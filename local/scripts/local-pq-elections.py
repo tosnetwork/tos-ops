@@ -177,6 +177,37 @@ async def snapshot(previous):
     return decoded["utime_since"]
 
 
+async def run_round(submit, selected, election, degraded):
+    """Submit one roster; one member's fault never stops the others.
+
+    Returns the accepted members and whether every member reached a recorded
+    outcome. An exception (unresolved or not ready) leaves the persisted intent
+    to be retried on the next pass, never paid twice; a recorded refusal is
+    final for this election. Both mark the member degraded until it is accepted.
+    """
+    accepted, settled = [], True
+    for i in selected:
+        try:
+            result = await submit(i)
+        except Exception as exc:
+            settled = False
+            degraded[i] = dict(at=time.time(), error=f"{type(exc).__name__}: {exc}")
+            event("candidate_failed", election=election, node=i, error=degraded[i]["error"])
+            continue
+        if result["kind"] == "accepted":
+            degraded.pop(i, None)
+            accepted.append(i)
+            event("stake_accepted", election=election, node=i, reply=result["reply"])
+        elif result.get("reply") == [0xEE6F454C, 0]:
+            event("election_closed_skipped", election=election, node=i, result=result)
+            break
+        else:
+            # The persisted refusal cannot be paid again after a restart.
+            degraded[i] = dict(at=time.time(), error=f"refused: {result}")
+            event("stake_refused", election=election, node=i, result=result)
+    return accepted, settled
+
+
 async def reconcile_candidate(client, sender, intent, candidate, pool):
     """Resolve one persisted order without inventing a second business request."""
 
@@ -335,6 +366,7 @@ async def run_driver():
                 "config15.json",
                 {"values": values, "boc_b64": base64.b64encode(config15.to_boc()).decode()},
             )
+            degraded = {}
             pools = {
                 i: make_pool_fixture(pool_code, wallet.address, Address(c["controller"]))
                 for i, c in candidates.items()
@@ -364,9 +396,16 @@ async def run_driver():
                     await wait(deployed)
                 saved = OUT / f"candidate-intent-{i}.json"
                 if not saved.exists() or read_json(saved)["state"] == "done":
-                    await ensure_operations(
-                        client, sender, c, i, OUT, network["global_id"], emit=event
-                    )
+                    # One controller's fault must not stop the others from
+                    # electing: elections are what let the chain collect garbage.
+                    try:
+                        await ensure_operations(
+                            client, sender, c, i, OUT, network["global_id"], emit=event
+                        )
+                    except Exception as exc:
+                        degraded[i] = dict(at=time.time(), error=f"{type(exc).__name__}: {exc}")
+                        event("candidate_not_ready", node=i, error=degraded[i]["error"])
+                        continue
                 event(
                     "candidate_ready",
                     node=i,
@@ -397,8 +436,7 @@ async def run_driver():
                             round_index = len(submitted)
                             selected = roster(round_index)
                             event("election_submitting", election=election, roster=selected)
-                            accepted_nodes = []
-                            for i in selected:
+                            async def submit(i, election=election):
                                 write(
                                     "status.json",
                                     dict(
@@ -410,7 +448,7 @@ async def run_driver():
                                         activation_since=previous,
                                     ),
                                 )
-                                result = await submit_candidate(
+                                return await submit_candidate(
                                     client,
                                     sender,
                                     consoles[i],
@@ -420,35 +458,20 @@ async def run_driver():
                                     i,
                                     network,
                                 )
-                                if result["kind"] == "accepted":
-                                    accepted_nodes.append(i)
-                                    event(
-                                        "stake_accepted",
-                                        election=election,
-                                        node=i,
-                                        reply=result["reply"],
-                                    )
-                                elif result.get("reply") == [0xEE6F454C, 0]:
-                                    event(
-                                        "election_closed_skipped",
-                                        election=election,
-                                        node=i,
-                                        result=result,
-                                    )
-                                    break
-                                else:
-                                    # The persisted refusal cannot be paid again after a restart.
-                                    event("stake_refused", election=election, node=i, result=result)
-                                    raise ValueError(f"node {i} stake refused: {result}")
-                            selected = accepted_nodes
-                            submitted[str(election)] = list(selected)
-                            write("submitted.json", submitted)
+
+                            accepted_nodes, settled = await run_round(
+                                submit, selected, election, degraded
+                            )
+                            if settled:
+                                submitted[str(election)] = list(accepted_nodes)
+                                write("submitted.json", submitted)
                         write(
                             "status.json",
                             dict(
                                 at=time.time(),
                                 kind="running",
-                                healthy=True,
+                                healthy=not degraded,
+                                degraded={str(k): v for k, v in degraded.items()},
                                 election=election,
                                 activation_since=previous,
                             ),

@@ -181,6 +181,26 @@ async def verify_local_network(client, network, plan):
         raise ValueError("connected election schedule differs from the local profile")
 
 
+# A refused authorization leaves the root nonce unchanged, so a later attempt
+# for the same nonce needs a label of its own. Only a refusal confirmed on chain
+# (a finished journal record with ok == False) opens the next label; an unknown
+# outcome keeps its label and must be reconciled, never paid again.
+MAX_REFUSED_AUTHORIZATIONS = 8
+
+
+def operations_label(faucet, index, epoch, nonce):
+    base = f"operations-{index}-{epoch}-{nonce}"
+    for attempt in range(MAX_REFUSED_AUTHORIZATIONS + 1):
+        label = base if attempt == 0 else f"{base}-retry{attempt}"
+        value = faucet.record(label)
+        if value is None or value.get("state") != "done" or value.get("ok"):
+            return label, attempt
+    raise ValueError(
+        f"controller {index}: {MAX_REFUSED_AUTHORIZATIONS + 1} authorizations for nonce "
+        f"{nonce} were refused on chain; inspect them before another attempt"
+    )
+
+
 async def confirmed_state(client, controller, receipt):
     """Wait for the account view to reach the independently confirmed transaction."""
     deadline = time.monotonic() + 30
@@ -290,8 +310,13 @@ async def ensure_operations(
             now + AUTHORIZATION_WINDOW,
             signer_tool,
         )
+        # Settle an earlier uncertain payment first: its outcome decides the label.
+        await faucet.recover()
+        label, attempt = operations_label(faucet, index, epoch, nonce)
+        if attempt and emit:
+            emit("operations_retry_after_refusal", node=index, nonce=nonce, attempt=attempt)
         receipt = await faucet.transfer(
-            f"operations-{index}-{epoch}-{nonce}",
+            label,
             controller,
             proposal["deposit"] + budget["processing"] + NANO,
             body,

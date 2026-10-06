@@ -173,3 +173,40 @@ def test_persisted_refusal_is_not_repaid(harness, monkeypatch):
     monkeypatch.setattr(driver, "election_result", lambda *args, **kwargs: refusal.copy())
     assert run() == run() == refusal
     assert len(transport.payments) == 1
+
+
+def test_one_member_fault_does_not_stop_the_rest_of_the_round(monkeypatch):
+    # Elections must keep producing key blocks; a member that fails or is refused
+    # is recorded as degraded while the other members still stake.
+    monkeypatch.setattr(driver, "event", lambda *args, **kwargs: None)
+    outcomes = {
+        1: ACCEPTED,
+        2: TimeoutError("unfinished relay"),
+        3: dict(kind="controller_bounced", exit_code=180),
+        7: ACCEPTED,
+    }
+
+    async def submit(i):
+        outcome = outcomes[i]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return dict(outcome)
+
+    degraded = {9: dict(at=0, error="old")}
+    accepted, settled = asyncio.run(driver.run_round(submit, (1, 2, 3, 7), ELECTION, degraded))
+    assert accepted == [1, 7]
+    assert settled is False  # node 2 is retried on the next pass
+    assert set(degraded) == {2, 3, 9}
+    outcomes[2] = ACCEPTED
+    accepted, settled = asyncio.run(driver.run_round(submit, (1, 2, 3, 7), ELECTION, degraded))
+    assert settled is True and 2 not in degraded
+
+
+def test_a_closed_election_stops_the_round(monkeypatch):
+    monkeypatch.setattr(driver, "event", lambda *args, **kwargs: None)
+
+    async def submit(i):
+        return dict(kind="refused", reply=[0xEE6F454C, 0])
+
+    accepted, settled = asyncio.run(driver.run_round(submit, (1, 2), ELECTION, {}))
+    assert accepted == [] and settled is True

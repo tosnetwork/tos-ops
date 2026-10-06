@@ -107,7 +107,14 @@ class Chain:
         self.bad_readback = False
         self.refuse = False
         self.calls = []
+        self.records = {}
         self.wallet = Obj(address=PAYER)
+
+    def record(self, label):
+        return self.records.get(label)
+
+    async def recover(self):
+        return []
 
     async def raw_get_account_state(self, addr):
         assert addr == CONTROLLER
@@ -145,13 +152,16 @@ class Chain:
             self.nonce += 1
         elif body is None:
             self.balance += amount
-        return dict(
+        receipt = dict(
             label=label,
+            state="done",
             ok=not self.refuse,
             transaction=dict(lt=self.lt, hash="00" * 32),
             exit_code=180 if self.refuse else 0,
             action_code=None,
         )
+        self.records[label] = receipt
+        return receipt
 
 
 def signer(seed, global_id, controller, epoch, nonce, payload, valid_until, tool):
@@ -296,3 +306,30 @@ def test_same_lt_with_another_hash_is_not_a_confirmed_readback():
                 Client(), CONTROLLER, dict(transaction=dict(lt=100, hash="00" * 32))
             )
         )
+
+
+def test_a_confirmed_refusal_lets_the_next_attempt_use_a_new_label(tmp_path, monkeypatch):
+    # A refused authorization leaves the nonce unchanged. Reusing its label would
+    # either replay the refused body or be rejected as a different payment, and
+    # the driver could never fund this controller again.
+    chain = Chain()
+    chain.refuse = True
+    with pytest.raises(ValueError, match="refused"):
+        run(chain, tmp_path, monkeypatch)
+    chain.refuse = False
+    run(chain, tmp_path, monkeypatch)
+    labels = [call[0] for call in chain.calls if call[2] is not None]
+    assert labels == ["operations-1-2-7", "operations-1-2-7-retry1"]
+    assert chain.nonce == 8
+
+
+def test_an_unknown_outcome_keeps_its_label():
+    faucet = Obj(record=lambda label: dict(state="prepared") if label.endswith("-7") else None)
+    assert funding.operations_label(faucet, 1, 2, 7) == ("operations-1-2-7", 0)
+
+
+def test_refusals_for_one_nonce_are_capped():
+    refused = dict(state="done", ok=False)
+    faucet = Obj(record=lambda label: refused)
+    with pytest.raises(ValueError, match="refused on chain"):
+        funding.operations_label(faucet, 1, 2, 7)

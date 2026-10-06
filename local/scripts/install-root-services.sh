@@ -54,7 +54,10 @@ STAMP="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 DEST="$BASE/$STAMP"
 mkdir "$DEST"
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+PUBLISHED=0
+# A snapshot that failed a check is never published; remove it rather than
+# leave it for the next successful install to sweep up.
+trap 'rm -rf "$WORK"; [[ $PUBLISHED == 1 ]] || rm -rf -- "$DEST"' EXIT
 SRC="$DEST/src"
 mkdir -p "$SRC/test/tostester" "$SRC/build/toslib" "$SRC/crypto/smartcont/single-nominator-pool" \
     "$SRC/tools/shielded-pool-circuit/crosscheck/target/release"
@@ -94,6 +97,7 @@ fi
 /usr/bin/python3 -I -S "$DRIVERS/check-local-pq-resources.py" "$DEST" "$REPO" "$BUILD"
 ln -sfn "$STAMP" "$BASE/current.new"
 mv -T "$BASE/current.new" "$BASE/current"
+PUBLISHED=1
 for old in "$BASE"/*; do
     [[ "$old" != "$DEST" && ! -L "$old" && -d "$old" && -e "$old/$MARKER" ]] || continue
     [[ "$(basename "$old")" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9]+$ ]] || continue

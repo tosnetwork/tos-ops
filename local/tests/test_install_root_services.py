@@ -650,3 +650,6 @@ def test_failed_resource_admission_preserves_the_previous_snapshot(setup):
     result = install(repo, tools, base)
     assert result.returncode != 0
     assert (base / "current").resolve() == previous and previous.exists()
+    # The refused staging directory is removed, not left for a later sweep.
+    snapshots = [p for p in base.iterdir() if p.is_dir() and not p.is_symlink()]
+    assert snapshots == [previous]
