@@ -16,6 +16,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import local_pq_testnet as local
+from local_pq_transactions import faucet_lock
 import nacl.signing
 from contract import WalletV1, WalletV1Blueprint
 from pytosiq_core import (
@@ -162,6 +163,19 @@ async def bootstrap(args, client, blueprints):
         ["systemctl", "is-active", "tos-pq-elections"], capture_output=True, text=True
     )
     require(state.stdout.strip() == "inactive", "stop the election service before bootstrap")
+    # A payment the election driver journalled but had not finished when it was
+    # stopped is bound to the next wallet seqno. Spending that seqno here would
+    # leave the driver an intent that can never execute.
+    require(
+        not (args.data / "elections/faucet-journal/pending.json").exists(),
+        "the election driver has an unfinished Genesis wallet payment; start it again "
+        "until its journal has no pending.json, then stop it and bootstrap",
+    )
+    with faucet_lock(args.data):
+        await fund_wallets(args, client, blueprints)
+
+
+async def fund_wallets(args, client, blueprints):
     faucet = WalletV1(
         client,
         Address(json.loads((args.data / "network.json").read_text())["genesis_wallet_address"]),

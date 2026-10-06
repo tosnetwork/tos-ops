@@ -259,3 +259,50 @@ def test_valid_initialization_and_bounce_flag_are_preserved(tmp_path):
     assert result["ok"] and not sender.pending.exists()
     assert result["init"] == init.serialize().hash.hex()
     assert result["bounce"] is True and len(net.broadcasts) == 1
+
+
+def test_an_intent_whose_seqno_another_payment_used_is_abandoned_and_retried(tmp_path):
+    # The election driver was stopped with a payment journalled but not yet sent;
+    # another Genesis wallet user then spent that seqno. The signed body can
+    # never execute, so it must not block every later payment forever.
+    net, sender = setup(tmp_path)
+    net.fail_before_delivery = True
+    with pytest.raises(ConnectionError):
+        asyncio.run(sender.transfer("one", address(2), 123))
+    net.fail_before_delivery = False
+    del net.broadcasts[:]
+    net.seqno += 1  # consumed by another writer, which this journal never saw
+    net.add(net.client_wallet.address, MessageAny(ExternalMsgInfo(None, address(1), 0), None, Cell.empty()))
+    restarted = Faucet(net, sender.wallet, sender.directory, "root")
+    receipt = asyncio.run(restarted.transfer("one", address(2), 123))
+    assert receipt["ok"] and net.seqno == 2
+    assert len(net.history[address(2).to_str(False)]) == 1  # paid exactly once
+    assert not restarted.pending.exists()
+    dead = list(restarted.directory.glob("dead-*.json"))
+    assert len(dead) == 1 and read_json(dead[0])["seqno"] == 0
+
+
+def test_a_duplicate_resend_is_observed_not_failed(tmp_path):
+    net, sender = setup(tmp_path)
+    original = sender.wallet.send_external
+
+    async def duplicate(*, body):
+        await original(body=body)
+        raise RuntimeError("LITE_SERVER_UNKNOWN: cannot send external message : duplicate message")
+
+    sender.wallet.send_external = duplicate
+    receipt = asyncio.run(sender.transfer("one", address(2), 123))
+    assert receipt["ok"] and net.seqno == 1
+
+
+def test_an_intent_at_the_current_seqno_is_never_abandoned(tmp_path):
+    net, sender = setup(tmp_path)
+    net.deliver = False
+    net.fail_before_delivery = True
+    with pytest.raises(ConnectionError):
+        asyncio.run(sender.transfer("one", address(2), 123))
+    net.fail_before_delivery = False
+    net.on_broadcast = lambda signed: setattr(net, "fail_before_delivery", True)
+    with pytest.raises((TimeoutError, ConnectionError)):
+        asyncio.run(sender.finish(read_json(sender.pending), timeout=0))
+    assert sender.pending.exists() and not list(sender.directory.glob("dead-*.json"))

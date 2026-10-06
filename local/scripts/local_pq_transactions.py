@@ -188,6 +188,12 @@ class Faucet:
 
     async def transfer(self, label, dest, amount, body=None, init=None, bounce=False):
         value = self.record(label)
+        if value is not None and value["state"] != "done":
+            # Resolve the journalled attempt first: only an attempt proven never
+            # to execute frees its label for a newly signed payment.
+            value = await self.finish(value)
+            if value["state"] == "dead":
+                value = None
         if value is None:
             # Finish any earlier uncertain payment before consuming another seqno.
             await self.recover()
@@ -242,6 +248,15 @@ class Faucet:
             raise ValueError("operation label reused for a different payment")
         return await self.finish(value)
 
+    def abandon(self, value):
+        value.update(state="dead", ok=False, reason="wallet seqno consumed by another payment")
+        atomic_json(self.directory / ("dead-" + self.path(value["label"]).name), value)
+        path = self.path(value["label"])
+        if path.exists():
+            path.unlink()
+        self.clear_pending(value["label"])
+        return value
+
     async def finish(self, value, timeout=60):
         if value["state"] == "done":
             self.clear_pending(value["label"])
@@ -253,7 +268,12 @@ class Faucet:
         if seqno == value["seqno"]:
             # The WAL is durable already. A transport exception cannot authorize
             # a second payment: recovery only ever resends this signed body.
-            await self.wallet.send_external(body=signed)
+            try:
+                await self.wallet.send_external(body=signed)
+            except Exception as exc:
+                # Already in the mempool from an earlier send: keep observing it.
+                if "duplicate message" not in str(exc):
+                    raise
         deadline = time.monotonic() + timeout
         outgoing = None
         while time.monotonic() < deadline:
@@ -272,6 +292,12 @@ class Faucet:
                 ]
                 if len(matches) > 1:
                     raise ValueError("signed faucet intent appears more than once")
+                if not matches and (await self.wallet.current).seqno > value["seqno"]:
+                    # Another payment consumed this seqno, and the complete wallet
+                    # history since the baseline holds no transaction carrying this
+                    # signed body: the wallet rejects it now, so it never executed
+                    # and never will. Keep it as evidence and free its label.
+                    return self.abandon(value)
                 if matches:
                     tx = matches[0]
                     if not successful(tx):
