@@ -16,3 +16,6 @@ keyring/
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Agent worktrees
+.claude/
