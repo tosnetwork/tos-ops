@@ -9,6 +9,7 @@ node software; this repository holds how we configure, deploy and operate it.
 ```
 .
 ├── README.md                    this file
+├── AGENTS.md                    working rules for agents and people (CLAUDE.md links here)
 ├── .gitignore                   keeps keys, seeds, tokens and certificates out
 ├── local/                       single-host local PQ development network
 │   ├── README.md                guide: setup, controller funding, retention, health rebinding
