@@ -18,9 +18,8 @@ was checked against:
 
 | tos revision | What it provides |
 | --- | --- |
-| PR #148, `feat/production-operator-gaps` at `69a8e827c` | Release packaging of the PQ tools, `bind-node`, controller deployment tools, `tosctl controller operations`, `wallet send --bounce`, `vote offer create`, init-block refresh, locked snapshot import |
-| `agent/operator-gaps-d` at `f9a10afe2` | Consensus-database cleanup on by default (section 6.4); **not yet merged into PR #148** |
-| PR #149, `feat/pq-multi-consensus-key` at `1f2cd09b3` | Several consensus keys per validator, zero-downtime rotation (section 9, step 8); **open, not merged** |
+| PR #148, `feat/production-operator-gaps` at `e9e81d04b` | Release packaging of the PQ tools, `bind-node`, controller deployment tools, `tosctl controller operations`, `wallet send --bounce`, `vote offer create`, init-block refresh, locked snapshot import, consensus-database cleanup on by default (section 6.4) |
+| PR #149, `feat/pq-multi-consensus-key` at `23df53058` | Several consensus keys per validator, zero-downtime rotation (section 9, step 8); **open, not merged** |
 
 Section 12 lists the gaps that remain. Until they are closed, the steps that
 depend on them cannot be carried out with released artifacts alone.
@@ -42,7 +41,7 @@ out where that guide and the code disagree.
 | Validator set | 4 members plus one standby | At most 21 (`config/pq-launch-limits.json`), enforced at four points |
 | Hosts | Seven nodes on one machine, loopback | One validator per host; separate full, RPC, archive and DHT hosts |
 | Retention | 1 h states, 2 h archive | Section 6 |
-| Consensus-database cleanup | On | On (the default once the cleanup change is merged, section 6.4) |
+| Consensus-database cleanup | On | On (the default, section 6.4) |
 | Monitoring | Local health stack on the same host | Health stack off the validator host (`production_off_validator`) |
 | Install | `setup-testnet.sh --clean` wipes `/data` | Nothing is ever wiped; data moves only through verified snapshots |
 
@@ -397,7 +396,10 @@ against the durable GC masterchain block:
 Deletion therefore trails the GC floor, that is `--state-ttl` plus the GC lag
 of section 6.1. A crash at any point is recovered on the next start. The
 backlog is scanned 256 records at a time with at most 16 deletions per pass,
-so a large backlog drains gradually without memory growth.
+so a large backlog drains gradually without memory growth. A fixed 10 s timer
+drives the scan: each tick runs at most one pass, the cursor wraps at the end of
+the store and the scan never pauses, so a failed read or deletion is simply
+retried on a later tick. Enabling or disabling cleanup is decided at start-up.
 
 **Cleanup is on by default.** No flag is needed. The options are:
 
@@ -423,13 +425,16 @@ WARNING, at any verbosity, and is retried. A production validator therefore
 keeps the default verbosity and does not set `-v` below 3.
 
 **Code status.** The default-on behaviour, the `--disable-` option and the
-mutual-exclusion check exist on tos branch `agent/operator-gaps-d`. They are
-not yet in PR #148's head (`69a8e827c`), where the only option is still
-`--enable-validator-consensus-cleanup`, labelled acceptance-only and off by
-default. A build from that head does **not** clean up by default. Do not deploy
-a validator build unless its `validator-engine --help` lists
-`--disable-validator-consensus-cleanup`. Its log must also show
-`validator consensus cleanup: enabled`.
+mutual-exclusion check are in PR #148. Builds from tos `main` before #148 merges
+still have only `--enable-validator-consensus-cleanup`, labelled acceptance-only
+and off by default, and do **not** clean up. Do not deploy a validator build
+unless its `validator-engine --help` lists `--disable-validator-consensus-cleanup`.
+Its log must also show `validator consensus cleanup: enabled`.
+
+**Evidence so far.** On the local seven-node development network (one host),
+an engine built from PR #148 deleted retired directories on all five validators
+within the first hour: the oldest retained catchain moved from 176 to about 200
+while each validator's directory count stayed flat (40–82).
 
 The production evidence still missing is a validator on a live, multi-host
 network that has deleted directories through several set rotations and kept
@@ -861,9 +866,9 @@ Alert at least on:
 | G6 | `tosctl` elections created classical temporary keys | **Closed by #148**: no temporary key; the permanent-key entry stays only as the ADNL-address record |
 | G7 | No authenticated distribution of the global config, and no init-block refresh | **Partly closed.** #148 adds `scripts/refresh-global-config-init-block.py`. Open: an authenticated, signed release channel for the global config and a refresh schedule. Docker still defaults to an unauthenticated URL |
 | G8 | Hardware profile `OWNER_REVIEW_REQUIRED`; no 21-validator disk or memory measurement | **Open.** Section 6.3 sizing is a lower bound only |
-| G9 | Stale operator docs in tos | **Mostly closed by #148** (operator guide, Validator.md, FullNode.md, single-nominator HOWTO, docker/README.md, tos-upgrade-process.md). Remaining inconsistencies: the guide's custody log line (`validator <hex> key <base64>`) differs from what the engine logs (`validator_id <hex> key_id <hex>`), and it still says `-1:<hex>` must use the `--flag=` form (section 9.1). Validator.md links a cleanup section that exists only on the unmerged cleanup branch |
+| G9 | Stale operator docs in tos | **Closed by #148** (operator guide, Validator.md, FullNode.md, single-nominator HOWTO, docker/README.md, tos-upgrade-process.md; the custody log line and `-1:<hex>` address wording were corrected in `47e317b57`) |
 | G10 | No tool created a configuration proposal | **Closed by #148** (`tosctl vote offer create`). `--wallet` needs RPC nodes built from #148 (`storage_stat`) |
-| G11 | Retired validator consensus databases never deleted by default | **Code ready, not yet in #148's head** (section 6.4: default-on lives on `agent/operator-gaps-d`). Open: merge, and deletion evidence from a live multi-host network across several set rotations |
+| G11 | Retired validator consensus databases never deleted by default | **Closed in code by #148** (section 6.4; on by default, fixed-period scan). Verified deleting on the local single-host network. Open: deletion evidence from a live multi-host network across several set rotations |
 | G12 | No production systemd unit in the tos repository | **Open.** Section 7 remains a proposal; the tos repository still ships only development and monitoring units |
 
 The order that unblocks a first external validator is now:

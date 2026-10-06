@@ -3,9 +3,9 @@
 Settings for nodes on the production network. This is a **design and template
 set, not an accepted deployment**. The design every file here follows is
 [Production-Node.md](Production-Node.md). Its section 12 tracks twelve gaps
-(G1–G12) and what tos PR #148 closes. The consensus-database cleanup default,
-the global config's authenticated distribution, production sizing, a live
-multi-node key rotation and an accepted production unit are still open.
+(G1–G12) and what tos PR #148 closes. The global config's authenticated
+distribution, production sizing, cleanup evidence from a live multi-host network,
+a live multi-node key rotation and an accepted production unit are still open.
 
 | Path | Contents |
 | --- | --- |
