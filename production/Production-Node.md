@@ -74,6 +74,38 @@ Rules that follow from the code:
   (`--full-node-master-trusted`, see tos `doc/FullNode.md`), so that block
   data fetching does not depend only on public peers.
 
+### 2.1 Lite server capacity
+
+Every node's lite server admits external queries through one per-node limit
+(`validator/liteserver-admission.h`), counted in a sliding one-second window
+across all clients together:
+
+| Class | Examples | Limit per second |
+| --- | --- | --- |
+| Heavy | `getBlockProof`, `getTransactions`, `getState`, `lookupBlockWithProof`, `getConfigAll` | 128 |
+| Medium | `getAccountState`, `runSmcMethod`, `sendMessage`, `getConfigParams`, `lookupBlock` | 512 |
+| Small | `getMasterchainInfo`, `getTime`, `getVersion` | 1,024 |
+| All heavy and medium together | | 2,048 |
+
+A query cost grows by one per 16 KiB of request. A query above the limit is
+refused with `LITE_SERVER_NOTREADY: liteserver admission limit exceeded` and
+is never executed, and so is a query type outside these lists. At most 512
+admitted queries execute at once.
+
+What this means for production:
+
+- A verifying client spends several heavy queries per account read, because
+  each answer is proved. Ten clients starting together can exceed 128 heavy
+  queries in one second. This was observed on the local network.
+- Clients must treat the refusal as "retry later": back off and retry. It is
+  safe, because a refused query did nothing. A client that treats it as fatal
+  turns a burst into an outage.
+- Plan RPC capacity by heavy queries, not by requests. Spread wallet,
+  explorer and indexer traffic across several RPC nodes, and keep each
+  validator's own tooling (`tosctl`) on a node that serves no public clients.
+- The limit is per node and compiled in. A public RPC tier that needs more
+  heavy throughput needs more nodes, not a configuration change.
+
 ## 3. Key custody
 
 There are three custody domains. A key never moves to a less protected domain.
