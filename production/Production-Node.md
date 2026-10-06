@@ -13,11 +13,22 @@ independent operator should configure and start a node on a shared network:
 - how a validator joins, stays in and leaves the validator set;
 - what is still missing before any of this can be followed for real.
 
-Every statement about behaviour is taken from the tos code at the commit this
-document was written against. Section 12 lists the gaps: tooling the
-procedure needs but the repository does not yet provide. Until they are
-closed, the steps that depend on them cannot be carried out with released
-artifacts alone.
+Every statement about behaviour is taken from the tos code. The revisions it
+was checked against:
+
+| tos revision | What it provides |
+| --- | --- |
+| PR #148, `feat/production-operator-gaps` at `69a8e827c` | Release packaging of the PQ tools, `bind-node`, controller deployment tools, `tosctl controller operations`, `wallet send --bounce`, `vote offer create`, init-block refresh, locked snapshot import |
+| `agent/operator-gaps-d` at `f9a10afe2` | Consensus-database cleanup on by default (section 6.4); **not yet merged into PR #148** |
+| PR #149, `feat/pq-multi-consensus-key` at `1f2cd09b3` | Several consensus keys per validator, zero-downtime rotation (section 9, step 8); **open, not merged** |
+
+Section 12 lists the gaps that remain. Until they are closed, the steps that
+depend on them cannot be carried out with released artifacts alone.
+
+The step-by-step operator procedure in the tos repository is
+`doc/validator-operator-guide.md`. This document adds the production
+choices (roles, placement, retention, custody domains, monitoring) and points
+out where that guide and the code disagree.
 
 ## 1. What differs from the local network
 
@@ -30,7 +41,8 @@ artifacts alone.
 | Elections (Config15) | 600 / 300 / 60 / 180 s | 65536 / 32768 / 8192 / 32768 s (`gen-zerostate.fif`) |
 | Validator set | 4 members plus one standby | At most 21 (`config/pq-launch-limits.json`), enforced at four points |
 | Hosts | Seven nodes on one machine, loopback | One validator per host; separate full, RPC, archive and DHT hosts |
-| Retention | 1 h states, 2 h archive, consensus cleanup on | Section 6; consensus cleanup is a launch decision |
+| Retention | 1 h states, 2 h archive | Section 6 |
+| Consensus-database cleanup | On | On (the default once the cleanup change is merged, section 6.4) |
 | Monitoring | Local health stack on the same host | Health stack off the validator host (`production_off_validator`) |
 | Install | `setup-testnet.sh --clean` wipes `/data` | Nothing is ever wiped; data moves only through verified snapshots |
 
@@ -43,7 +55,7 @@ production. That includes:
 - `local-pq-elections.py`, `local-pq-transfers.py`, `local-pq-privacy.py` and
   `local-pq-fund-controllers.py`;
 - the development pool verifying key;
-- `--enable-validator-consensus-cleanup` while it is still labelled acceptance-only (section 6.4).
+- `--test-consensus-cleanup-crash-before-erase` (fault injection, section 7.1).
 
 ## 2. Node roles
 
@@ -60,11 +72,17 @@ Rules that follow from the code:
 - A validator runs no public liteserver and no JSON-RPC. Its console and
   exporter bind to loopback. Wallet and explorer traffic go to RPC nodes, so a
   query load can never starve consensus.
-- A validator host holds exactly one consensus key. The node refuses to start
-  a validator group unless it holds the exact key that Config34 records for its
-  controller (`validator/manager.cpp`, group creation). Running a second copy
-  of the same key elsewhere is never a failover mechanism; it is how a
-  validator double-signs.
+- A validator host holds the consensus key of exactly one validator. The node
+  refuses to start a validator group unless it holds the exact key that
+  Config34 records for its controller (`validator/manager.cpp`, group
+  creation). Running a second copy of the same key elsewhere is never a
+  failover mechanism; it is how a validator double-signs.
+- One engine per database. The engine takes `<db>/config.json.lock` (a POSIX
+  `fcntl` write lock) before it reads any configuration and holds it until it
+  exits. A second engine on the same database, or an engine started while
+  `tos-pq-consensus-key bind-node` edits the configuration, exits with status 2
+  and names the lock (`validator-engine.cpp`). Under systemd,
+  `Restart=on-failure` then retries every `RestartSec`; the log line says why.
 - JSON-RPC with write methods (`sendBoc`, `sendQuery`) may only bind to
   loopback. The node exits with code 2 otherwise, whatever API key is set
   (`validator-engine.cpp`, `json-rpc-listen-policy.h`). A public RPC endpoint is
@@ -73,6 +91,9 @@ Rules that follow from the code:
 - A validator should keep a trusted full node as its master
   (`--full-node-master-trusted`, see tos `doc/FullNode.md`), so that block
   data fetching does not depend only on public peers.
+- RPC nodes that serve `tosctl vote offer create --wallet` must be built from
+  PR #148 or later: that command needs the account's `storage_stat`, which
+  older nodes do not serve (section 10.1).
 
 ### 2.1 Lite server capacity
 
@@ -112,37 +133,48 @@ There are three custody domains. A key never moves to a less protected domain.
 
 | Domain | Keys | Where |
 | --- | --- | --- |
-| **Offline operator domain** | Controller root seed (`tos-pq-key keygen`); next root seed during rotation | Air-gapped machine or HSM-backed signer. The root signs controller actions (`tos-pq-controller`) and nothing else. |
+| **Offline operator domain** | Controller root seed (`tos-pq-key keygen`); next root seed during rotation; a new consensus seed while it is bound (kind 3) | Air-gapped machine or HSM-backed signer. The root signs controller actions (`tos-pq-controller`) and nothing else. |
 | **Validator host** | PQ consensus seed (32-byte ML-DSA-44 seed); ADNL/DHT transport keys in the keyring; console server key | The node host, owner-only files |
 | **Operator wallets** | Pool owner wallet; validator (stake-ordering) wallet; operating-authorization payer wallet | Wallet custody of the operator's choice; the owner wallet ideally offline |
 
 ### 3.1 Consensus key
 
-- Generate it on the validator host:
+- Generate it on the validator host, as the node's service account:
   ```bash
   umask 077
+  install -d -m 700 /var/lib/tos/validator/keys
   tos-pq-consensus-key generate /var/lib/tos/validator/keys/pq-consensus.seed
+  tos-pq-consensus-key show /var/lib/tos/validator/keys/pq-consensus.seed
   ```
-  The tool refuses to overwrite a key, writes through a temporary file and a
-  rename, and fsyncs the file and its directory. It prints the algorithm,
-  `key_id` and public key, and never the seed.
+  `generate` refuses to overwrite a key, writes through a temporary file and a
+  rename, and fsyncs the file and its directory. Both commands print the
+  algorithm, `key_id` and public key in hex, and never the seed.
 - The node and every PQ tool load the seed with the same rules
   (`crypto/pq/seed-file.h`):
   - no symlink;
-  - a regular file of exactly 32 bytes;
+  - a regular file of exactly 32 bytes (a FIFO is refused);
   - owned by the effective user;
   - no group or other permission bits;
   - a parent directory that is not group- or world-writable.
 
   A permission error must be fixed, never worked around by loosening modes.
-- Back up the seed **offline and encrypted**, never on the host. A lost
-  consensus seed is recoverable by binding a new key (kind 3). A leaked seed is
-  a double-signing risk until it is rebound.
+- Back up the seed **offline and encrypted**, never on the host. The only
+  command that outputs the seed is `export`, and it writes only to a pipe or a
+  socket, never to a terminal or a regular file:
+  ```bash
+  tos-pq-consensus-key export KEYFILE | ENCRYPT > BACKUP
+  DECRYPT < BACKUP | tos-pq-consensus-key import KEYFILE   # restore: 64 hex digits on stdin
+  ```
+  `ENCRYPT`/`DECRYPT` stand for the encryption program the operator uses.
+- A lost consensus seed is recoverable by binding a new key (kind 3,
+  section 9, step 8). A leaked seed is a double-signing risk until it is rebound.
 
 ### 3.2 Controller root key
 
-- Generate it with `tos-pq-key keygen` in the offline domain. The root is
-  deliberately not linked into the node: `scripts/check-root-authority-off-the-node.sh`
+- Generate it with `tos-pq-key keygen ROOTSEED` in the offline domain
+  (`tos-pq-key public ROOTSEED` prints the public key again). The root is
+  deliberately not linked into the node: `tos-pq-key` is a separate CMake
+  project (`crypto/pq/tools`), and `scripts/check-root-authority-off-the-node.sh`
   fails the build if root symbols reach the validator, overlay, ADNL or
   catchain code.
 - Every root action is an internal message body produced offline and submitted
@@ -153,17 +185,19 @@ There are three custody domains. A key never moves to a less protected domain.
     ROOTSEED GLOBAL_ID CONTROLLER_HEX EPOCH NONCE VALID_UNTIL ...
   ```
 
-  - `EPOCH` and `NONCE` come from the controller getter `controller_state`.
+  - `EPOCH` and `NONCE` come from the controller getter `controller_state`;
+    `tosctl controller operations plan` prints them for a kind 4 action.
   - `VALID_UNTIL` must be in the future and at most 3,600 s ahead.
   - Each action spends one nonce. `rotate-root` increments the epoch and
-    resets the nonce to 0.
-- **Binding a consensus key.** Kinds 2 (rotate root) and 3 (bind consensus
-  key) need a cosignature by the incoming key, so a kind 3 `bind` needs the
-  consensus seed inside the offline ceremony. To avoid moving the seed at all
-  for the initial key, bind it **at birth**: put the consensus `key_id` into the
-  controller's initial data, as the test fixture does. Only the public `key_id`
-  then crosses domains. Later key rotations (kind 3) need a planned ceremony;
-  see gap G5.
+    resets the nonce to 0, so bodies prepared earlier become invalid.
+- **Binding the first consensus key at birth.** The controller is deployed
+  already bound to the consensus `key_id` (`tos-pq-controller init-data`,
+  section 9, step 2). Only the public `key_id` crosses domains; the consensus seed
+  never leaves the validator host for the first deployment.
+- **Binding a later key (kind 3).** `tos-pq-controller bind ... CONSENSUS_SEED`
+  needs a cosignature by the incoming key, so the new consensus seed must be
+  inside the offline ceremony and is then moved to the host with
+  `export | ENCRYPT` / `DECRYPT | import` (section 9, step 8).
 
 ## 4. Host layout and service account
 
@@ -175,6 +209,7 @@ layout below replaces the development `/data/testnet/node<i>` tree.
 /etc/tos/global-config.json             network global config (section 8), root-owned 0644
 /var/lib/tos/<role>/                    -D database root, owned by tos, 0700
 /var/lib/tos/<role>/config.json         local config generated on first run (section 5)
+/var/lib/tos/<role>/config.json.lock    engine lock file; created by the engine, never delete it while anything runs
 /var/lib/tos/<role>/keyring/            transport and console keys, 0700
 /var/lib/tos/<role>/keys/pq-consensus.seed   validator only, 0600, in a 0700 directory
 /var/log/tos/<role>/                    -l log, --session-logs
@@ -183,8 +218,13 @@ layout below replaces the development `/data/testnet/node<i>` tree.
 - Keep the database on dedicated NVMe and the logs on a separate volume.
 - `-f` (Fift directory) is accepted but never read (`validator-engine.hpp`),
   so it is omitted.
+- Release archives for Linux x86_64 and arm64 ship `tos-pq-consensus-key`,
+  `tos-pq-controller`, `tos-pq-key` and `tos-pq-vote` beside `validator-engine`
+  (`scripts/release-artifacts.json`). Install `tos-pq-key` and
+  `tos-pq-controller` only in the offline domain, not on the validator host.
+  The key tools are not shipped for macOS or Windows.
 
-## 5. First start
+## 5. First start and binding the validator
 
 The node always runs from `<db>/config.json`. `-c` is read **only when that
 file does not exist**. In that case the engine:
@@ -196,29 +236,74 @@ file does not exist**. In that case the engine:
 
 A production install therefore has two phases:
 
-1. **Generate.** Run the engine once:
+1. **Generate.** Run the engine once, as the service account:
 
    ```bash
    validator-engine -C /etc/tos/global-config.json -D /var/lib/tos/<role> -I <public-ip>:<port>
    ```
 
    It creates `config.json` and exits. Review the file.
-2. **Configure** before the first real start:
+2. **Configure** before the first real start, with the node stopped:
    - Add console control keys. The Docker entrypoint does this with
      `generate-random-id` and a permissions template (`docker/init.sh`,
      `docker/control.template`).
    - On RPC nodes only, add liteserver keys.
-   - **Validator only:** add
-     `extraconfig.pq_consensus {validator_id, consensus_key_file}`
-     (`tl/generate/scheme/tos_api.tl`):
-     - `validator_id` is the controller's 256-bit account ID;
-     - `consensus_key_file` is the absolute path from section 4.
-
-     The engine aborts at start if `validator_id` is zero or the key fails to
-     load. No console command sets this block yet; see gap G3.
+   - **Validator only:** bind the node to its controller (section 5.1).
 
 The Ed25519 keys created in step 1 are transport identities only (ADNL,
 DHT). They have no part in consensus.
+
+Never edit `config.json` while the engine runs: it rewrites the file whenever
+its configuration changes, and a hand edit is lost or overwritten.
+
+### 5.1 `bind-node`
+
+```bash
+systemctl stop tos-validator
+sudo -u tos tos-pq-consensus-key bind-node /var/lib/tos/validator \
+  /var/lib/tos/validator/keys/pq-consensus.seed VALIDATOR_ID
+```
+
+- `DB_ROOT` is the node's `-D` directory; the tool edits
+  `DB_ROOT/config.json` and sets `extraconfig.pq_consensus
+  {validator_id, consensus_key_file}`.
+- `KEYFILE` must be an absolute path. The key is checked under the node's own
+  rules (section 3.1), so run the tool as the node's service account.
+- `VALIDATOR_ID` is the controller's account id, as 64 hex digits or
+  `-1:<64 hex digits>`.
+- A different existing binding is replaced only with `--replace`
+  (`bind-node --replace DB_ROOT KEYFILE VALIDATOR_ID`); an identical binding is
+  a no-op.
+- The tool holds `DB_ROOT/config.json.lock` for the whole read-modify-write,
+  and the cell database's RocksDB `LOCK` when it exists. A running node holds
+  the same configuration lock, so `bind-node` refuses while the node runs and
+  the node refuses to start (exit 2) while `bind-node` edits. **Never run
+  `bind-node` beside a running node**; stop the unit first. The lock is a
+  second line of defence, not a substitute for stopping it.
+- It refuses a leftover `config.json.tmp` (decide which file is correct
+  first), content the engine's configuration schema would drop, a symbolic
+  link, and a file owned by another user. It keeps the file's mode and group
+  and writes through a temporary file, `fsync` and rename.
+
+| Exit status | Meaning | Action |
+| --- | --- | --- |
+| 0 | Bound, or already bound | Start the node |
+| 1 | Refused; nothing was written | Read the message, fix the cause |
+| 2 | Usage error | Fix the command line |
+| 3 | Written, but the directory flush failed: durability unconfirmed | Run `sync` on `config.json` and on the database root (`sync /var/lib/tos/validator/config.json /var/lib/tos/validator`) before starting or relying on it |
+
+Start the node and check the custody line it logs at start-up:
+
+```
+post-quantum consensus custody: validator_id <hex> key_id <hex>
+```
+
+Both values are in the same hex form `tos-pq-consensus-key show` prints
+(`validator-engine.cpp`). The engine aborts at start if `validator_id` is zero
+or the key fails to load, instead of starting as an observer.
+
+`bind-node` has been tested on Linux only. It is not shipped for macOS and
+has not been run there.
 
 ## 6. Storage and retention
 
@@ -230,7 +315,7 @@ DHT). They have no part in consensus.
 | Archived blocks | At least `state-ttl + archive-ttl` after their time, per 20,000-seqno package | `ArchiveManager::run_gc`, `archive-gc-floor.h` |
 | Session statistics | Self-rotating at 256 MiB, one `.old` copy | `max_session_stats_file_bytes_` |
 | Text log (`-l`) | Rotates at 10 MiB, one `.old` copy | `TsFileLog` |
-| Retired validator consensus databases | **Never by default** | Section 6.4 |
+| Retired validator consensus databases | Once provably obsolete, trailing the GC floor (default on, section 6.4) | `validator/manager.cpp`, `VALCLEANUP` |
 
 The GC floor advances only while **all** of the following hold:
 
@@ -258,8 +343,8 @@ not for the TTLs alone.
 way forward from the zero state needs every key block since Genesis. Once those
 blocks are collected, a newly started client fails with
 `LITE_SERVER_NOTREADY: block handle not in db`; this was observed on the local
-network. Every client therefore needs a recent trusted `init_block`. Section 8
-covers how the global config provides it.
+network. Every client therefore needs a recent trusted `init_block`. Section
+8.1 covers how the global config provides it.
 
 ### 6.2 Recommended retention per role
 
@@ -275,7 +360,7 @@ Measured on the local development network: 4 validators, about 2.5–2.8
 masterchain blocks/s, ConfigParam 30 target rate 400 ms. Per hour, per
 validator:
 
-- consensus databases about 670 MB;
+- consensus databases about 670 MB (before cleanup);
 - block files about 330 MB;
 - archive about 180 MB;
 - state database about 73 MB until GC.
@@ -288,34 +373,67 @@ sizing must be measured on the N6 hardware profile with 21 validators before
 launch (gap G8). Until then, provision at least:
 
 - (archive + block-file growth) × (TTLs + 2 days of GC lag) × 1.5 safety factor;
-- plus the consensus databases (section 6.4);
+- plus the consensus databases retained until cleanup reaches them: about one
+  `--state-ttl` plus the GC lag of growth (section 6.4);
 - with at least 25 % free space (tos `doc/Validator.md`).
 
-### 6.4 Retired consensus databases — launch decision
+### 6.4 Retired consensus databases
 
 Every validator-set session creates a RocksDB directory under
 `<db>/consensus/`. A new session starts roughly every 250 s per validated
-shard (ConfigParam 28 catchain lifetimes) and on every key block.
+shard (ConfigParam 28 catchain lifetimes) and on every key block, so these
+directories add up to gigabytes per day.
 
-When a session retires, the node closes the directory and records a durable
-cleanup intent. It deletes the directory only if
-`--enable-validator-consensus-cleanup` is set. The option is labelled:
+When a session retires, the engine writes a durable cleanup record (in the
+same synced write as the retirement), then stops the group and closes its
+database. It deletes the directory later, once all of the following hold
+against the durable GC masterchain block:
 
-> ACCEPTANCE ONLY: arm live deletion of obsolete validator consensus-DB
-> directories (Finding 1). Default off; a normal deployment must not set this.
+- the block at which the session retired is an ancestor of the GC block;
+- the GC state shows the session's shard on a strictly newer catchain;
+- no current or next validator group uses or can recreate the session;
+- the retiring group has closed its database.
 
-A production validator built today therefore grows by roughly 16 GB per day
-in consensus databases alone, without bound. One of these must happen before
-launch:
+Deletion therefore trails the GC floor, that is `--state-ttl` plus the GC lag
+of section 6.1. A crash at any point is recovered on the next start. The
+backlog is scanned 256 records at a time with at most 16 deletions per pass,
+so a large backlog drains gradually without memory growth.
 
-1. **Accept** the cleanup path, so that it is enabled by default or approved
-   for production. The local network runs it from October 2026; its results
-   are evidence for this decision.
-2. Ship an **offline maintenance procedure** that removes retired directories
-   using the durable cleanup records while the node is stopped.
+**Cleanup is on by default.** No flag is needed. The options are:
 
-Running without either is not an option for a long-lived validator. The
-startup sweep that exists today only removes *observer* directories.
+| Option | Effect |
+| --- | --- |
+| *(none)* | Delete retired consensus databases (the default) |
+| `--enable-validator-consensus-cleanup` | States the default explicitly |
+| `--disable-validator-consensus-cleanup` | Keep them, for forensics only; the disk grows without bound. Records keep accumulating and are reclaimed after a restart without the flag |
+| both | Refused: the engine exits with status 2 |
+
+Evidence in the log (`-l`):
+
+- at start-up, `validator consensus cleanup: enabled` (INFO) or
+  `validator consensus cleanup: disabled; ...` (WARNING);
+- per deletion, `VALCLEANUP reserve`, `VALCLEANUP delete_done ...
+  confirmed_gone=1` and `VALCLEANUP erase_ack`.
+
+The start-up `enabled` line and the per-deletion lines are logged at **INFO**.
+The engine's default verbosity is INFO (`-v 3`); at `-v 2` or lower they are not
+written, and their absence then proves nothing about whether cleanup runs. A
+failed deletion is logged as `VALCLEANUP delete_done ... confirmed_gone=0` at
+WARNING, at any verbosity, and is retried. A production validator therefore
+keeps the default verbosity and does not set `-v` below 3.
+
+**Code status.** The default-on behaviour, the `--disable-` option and the
+mutual-exclusion check exist on tos branch `agent/operator-gaps-d`. They are
+not yet in PR #148's head (`69a8e827c`), where the only option is still
+`--enable-validator-consensus-cleanup`, labelled acceptance-only and off by
+default. A build from that head does **not** clean up by default. Do not deploy
+a validator build unless its `validator-engine --help` lists
+`--disable-validator-consensus-cleanup`. Its log must also show
+`validator consensus cleanup: enabled`.
+
+The production evidence still missing is a validator on a live, multi-host
+network that has deleted directories through several set rotations and kept
+`<db>/consensus/` bounded (gap G11).
 
 ## 7. Service definitions
 
@@ -365,7 +483,12 @@ Notes on each choice:
 - **No `MemoryMax`/`CPUQuota`.** No hard cap until steady-state memory has been
   measured on the production profile (tos `doc/Validator.md`). A cap set
   too low turns a load spike into a validator restart.
-- **`TimeoutStopSec`.** Leaves RocksDB time to close cleanly.
+- **`TimeoutStopSec`.** Leaves RocksDB time to close cleanly. The engine holds
+  `config.json.lock` until it has exited; a replacement started earlier exits
+  with status 2.
+- **Consensus cleanup.** No flag: cleanup is the default (section 6.4).
+- **Verbosity.** No `-v`: the default INFO level is what records the cleanup
+  evidence.
 - **Further sandboxing.** Options such as `RestrictAddressFamilies` or
   `SystemCallFilter` are deliberately absent until a staging node has run with
   them. A filter that blocks something the network stack needs fails at
@@ -392,7 +515,8 @@ Notes on each choice:
 
 | Option | Why |
 | --- | --- |
-| `--enable-validator-consensus-cleanup` (until accepted), `--test-consensus-cleanup-crash-before-erase` | Acceptance and fault injection; the latter exits abruptly by design |
+| `--disable-validator-consensus-cleanup` on a validator, except time-boxed for forensics | Unbounded disk growth (section 6.4) |
+| `--test-consensus-cleanup-crash-before-erase` | Fault injection; exits abruptly by design |
 | `-U/--unsafe-catchain-restore`, `-F/--unsafe-catchain-rotate` | Labelled dangerous; PQ rejects a nonzero rotate tag |
 | `-T/--truncate-db` | Rewrites the database head; recovery tool only |
 | `--disable-state-serializer` | Stops persistent states, which stops GC |
@@ -401,20 +525,17 @@ Notes on each choice:
 | `--unsynced-liteserver`, `--nonfinal-ls` | Serve unsynced or non-final data |
 | `--json-rpc-cors-origin "*"`, `--json-rpc-expose-consensus-status` on a non-loopback bind | Expose the node beyond its role |
 | `-v` above the default on a validator | Log volume and latency; diagnostics only, time-boxed |
+| `-v` below 3 on a validator | Hides the INFO-level cleanup evidence (section 6.4) |
 
 ## 8. Joining the network
 
 1. **Global config.** It contains the zero-state, the init block and the DHT
-   seeds. Obtain it from the network's signed release, not from an unauthenticated URL, and verify:
+   seeds. Obtain it from the network's signed release, not from an
+   unauthenticated URL, and verify:
    - the zero-state root hash;
    - the file hash;
-   - the global ID (1).
-
-   The release must also carry a recent key block as `init_block`, refreshed
-   at least as often as the shortest archive retention on the network's
-   liteservers. Without it, new clients and new nodes cannot prove their way
-   forward once the early key blocks are collected (section 6.1). Publishing
-   that refresh is part of gap G7.
+   - the global ID (1);
+   - that `validator.init_block` is a recent key block (section 8.1).
 
    The Docker default `https://tos.network/global-config.json` is
    not authenticated by anything in the repository (gap G7).
@@ -423,68 +544,166 @@ Notes on each choice:
    Persistent-state import is bounded by the `--persistent-state-*` budgets.
    Their effective values are logged at start; size the spool volume (48 GiB
    per import, 96 GiB total by default) accordingly.
-3. **Snapshots.** Only through the digest-checked importer
-   (`docker/import-snapshot.sh`) into a new database. A snapshot's zero-state
-   check does not authenticate the global config.
+3. **Snapshots.** Only into a new database, through the digest-checked
+   importer (section 8.2). A snapshot's zero-state check does not authenticate
+   the global config.
 4. Confirm sync before anything else depends on the node:
    - the head advances;
    - the node agrees with a second trusted node on the full block ID, not just
      the height;
    - `/readyz`, on RPC nodes, is within its threshold.
 
+### 8.1 Refreshing the global config's init block
+
+Whoever publishes the network's global config refreshes `validator.init_block`
+to a recent key block, at least as often as the shortest archive retention
+among the network's public lite servers:
+
+```bash
+python3 "$TOS_ROOT/scripts/refresh-global-config-init-block.py" \
+  --rpc http://127.0.0.1:<rpc-port>/jsonRPC --global-id 1 \
+  CURRENT-global.config.json NEW-global.config.json
+```
+
+- It reads `getMasterchainInfo`, `getBlockHeader` and `lookupBlock` from one
+  node and writes a **new** file; it never overwrites one.
+- The new init block is the latest key block. If the chain has no key block
+  after the zero state yet, the init block is the zero state itself, checked
+  against the input config's.
+- It refuses, writing nothing, when the node's zero state differs from the
+  config's, when the two answers for the key block disagree on its full id,
+  when a header is not a key block or carries another global id, or when the
+  new init block is older than the existing one, or at the same height but a
+  different block.
+- The node is trusted, not proven. Run it against a node the publisher
+  operates, after comparing that node's last block, on the full block id, with
+  a second trusted node. The refreshed file is authenticated by the release
+  that carries it (digest and attestation), not by the script.
+
+### 8.2 Snapshot import
+
+`docker/import-snapshot.sh` also runs outside the container. It takes its
+settings from the environment (`SNAPSHOT_IMPORT=1`, `DUMP_URL`,
+`DUMP_SHA256`, `DUMP_ZEROSTATE_ROOT_HASH`, `SNAPSHOT_STAGING_DIR`,
+`TOS_DB_DIR`, `TOS_GLOBAL_CONFIG`) and needs `curl`, `plzip`, `sha256sum`,
+`perl` and `jq`.
+
+1. **Stop the node** (`systemctl stop tos-<role>`) and every other process that
+   might open the database. The import must be the database's only writer
+   until it exits.
+2. Obtain `DUMP_SHA256` independently of the snapshot download. It is the only
+   trust anchor; a checksum served next to the archive proves nothing.
+   `DUMP_ZEROSTATE_ROOT_HASH` must equal the global config's zero state, which
+   is a consistency check between two operator settings, not authentication.
+3. Run the import as the service account, with the staging directory outside
+   the database but on the same filesystem.
+
+What the script enforces:
+
+- It takes the engine's own lock: a POSIX `fcntl` write lock on
+  `<db>/config.json.lock`, from before it reads the database until it exits,
+  and confirms through `/proc/locks` that it holds it. An engine started during
+  the import exits with status 2. `flock(1)`/`flock(2)` is a different lock that
+  the engine neither takes nor sees; holding the database with `flock` excludes
+  nothing, so do not wrap the import in `flock` and assume the node is kept out.
+- It refuses if any RocksDB `LOCK` file under the database is held.
+- It imports only into a new database: besides `config.json`,
+  `config.json.lock`, `keyring/`, `tos-global.config`, the engine's empty
+  `error/` log and an empty `lost+found`, nothing may be there, both before
+  the download and again immediately before installation.
+- It checks the SHA-256 before unpacking, accepts only regular files and
+  directories with safe relative names, and writes the `.snapshot-imported`
+  marker last.
+
+The lock catches a node that was not stopped; it does not replace stopping
+it, and nothing recovers an installation interrupted by a crash: start again
+from a new database.
+
 ## 9. Validator lifecycle
 
 Prerequisites: a synced full node (section 8) on the validator host, and an
-operator wallet with funds. Steps marked **(gap)** depend on tooling listed in
-section 12.
+operator wallet with funds. The tos guide (`doc/validator-operator-guide.md`)
+has the full command sequence; the production points are below.
 
 1. **Keys.** Consensus seed on the host (3.1). Root seed offline (3.2).
-2. **Controller (gap G4).**
-   - Build the controller's initial data:
-     - epoch 0, nonce 0;
-     - algorithm 1;
-     - the consensus `key_id`;
-     - the root public key.
-   - Compute the address and birth witness with
-     `tos-pq-controller witness CODE_BOC_B64 INITIAL_DATA_BOC_B64`.
-   - Check that the code hash is admitted in ConfigParam 47; the Elector refuses
+2. **Controller.**
+   - Build the code from the release source (`func` on
+     `crypto/smartcont/validator-controller-v1.fc`, then `fift`) and check
+     that its code hash is admitted in ConfigParam 47; the Elector refuses
      unadmitted code with reason 10.
-   - Deploy the controller from the operator wallet and keep the deployment
-     transaction.
-   - Register its birth state with
-     `tosctl config bind import-birth --node N --transaction-boc B --output /abs/path`.
-3. **Pool.** Deploy a single-nominator pool with owner, validator wallet and
-   controller (`crypto/smartcont/single-nominator-pool/init.fif`, five
-   arguments, see gap G9). Alternatively deploy a nominator pool with the
-   controller in its config. Register it with `tosctl config pool add` and
-   `tosctl config bind add`.
-4. **Operating authorization (gap G2).**
-   - Fund the controller with a root-signed kind 4 action, using
-     `controller_operating_payload` and then `tos-pq-controller fund-operations`.
-   - The payer is a dedicated operator wallet. Operating capital is not pool
-     principal.
-   - Each relayed stake charges `automatic_value` against funds and allowance:
-     about 6.44 TOS at the current fee configuration, so re-derive it from the
-     `sr` helpers.
-   - In production there is one stake per election, about every 18.2 h, so
-     about 8.5 TOS per day. For example, a 1,000 TOS deposit and allowance
-     covers about four months. Set the sponsorship expiry to match, and set
-     the per-request limit to at least `automatic_value`.
-   - Deposits are **additive** and every other field is **replaced**, so renew
-     by deficit (`funds_target - funds`).
-   - Keep `balance ≥ funds + floor` plus a margin.
-   - Monitor expiry: an expired authorization makes every relay fail with exit
-     180, and the stake returns through a bounce.
-5. **Stake.** `tosctl service` with the elections task enabled:
+   - Offline: `tos-pq-controller init-data ROOT_PUBLIC_HEX CONSENSUS_KEY_ID_HEX`
+     prints the initial data (epoch 0, nonce 0, the consensus `key_id`, the
+     root public key). It refuses a zero key id and a key id equal to the
+     root's own.
+   - `tos-pq-controller state-init CODE_BOC_B64 INITIAL_DATA_BOC_B64` prints the
+     StateInit; the address and code hash go to standard error.
+   - Deploy it from an operator wallet with a non-bouncing message and an empty
+     body:
+     `tosctl wallet send --from WALLET --to -1:CONTROLLER_HEX --amount TOS --state-init-boc STATE_INIT_BOC_B64`.
+   - Keep the raw BOC of the deployment transaction, and register the birth
+     with
+     `tosctl config bind import-birth --node NODE --transaction-boc TX.boc --output /abs/path/controller-birth.boc`.
+     `tos-pq-controller witness CODE_BOC_B64 INITIAL_DATA_BOC_B64` prints the
+     birth witness for inspection.
+3. **Bind the node** to the controller with `bind-node` (section 5.1).
+4. **Pool.** Deploy a single-nominator pool with owner, validator wallet and
+   controller: `tosctl deploy pool --node NODE --owner OWNER --controller CONTROLLER --amount TOS`,
+   or by hand with `init.fif` (five arguments, see
+   `crypto/smartcont/single-nominator-pool/HOWTO-deploy.md`). Register it with
+   `tosctl config pool add --controller ...` and `tosctl config bind add --pool ...`.
+5. **Operating authorization (kind 4).**
+   - Check it:
+     `tosctl controller operations status --controller -1:CONTROLLER_HEX`.
+     It prints funds, allowance, per-request limit, storage floor, expiry,
+     payer, balance, the live grant (ConfigParam 20/24), stakes remaining and
+     the runway at the ConfigParam 15 interval. Every value is read at one
+     pinned masterchain block, which it names. `--strict` exits non-zero on
+     any warning; `--format json` is available; `--target-days`,
+     `--warn-percent` and `--expiry-warn-days` default to 30, 25 and 7.
+   - Warnings marked **[BLOCKING]** mean the next relay fails: no
+     authorization, expired, per-request limit below the grant, funds or
+     allowance below one grant, or balance below funds + floor.
+   - Renew it:
+     `tosctl controller operations plan --controller -1:CONTROLLER_HEX --payer PAYER_ADDRESS`.
+     The plan renews by deficit (a deposit adds to the funds, every other field
+     replaces the stored one), names the block it read, and signs and sends
+     nothing. `--floor-nanotos` is required for a first authorization;
+     `--expiry-only` renews only the expiry; `--allow-payer-change` is needed
+     to move sponsorship; `--valid-for` (default 1800, at most 3600 s) sets
+     `valid_until`. It refuses while a relay is pending or retry fees are held.
+   - When a new floor is not covered by the balance, the plan prints a step 0:
+     a **capital top-up**, sent to the controller as a separate plain transfer,
+     because the deposit raises balance and funds alike. Without it every relay
+     fails the capital check, and the plan shows the projected warning as
+     `[BLOCKING] after renewal`.
+   - The plan prints the exact offline
+     `tos-pq-controller fund-operations ROOTSEED GLOBAL_ID CONTROLLER_HEX EPOCH NONCE VALID_UNTIL PAYLOAD_BOC_B64`
+     line and the payer's send:
+     `tosctl wallet send --from PAYER_WALLET --to -1:CONTROLLER_HEX --amount-nanotos VALUE --body-boc SIGNED_BODY_B64 --bounce`.
+     `--bounce` makes a refused request return its value. Send exactly the
+     printed value before `valid_until`, then re-run `status` and check that
+     the nonce advanced and the values are the planned ones. Re-run the plan
+     if any relay or root action happened after its pinned block.
+   - Sizing: one stake per election, about every 18.2 h. At the current fee
+     configuration a grant is about 6.44 TOS, about 8.5 TOS per day; take the
+     live grant from `status`, not from this number. The payer is a dedicated
+     operator wallet; operating capital is not pool principal.
+6. **Stake.** `tosctl config elections enable NODE`, then `tosctl service`
+   with the elections task:
    - polls `active_election_id`;
-   - obtains the PQ stake signature from the node
-     (`create-stake-authorization` / `engine.validator.createPqStakeAuthorization`);
+   - asks the node to sign the PQ stake authorization with its consensus key
+     (`engine.validator.createPqStakeAuthorization`), so the node must be bound
+     and running;
    - builds the pool stake order from the birth artifact;
-   - recovers returned stakes.
-
-   It does **not** manage the operating authorization (gap G2). Check that its
-   console key steps fit a PQ-only node (gap G6).
-6. **Verify each election.**
+   - recovers returned stakes;
+   - creates no temporary validator key: on the PQ chain the node is matched to
+     its set entry only through the consensus key;
+   - reads each controller's operating authorization every five minutes, logs
+     missing, expired or low ones, and publishes them per node as
+     `operating_authorization` in `/v1/validators`. It reports; it cannot
+     renew. Thresholds are under `elections.operating_authorization` in the
+     `tosctl` configuration.
+7. **Verify each election.**
    - The Elector replies `sr::ok` for the query.
    - The controller's recorded result matches.
    - After the set switch, the validator appears in Config34 with its exact
@@ -493,16 +712,52 @@ section 12.
 
    Elector refusal reasons are listed in `elector-code.fc` (for example
    3 = wrong `stake_at`, 5 = below `min_stake`, 13 = witness mismatch).
-7. **Leaving and recovery.** Stop staking. Funds stay frozen until
-   `utime_until + stake_held_for` (32,768 s), then return through
-   `compute_returned_stake` and the receipt-based recover path. Withdraw
-   operating funds with kind 5, which needs no relay pending. Keep the node
-   running until the set it belongs to has expired.
 8. **Rotation.**
-   - **Consensus key:** a kind 3 bind ceremony (3.2), then a restart with the
-     new seed, timed between elections.
+   - **Consensus key, today (PR #148): one key per node.** Once the controller
+     is bound to a new key B it refuses stakes signed with the old key A, and
+     once the node restarts with B it no longer signs for a set that lists A.
+     A rotation is safe only in a verified interval in which A has no signing
+     obligation: ConfigParam 34, and ConfigParam 36 while a next set is
+     pending, no longer list this controller with A, and the next stake is not
+     due before the restart. Otherwise it costs downtime. Steps: generate B
+     offline; `tos-pq-controller bind ... NEXT.seed` and send the body; move B
+     with `export | ENCRYPT` / `DECRYPT | import`; with the node stopped,
+     `tos-pq-consensus-key bind-node --replace DB_ROOT NEW_KEYFILE VALIDATOR_ID`;
+     start and check the custody line shows B; confirm the next election
+     accepts B; then delete A and the transfer copies.
+   - **Consensus key, zero downtime: available once PR #149 merges.** The node
+     then holds up to eight keys per validator, each with `valid_from` (first
+     election date it signs stakes for) and `expire_at` (0: never). B is added
+     beside A on a running node with the console command
+     `add-pq-consensus-key KEYFILE VALID_FROM EXPIRE_AT`, or offline with
+     `tos-pq-consensus-key add-node-key DB_ROOT KEYFILE VALID_FROM [EXPIRE_AT]`;
+     `get-pq-consensus-keys` / `list-node-keys DB_ROOT` show the held keys;
+     A is removed with `del-pq-consensus-key` (refused while a current,
+     previous or next set lists A) or `remove-node-key DB_ROOT KEYFILE|KEY_ID`
+     on a stopped node (which cannot see validator sets). `expire_at` is a hard
+     deadline read from the wall clock: from then on the key signs nothing,
+     even in a running group, and once seen expired it is retired for the life
+     of the process. A restart with the clock rolled back would load it again,
+     so run NTP. `bind-node` refuses a node holding more than one key. Until
+     #149 is merged and released, none of these commands exists in a release.
    - **Root key:** `rotate-root` (kind 2). It changes the epoch, so signed
      bodies prepared earlier become invalid.
+9. **Leaving and recovery.** Stop staking. Funds stay frozen until
+   `utime_until + stake_held_for` (32,768 s), then return through
+   `compute_returned_stake` and the receipt-based recover path. Withdraw
+   operating funds with kind 5 (`withdraw-operations`), which needs no relay
+   pending. Keep the node running until the set it belongs to has expired.
+
+### 9.1 Masterchain addresses on the command line
+
+From PR #148, every `tosctl` address flag (for example `wallet send --to`,
+`controller operations --controller/--payer`, `config pool add
+--address/--owner/--controller`, `deploy pool --owner/--controller`) accepts a
+raw masterchain address as its own word, `--to -1:<hex>`, as well as
+`--to=-1:<hex>`. Each value is parsed as an address at parse time, so a
+missing value followed by another option (`--to --bounce`) is refused instead
+of being taken as the address. The tos guide's statement that `-1:<hex>` must
+be written in the `--flag=` form predates this change; both forms work.
 
 ## 10. Releases, upgrades and restarts
 
@@ -510,15 +765,64 @@ section 12.
   attestation (`gh attestation verify`), and container images only by digest.
 - Roll a version one validator at a time:
   - only while the chain is live and every other validator is at the head;
+  - stop the old process completely before starting the new one: while it
+    holds `<db>/config.json.lock` the new engine exits with status 2;
   - wait until the restarted node is back at the head before the next one;
   - two validators replaying at once can halt a four-member set.
 
   See `tools/node-health-monitor/deploy/README.md`, "Rolling an engine".
-- Protocol changes ship binary first, then activate by a configuration vote.
-  `tosctl vote offer ls|diff|cast` exists; there is no `create` command, see
-  gap G10.
+- Read the release notes for changed defaults. The release that brings
+  consensus cleanup on by default changes behaviour without any flag; a unit
+  that still passes `--enable-validator-consensus-cleanup` keeps working, and
+  one that adds `--disable-` as well is refused with status 2.
 - Never restart a validator to change a performance setting; measure on a
   non-validator first.
+
+### 10.1 Configuration proposals
+
+Protocol changes ship binary first, then activate by a configuration vote.
+
+- Create a proposal with `tosctl vote offer create --param N` and one of
+  `--value-boc`, `--value-boc-file` or `--remove`. It prices the proposal from
+  live ConfigParam 11 and refuses locally what the configuration contract would
+  refuse: a ConfigParam 10 parameter without `--critical`, a ConfigParam 9
+  parameter that does not name the value it replaces (`--bind-current` or
+  `--if-hash-equal`), and a value that does not decode as the parameter's type
+  (`--skip-value-check` overrides only the last).
+- With `--wallet NAME` it sends from a configured **masterchain** wallet after
+  confirmation (`--yes` for non-interactive use). It bounds the wallet's own
+  fees, including storage owed, from the `storage_stat` the node serves with
+  the account at one block. A node not built from PR #148 does not serve it,
+  and `--wallet` then refuses. Without `--wallet` it prints the body and value
+  for an external masterchain wallet; the contract ignores a proposal from any
+  other workchain and keeps its value.
+- The report says `registered` only when the configuration contract is then
+  seen holding the proposal; that is observed state, not proof that this
+  transaction caused it. A lost send answer is reported as an unconfirmed
+  broadcast, not as a failure.
+- List and inspect with `tosctl vote offer ls` and
+  `tosctl vote offer diff --hash HASH`.
+
+### 10.2 Votes
+
+- Votes are signed with the consensus key, on the validator host, as the
+  node's service account:
+  ```bash
+  tos-pq-vote config KEYFILE GLOBAL_ID SET_ID_HEX VALIDATOR_ID_HEX IDX PROPOSAL_HEX
+  ```
+  `SET_ID_HEX` is the hash of the current ConfigParam 34 cell, `IDX` this
+  validator's index in it, `VALIDATOR_ID_HEX` the controller id. The output is
+  a message body; send it from a wallet (`tosctl wallet send ... --body-boc`)
+  to the configuration contract (ConfigParam 0) with at least the masterchain
+  compute fee for 50,000 gas plus the message's own processing. The contract
+  refuses a smaller value before it checks the signature.
+- `tosctl vote offer cast` does not send PQ votes; it explains why and stops.
+- A round is won when validators holding **strictly more than three quarters**
+  of the set's total weight have voted for the proposal. Exactly three quarters
+  does not win: the contract starts each round at `floor(3W/4)` remaining
+  weight and requires it to go below zero (`config-code.fc`). The number of
+  won rounds needed, and of lost rounds that kill it, come from ConfigParam 11,
+  separately for critical parameters.
 
 ## 11. Monitoring
 
@@ -538,33 +842,35 @@ Alert at least on:
 | --- | --- |
 | Head age, agreement with a second node on the full block ID | Liveness and fork detection |
 | Election outcome per round (`sr::ok` present, controller refusal or bounce) | A missed election is silent otherwise |
-| Operating authorization: remaining funds/allowance below 25 %, expiry within 7 days | Expired or empty authorization stops staking |
-| Time since last key block, GC floor progress (`VALCLEANUP pass gc_seqno`), consensus directory count | GC stalls show up hours before the disk does |
+| `tosctl controller operations status --controller ... --strict` non-zero, or `operating_authorization` in `/v1/validators` | Any `[BLOCKING]` warning stops the next stake; early warnings at 25 % of a 30-day runway and 7 days before expiry |
+| Time since last key block, GC floor progress (`VALCLEANUP pass gc_seqno`, INFO once the cleanup change is merged), consensus directory count | GC stalls show up hours before the disk does |
+| `validator consensus cleanup: enabled` at each start; `VALCLEANUP delete_done ... confirmed_gone=0` | Cleanup off or failing means unbounded growth |
 | Free disk below 25 %; growth rate above plan | Section 6 |
 | Wallet balances of payer and validator wallets | Fees for stake orders and authorizations |
+| Engine exit status 2 in the unit's journal | A second engine, a held lock, or a refused option |
 
 ## 12. Gaps before this procedure can be followed
 
-| ID | Gap | Effect |
+| ID | Gap | Status |
 | --- | --- | --- |
-| G1 | Release artifacts and the Docker image do not ship `tos-pq-consensus-key`, `tos-pq-controller`, `tos-pq-key` or `tos-pq-vote` (`scripts/release-artifacts.json`, `assembly/`, `Dockerfile`) | A released node cannot create or use a PQ consensus key; the image is full node only |
-| G2 | No production tool submits, checks or renews the kind 4 operating authorization; `tosctl` elections ignore it | Staking fails with exit 180 once the authorization is missing or expired |
-| G3 | No console command or template sets `extraconfig.pq_consensus` | Validator configuration is a manual JSON edit |
-| G4 | No production tool builds controller initial data or deploys a controller; only test fixtures do | Controller onboarding needs custom tooling |
-| G5 | A key generated with `tos-pq-consensus-key` cannot be exported for a kind 3 ceremony; there is no supported transfer path | Key rotation after launch has no tooled procedure |
-| G6 | `tosctl` elections still create classical permanent/temporary validator keys through the console | Must be reviewed against PQ-only consensus |
-| G7 | No authenticated distribution of the global config; Docker defaults to an unauthenticated URL | Trust in the network starts from an unauthenticated file |
-| G8 | Hardware profile is `OWNER_REVIEW_REQUIRED`; no 21-validator disk or memory measurement | Section 6.3 sizing is a lower bound only |
-| G9 | Stale operator docs: Validator.md (no PQ setup, legacy unit names, `--initial-sync-delay` and `--quic-flood-control` described as required); FullNode.md (`-f` path, `-c` semantics); single-nominator HOWTO (four arguments instead of five, wrong file name); docker/README.md (ports 43677 vs 30001–30003, upstream example output); tos-upgrade-process.md (`tosctl vote offer create` does not exist) | Operators following existing docs reach wrong states |
-| G10 | No tool creates a configuration proposal | Protocol activation by vote is not operable end to end |
-| G11 | Retired validator consensus databases are never deleted by default (6.4) | Unbounded disk growth on every validator |
-| G12 | No production systemd unit in the repository; dev templates hard-cap memory and disable QUIC flood control | Section 7 is a proposal only |
+| G1 | Release artifacts and the Docker image lacked the PQ tools | **Closed by #148** for Linux x86_64/arm64 and the image. Not shipped for macOS or Windows |
+| G2 | No tool checked or renewed the kind 4 operating authorization | **Closed by #148** (`tosctl controller operations status/plan`, `wallet send --bounce`, elections-task warnings). Renewal stays a manual offline signing plus send by design. Not yet exercised on a live multi-host network |
+| G3 | No tool set `extraconfig.pq_consensus` | **Closed by #148** (`tos-pq-consensus-key bind-node`). Tested on Linux only; macOS untested |
+| G4 | No tool built controller initial data or deployed a controller | **Closed by #148** (`tos-pq-controller init-data/state-init`, `wallet send --state-init-boc`, `config bind import-birth`) |
+| G5 | No supported key transfer path for a kind 3 ceremony; rotation needs downtime | **Partly closed.** #148: `export`/`import` and a documented single-key rotation inside a verified interval. Zero-downtime rotation is available once PR #149 merges. Open: a multi-node rotation through a real election on a live network |
+| G6 | `tosctl` elections created classical temporary keys | **Closed by #148**: no temporary key; the permanent-key entry stays only as the ADNL-address record |
+| G7 | No authenticated distribution of the global config, and no init-block refresh | **Partly closed.** #148 adds `scripts/refresh-global-config-init-block.py`. Open: an authenticated, signed release channel for the global config and a refresh schedule. Docker still defaults to an unauthenticated URL |
+| G8 | Hardware profile `OWNER_REVIEW_REQUIRED`; no 21-validator disk or memory measurement | **Open.** Section 6.3 sizing is a lower bound only |
+| G9 | Stale operator docs in tos | **Mostly closed by #148** (operator guide, Validator.md, FullNode.md, single-nominator HOWTO, docker/README.md, tos-upgrade-process.md). Remaining inconsistencies: the guide's custody log line (`validator <hex> key <base64>`) differs from what the engine logs (`validator_id <hex> key_id <hex>`), and it still says `-1:<hex>` must use the `--flag=` form (section 9.1). Validator.md links a cleanup section that exists only on the unmerged cleanup branch |
+| G10 | No tool created a configuration proposal | **Closed by #148** (`tosctl vote offer create`). `--wallet` needs RPC nodes built from #148 (`storage_stat`) |
+| G11 | Retired validator consensus databases never deleted by default | **Code ready, not yet in #148's head** (section 6.4: default-on lives on `agent/operator-gaps-d`). Open: merge, and deletion evidence from a live multi-host network across several set rotations |
+| G12 | No production systemd unit in the tos repository | **Open.** Section 7 remains a proposal; the tos repository still ships only development and monitoring units |
 
-The order that unblocks a first external validator is:
+The order that unblocks a first external validator is now:
 
-1. G1, G3 and G4: an operator can create keys, configure the node and deploy
-   a controller;
-2. G2 and G11: the validator can stay in the set without manual top-ups or
-   disk exhaustion;
-3. G8: sizing;
-4. G9: correct documentation.
+1. G11: merge the cleanup change into #148 and gather live deletion evidence;
+2. G7: publish the global config through an authenticated channel, with the
+   init block refreshed on a schedule;
+3. G8: sizing on the production hardware profile;
+4. G5: a multi-node rotation through a real election, after PR #149;
+5. G12: an accepted production unit.
