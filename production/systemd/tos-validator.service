@@ -1,0 +1,32 @@
+[Unit]
+Description=TOS validator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=tos
+Group=tos
+UMask=0077
+WorkingDirectory=/var/lib/tos/validator
+ExecStart=/usr/local/bin/validator-engine \
+  -C /etc/tos/global-config.json \
+  -D /var/lib/tos/validator \
+  -l /var/log/tos/validator/node.log \
+  --session-logs /var/log/tos/validator/session-stats \
+  -t 16 \
+  --state-ttl 86400 --archive-ttl 86400 \
+  --exporter-address 127.0.0.1:9100
+Restart=on-failure
+RestartSec=10
+KillMode=control-group
+TimeoutStopSec=120
+LimitNOFILE=1572864
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/tos/validator /var/log/tos/validator
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

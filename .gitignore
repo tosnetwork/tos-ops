@@ -1,0 +1,18 @@
+# Secrets never belong in this repository: keys, seeds, tokens, certificates.
+*.seed
+*.pk
+*.key
+*.pem
+*.p12
+*.token
+*.private.json
+id_rsa*
+id_ed25519*
+keyring/
+.env
+.env.*
+
+# Local build and test output
+__pycache__/
+*.pyc
+.pytest_cache/
