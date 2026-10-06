@@ -272,7 +272,8 @@ def test_an_intent_whose_seqno_another_payment_used_is_abandoned_and_retried(tmp
     net.fail_before_delivery = False
     del net.broadcasts[:]
     net.seqno += 1  # consumed by another writer, which this journal never saw
-    net.add(net.client_wallet.address, MessageAny(ExternalMsgInfo(None, address(1), 0), None, Cell.empty()))
+    other = Builder().store_bytes(bytes(64)).store_uint(0, 32).store_uint(7, 8).end_cell()
+    net.add(net.client_wallet.address, MessageAny(ExternalMsgInfo(None, address(1), 0), None, other))
     restarted = Faucet(net, sender.wallet, sender.directory, "root")
     receipt = asyncio.run(restarted.transfer("one", address(2), 123))
     assert receipt["ok"] and net.seqno == 2
@@ -306,3 +307,30 @@ def test_an_intent_at_the_current_seqno_is_never_abandoned(tmp_path):
     with pytest.raises((TimeoutError, ConnectionError)):
         asyncio.run(sender.finish(read_json(sender.pending), timeout=0))
     assert sender.pending.exists() and not list(sender.directory.glob("dead-*.json"))
+
+
+def test_a_payment_whose_history_lags_its_seqno_is_never_abandoned(tmp_path):
+    # Seen live: the state RPC already reported the advanced seqno while the
+    # transaction history did not yet show the payment that advanced it. That
+    # is not proof of a dead intent; abandoning it paid the same order twice.
+    net, sender = setup(tmp_path)
+    net.fail_after_delivery = True
+    lagging = {}
+
+    def hide_history(signed):
+        lagging["wallet"] = list(net.history.get(net.client_wallet.address.to_str(False), []))
+
+    net.on_broadcast = hide_history
+    with pytest.raises(ConnectionError):
+        asyncio.run(sender.transfer("one", address(2), 123))
+    net.fail_after_delivery = False
+    key = net.client_wallet.address.to_str(False)
+    included, net.history[key] = net.history[key], lagging["wallet"]  # history lags
+    assert net.seqno == 1  # the payment did execute
+    with pytest.raises(TimeoutError):
+        asyncio.run(sender.finish(read_json(sender.pending), timeout=1))
+    assert sender.pending.exists() and not list(sender.directory.glob("dead-*.json"))
+    net.history[key] = included  # history catches up
+    receipt = asyncio.run(sender.recover())[0]
+    assert receipt["ok"] and len(net.broadcasts) == 1
+    assert len(net.history[address(2).to_str(False)]) == 1

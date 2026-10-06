@@ -140,6 +140,16 @@ def fingerprint(message):
     )
 
 
+def wallet_seqno(tx):
+    """The seqno a wallet external message executed: after its 64-byte signature."""
+    try:
+        body = tx.in_msg.body.begin_parse()
+        body.load_bytes(64)
+        return body.load_uint(32)
+    except Exception:
+        return None
+
+
 class Faucet:
     def __init__(self, client, wallet, directory, network_id, *, readonly=False):
         self.client, self.wallet = client, wallet
@@ -292,11 +302,17 @@ class Faucet:
                 ]
                 if len(matches) > 1:
                     raise ValueError("signed faucet intent appears more than once")
-                if not matches and (await self.wallet.current).seqno > value["seqno"]:
-                    # Another payment consumed this seqno, and the complete wallet
-                    # history since the baseline holds no transaction carrying this
-                    # signed body: the wallet rejects it now, so it never executed
-                    # and never will. Keep it as evidence and free its label.
+                if not matches and any(
+                    wallet_seqno(tx) == value["seqno"]
+                    for tx in transactions
+                    if tx.in_msg is not None
+                    and isinstance(tx.in_msg.info, ExternalMsgInfo)
+                    and tx.in_msg.info.dest == self.wallet.address
+                ):
+                    # Positive proof only: a wallet transaction executed this seqno
+                    # with another signed body, so the wallet rejects ours now and
+                    # forever. A higher current seqno alone proves nothing, because
+                    # the state can be ahead of the transaction history it serves.
                     return self.abandon(value)
                 if matches:
                     tx = matches[0]
@@ -346,6 +362,8 @@ class Faucet:
 
 
 def require_success(receipt):
+    if receipt.get("state") == "dead":
+        raise ValueError(f"{receipt['label']} never executed: {receipt.get('reason')}")
     if not receipt["ok"]:
         raise ValueError(
             f"{receipt['label']} refused: exit={receipt['exit_code']}, "
