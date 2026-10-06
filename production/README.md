@@ -2,8 +2,10 @@
 
 Settings for nodes on the production network. This is a **design and template
 set, not an accepted deployment**. The design every file here follows is
-[Production-Node.md](Production-Node.md). That design lists twelve gaps (G1–G12)
-that must be closed before an external validator can follow it.
+[Production-Node.md](Production-Node.md). Its section 12 tracks twelve gaps
+(G1–G12) and what tos PR #148 closes. The global config's authenticated
+distribution, production sizing, cleanup evidence from a live multi-host network,
+a live multi-node key rotation and an accepted production unit are still open.
 
 | Path | Contents |
 | --- | --- |
@@ -21,10 +23,15 @@ Before using it:
 
 - install binaries only from a tagged release, verified by digest;
 - generate `<db>/config.json` with the two-phase first start (design section 5);
-- review the retention options against the disk plan (design section 6).
+- on a validator, bind the consensus key with `tos-pq-consensus-key bind-node`
+  while the node is stopped (design section 5.1);
+- review the retention options against the disk plan (design section 6);
+- check that the build cleans up retired consensus databases by default
+  (`validator-engine --help` lists `--disable-validator-consensus-cleanup`,
+  design section 6.4).
 
 Do not copy anything from `local/` here. Deterministic seeds, the faucet wallet,
-the development drivers and `--enable-validator-consensus-cleanup` are
+the development drivers and `--test-consensus-cleanup-crash-before-erase` are
 development-only.
 
 Node keys (consensus seed, keyring, console keys) and the controller root key

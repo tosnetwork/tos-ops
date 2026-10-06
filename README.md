@@ -47,7 +47,7 @@ node software; this repository holds how we configure, deploy and operate it.
 │   └── README.md
 └── production/                  production network design and templates
     ├── README.md
-    ├── Production-Node.md       design: roles, keys, options, retention, validator lifecycle, gaps
+    ├── Production-Node.md       design: roles, keys, binding, retention, cleanup, validator lifecycle, votes, gaps
     └── systemd/
         └── tos-validator.service
 ```
