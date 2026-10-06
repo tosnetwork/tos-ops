@@ -177,6 +177,31 @@ async def snapshot(previous):
     return decoded["utime_since"]
 
 
+async def reprobe(degraded, candidates, sender, client, interval=60):
+    """Clear a member that was only not ready once its controller checks out.
+
+    A transient fault (an admission refusal at startup, an unresolved read) must
+    not keep the driver unhealthy until that member's next roster turn. A
+    recorded stake refusal stays degraded: it is the outcome of that election.
+    """
+    for i, entry in list(degraded.items()):
+        if entry.get("kind") == "refused" or time.time() - entry["at"] < interval:
+            continue
+        try:
+            await ensure_operations(
+                client, sender, candidates[i], i, OUT, json_network()["global_id"], emit=event
+            )
+        except Exception as exc:
+            entry.update(at=time.time(), error=f"{type(exc).__name__}: {exc}")
+            continue
+        degraded.pop(i, None)
+        event("candidate_recovered", node=i)
+
+
+def json_network():
+    return json.loads((DATA / "network.json").read_text())
+
+
 async def run_round(submit, selected, election, degraded):
     """Submit one roster; one member's fault never stops the others.
 
@@ -191,7 +216,7 @@ async def run_round(submit, selected, election, degraded):
             result = await submit(i)
         except Exception as exc:
             settled = False
-            degraded[i] = dict(at=time.time(), error=f"{type(exc).__name__}: {exc}")
+            degraded[i] = dict(at=time.time(), kind="failed", error=f"{type(exc).__name__}: {exc}")
             event("candidate_failed", election=election, node=i, error=degraded[i]["error"])
             continue
         if result["kind"] == "accepted":
@@ -203,7 +228,7 @@ async def run_round(submit, selected, election, degraded):
             break
         else:
             # The persisted refusal cannot be paid again after a restart.
-            degraded[i] = dict(at=time.time(), error=f"refused: {result}")
+            degraded[i] = dict(at=time.time(), kind="refused", error=f"refused: {result}")
             event("stake_refused", election=election, node=i, result=result)
     return accepted, settled
 
@@ -404,7 +429,9 @@ async def run_driver():
                             client, sender, c, i, OUT, network["global_id"], emit=event
                         )
                     except Exception as exc:
-                        degraded[i] = dict(at=time.time(), error=f"{type(exc).__name__}: {exc}")
+                        degraded[i] = dict(
+                            at=time.time(), kind="not_ready", error=f"{type(exc).__name__}: {exc}"
+                        )
                         event("candidate_not_ready", node=i, error=degraded[i]["error"])
                         continue
                 event(
@@ -466,6 +493,7 @@ async def run_driver():
                             if settled:
                                 submitted[str(election)] = list(accepted_nodes)
                                 write("submitted.json", submitted)
+                        await reprobe(degraded, candidates, sender, client)
                         write(
                             "status.json",
                             dict(

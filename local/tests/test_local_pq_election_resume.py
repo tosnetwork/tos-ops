@@ -210,3 +210,28 @@ def test_a_closed_election_stops_the_round(monkeypatch):
 
     accepted, settled = asyncio.run(driver.run_round(submit, (1, 2), ELECTION, {}))
     assert accepted == [] and settled is True
+
+
+def test_a_transiently_degraded_member_is_cleared_once_it_checks_out(monkeypatch):
+    monkeypatch.setattr(driver, "event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(driver, "json_network", lambda: NETWORK)
+    healthy = {7}
+
+    async def ensure(client, sender, candidate, index, *args, **kwargs):
+        if index not in healthy:
+            raise RuntimeError("LITE_SERVER_NOTREADY")
+
+    monkeypatch.setattr(driver, "ensure_operations", ensure)
+    old = driver.time.time() - 120
+    degraded = {
+        7: dict(at=old, kind="not_ready", error="x"),
+        4: dict(at=old, kind="failed", error="x"),
+        3: dict(at=old, kind="refused", error="x"),
+        2: dict(at=driver.time.time(), kind="not_ready", error="x"),
+    }
+    candidates = {i: CANDIDATE for i in (2, 3, 4, 7)}
+    asyncio.run(driver.reprobe(degraded, candidates, None, None))
+    assert 7 not in degraded  # checked out: cleared
+    assert degraded[4]["at"] > old  # still failing: kept, retried later
+    assert 3 in degraded  # a stake refusal is the election's outcome
+    assert 2 in degraded  # too recent to probe again
