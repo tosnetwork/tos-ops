@@ -165,7 +165,9 @@ async def run(args):
             clients = []
             for i in range(1, args.nodes + 1):
                 cfg = local.lite_config(args.data / f"configs/node-{i}-lite.json", 8010 + i)
-                clients.append(await stack.enter_async_context(ToslibClient(cfg, cdll)))
+                clients.append(
+                    local.PatientClient(await stack.enter_async_context(ToslibClient(cfg, cdll)))
+                )
             if args.bootstrap:
                 # Separate wallet keys; the existing regular-transfer config is untouched.
                 args.bootstrap_config = "privacy-test.json"

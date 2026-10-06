@@ -242,7 +242,11 @@ async def run(args):
             clients = []
             for i in range(1, args.nodes + 1):
                 config = local.lite_config(args.data / f"configs/node-{i}-lite.json", 8010 + i)
-                clients.append(await stack.enter_async_context(ToslibClient(config, cdll)))
+                clients.append(
+                    local.PatientClient(
+                        await stack.enter_async_context(ToslibClient(config, cdll))
+                    )
+                )
             if args.bootstrap:
                 await bootstrap(args, clients[0], blueprints)
                 return

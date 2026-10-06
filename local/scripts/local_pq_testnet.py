@@ -10,6 +10,7 @@ import asyncio
 import base64
 import copy
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -285,6 +286,38 @@ def rpc(port, method, **params):
     if result.get("error") or "result" not in result:
         raise RuntimeError(f"{method}: {result.get('error', result)}")
     return result["result"]
+
+
+class PatientClient:
+    """A toslib client that waits out a lite server's admission limit.
+
+    A lite server refuses a query it will not run now with LITE_SERVER_NOTREADY
+    (for example when more than its per-second budget of heavy proof queries
+    arrives together). The refused query was never executed, so asking again
+    later is safe, including for a message send: the drivers' journal already
+    makes sends idempotent. Every other error is raised at once.
+    """
+
+    def __init__(self, client, attempts=7, delay=0.5):
+        self._client, self._attempts, self._delay = client, attempts, delay
+
+    def __getattr__(self, name):
+        attr = getattr(self._client, name)
+        if not inspect.iscoroutinefunction(attr):
+            return attr
+
+        async def call(*args, **kwargs):
+            wait = self._delay
+            for attempt in range(self._attempts):
+                try:
+                    return await attr(*args, **kwargs)
+                except Exception as exc:
+                    if "LITE_SERVER_NOTREADY" not in str(exc) or attempt + 1 == self._attempts:
+                        raise
+                    await asyncio.sleep(wait)
+                    wait = min(wait * 2, 8)
+
+        return call
 
 
 MASTERCHAIN_SHARD = "-9223372036854775808"
@@ -689,6 +722,7 @@ async def deploy(args):
     cdll = ToslibCDLL(args.build / "toslib/libtoslibjson.so")
     cdll.client_set_verbosity_level(0)
     async with ToslibClient(config, cdll) as client:
+        client = PatientClient(client)
         account = await client.raw_get_account_state(address)
         if not account.code:
             key = nacl.signing.SigningKey((args.data / "testnet/state/main-wallet.pk").read_bytes())

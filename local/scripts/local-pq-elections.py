@@ -348,6 +348,7 @@ async def run_driver():
     tracer = asyncio.create_task(trace_loop())
     try:
         async with ToslibClient(config, cdll) as client:
+            client = local.PatientClient(client)
             # The faucet is exclusively owned by this service after pool deployment.
             wallet = WalletV1(
                 client,

@@ -235,6 +235,7 @@ not the checkout. To deploy changed driver code:
 | Controller rejects with exit 180 | This is a shared relay guard code, not a unique diagnosis. Inspect the request and exact transaction; check balance against recorded funds plus floor, as well as the other relay preconditions. |
 | Pool receives a native bounce after forwarding | Decode the controller compute/action failure and pool bounce transaction. Confirm where principal returned before retrying. A bounce is not an elector acceptance. |
 | Election driver reports a confirmation timeout | The signed intent remains unresolved. Inspect the complete transaction path and the retained journal; do not infer acceptance or send a new payment. |
+| `LITE_SERVER_NOTREADY: liteserver admission limit exceeded` | A lite server allows at most 128 heavy proof queries per second (`validator/liteserver-admission.h`), and several drivers starting together exceed it. The drivers wait it out (`PatientClient`, up to seven attempts with backoff); a refused query was never executed. Persistent refusals mean something keeps querying one node too heavily. |
 | A restart appears to repeat funding | Check that the installed snapshot contains the journal, and preserve it. Reconcile exact transaction identities and balances; do not delete records to bypass duplicate protection. |
 
 Do not disable contract guards to make deployment succeed. Correct missing

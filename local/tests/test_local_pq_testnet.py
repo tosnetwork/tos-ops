@@ -381,3 +381,39 @@ def test_the_path_write_guard_sees_each_kind_of_write():
         ".open",
         ".copyfile",
     ]
+
+
+def test_patient_client_waits_out_a_lite_server_admission_refusal(monkeypatch):
+    import asyncio
+
+    calls = []
+
+    class Client:
+        sync_attribute = "kept"
+
+        async def query(self, value):
+            calls.append(value)
+            if len(calls) < 3:
+                raise RuntimeError("LITE_SERVER_NOTREADY: liteserver admission limit exceeded")
+            return value
+
+        async def broken(self):
+            calls.append("broken")
+            raise RuntimeError("LITE_SERVER_UNKNOWN: duplicate message")
+
+    async def no_wait(seconds):
+        return None
+
+    monkeypatch.setattr(local.asyncio, "sleep", no_wait)
+    client = local.PatientClient(Client(), attempts=4)
+    assert client.sync_attribute == "kept"
+    assert asyncio.run(client.query(7)) == 7 and calls == [7, 7, 7]
+    calls.clear()
+    with pytest.raises(RuntimeError, match="duplicate"):
+        asyncio.run(client.broken())  # only NOTREADY is retried
+    assert calls == ["broken"]
+    calls.clear()
+    patient = local.PatientClient(Client(), attempts=2)
+    with pytest.raises(RuntimeError, match="NOTREADY"):
+        asyncio.run(patient.query(1))  # gives up after its attempts
+    assert len(calls) == 2

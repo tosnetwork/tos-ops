@@ -41,6 +41,7 @@ async def main(args):
     config = local.lite_config(DATA / "configs/node-1-lite.json")
     with nullcontext() if args.check else faucet_lock(DATA):
         async with ToslibClient(config, cdll) as client:
+            client = local.PatientClient(client)
             await verify_local_network(client, network, plan)
             wallet = SimpleNamespace(address=Address(network["genesis_wallet_address"]))
             if not args.check:
