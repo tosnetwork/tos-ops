@@ -15,6 +15,7 @@ node software; this repository holds how we configure, deploy and operate it.
 │   ├── README.md                guide: setup, controller funding, retention, health rebinding
 │   ├── OPERATIONS.md            elections, random transfers, shielded-pool traffic
 │   ├── PREPARATION.md           topology and port plan
+│   ├── DEFECTS-20261006.md      record of the election-authorization and snapshot defects
 │   ├── scripts/                 installer, control, drivers, snapshot installer
 │   │   ├── setup-testnet.sh
 │   │   ├── testnet-ctl.sh
