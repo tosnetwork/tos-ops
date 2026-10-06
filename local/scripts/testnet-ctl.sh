@@ -25,7 +25,10 @@ POOL
         else echo 'Shielded pool: no verified deployment receipt'; fi ;;
     check)
         [[ -n "${TOS_ROOT:-}" ]] || { echo 'Set TOS_ROOT to the tos checkout'; exit 2; }
-        cd "$TOS_ROOT"; uv run python "$HERE/local_pq_testnet.py" check ;;
+        cd "$TOS_ROOT"; uv run python "$HERE/local_pq_testnet.py" check
+        if [[ -f /data/configs/node-7.json ]]; then
+            sudo /usr/bin/python3 -I -S /usr/local/lib/tos-dev-services/current/src/scripts/check-local-pq-elections.py
+        fi ;;
     deploy-pool)
         [[ -n "${TOS_ROOT:-}" ]] || { echo 'Set TOS_ROOT to the tos checkout'; exit 2; }
         cd "$TOS_ROOT"; sudo TOS_ROOT="$TOS_ROOT" "$(command -v uv)" run python "$HERE/local_pq_testnet.py" deploy ;;

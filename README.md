@@ -22,6 +22,14 @@ node software; this repository holds how we configure, deploy and operate it.
 │   │   ├── local-pq-elections.py
 │   │   ├── local-pq-election-absence-drill.py
 │   │   ├── local-pq-fund-controllers.py
+│   │   ├── local_pq_funding.py           operating-authorization renewal (deficit, readback)
+│   │   ├── local_pq_funding_policy.py    30-day sizing, renew at 25 %
+│   │   ├── local_pq_transactions.py      faucet lock and crash-safe send journal
+│   │   ├── local_pq_election_evidence.py
+│   │   ├── local_pq_test_wire.py
+│   │   ├── check-local-pq-elections.py   election health check (testnet-ctl.sh check)
+│   │   ├── check-local-pq-resources.py   snapshot admission: run the generator protected
+│   │   ├── check-local-pq-protected-resources.py
 │   │   ├── local-pq-transfers.py
 │   │   ├── local-pq-privacy.py
 │   │   ├── check-local-pq-relays.py

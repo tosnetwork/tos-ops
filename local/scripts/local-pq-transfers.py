@@ -27,8 +27,6 @@ from pytosiq_core import (
     WalletMessage,
     begin_cell,
 )
-from tosapi import tos_api
-
 from toslib import ToslibCDLL, ToslibClient
 
 REPO = local.tos_root()

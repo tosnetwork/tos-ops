@@ -672,9 +672,8 @@ async def deploy(args):
     import nacl.signing
     from contract import WalletV1, tos
     from pytosiq_core import Address, Cell, InternalMsgInfo, MessageAny, StateInit, WalletMessage
-    from toslib.toslib_cdll import ToslibCDLL
-
     from toslib import ToslibClient
+    from toslib.toslib_cdll import ToslibCDLL
 
     observation = await wait_network(args)
     pooldir = args.data / "shielded-pool"

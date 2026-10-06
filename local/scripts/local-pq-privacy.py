@@ -23,8 +23,6 @@ import local_pq_testnet as local
 import nacl.signing
 from contract import WalletV1Blueprint
 from pytosiq_core import Address, Cell
-from tosapi import tos_api
-
 from toslib import ToslibCDLL, ToslibClient
 
 REPO = local.tos_root()
