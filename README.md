@@ -2,8 +2,7 @@
 
 Node service settings, operating documents and scripts for the TOS networks the
 team runs. Each network has its own subdirectory. The tos repository holds the
-node software and the public design documents; this repository holds how we
-deploy and operate it.
+node software; this repository holds how we configure, deploy and operate it.
 
 ## Directory layout
 
@@ -36,8 +35,9 @@ deploy and operate it.
 │   └── tests/                   driver and installer tests (pytest)
 ├── development/                 shared multi-host development network (empty)
 │   └── README.md
-└── production/                  production network templates
+└── production/                  production network design and templates
     ├── README.md
+    ├── Production-Node.md       design: roles, keys, options, retention, validator lifecycle, gaps
     └── systemd/
         └── tos-validator.service
 ```

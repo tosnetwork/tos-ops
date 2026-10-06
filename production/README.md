@@ -1,12 +1,13 @@
 # Production network
 
-Settings for nodes on the production network. This is a **template set, not an
-accepted deployment**. The design every file here follows is
-`doc/Production-Node.md` in the tos repository. That design lists twelve gaps
-(G1–G12) that must be closed before an external validator can follow it.
+Settings for nodes on the production network. This is a **design and template
+set, not an accepted deployment**. The design every file here follows is
+[Production-Node.md](Production-Node.md). That design lists twelve gaps (G1–G12)
+that must be closed before an external validator can follow it.
 
 | Path | Contents |
 | --- | --- |
+| `Production-Node.md` | Design: node roles, key custody, options, retention, joining, validator lifecycle, monitoring, gaps |
 | `systemd/tos-validator.service` | Proposed hardened validator unit (design section 7) |
 
 The unit assumes the layout from design section 4:
