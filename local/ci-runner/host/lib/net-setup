@@ -1,0 +1,40 @@
+#!/bin/bash
+# Load the CI isolation rules, admit CI traffic through the existing FORWARD
+# policy (docker sets it to drop), and record the host's public IPv4 so a VM
+# cannot loop back to it through the router.
+set -euo pipefail
+
+nft -f /usr/lib/tos-ci/tos-ci.nft
+
+# The iptables-nft FORWARD chain has policy drop; a packet must be accepted
+# there too. DOCKER-USER is the chain docker leaves to the administrator.
+if iptables -nL DOCKER-USER > /dev/null 2>&1; then
+  iptables -C DOCKER-USER -i tosci0 -o eno1 -j ACCEPT 2> /dev/null \
+    || iptables -I DOCKER-USER 1 -i tosci0 -o eno1 -j ACCEPT
+  iptables -C DOCKER-USER -i eno1 -o tosci0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2> /dev/null \
+    || iptables -I DOCKER-USER 1 -i eno1 -o tosci0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+fi
+
+refresh_public() {
+  local addr
+  addr=$(dig +short +time=3 +tries=2 -4 myip.opendns.com @resolver1.opendns.com 2> /dev/null | tail -1 || true)
+  if [[ $addr =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+    nft flush set inet tos_ci host_public4
+    nft add element inet tos_ci host_public4 "{ $addr }"
+    echo "host public IPv4 recorded"
+  else
+    echo "host public IPv4 not resolved; private ranges stay blocked" >&2
+  fi
+}
+
+case "${1:-up}" in
+  up) refresh_public ;;
+  refresh) refresh_public ;;
+  down)
+    nft delete table inet tos_ci 2> /dev/null || true
+    nft delete table bridge tos_ci_l2 2> /dev/null || true
+    iptables -D DOCKER-USER -i tosci0 -o eno1 -j ACCEPT 2> /dev/null || true
+    iptables -D DOCKER-USER -i eno1 -o tosci0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2> /dev/null || true
+    ;;
+  *) echo "usage: net-setup up|refresh|down" >&2; exit 2 ;;
+esac

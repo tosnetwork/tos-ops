@@ -1,0 +1,33 @@
+#!/bin/bash
+# Root-owned, fixed: the QEMU command line of CI slot $1. Runs as the slot
+# account inside tos-ci-vm@.service. Every path is derived from the slot
+# number; nothing else is read from outside this file.
+set -euo pipefail
+
+slot=${1:-}
+case $slot in
+  1) cpus=72-79,168-175 ;;
+  2) cpus=80-87,176-183 ;;
+  3) cpus=88-95,184-191 ;;
+  *) echo "slot-qemu: invalid slot" >&2; exit 2 ;;
+esac
+
+[[ $(id -un) == "tos-ci-slot$slot" ]] || { echo "slot-qemu: wrong account" >&2; exit 1; }
+allowed=$(awk '/^Cpus_allowed_list:/ {print $2}' /proc/self/status)
+[[ $allowed == "$cpus" ]] || { echo "slot-qemu: CPU set $allowed, expected $cpus" >&2; exit 1; }
+
+STORE=/var/lib/tos-ci
+exec /usr/bin/qemu-system-x86_64 \
+  -name "tos-ci-vm-$slot" -no-user-config -nodefaults \
+  -machine q35,accel=kvm -cpu host -smp 16 -m 16G \
+  -display none -vga none -monitor none \
+  -chardev stdio,id=console,signal=off -serial chardev:console \
+  -drive "file=$STORE/slot$slot/overlay.qcow2,if=virtio,format=qcow2,cache=none,aio=native,discard=unmap" \
+  -drive "file=$STORE/seed$slot/seed.iso,if=virtio,format=raw,readonly=on" \
+  -netdev "tap,id=n0,ifname=tci$slot,script=no,downscript=no" \
+  -device "virtio-net-pci,netdev=n0,mac=52:54:00:7c:00:0$slot" \
+  -device virtio-serial-pci \
+  -chardev "socket,id=admission,path=/run/tos-ci/slot$slot/admission.sock,reconnect=1" \
+  -device virtserialport,chardev=admission,name=org.tosnetwork.admission \
+  -device virtio-rng-pci \
+  -sandbox on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny

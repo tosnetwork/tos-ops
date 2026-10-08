@@ -1,0 +1,16 @@
+[Unit]
+Description=TOS CI network isolation (bridge rules, NAT, DNS/DHCP)
+Documentation=file:///usr/lib/tos-ci/README.md
+After=network-online.target docker.service systemd-networkd.service
+Wants=network-online.target tos-ci-dnsmasq.service
+Before=tos-ci-dnsmasq.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/tos-ci/net-setup up
+ExecReload=/usr/lib/tos-ci/net-setup refresh
+ExecStop=/usr/lib/tos-ci/net-setup down
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,3 @@
+# The admission port is readable and writable by the runner account, which
+# runs the job-started hook.
+SUBSYSTEM=="virtio-ports", ATTR{name}=="org.tosnetwork.admission", GROUP="runner", MODE="0660"

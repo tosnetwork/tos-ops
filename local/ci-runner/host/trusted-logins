@@ -1,0 +1,6 @@
+# GitHub logins whose pull requests (as author, triggering actor and sender)
+# and pushes to main may run on the self-hosted CI VMs. Confirmed by the
+# owner on 2026-10-08: the organisation's three admins.
+0xlewis
+gtosnetwork-dotcom
+tosmaker

@@ -1,0 +1,16 @@
+{
+  "repository": "tosnetwork/tos",
+  "label": "tos-vm",
+  "labels": ["self-hosted", "linux", "x64", "tos-vm"],
+  "token": "/etc/tos-ci/token",
+  "allowlist": "/etc/tos-ci/trusted-logins",
+  "drain_file": "/etc/tos-ci/drain",
+  "manifest": "/usr/lib/tos-ci/MANIFEST.sha256",
+  "slotctl_socket": "/run/tos-ci/slotctl.sock",
+  "store": "/var/lib/tos-ci",
+  "hard_cap_minutes": 165,
+  "boot_deadline_seconds": 180,
+  "idle_deadline_seconds": 1800,
+  "unadmitted_busy_seconds": 60,
+  "audit": false
+}

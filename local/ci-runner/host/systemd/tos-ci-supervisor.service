@@ -1,0 +1,39 @@
+[Unit]
+Description=TOS CI runner supervisor (single-use VM slots)
+Documentation=file:///usr/lib/tos-ci/README.md
+Requires=tos-ci-net.service tos-ci-dnsmasq.service tos-ci-slotctl.socket var-lib-tos\x2dci.mount
+After=tos-ci-net.service tos-ci-dnsmasq.service tos-ci-slotctl.socket var-lib-tos\x2dci.mount network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tos-ci
+Group=tos-ci
+ExecStart=/usr/bin/python3 -I /usr/lib/tos-ci/supervisor.py
+# SIGTERM drains and waits up to ten minutes for admitted jobs.
+TimeoutStopSec=11min
+KillSignal=SIGTERM
+Restart=on-failure
+RestartSec=30
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/var/lib/tos-ci/seed1 /var/lib/tos-ci/seed2 /var/lib/tos-ci/seed3 /run/tos-ci/slot1 /run/tos-ci/slot2 /run/tos-ci/slot3
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

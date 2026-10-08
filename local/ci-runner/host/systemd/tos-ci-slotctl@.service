@@ -1,0 +1,11 @@
+[Unit]
+Description=TOS CI slot control request
+Documentation=file:///usr/lib/tos-ci/README.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /usr/lib/tos-ci/slotctl.py
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+RuntimeMaxSec=240

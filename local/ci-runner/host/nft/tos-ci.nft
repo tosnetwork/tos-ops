@@ -1,0 +1,62 @@
+#!/usr/sbin/nft -f
+# CI VM isolation on bridge tosci0 (10.231.37.0/24). A VM may reach the
+# internet through the uplink, the bridge's DHCP and DNS, and nothing else:
+# no host service, no private or carrier-grade range (LAN, tailnet, docker),
+# no other VM, no IPv6.
+
+table inet tos_ci
+delete table inet tos_ci
+table bridge tos_ci_l2
+delete table bridge tos_ci_l2
+
+table inet tos_ci {
+	# The host's own public IPv4 addresses, refreshed by tos-ci-net.
+	set host_public4 {
+		type ipv4_addr
+	}
+
+	set blocked4 {
+		type ipv4_addr
+		flags interval
+		elements = {
+			0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8,
+			169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16,
+			224.0.0.0/4, 240.0.0.0/4
+		}
+	}
+
+	chain input {
+		type filter hook input priority -10; policy accept;
+		iifname "tosci0" meta nfproto ipv6 counter drop
+		iifname "tosci0" udp sport 68 udp dport 67 counter accept
+		iifname "tosci0" ip daddr 10.231.37.1 udp dport 53 counter accept
+		iifname "tosci0" ip daddr 10.231.37.1 tcp dport 53 counter accept
+		iifname "tosci0" counter drop
+	}
+
+	chain forward {
+		type filter hook forward priority -10; policy accept;
+		iifname "tosci0" meta nfproto ipv6 counter drop
+		oifname "tosci0" meta nfproto ipv6 counter drop
+		iifname "tosci0" oifname "tosci0" counter drop
+		iifname "tosci0" ip daddr @blocked4 counter drop
+		iifname "tosci0" ip daddr @host_public4 counter drop
+		iifname "tosci0" oifname != "eno1" counter drop
+		iifname "tosci0" counter accept
+		oifname "tosci0" ct state established,related counter accept
+		oifname "tosci0" counter drop
+	}
+
+	chain postrouting {
+		type nat hook postrouting priority srcnat; policy accept;
+		ip saddr 10.231.37.0/24 oifname "eno1" counter masquerade
+	}
+}
+
+table bridge tos_ci_l2 {
+	chain forward {
+		type filter hook forward priority 0; policy accept;
+		# No frame between two VM ports, at layer 2.
+		iifname "tci*" oifname "tci*" counter drop
+	}
+}

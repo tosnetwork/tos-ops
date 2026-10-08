@@ -1,0 +1,59 @@
+#!/bin/bash
+# Root-owned, fixed: prepare CI slot $1 for a fresh VM. Runs as ExecStartPre=+
+# of tos-ci-vm@.service. The only input is the slot number.
+set -euo pipefail
+umask 077
+
+slot=${1:-}
+[[ $slot =~ ^[123]$ ]] || { echo "slot-prepare: invalid slot" >&2; exit 2; }
+
+STORE=/var/lib/tos-ci
+STATE=$STORE/state
+dir=$STORE/slot$slot
+seed=$STORE/seed$slot/seed.iso
+user=tos-ci-slot$slot
+tap=tci$slot
+
+mountpoint -q "$STORE" || { echo "slot-prepare: $STORE is not mounted" >&2; exit 1; }
+[[ ! -L $STORE && ! -L $STATE ]] || { echo "slot-prepare: store path is a link" >&2; exit 1; }
+
+# A slot is reused only after its previous cleanup completed.
+if [[ -e $STATE/start-$slot ]]; then
+  [[ -e $STATE/cleanup-$slot && $STATE/cleanup-$slot -nt $STATE/start-$slot ]] \
+    || { echo "slot-prepare: previous cleanup of slot $slot did not complete" >&2; exit 1; }
+fi
+
+# The seed must be the supervisor's, written after the last cleanup.
+[[ -f $seed && ! -L $seed ]] || { echo "slot-prepare: no seed" >&2; exit 1; }
+[[ $(stat -c %U "$seed") == tos-ci ]] || { echo "slot-prepare: seed not owned by tos-ci" >&2; exit 1; }
+if [[ -e $STATE/cleanup-$slot ]]; then
+  [[ $seed -nt $STATE/cleanup-$slot ]] || { echo "slot-prepare: seed is older than the last cleanup" >&2; exit 1; }
+fi
+
+# The base image the overlay builds on, resolved once and fixed in the overlay.
+base=$(readlink -f "$STORE/images/current.qcow2")
+[[ -f $base && $base == "$STORE"/images/gen-*.qcow2 ]] || { echo "slot-prepare: no current image" >&2; exit 1; }
+[[ $(stat -c %U "$base") == root ]] || { echo "slot-prepare: image not root-owned" >&2; exit 1; }
+
+# Fresh slot directory. A link at the path is removed, never followed.
+if [[ -L $dir ]]; then rm -f -- "$dir"; fi
+rm -rf --one-file-system -- "$dir"
+mkdir -m 0700 -- "$dir"
+chown "$user:$user" -- "$dir"
+
+# The overlay is created by the slot account in its own empty directory; the
+# directory was just created, so nothing exists at the path.
+[[ ! -e $dir/overlay.qcow2 ]] || { echo "slot-prepare: overlay path exists" >&2; exit 1; }
+setpriv --reuid="$user" --regid="$user" --clear-groups --no-new-privs \
+  qemu-img create -q -f qcow2 -F qcow2 -b "$base" "$dir/overlay.qcow2" 80G
+
+# Tap owned by the slot account, isolated on the bridge.
+ip link del "$tap" 2> /dev/null || true
+ip tuntap add dev "$tap" mode tap user "$user" group "$user"
+ip link set "$tap" master tosci0
+bridge link set dev "$tap" isolated on
+ip link set "$tap" up
+
+install -d -m 0755 -o root -g root "$STATE"
+touch "$STATE/start-$slot"
+echo "slot $slot prepared on $(basename "$base")"

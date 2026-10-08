@@ -1,0 +1,15 @@
+[Unit]
+Description=GitHub Actions runner for exactly one job
+After=network-online.target docker.service
+Wants=network-online.target
+ConditionPathExists=/etc/tos-ci/jitconfig
+
+[Service]
+Type=simple
+User=runner
+Group=runner
+WorkingDirectory=/opt/actions-runner
+ExecStart=/bin/sh -c 'exec /opt/actions-runner/run.sh --jitconfig "$(cat /etc/tos-ci/jitconfig)"'
+ExecStopPost=+/usr/lib/tos-ci-guest/end-job
+Restart=no
+TimeoutStopSec=60

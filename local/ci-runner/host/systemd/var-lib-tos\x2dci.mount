@@ -1,0 +1,14 @@
+[Unit]
+Description=TOS CI disk store (fixed-size, preallocated)
+Documentation=file:///usr/lib/tos-ci/README.md
+
+[Mount]
+# A preallocated ext4 image: CI disks can never consume the root
+# filesystem's free space beyond this file's fixed size.
+What=/var/lib/tos-ci.img
+Where=/var/lib/tos-ci
+Type=ext4
+Options=loop,nodev,nosuid,noexec
+
+[Install]
+WantedBy=multi-user.target

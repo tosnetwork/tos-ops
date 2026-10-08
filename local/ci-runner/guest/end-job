@@ -1,0 +1,9 @@
+#!/bin/bash
+# After the runner exits, for any reason: write the end-of-life record to the
+# console and power off. The host deletes the VM when QEMU exits.
+if [[ $(cat /etc/tos-ci/audit 2> /dev/null) == 1 ]]; then
+  logger -p user.notice -t tos-ci "audit status at end: $(auditctl -s | tr '\n' ' ')"
+fi
+logger -p user.notice -t tos-ci "end-of-life $(cat /etc/tos-ci/vm-nonce 2> /dev/null)"
+sleep 1
+systemctl poweroff --no-block

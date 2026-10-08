@@ -1,0 +1,20 @@
+#!/bin/bash
+# Run by cloud-init (runcmd) once the seed's files are in place: optionally
+# turn on execution auditing, then start the single-job runner.
+set -euo pipefail
+
+if [[ $(cat /etc/tos-ci/audit 2> /dev/null) == 1 ]]; then
+  # Verification mode: every execve, by every UID, streamed to the console.
+  install -d /etc/systemd/journald.conf.d
+  printf '[Journal]\nMaxLevelConsole=info\n' > /etc/systemd/journald.conf.d/90-tos-ci-audit.conf
+  systemctl restart systemd-journald
+  sed -i 's/^active = .*/active = yes/' /etc/audit/plugins.d/syslog.conf
+  systemctl restart auditd
+  auditctl -b 16384 -f 1
+  auditctl -a always,exit -F arch=b64 -S execve,execveat -k tos-ci-exec
+  auditctl -a always,exit -F arch=b32 -S execve -k tos-ci-exec
+  logger -p user.notice -t tos-ci "audit on: $(auditctl -s | tr '\n' ' ')"
+fi
+
+logger -p user.notice -t tos-ci "runner starting"
+systemctl start --no-block tos-ci-runner.service

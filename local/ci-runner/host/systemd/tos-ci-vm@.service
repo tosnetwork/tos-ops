@@ -1,0 +1,58 @@
+[Unit]
+Description=TOS CI single-use VM, slot %i
+Documentation=file:///usr/lib/tos-ci/README.md
+Requires=tos-ci-net.service var-lib-tos\x2dci.mount
+After=tos-ci-net.service var-lib-tos\x2dci.mount
+# Only slots 1-3 exist; each has a root-owned cpus.conf drop-in.
+ConditionPathExists=/etc/systemd/system/tos-ci-vm@%i.service.d/cpus.conf
+
+[Service]
+Type=simple
+Slice=tos-ci.slice
+User=tos-ci-slot%i
+Group=tos-ci-slot%i
+SupplementaryGroups=kvm
+
+# Root-owned fixed operations: fresh overlay, tap, markers. "+" runs them
+# with full privileges; nothing in them comes from the supervisor or a job.
+ExecStartPre=+/usr/lib/tos-ci/slot-prepare %i
+ExecStart=/usr/lib/tos-ci/slot-qemu %i
+ExecStopPost=+/usr/lib/tos-ci/slot-cleanup %i
+
+# The guest's serial console becomes this unit's journal.
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+
+Restart=no
+KillMode=mixed
+TimeoutStartSec=120
+TimeoutStopSec=30
+
+MemoryMax=17G
+MemorySwapMax=0
+TasksMax=4096
+NUMAPolicy=bind
+NUMAMask=1
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+DevicePolicy=closed
+DeviceAllow=/dev/kvm rw
+DeviceAllow=/dev/net/tun rw
+ReadWritePaths=/var/lib/tos-ci/slot%i /run/tos-ci/slot%i
+UMask=0077
