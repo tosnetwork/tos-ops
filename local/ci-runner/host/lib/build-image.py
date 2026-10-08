@@ -42,6 +42,20 @@ KEEP = 2
 IMAGE_CAP = 15 * 2**30
 BUILD_RESERVE = 75 * 2**30  # build overlay (40 GiB virtual) + capped conversion + margin
 BUILD_LOCK = "/run/tos-ci/build.lock"
+# What the image itself needs: container runtime, the runner's prerequisites,
+# image tooling and auditing.
+BASE_PACKAGES = ["docker.io", "git", "curl", "ca-certificates", "gnupg", "python3", "build-essential",
+                 "cmake", "ninja-build", "ccache", "auditd", "jq", "unzip", "zstd", "xz-utils", "sudo"]
+# From apt.llvm.org, after its reviewed key and source are configured.
+LLVM_PACKAGES = ["clang-21", "lld-21", "llvm-21", "clang-format-21"]
+# Every package tos's workflows install (image-packages.json, derived from
+# them by tests/workflow_packages.py), so a job moved here finds what the
+# hosted image gave it. Kept literal here; a test checks it covers the pin.
+WORKFLOW_PACKAGES = ["autoconf", "automake", "build-essential", "ccache", "clang", "cmake", "git", "gperf",
+                     "libblas-dev", "libgflags-dev", "libgsl-dev", "libgslcblas0", "libjemalloc-dev", "liblz4-dev",
+                     "libreadline-dev", "libsodium-dev", "libssl-dev", "libtool", "lld", "ninja-build",
+                     "pkg-config", "python3", "python3-dev", "python3-yaml", "ripgrep", "texinfo", "tmux",
+                     "zlib1g-dev"]
 MAINTENANCE_LOCK = "/run/tos-ci/maintenance.lock"
 
 
@@ -136,7 +150,8 @@ gpg --dearmor -o /usr/share/keyrings/llvm.gpg /root/llvm.asc
 rm -f /root/llvm.asc
 echo 'deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main' > /etc/apt/sources.list.d/llvm.list
 apt-get update -q
-apt-get install -y -q clang-21 lld-21 llvm-21
+apt-get install -y -q {" ".join(LLVM_PACKAGES)}
+apt-get install -y -q {" ".join(WORKFLOW_PACKAGES)}
 # Actions runner {runner_tag}, verified against GitHub's published digest.
 curl -fsSL -o /tmp/runner.tgz '{runner_url}'
 echo '{runner_sha}  /tmp/runner.tgz' | sha256sum -c -
@@ -187,8 +202,7 @@ echo "TOS-CI-BUILD-OK"
             "    sudo: 'ALL=(ALL) NOPASSWD:ALL'",
             "    lock_passwd: true",
             "package_update: true",
-            "packages: [docker.io, git, curl, ca-certificates, gnupg, python3, build-essential,"
-            " cmake, ninja-build, ccache, auditd, jq, unzip, zstd, xz-utils, sudo]",
+            f"packages: [{', '.join(BASE_PACKAGES)}]",
             "write_files:",
             *files,
             "runcmd:",
