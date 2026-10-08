@@ -345,6 +345,8 @@ class Supervisor:
         self.stopping = threading.Event()
         self.disk_drain = False
         self.last_reconcile = 0.0
+        # Per-slot launch backoff after a failure: (failures, not before).
+        self.backoff: dict[int, tuple[int, float]] = {n: (0, 0.0) for n in (1, 2, 3)}
 
     # -- allowlist, always under self.lock
 
@@ -399,13 +401,13 @@ class Supervisor:
 
     def _serve_admission(self, slot: Slot, listener: socket.socket, nonce: str) -> None:
         while not self.stopping.is_set() and slot.nonce == nonce:
-            ready, _, _ = select.select([listener], [], [], 1.0)
-            if not ready:
-                continue
             try:
+                ready, _, _ = select.select([listener], [], [], 1.0)
+                if not ready:
+                    continue
                 conn, _ = listener.accept()
-            except OSError:
-                return
+            except (OSError, ValueError):
+                return  # the slot finished and its listener was closed
             with conn:
                 if not self._peer_ok(conn, slot):
                     log("admission_peer_refused", slot=slot.number)
@@ -510,8 +512,17 @@ class Supervisor:
             if reply != "ok":
                 raise RuntimeError(f"slot start failed: {reply}")
             log("slot_started", slot=slot.number, runner=name, runner_id=runner_id)
+            self.backoff[slot.number] = (0, 0.0)
         except Exception as error:  # noqa: BLE001 - any failure tears the slot down
-            log("slot_launch_failed", slot=slot.number, error=f"{type(error).__name__}: {error}")
+            failures = self.backoff[slot.number][0] + 1
+            delay = min(120 * 2 ** (failures - 1), 1800)
+            self.backoff[slot.number] = (failures, time.monotonic() + delay)
+            log(
+                "slot_launch_failed",
+                slot=slot.number,
+                error=f"{type(error).__name__}: {error}",
+                retry_in_s=delay,
+            )
             slot.state = "running"
             slot.runner_id = runner_id
             self._stop(slot, "launch failed")
@@ -637,7 +648,11 @@ class Supervisor:
                     if draining and not slot.admitted and slot.stop_reason is None:
                         self._stop(slot, "draining")
                     self._check(slot, now)
-                elif not draining and self._cleanup_done(slot):
+                elif (
+                    not draining
+                    and now >= self.backoff[slot.number][1]
+                    and self._cleanup_done(slot)
+                ):
                     self._launch(slot)
             if now - self.last_reconcile > 300:
                 self.last_reconcile = now

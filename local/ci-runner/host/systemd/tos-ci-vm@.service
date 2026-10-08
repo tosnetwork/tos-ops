@@ -54,5 +54,8 @@ AmbientCapabilities=
 DevicePolicy=closed
 DeviceAllow=/dev/kvm rw
 DeviceAllow=/dev/net/tun rw
-ReadWritePaths=/var/lib/tos-ci/slot%i /run/tos-ci/slot%i
+# "-": the slot directory does not exist until slot-prepare creates it, and
+# systemd sets up the namespace before every command, "+" ones included.
+# QEMU starts after slot-prepare, when the path exists and the rule applies.
+ReadWritePaths=-/var/lib/tos-ci/slot%i -/run/tos-ci/slot%i
 UMask=0077
