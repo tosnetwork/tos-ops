@@ -461,7 +461,7 @@ class Supervisor:
                 run_id=request["run_id"],
                 run_attempt=request["run_attempt"],
                 job=request["job"],
-                event=request["event"],
+                event_name=request["event"],
                 author=request["author"],
                 triggering_actor=request["triggering_actor"],
                 sender=request["sender"],

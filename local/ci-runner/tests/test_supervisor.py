@@ -97,6 +97,58 @@ class DecisionTest(unittest.TestCase):
             decide({**REQUEST, "allowlist_sha256": new.sha256}, allowlist=new)
 
 
+class AdmitTest(unittest.TestCase):
+    """The request handler itself, not only the decision: it must reply."""
+
+    def setUp(self) -> None:
+        import tempfile
+
+        self.dir = tempfile.TemporaryDirectory()
+        root = Path(self.dir.name)
+        (root / "trusted-logins").write_bytes(DATA)
+        (root / "token").write_text("unused")
+        config = {
+            "repository": "tosnetwork/tos", "label": "tos-vm", "labels": ["tos-vm"],
+            "token": str(root / "token"), "allowlist": str(root / "trusted-logins"),
+            "drain_file": str(root / "drain"), "slotctl_socket": str(root / "none.sock"),
+            "store": str(root), "hard_cap_minutes": 165,
+        }
+        self.sup = supervisor.Supervisor(config)
+        self.slot = self.sup.slots[2]
+        self.slot.state, self.slot.nonce = "running", NONCE
+        self.sup._stop = lambda slot, reason: setattr(slot, "stop_reason", reason)
+
+    def tearDown(self) -> None:
+        self.dir.cleanup()
+
+    def test_allowed_request_gets_a_matching_reply_and_binds_the_slot(self) -> None:
+        reply = self.sup._admit(self.slot, frame(REQUEST))
+        self.assertEqual(reply["verdict"], "allowed")
+        for key in ("vm_nonce", "run_id", "run_attempt", "job"):
+            self.assertEqual(reply[key], REQUEST[key])
+        self.assertEqual(self.slot.binding, ("123456", "1", "network-safety"))
+
+    def test_second_request_is_denied(self) -> None:
+        self.sup._admit(self.slot, frame(REQUEST))
+        self.assertEqual(self.sup._admit(self.slot, frame(REQUEST))["verdict"], "denied")
+
+    def test_allowlist_change_denies_and_stops_unadmitted_slots(self) -> None:
+        other = self.sup.slots[3]
+        other.state, other.nonce = "running", "e" * 32
+        (Path(self.dir.name) / "trusted-logins").write_bytes(b"0xlewis\n")
+        reply = self.sup._admit(self.slot, frame(REQUEST))
+        self.assertEqual(reply["verdict"], "denied")
+        self.assertIsNone(self.slot.binding)
+        self.assertEqual(other.stop_reason, "allowlist changed before admission")
+
+    def test_admitted_slot_survives_an_allowlist_change(self) -> None:
+        self.sup._admit(self.slot, frame(REQUEST))
+        (Path(self.dir.name) / "trusted-logins").write_bytes(b"0xlewis\n")
+        with self.sup.lock:
+            self.sup._refresh_allowlist_locked()
+        self.assertIsNone(self.slot.stop_reason)
+
+
 class AllowlistTest(unittest.TestCase):
     def test_comments_and_case(self) -> None:
         self.assertEqual(supervisor.parse_allowlist(b"# x\nToSMaker\n\n"), frozenset({"tosmaker"}))

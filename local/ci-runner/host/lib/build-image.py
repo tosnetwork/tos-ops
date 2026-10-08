@@ -100,7 +100,8 @@ def user_data(runner: tuple[str, str, str], uv: tuple[str, str, str]) -> str:
     uv_tag, uv_url, uv_sha = uv
     files = []
     files += guest_file("/usr/lib/tos-ci-guest/admission.py", "admission.py", "root:root", "0644")
-    files += guest_file("/usr/lib/tos-ci-guest/admission-hook", "admission-hook", "root:root", "0755")
+    # The runner accepts a job hook only by a .sh, .ps1 or .js file name.
+    files += guest_file("/usr/lib/tos-ci-guest/admission-hook.sh", "admission-hook.sh", "root:root", "0755")
     files += guest_file("/usr/lib/tos-ci-guest/start-job", "start-job", "root:root", "0755")
     files += guest_file("/usr/lib/tos-ci-guest/end-job", "end-job", "root:root", "0755")
     files += guest_file("/etc/systemd/system/tos-ci-runner.service", "tos-ci-runner.service", "root:root", "0644")
