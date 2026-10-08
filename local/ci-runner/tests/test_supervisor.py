@@ -196,6 +196,22 @@ class HandleTest(unittest.TestCase):
         self.wait(supervisor.Handle([str(target)], None, op=op))
         self.assertEqual(target.stat().st_size, supervisor.Handle.FILE_LIMIT)
 
+    def test_a_failed_spawn_leaves_no_files(self) -> None:
+        tmp = Path(self.op_script("")).parent / "optmp"
+        tmp.mkdir()
+        real = supervisor.subprocess.Popen
+
+        def refuse(*args, **kwargs):
+            raise OSError("spawn refused")
+
+        supervisor.subprocess.Popen = refuse
+        try:
+            with self.assertRaises(OSError):
+                supervisor.Handle(["jit"], b"secret", op="unused", tmp=str(tmp))
+        finally:
+            supervisor.subprocess.Popen = real
+        self.assertEqual(list(tmp.iterdir()), [])
+
     def test_output_over_64k_fails(self) -> None:
         op = self.op_script("print(json.dumps({'pad': 'x' * 70_000}))\n")
         ok, result = self.wait(supervisor.Handle(["x"], None, op=op))

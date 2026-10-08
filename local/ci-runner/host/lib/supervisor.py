@@ -169,16 +169,21 @@ class Handle:
         if len(stdin) > self.MAX_STDIN:
             raise ValueError(f"op stdin of {len(stdin)} bytes exceeds {self.MAX_STDIN}")
         self.dir = Path(tempfile.mkdtemp(prefix="tos-ci-op-", dir=tmp))
-        (self.dir / "in").write_bytes(stdin)
         self.result: tuple[bool, dict | str] | None = None
         self.collected = False
-        with open(self.dir / "in", "rb") as fin, open(self.dir / "out", "wb") as fout, \
-                open(self.dir / "err", "wb") as ferr:
-            self.proc = subprocess.Popen(
-                ["/usr/bin/prlimit", f"--fsize={self.FILE_LIMIT}", "--",
-                 "/usr/bin/python3", "-I", op, *argv],
-                stdin=fin, stdout=fout, stderr=ferr, start_new_session=True, close_fds=True,
-            )
+        try:
+            (self.dir / "in").write_bytes(stdin)
+            with open(self.dir / "in", "rb") as fin, open(self.dir / "out", "wb") as fout, \
+                    open(self.dir / "err", "wb") as ferr:
+                self.proc = subprocess.Popen(
+                    ["/usr/bin/prlimit", f"--fsize={self.FILE_LIMIT}", "--",
+                     "/usr/bin/python3", "-I", op, *argv],
+                    stdin=fin, stdout=fout, stderr=ferr, start_new_session=True, close_fds=True,
+                )
+        except BaseException:
+            # No child exists to reap; the stdin file may hold a secret.
+            self._finish_files()
+            raise
 
     def _kill_group(self) -> None:
         try:
