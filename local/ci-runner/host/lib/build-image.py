@@ -112,8 +112,7 @@ def user_data(runner: tuple[str, str, str], uv: tuple[str, str, str]) -> str:
     files += guest_file("/usr/lib/tos-ci-guest/admission-hook.sh", "admission-hook.sh", "root:root", "0755")
     files += guest_file("/usr/lib/tos-ci-guest/start-job", "start-job", "root:root", "0755")
     files += guest_file("/usr/lib/tos-ci-guest/end-job", "end-job", "root:root", "0755")
-    files += guest_file("/etc/systemd/system/tos-ci-runner.service", "tos-ci-runner.service", "root:root", "0644")
-    files += guest_file("/etc/udev/rules.d/90-tos-ci-admission.rules", "90-tos-ci-admission.rules", "root:root", "0644")
+    files += guest_file("/etc/systemd/system/tos-ci-runner.service", "tos-ci-runner.service", "root:root", "0644")    files += guest_file("/etc/udev/rules.d/90-tos-ci-admission.rules", "90-tos-ci-admission.rules", "root:root", "0644")
     files += guest_file("/etc/systemd/journald.conf.d/90-tos-ci-console.conf", "90-tos-ci-console.conf", "root:root", "0644")
     files += guest_file("/etc/sysctl.d/90-tos-ci-noipv6.conf", "90-tos-ci-noipv6.conf", "root:root", "0644")
     files += guest_file("/usr/lib/tos-ci-guest/runner.env", "runner.env", "root:root", "0644")
@@ -149,7 +148,6 @@ install -m 0755 /tmp/uv-x86_64-unknown-linux-gnu/uv /tmp/uv-x86_64-unknown-linux
 systemctl disable --now ssh.service ssh.socket unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer motd-news.timer || true
 systemctl mask ssh.service ssh.socket || true
 systemctl enable auditd
-sed -i 's/^active = .*/active = no/' /etc/audit/plugins.d/syslog.conf
 echo "TOS-CI-MANIFEST-BEGIN"
 echo "runner {runner_tag} sha256 {runner_sha}"
 echo "uv {uv_tag} sha256 {uv_sha}"
@@ -228,22 +226,38 @@ def run_builder(work: Path, base: Path, seed: Path, log_path: Path) -> None:
         subprocess.run(["ip", "link", "del", TAP], stderr=subprocess.DEVNULL)
 
 
-def take_locks(deadline: float) -> tuple[object, object]:
-    """build.lock (refuse if held), then maintenance.lock exclusively before the deadline."""
-    build = open(BUILD_LOCK, "a+")
+def take_locks(deadline: float, build_lock: str = BUILD_LOCK, maintenance_lock: str = MAINTENANCE_LOCK,
+               clock=time.monotonic, sleep=time.sleep) -> tuple[object, object]:
+    """build.lock (refuse if held), then maintenance.lock exclusively, both within the deadline.
+
+    The deadline is checked before every attempt and again once both locks
+    are held, so a lock obtained late never starts a build.
+    """
+    late = "maintenance lock not obtained before the deadline; nothing built"
+    if clock() > deadline:
+        raise SystemExit(late)
+    build = open(build_lock, "a+")
     try:
         fcntl.flock(build, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
+        build.close()
         raise SystemExit("another image build is running") from None
-    maintenance = open(MAINTENANCE_LOCK, "a+")
+    maintenance = open(maintenance_lock, "a+")
     while True:
+        if clock() > deadline:
+            maintenance.close()
+            build.close()
+            raise SystemExit(late)
         try:
             fcntl.flock(maintenance, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return build, maintenance
         except OSError:
-            if time.monotonic() > deadline:
-                raise SystemExit("maintenance lock not obtained before the deadline; nothing built") from None
-            time.sleep(5)
+            sleep(5)
+            continue
+        if clock() > deadline:
+            maintenance.close()
+            build.close()
+            raise SystemExit(late)
+        return build, maintenance
 
 
 def slots_quiet() -> bool:
@@ -274,15 +288,36 @@ def convert_capped(source: Path, candidate: Path, cap: int) -> None:
                          f"{result.stderr.strip()[-300:]}")
 
 
-def prune(keep_names: set[str]) -> None:
-    """Remove old generations that no slot overlay references."""
+def backing_chain(overlay: Path) -> set[str]:
+    """File names in an overlay's backing chain; any doubt is an error."""
+    info = subprocess.run(["qemu-img", "info", "--backing-chain", "--output=json", "-U", str(overlay)],
+                          capture_output=True, text=True)
+    if info.returncode != 0:
+        raise ValueError(f"qemu-img info failed: {info.stderr.strip()[-200:]}")
+    chain = json.loads(info.stdout)
+    if not isinstance(chain, list) or not chain:
+        raise ValueError("backing chain is not a non-empty list")
+    names = set()
+    for entry in chain:
+        if not isinstance(entry, dict) or not isinstance(entry.get("filename"), str) or not entry["filename"]:
+            raise ValueError("backing chain entry without a file name")
+        names.add(Path(entry["filename"]).name)
+    return names
+
+
+def prune(keep_names: set[str], store: Path = STORE, images: Path = IMAGES, inspect=backing_chain) -> None:
+    """Remove old generations that no slot overlay references.
+
+    Every overlay is inspected before anything is removed. If any overlay
+    cannot be inspected, nothing is removed: an unknown reference is kept.
+    """
     referenced = set()
-    for overlay in STORE.glob("slot*/overlay.qcow2"):
-        info = subprocess.run(["qemu-img", "info", "--backing-chain", "--output=json", str(overlay)],
-                              capture_output=True, text=True)
-        if info.returncode == 0:
-            referenced |= {Path(i.get("filename", "")).name for i in json.loads(info.stdout)}
-    for old in sorted(IMAGES.glob("gen-*.qcow2")):
+    for overlay in store.glob("slot*/overlay.qcow2"):
+        try:
+            referenced |= inspect(overlay)
+        except (OSError, ValueError) as error:
+            raise SystemExit(f"cannot inspect {overlay} ({error}); no generation pruned") from None
+    for old in sorted(images.glob("gen-*.qcow2")):
         if old.name in keep_names or old.name in referenced:
             continue
         old.unlink()

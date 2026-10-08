@@ -26,6 +26,7 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -148,42 +149,135 @@ def decide(request: dict[str, object], *, slot: int, nonce: str | None, admitted
 
 
 class Handle:
-    """A running op.py child. poll() -> None while running, else (ok, result)."""
+    """A running op.py child that can never block the supervisor.
 
-    def __init__(self, argv: list[str], stdin: bytes | None, op: str = OP) -> None:
-        self.proc = subprocess.Popen(
-            ["/usr/bin/python3", "-I", op, *argv],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
+    stdin, stdout and stderr are private files, not pipes. Every file the
+    child or its descendants write is bounded by RLIMIT_FSIZE (prlimit), so a
+    runaway child is stopped by the kernel at the bound. The child leads its
+    own session: completion and kill both SIGKILL the whole process group, so
+    no descendant outlives its operation. kill() never waits; reap() is
+    polled until the child is collected, then the files are removed.
+    poll() -> None while running, else (ok, result).
+    """
+
+    MAX_STDIN = 32 * 1024
+    MAX_OUTPUT = 64 * 1024
+    FILE_LIMIT = 4 * 1024 * 1024
+
+    def __init__(self, argv: list[str], stdin: bytes | None, op: str = OP, tmp: str | None = None) -> None:
+        stdin = stdin or b""
+        if len(stdin) > self.MAX_STDIN:
+            raise ValueError(f"op stdin of {len(stdin)} bytes exceeds {self.MAX_STDIN}")
+        self.dir = Path(tempfile.mkdtemp(prefix="tos-ci-op-", dir=tmp))
+        (self.dir / "in").write_bytes(stdin)
+        self.result: tuple[bool, dict | str] | None = None
+        self.collected = False
+        with open(self.dir / "in", "rb") as fin, open(self.dir / "out", "wb") as fout, \
+                open(self.dir / "err", "wb") as ferr:
+            self.proc = subprocess.Popen(
+                ["/usr/bin/prlimit", f"--fsize={self.FILE_LIMIT}", "--",
+                 "/usr/bin/python3", "-I", op, *argv],
+                stdin=fin, stdout=fout, stderr=ferr, start_new_session=True, close_fds=True,
+            )
+
+    def _kill_group(self) -> None:
         try:
-            if stdin:
-                self.proc.stdin.write(stdin)
-            self.proc.stdin.close()
-        except OSError:
+            os.killpg(self.proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
             pass
+
+    def _read(self, name: str) -> bytes:
+        with open(self.dir / name, "rb") as f:
+            return f.read(self.MAX_OUTPUT + 1)
+
+    def _finish_files(self) -> None:
+        shutil.rmtree(self.dir, ignore_errors=True)
 
     def poll(self) -> tuple[bool, dict | str] | None:
-        if self.proc.poll() is None:
+        if self.result is not None:
+            return self.result
+        # Look without reaping, so the group id cannot be reused before the
+        # group is killed.
+        info = os.waitid(os.P_PID, self.proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        if info is None:
             return None
-        # The child has exited; its pipes are at EOF. (communicate() would try
-        # to flush the stdin pipe already closed in __init__.)
-        out, err = self.proc.stdout.read(), self.proc.stderr.read()
-        self.proc.stdout.close()
-        self.proc.stderr.close()
-        if self.proc.returncode != 0:
-            return False, (err.decode(errors="replace").strip().splitlines() or ["failed"])[-1][:300]
-        try:
-            return True, json.loads(out.decode())
-        except ValueError:
-            return False, "unparsable op output"
+        self._kill_group()  # descendants of a finished op do not survive it
+        returncode = self.proc.wait()
+        self.collected = True
+        # A child that hit the bound sees SIGXFSZ, or EFBIG if it ignores the
+        # signal (Python does); either way a file is left at the bound.
+        at_bound = any((self.dir / name).stat().st_size >= self.FILE_LIMIT for name in ("out", "err"))
+        out, err = self._read("out"), self._read("err")
+        self._finish_files()
+        if at_bound or returncode == -signal.SIGXFSZ:
+            self.result = (False, "output exceeded the file size limit")
+        elif returncode != 0:
+            detail = (err.decode(errors="replace").strip().splitlines() or [f"exit {returncode}"])[-1][:300]
+            self.result = (False, detail)
+        elif len(out) > self.MAX_OUTPUT:
+            self.result = (False, "output too large")
+        else:
+            try:
+                self.result = (True, json.loads(out.decode()))
+            except ValueError:
+                self.result = (False, "unparsable op output")
+        return self.result
 
     def kill(self) -> None:
-        if self.proc.poll() is None:
-            self.proc.kill()
-        try:
-            self.proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
+        self._kill_group()
+
+    def reap(self) -> bool:
+        """True once the child is collected and its files are gone."""
+        if not self.collected:
+            if self.proc.poll() is None:
+                return False
+            self.collected = True
+        self._finish_files()
+        return True
+
+
+class FailedHandle:
+    """An operation that could not start; reported as an ordinary failure."""
+
+    def __init__(self, reason: str) -> None:
+        self.result = (False, reason)
+
+    def poll(self) -> tuple[bool, str]:
+        return self.result
+
+    def kill(self) -> None:
+        pass
+
+    def reap(self) -> bool:
+        return True
+
+
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def valid_result(kind: str, result: object) -> bool:
+    """The successful result of an operation has its kind's exact shape."""
+    if not isinstance(result, dict):
+        return False
+    if kind == "jit":
+        return (_is_int(result.get("runner_id")) and isinstance(result.get("name"), str)
+                and isinstance(result.get("encoded_jit_config"), str) and bool(result["encoded_jit_config"]))
+    if kind == "runner-status":
+        return result == {"missing": True} or (
+            isinstance(result.get("status"), str) and isinstance(result.get("busy"), bool))
+    if kind == "slot-status":
+        return (isinstance(result.get("active"), str) and _is_int(result.get("pid")) and result["pid"] >= 0
+                and _is_int(result.get("latest")) and result["latest"] >= 0
+                and result.get("desired") in ("up", "down"))
+    if kind in ("slot-up", "slot-down", "slot-cleanup"):
+        return isinstance(result.get("reply"), str)
+    if kind in ("seed", "runner-delete"):
+        return result.get("ok") is True
+    if kind == "reconcile":
+        deleted = result.get("deleted")
+        return isinstance(deleted, list) and all(isinstance(n, str) for n in deleted)
+    return False
 
 
 @dataclass
@@ -255,13 +349,18 @@ class Supervisor:
         self.stopping = threading.Event()
         self.shutdown_started = 0.0
         self.disk_drain = False
+        # Children killed before completion, polled until collected.
+        self.reaping: list = []
 
     # -- operations
 
     def _start_op(self, slot: Slot | None, kind: str, argv: list[str], stdin: bytes | None = None) -> Op:
         self.next_op_id += 1
-        op = Op(kind, slot.generation if slot else 0, self.next_op_id,
-                self.spawn(argv, stdin), self.now() + OP_DEADLINES[kind])
+        try:
+            handle = self.spawn(argv, stdin)
+        except (OSError, ValueError) as error:
+            handle = FailedHandle(f"{kind} could not start: {error}")
+        op = Op(kind, slot.generation if slot else 0, self.next_op_id, handle, self.now() + OP_DEADLINES[kind])
         if slot is not None:
             slot.op = op
         else:
@@ -271,15 +370,33 @@ class Supervisor:
     def _kill_op(self, slot: Slot) -> None:
         if slot.op is not None:
             slot.op.handle.kill()
+            self.reaping.append(slot.op.handle)
             log("op_superseded", slot=slot.number, kind=slot.op.kind)
             slot.op = None
 
     def _poll_op(self, op: Op) -> tuple[bool, dict | str] | None:
         result = op.handle.poll()
-        if result is None and self.now() > op.deadline:
-            op.handle.kill()
-            return False, f"{op.kind} exceeded its {OP_DEADLINES[op.kind]} s deadline"
+        if result is None:
+            if self.now() > op.deadline:
+                op.handle.kill()
+                self.reaping.append(op.handle)
+                return False, f"{op.kind} exceeded its {OP_DEADLINES[op.kind]} s deadline"
+            return None
+        ok, value = result
+        if ok and not valid_result(op.kind, value):
+            return False, f"{op.kind} returned a malformed result"
         return result
+
+    def _reap(self) -> None:
+        self.reaping = [handle for handle in self.reaping if not handle.reap()]
+
+    def _ops_running(self, kind: str) -> bool:
+        ops = [s.op for s in self.slots.values()] + [self.global_op]
+        return any(op is not None and op.kind == kind for op in ops)
+
+    def _reserved_names(self) -> list[str]:
+        """Every runner name a slot holds or is creating; reconciliation keeps them."""
+        return [s.runner_name for s in self.slots.values() if s.runner_name]
 
     # -- allowlist (under the lock)
 
@@ -491,21 +608,21 @@ class Supervisor:
             if not ok:
                 self._mark_stop(slot, f"launch failed: {kind}: {result}", launch_failed=True)
                 return
+            # Each step only records the next phase; _advance_launch starts it
+            # when the coordination rules allow.
             if kind == "reconcile":
                 slot.phase = "jit"
-                self._start_op(slot, "jit", ["jit", str(slot.number), slot.nonce])
             elif kind == "jit":
-                slot.runner_id, slot.runner_name = result["runner_id"], result["name"]
+                if result["name"] != slot.runner_name:
+                    self._mark_stop(slot, "launch failed: jit returned another name", launch_failed=True)
+                    return
+                slot.runner_id = result["runner_id"]
                 slot.jit = result["encoded_jit_config"]
                 slot.phase = "seed"
-                stdin = json.dumps({"nonce": slot.nonce, "jit": slot.jit, "allowlist": slot.allowlist.data.decode(),
-                                    "audit": bool(self.config.get("audit", False))}).encode()
-                self._start_op(slot, "seed", ["seed", str(slot.number)], stdin)
             elif kind == "seed":
                 slot.jit = None
                 self._open_listener(slot)
                 slot.phase = "up"
-                self._start_op(slot, "slot-up", ["slot", "up", str(slot.number), str(slot.generation)])
             elif kind == "slot-up":
                 if result.get("reply") != "ok":
                     self._mark_stop(slot, f"launch failed: up: {result.get('reply')}", launch_failed=True)
@@ -570,10 +687,32 @@ class Supervisor:
         slot.maint_fd = fd
         slot.generation += 1
         slot.nonce = secrets.token_hex(16)
+        # Reserved before any JIT request, so every reconciliation from now
+        # on keeps this name even while its creation is in flight.
+        slot.runner_name = f"tos-ci-s{slot.number}-{slot.nonce[:8]}"
         slot.allowlist = self.allowlist
         slot.state, slot.phase, slot.started = "launching", "sweep", self.now()
-        keep = [s.runner_name for s in self.slots.values() if s.runner_name]
-        self._start_op(slot, "reconcile", ["reconcile"], json.dumps({"keep": keep}).encode())
+        self._advance_launch(slot)
+
+    def _advance_launch(self, slot: Slot) -> None:
+        """Start the launch's next step. JIT creation and reconciliation never overlap."""
+        if slot.op is not None:
+            return
+        if slot.phase == "sweep":
+            if self._ops_running("jit"):
+                return
+            stdin = json.dumps({"keep": self._reserved_names(), "prefix": f"tos-ci-s{slot.number}-"}).encode()
+            self._start_op(slot, "reconcile", ["reconcile"], stdin)
+        elif slot.phase == "jit":
+            if self._ops_running("reconcile"):
+                return
+            self._start_op(slot, "jit", ["jit", str(slot.number), slot.runner_name])
+        elif slot.phase == "seed":
+            stdin = json.dumps({"nonce": slot.nonce, "jit": slot.jit, "allowlist": slot.allowlist.data.decode(),
+                                "audit": bool(self.config.get("audit", False))}).encode()
+            self._start_op(slot, "seed", ["seed", str(slot.number)], stdin)
+        elif slot.phase == "up":
+            self._start_op(slot, "slot-up", ["slot", "up", str(slot.number), str(slot.generation)])
 
     def _tick_slot(self, slot: Slot, now: float, draining: bool) -> None:
         if slot.op is not None:
@@ -582,7 +721,7 @@ class Supervisor:
                 op = slot.op
                 try:
                     self._on_result(slot, op, *result)
-                except (KeyError, TypeError, ValueError) as error:
+                except (AttributeError, KeyError, TypeError, ValueError) as error:
                     # A malformed result is that operation failing, never a crash.
                     log("op_result_invalid", slot=slot.number, kind=op.kind, error=f"{type(error).__name__}: {error}")
                     slot.op = None
@@ -609,6 +748,8 @@ class Supervisor:
                 self._mark_stop(slot, "VM exceeded its lifetime")
             elif slot.busy_since and not slot.admitted and now - slot.busy_since > self.config["unadmitted_busy_seconds"]:
                 self._mark_stop(slot, "violation: job activity without admission")
+            elif slot.state == "launching":
+                self._advance_launch(slot)
             elif slot.state == "running" and slot.op is None:
                 if now >= slot.next_status:
                     slot.next_status = now + 5
@@ -640,10 +781,10 @@ class Supervisor:
             self.global_op = None
         if self.pending_deletes:
             self._start_op(None, "runner-delete", ["runner-delete", str(self.pending_deletes.pop(0))])
-        elif now >= self.next_reconcile:
+        elif now >= self.next_reconcile and not self._ops_running("jit"):
             self.next_reconcile = now + 300
-            keep = [s.runner_name for s in self.slots.values() if s.runner_name]
-            self._start_op(None, "reconcile", ["reconcile"], json.dumps({"keep": keep}).encode())
+            stdin = json.dumps({"keep": self._reserved_names()}).encode()
+            self._start_op(None, "reconcile", ["reconcile"], stdin)
 
     def _disk_ok(self) -> bool:
         pool, root = shutil.disk_usage(self.store), shutil.disk_usage("/")
@@ -670,6 +811,7 @@ class Supervisor:
             for number in (1, 2, 3):
                 self._tick_slot(self.slots[number], now, draining)
             self._tick_global(now)
+            self._reap()
 
     def all_quiet(self) -> bool:
         with self.lock:

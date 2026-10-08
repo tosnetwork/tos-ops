@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -131,12 +133,83 @@ class HandleTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(result, "boom")
 
-    def test_kill_ends_a_hung_child(self) -> None:
-        op = self.op_script("time.sleep(600)\n")
+    def reaped(self, handle) -> None:
+        for _ in range(200):
+            if handle.reap():
+                break
+            time.sleep(0.02)
+        else:
+            self.fail("killed op was never reaped")
+        self.assertFalse(handle.dir.exists())
+
+    def group_gone(self, pgid: int) -> bool:
+        for _ in range(200):
+            try:
+                os.killpg(pgid, 0)
+            except ProcessLookupError:
+                return True
+            time.sleep(0.02)
+        return False
+
+    def test_kill_returns_at_once_and_reaps_a_hung_grandchild(self) -> None:
+        op = self.op_script("import subprocess\nsubprocess.Popen(['sleep', '600'])\ntime.sleep(600)\n")
         handle = supervisor.Handle(["x"], None, op=op)
+        time.sleep(0.3)
         self.assertIsNone(handle.poll())
+        started = time.monotonic()
         handle.kill()
-        self.assertIsNotNone(handle.proc.poll())
+        self.assertLess(time.monotonic() - started, 0.1)
+        self.reaped(handle)
+        self.assertTrue(self.group_gone(handle.proc.pid))
+
+    def test_a_background_descendant_does_not_outlive_completion(self) -> None:
+        op = self.op_script(
+            "import subprocess\nsubprocess.Popen(['sleep', '600'], stdout=subprocess.DEVNULL)\n"
+            "print(json.dumps({'ok': True}))\n")
+        handle = supervisor.Handle(["x"], None, op=op)
+        ok, result = self.wait(handle)
+        self.assertTrue(ok)
+        self.assertTrue(self.group_gone(handle.proc.pid))
+        self.assertFalse(handle.dir.exists())
+
+    def test_runaway_stdout_is_stopped_at_the_file_limit(self) -> None:
+        op = self.op_script("sys.stdout.write('x' * 10_000_000); sys.stdout.flush()\n")
+        handle = supervisor.Handle(["x"], None, op=op)
+        ok, result = self.wait(handle)
+        self.assertFalse(ok)
+        self.assertEqual(result, "output exceeded the file size limit")
+        self.assertFalse(handle.dir.exists())
+
+    def test_runaway_stderr_is_stopped_at_the_file_limit(self) -> None:
+        op = self.op_script("sys.stderr.write('x' * 10_000_000); sys.stderr.flush()\n")
+        ok, result = self.wait(supervisor.Handle(["x"], None, op=op))
+        self.assertFalse(ok)
+        self.assertEqual(result, "output exceeded the file size limit")
+
+    def test_every_file_a_child_writes_stops_at_the_bound(self) -> None:
+        # Not only the captured output: a file the op itself writes (a seed
+        # image, say) cannot grow past the limit either.
+        op = self.op_script(
+            "try:\n    open(sys.argv[1], 'wb').write(b'x' * 10_000_000)\nexcept OSError:\n    pass\n"
+            "print(json.dumps({'ok': True}))\n")
+        target = Path(self.dir.name) / "written"
+        self.wait(supervisor.Handle([str(target)], None, op=op))
+        self.assertEqual(target.stat().st_size, supervisor.Handle.FILE_LIMIT)
+
+    def test_output_over_64k_fails(self) -> None:
+        op = self.op_script("print(json.dumps({'pad': 'x' * 70_000}))\n")
+        ok, result = self.wait(supervisor.Handle(["x"], None, op=op))
+        self.assertFalse(ok)
+        self.assertEqual(result, "output too large")
+
+    def test_oversized_stdin_is_refused_before_spawning(self) -> None:
+        op = self.op_script("open(sys.argv[1], 'w').write(str(len(sys.stdin.read())))\n")
+        marker = Path(self.dir.name) / "marker"
+        with self.assertRaises(ValueError):
+            supervisor.Handle([str(marker)], b"x" * (33 * 1024), op=op)
+        self.assertFalse(marker.exists())
+        self.wait(supervisor.Handle([str(marker)], b"x" * (32 * 1024), op=op))
+        self.assertEqual(marker.read_text(), str(32 * 1024))
 
 
 # ------------------------------------------------------------ state machine
@@ -155,6 +228,9 @@ class StubHandle:
 
     def kill(self) -> None:
         self.killed = True
+
+    def reap(self) -> bool:
+        return True
 
 
 class Machine(unittest.TestCase):
@@ -181,6 +257,7 @@ class Machine(unittest.TestCase):
         self.sup = supervisor.Supervisor(self.config, spawn=spawn, clock=lambda: self.t)
         self.sup._open_listener = lambda slot: None
         self.sup._disk_ok = lambda: True
+        self.sup.next_reconcile = float("inf")  # the periodic pass is tested on its own
 
     def tearDown(self) -> None:
         self.dir.cleanup()
@@ -191,6 +268,10 @@ class Machine(unittest.TestCase):
     def answer(self, n: int, result: dict, ok: bool = True) -> None:
         self.op(n).result = (ok, result)
         self.sup.tick()
+
+    def answer_jit(self, n: int, **overrides: object) -> None:
+        slot = self.sup.slots[n]
+        self.answer(n, {"runner_id": 100 + n, "name": slot.runner_name, "encoded_jit_config": "secret", **overrides})
 
     def to_idle(self, n: int, latest: int = 0) -> None:
         """Drive slot n from init to idle: status, down, status inactive."""
@@ -206,7 +287,7 @@ class Machine(unittest.TestCase):
         if slot.state == "idle":
             self.sup.tick()
         self.answer(n, {"deleted": []})  # reconcile sweep
-        self.answer(n, {"runner_id": 100 + n, "name": f"tos-ci-s{n}-x", "encoded_jit_config": "secret"})
+        self.answer_jit(n)
         self.answer(n, {"ok": True})  # seed
         self.answer(n, {"reply": "ok"})  # up
         self.assertEqual(self.sup.slots[n].state, "running")
@@ -277,7 +358,7 @@ class StateMachineTest(Machine):
         self.to_idle(1)
         self.sup.tick()
         self.answer(1, {"deleted": []})
-        self.answer(1, {"runner_id": 101, "name": "tos-ci-s1-x", "encoded_jit_config": "secret"})
+        self.answer_jit(1)
         self.answer(1, {"ok": True})
         up = self.op(1)
         self.assertEqual(up.argv[:2], ["slot", "up"])
@@ -342,6 +423,157 @@ class StateMachineTest(Machine):
         self.sup.slots[2].nonce = NONCE
         reply = self.sup._admit(2, self.sup.slots[2].generation, frame(REQUEST))
         self.assertEqual(reply["verdict"], "allowed")
+
+
+class CoordinationTest(Machine):
+    """Runner names are reserved at launch; JIT creation and reconciliation never overlap."""
+
+    def launch(self, n: int) -> None:
+        self.to_idle(n)
+        self.sup.tick()
+        self.assertEqual(self.sup.slots[n].state, "launching")
+
+    def test_name_is_reserved_before_jit_and_passed_to_it(self) -> None:
+        self.launch(1)
+        slot = self.sup.slots[1]
+        self.assertRegex(slot.runner_name, r"^tos-ci-s1-[0-9a-f]{8}$")
+        self.assertEqual(slot.runner_name, f"tos-ci-s1-{slot.nonce[:8]}")
+        sweep = self.op(1)
+        self.assertEqual(sweep.argv, ["reconcile"])
+        self.assertEqual(json.loads(sweep.stdin), {"keep": [slot.runner_name], "prefix": "tos-ci-s1-"})
+        self.answer(1, {"deleted": []})
+        self.assertEqual(self.op(1).argv, ["jit", "1", slot.runner_name])
+
+    def test_a_jit_result_for_another_name_fails_the_launch(self) -> None:
+        self.launch(1)
+        self.answer(1, {"deleted": []})
+        self.answer_jit(1, name="tos-ci-s1-deadbeef")
+        self.assertEqual(self.sup.slots[1].state, "stopping")
+        self.assertTrue(self.sup.slots[1].launch_failed)
+
+    def test_a_sweep_keeps_every_reserved_name(self) -> None:
+        self.launch(1)
+        self.answer(1, {"deleted": []})  # slot 1 now requests its JIT
+        self.to_idle(2)
+        self.sup.tick()
+        # Slot 2's sweep waits while slot 1's JIT request is in flight.
+        self.assertIsNone(self.sup.slots[2].op)
+        self.answer_jit(1)
+        sweep = self.op(2)
+        self.assertEqual(sweep.argv, ["reconcile"])
+        keep = json.loads(sweep.stdin)["keep"]
+        self.assertIn(self.sup.slots[1].runner_name, keep)
+        self.assertIn(self.sup.slots[2].runner_name, keep)
+
+    def test_jit_waits_for_a_running_sweep(self) -> None:
+        self.launch(1)
+        self.to_idle(2)
+        self.sup.tick()  # slot 2 sweeps while slot 1 still sweeps
+        self.assertEqual(self.op(2).argv, ["reconcile"])
+        self.answer(1, {"deleted": []})
+        self.assertIsNone(self.sup.slots[1].op)  # slot 2's sweep still runs
+        self.assertEqual(self.sup.slots[1].phase, "jit")
+        self.answer(2, {"deleted": []})
+        self.sup.tick()  # slot 1 was ticked before slot 2's sweep finished
+        kinds = sorted(self.sup.slots[n].op.kind for n in (1, 2))
+        self.assertEqual(kinds, ["jit", "jit"])
+
+    def test_global_reconcile_waits_for_jit_and_keeps_reserved_names(self) -> None:
+        self.launch(1)
+        self.answer(1, {"deleted": []})
+        self.assertEqual(self.op(1).argv[0], "jit")
+        self.sup.next_reconcile = 0.0
+        self.sup.tick()
+        self.assertIsNone(self.sup.global_op)
+        self.answer_jit(1)
+        self.assertEqual(self.sup.global_op.kind, "reconcile")
+        self.assertEqual(json.loads(self.sup.global_op.handle.stdin), {"keep": [self.sup.slots[1].runner_name]})
+
+    def test_a_global_reconcile_blocks_jit(self) -> None:
+        self.sup.next_reconcile = 0.0
+        self.launch(1)
+        self.assertEqual(self.sup.global_op.kind, "reconcile")
+        self.answer(1, {"deleted": []})
+        self.assertIsNone(self.sup.slots[1].op)
+        self.sup.global_op.handle.result = (True, {"deleted": []})
+        self.sup.tick()  # the global op finishes after the slots were ticked
+        self.sup.tick()
+        self.assertEqual(self.op(1).argv[0], "jit")
+
+    def test_killed_handles_are_reaped(self) -> None:
+        self.launch(1)
+        sweep = self.op(1)
+        reaps = []
+        sweep.reap = lambda: reaps.append(1) or len(reaps) >= 2
+        Path(self.config["drain_file"]).write_text("")
+        self.sup.tick()
+        self.assertTrue(sweep.killed)
+        self.assertIn(sweep, self.sup.reaping)
+        self.sup.tick()
+        self.assertNotIn(sweep, self.sup.reaping)
+
+    def test_a_result_that_only_the_schema_rejects_fails_the_launch(self) -> None:
+        # Every field is present, so nothing downstream would notice.
+        self.launch(1)
+        self.answer(1, {"deleted": []})
+        self.answer_jit(1, runner_id=True)
+        self.assertEqual(self.sup.slots[1].state, "stopping")
+        self.assertTrue(self.sup.slots[1].launch_failed)
+        self.assertIsNone(self.sup.slots[1].runner_id)
+
+    def test_a_spawn_failure_is_an_ordinary_failure(self) -> None:
+        self.to_idle(1)
+
+        def broken(argv, stdin):
+            raise OSError("no such file")
+
+        self.sup.spawn = broken
+        self.sup.tick()
+        self.sup.tick()
+        self.assertEqual(self.sup.slots[1].state, "stopping")
+        self.assertTrue(self.sup.slots[1].launch_failed)
+
+
+class ResultSchemaTest(unittest.TestCase):
+    VALID = {
+        "jit": {"runner_id": 5, "name": "tos-ci-s1-abcdef01", "encoded_jit_config": "x"},
+        "runner-status": {"status": "online", "busy": False},
+        "slot-status": {"active": "active", "pid": 7, "latest": 3, "desired": "up"},
+        "slot-up": {"reply": "ok"},
+        "seed": {"ok": True},
+        "runner-delete": {"ok": True},
+        "reconcile": {"deleted": ["tos-ci-s1-abcdef01"]},
+    }
+    INVALID = {
+        "jit": [{"runner_id": True, "name": "n", "encoded_jit_config": "x"},
+                {"runner_id": "5", "name": "n", "encoded_jit_config": "x"},
+                {"runner_id": 5, "name": 1, "encoded_jit_config": "x"},
+                {"runner_id": 5, "name": "n", "encoded_jit_config": ""}],
+        "runner-status": [{"status": "online", "busy": 1}, {"missing": False}, {"status": 1, "busy": True}],
+        "slot-status": [{"active": "active", "pid": True, "latest": 3, "desired": "up"},
+                        {"active": "active", "pid": 7, "latest": False, "desired": "up"},
+                        {"active": "active", "pid": -1, "latest": 3, "desired": "up"},
+                        {"active": "active", "pid": 7, "latest": 3, "desired": "sideways"},
+                        {"reply": '{"not": "a status"}'}],
+        "slot-up": [{"reply": 1}, {}],
+        "seed": [{"ok": 1}, {"ok": "true"}],
+        "runner-delete": [{"ok": False}],
+        "reconcile": [{"deleted": "x"}, {"deleted": [1]}, {}],
+    }
+
+    def test_valid_results(self) -> None:
+        self.assertTrue(supervisor.valid_result("runner-status", {"missing": True}))
+        for kind, result in self.VALID.items():
+            with self.subTest(kind):
+                self.assertTrue(supervisor.valid_result(kind, result))
+
+    def test_invalid_results(self) -> None:
+        for kind, cases in self.INVALID.items():
+            for result in cases:
+                with self.subTest(kind=kind, result=result):
+                    self.assertFalse(supervisor.valid_result(kind, result))
+        self.assertFalse(supervisor.valid_result("jit", [1]))
+        self.assertFalse(supervisor.valid_result("unknown", {}))
 
 
 class AdmitTest(Machine):

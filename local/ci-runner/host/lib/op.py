@@ -1,9 +1,9 @@
 """One supervisor operation, run as a killable child process.
 
-    op.py jit SLOT NONCE                  -> {"runner_id", "name", "encoded_jit_config"}
+    op.py jit SLOT NAME                   -> {"runner_id", "name", "encoded_jit_config"}
     op.py runner-status ID                -> {"status", "busy"} or {"missing": true}
     op.py runner-delete ID                -> {"ok": true}
-    op.py reconcile                       -> {"deleted": [...]}   (stdin: {"keep": [names]})
+    op.py reconcile                       -> {"deleted": [...]}   (stdin: {"keep": [names], "prefix"?})
     op.py seed SLOT                       -> {"ok": true}         (stdin: {"nonce", "jit", "allowlist", "audit"})
     op.py slot VERB SLOT [GEN]            -> {"reply": "..."}
 
@@ -132,8 +132,9 @@ def slotctl(request: str) -> str:
 def main(argv: list[str]) -> dict:
     verb = argv[0]
     if verb == "jit":
-        slot, nonce = int(argv[1]), argv[2]
-        name = f"{NAME_PREFIX}{slot}-{nonce[:8]}"
+        slot, name = int(argv[1]), argv[2]
+        if not name.startswith(f"{NAME_PREFIX}{slot}-"):
+            raise SystemExit("runner name outside the slot's namespace")
         result = github(
             "POST",
             "/actions/runners/generate-jitconfig",
@@ -152,11 +153,16 @@ def main(argv: list[str]) -> dict:
         delete_runner(int(argv[1]))
         return {"ok": True}
     if verb == "reconcile":
-        keep = set(json.load(sys.stdin)["keep"])
+        args = json.load(sys.stdin)
+        keep = set(args["keep"])
+        # A per-slot sweep passes its own slot's prefix; the global pass the common one.
+        prefix = args.get("prefix", NAME_PREFIX)
+        if not prefix.startswith(NAME_PREFIX):
+            raise SystemExit("reconcile prefix outside the CI runner namespace")
         deleted = []
         for runner in all_runners():
             name = runner.get("name", "")
-            if name.startswith(NAME_PREFIX) and name not in keep:
+            if name.startswith(prefix) and name not in keep:
                 delete_runner(runner["id"])
                 deleted.append(name)
         return {"deleted": deleted}

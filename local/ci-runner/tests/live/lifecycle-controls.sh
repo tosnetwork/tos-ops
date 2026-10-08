@@ -49,8 +49,13 @@ ls /var/lib/tos-ci/images/ | grep -q build- && fail "a build directory was left"
 sleep 30
 log_since "$mark" | grep '"slot_started"' | grep -q '"slot": 1' && fail "slot 1 was relaunched before its cleanup" \
   || pass "slot 1 stays unavailable"
+# The builder held the maintenance lock until its deadline, so healthy slots
+# relaunch only after it gave up, at their next 30 s retry.
+for _ in $(seq 24); do log_since "$mark" | grep '"slot_started"' | grep -qE '"slot": (2|3)' && break; sleep 5; done
 log_since "$mark" | grep '"slot_started"' | grep -qE '"slot": (2|3)' && pass "slots 2 and 3 relaunched meanwhile" \
   || fail "slots 2 and 3 did not relaunch"
+log_since "$mark" | grep '"slot_started"' | grep -q '"slot": 1' && fail "slot 1 relaunched while its cleanup was stuck" \
+  || pass "slot 1 still unavailable after the others relaunched"
 chattr -i /var/lib/tos-ci/slot1/immutable-probe
 mark2=$(now)
 for _ in $(seq 30); do log_since "$mark2" | grep '"slot_started"' | grep -q '"slot": 1' && break; sleep 5; done
@@ -60,8 +65,10 @@ log_since "$mark2" | grep '"slot_started"' | grep -q '"slot": 1' && pass "after 
   && pass "slot 1's marker matched before its relaunch" || fail "markers inconsistent"
 
 echo "== 2. orphan registration"
-setpriv --reuid=tos-ci --regid=tos-ci --clear-groups -- python3 -I /usr/lib/tos-ci/op.py jit 2 deadbeefdeadbeefdeadbeefdeadbeef > /dev/null \
-  && echo "created stray tos-ci-s2-deadbeef"
+as_ci() { setpriv --reuid=tos-ci --regid=tos-ci --clear-groups -- python3 -I /usr/lib/tos-ci/op.py "$@"; }
+as_ci jit 2 tos-ci-s1-deadbeef > /dev/null 2>&1 && fail "jit accepted a name in another slot's namespace" \
+  || pass "jit refuses a name outside its slot's namespace"
+as_ci jit 2 tos-ci-s2-deadbeef > /dev/null && echo "created stray tos-ci-s2-deadbeef"
 gh_names | grep -q tos-ci-s2-deadbeef && pass "positive control: the stray is listed" || fail "stray not created"
 for _ in $(seq 40); do gh_names | grep -q tos-ci-s2-deadbeef || break; sleep 10; done
 gh_names | grep -q tos-ci-s2-deadbeef && fail "the stray survived reconciliation" || pass "reconciliation removed the stray"
