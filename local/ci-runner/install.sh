@@ -39,7 +39,7 @@ install -d -m 0755 -o root -g root "$LIB" "$LIB/guest" "$ETC"
 for f in slot-prepare slot-cleanup slot-qemu net-setup; do
   install -m 0755 -o root -g root "$HERE/host/lib/$f" "$LIB/$f"
 done
-for f in slotctl.py supervisor.py build-image.py; do
+for f in slotctl.py supervisor.py op.py build-image.py; do
   install -m 0644 -o root -g root "$HERE/host/lib/$f" "$LIB/$f"
 done
 install -m 0644 -o root -g root "$HERE/host/nft/tos-ci.nft" "$LIB/tos-ci.nft"
@@ -78,7 +78,8 @@ echo "== manifest"
            /etc/systemd/system/tos-ci.slice /etc/systemd/system/tos-ci-slotctl.socket \
            /etc/systemd/system/tos-ci-slotctl@.service /etc/systemd/system/tos-ci-supervisor.service \
            /etc/systemd/system/tos-ci-net.service "$LIB"/slot-prepare "$LIB"/slot-cleanup "$LIB"/slot-qemu \
-           "$LIB"/net-setup "$LIB"/slotctl.py "$LIB"/supervisor.py "$LIB"/tos-ci.nft "$ETC"/config.json; do
+           "$LIB"/net-setup "$LIB"/slotctl.py "$LIB"/supervisor.py "$LIB"/op.py "$LIB"/tos-ci.nft \
+           "$ETC"/config.json; do
     printf '%s  %s\n' "$(sha256sum < "$f" | cut -d' ' -f1)" "$f"
   done
 } > "$LIB/MANIFEST.sha256"

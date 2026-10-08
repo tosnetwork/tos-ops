@@ -17,9 +17,15 @@ tap=tci$slot
 mountpoint -q "$STORE" || { echo "slot-prepare: $STORE is not mounted" >&2; exit 1; }
 [[ ! -L $STORE && ! -L $STATE ]] || { echo "slot-prepare: store path is a link" >&2; exit 1; }
 
+# Markers hold generations, compared exactly: file timestamps are too coarse
+# to order a start and a cleanup written close together.
+generation=$(python3 -I -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["latest"]))' \
+  "/run/tos-ci/slot$slot.state" 2> /dev/null) \
+  || { echo "slot-prepare: no recorded generation for slot $slot" >&2; exit 1; }
+
 # A slot is reused only after its previous cleanup completed.
 if [[ -e $STATE/start-$slot ]]; then
-  [[ -e $STATE/cleanup-$slot && $STATE/cleanup-$slot -nt $STATE/start-$slot ]] \
+  [[ -e $STATE/cleanup-$slot && $(cat "$STATE/cleanup-$slot") == "$(cat "$STATE/start-$slot")" ]] \
     || { echo "slot-prepare: previous cleanup of slot $slot did not complete" >&2; exit 1; }
 fi
 
@@ -55,5 +61,7 @@ bridge link set dev "$tap" isolated on
 ip link set "$tap" up
 
 install -d -m 0755 -o root -g root "$STATE"
-touch "$STATE/start-$slot"
-echo "slot $slot prepared on $(basename "$base")"
+printf '%s\n' "$generation" > "$STATE/start-$slot.tmp"
+chmod 0644 "$STATE/start-$slot.tmp"  # read by the supervisor; holds only a generation
+mv "$STATE/start-$slot.tmp" "$STATE/start-$slot"
+echo "slot $slot generation $generation prepared on $(basename "$base")"

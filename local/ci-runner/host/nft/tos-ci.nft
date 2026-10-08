@@ -10,9 +10,11 @@ table bridge tos_ci_l2
 delete table bridge tos_ci_l2
 
 table inet tos_ci {
-	# The host's own public IPv4 addresses, refreshed by tos-ci-net.
+	# The host's own public IPv4, filled in by net-setup when it renders this
+	# file, so the set is never empty while the tables exist.
 	set host_public4 {
 		type ipv4_addr
+		elements = { @PUBLIC4@ }
 	}
 
 	set blocked4 {

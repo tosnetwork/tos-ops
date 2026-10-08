@@ -12,7 +12,11 @@
 
 from __future__ import annotations
 
+import argparse
 import base64
+import fcntl
+import resource
+import time
 import datetime as dt
 import hashlib
 import json
@@ -35,6 +39,10 @@ BUILD_USER = "tos-ci-build"
 TAP = "tcib"
 BUILD_TIMEOUT = 45 * 60
 KEEP = 2
+IMAGE_CAP = 15 * 2**30
+BUILD_RESERVE = 75 * 2**30  # build overlay (40 GiB virtual) + capped conversion + margin
+BUILD_LOCK = "/run/tos-ci/build.lock"
+MAINTENANCE_LOCK = "/run/tos-ci/maintenance.lock"
 
 
 def fetch(url: str, dest: Path | None = None) -> bytes:
@@ -109,13 +117,18 @@ def user_data(runner: tuple[str, str, str], uv: tuple[str, str, str]) -> str:
     files += guest_file("/etc/systemd/journald.conf.d/90-tos-ci-console.conf", "90-tos-ci-console.conf", "root:root", "0644")
     files += guest_file("/etc/sysctl.d/90-tos-ci-noipv6.conf", "90-tos-ci-noipv6.conf", "root:root", "0644")
     files += guest_file("/usr/lib/tos-ci-guest/runner.env", "runner.env", "root:root", "0644")
+    # The reviewed apt.llvm.org key, committed with this script; never downloaded.
+    files += guest_file("/root/llvm.asc", "llvm-snapshot.gpg.asc", "root:root", "0600")
     install = f"""#!/bin/bash
 set -euxo pipefail
 export DEBIAN_FRONTEND=noninteractive
-# clang-21 from apt.llvm.org, key pinned by fingerprint.
-curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o /tmp/llvm.asc
-gpg --show-keys --with-colons /tmp/llvm.asc | grep -q '^fpr:::::::::{LLVM_KEY_FINGERPRINT}:$'
-gpg --dearmor -o /usr/share/keyrings/llvm.gpg /tmp/llvm.asc
+# clang-21 from apt.llvm.org. The committed key file must hold exactly one
+# primary key, with the reviewed fingerprint; a bundle of keys is refused.
+keys=$(gpg --show-keys --with-colons /root/llvm.asc)
+[ "$(printf '%s\\n' "$keys" | grep -c '^pub:')" = 1 ]
+[ "$(printf '%s\\n' "$keys" | awk -F: '/^pub:/ {{getline; print $10; exit}}')" = '{LLVM_KEY_FINGERPRINT}' ]
+gpg --dearmor -o /usr/share/keyrings/llvm.gpg /root/llvm.asc
+rm -f /root/llvm.asc
 echo 'deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main' > /etc/apt/sources.list.d/llvm.list
 apt-get update -q
 apt-get install -y -q clang-21 lld-21 llvm-21
@@ -215,12 +228,88 @@ def run_builder(work: Path, base: Path, seed: Path, log_path: Path) -> None:
         subprocess.run(["ip", "link", "del", TAP], stderr=subprocess.DEVNULL)
 
 
+def take_locks(deadline: float) -> tuple[object, object]:
+    """build.lock (refuse if held), then maintenance.lock exclusively before the deadline."""
+    build = open(BUILD_LOCK, "a+")
+    try:
+        fcntl.flock(build, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        raise SystemExit("another image build is running") from None
+    maintenance = open(MAINTENANCE_LOCK, "a+")
+    while True:
+        try:
+            fcntl.flock(maintenance, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return build, maintenance
+        except OSError:
+            if time.monotonic() > deadline:
+                raise SystemExit("maintenance lock not obtained before the deadline; nothing built") from None
+            time.sleep(5)
+
+
+def slots_quiet() -> bool:
+    """No CI VM unit is starting, running or stopping, and every cleanup completed."""
+    units = subprocess.run(["systemctl", "list-units", "tos-ci-vm@*", "--all", "--no-legend", "--plain"],
+                           capture_output=True, text=True).stdout
+    for line in units.splitlines():
+        fields = line.split()
+        if len(fields) >= 3 and fields[2] in ("activating", "active", "deactivating", "reloading"):
+            return False
+    state = STORE / "state"
+    for n in (1, 2, 3):
+        start, cleanup = state / f"start-{n}", state / f"cleanup-{n}"
+        if start.exists() and not (cleanup.exists() and cleanup.read_text().strip() == start.read_text().strip()):
+            return False
+    return True
+
+
+def convert_capped(source: Path, candidate: Path, cap: int) -> None:
+    """qemu-img convert with RLIMIT_FSIZE: the output can never exceed the cap."""
+    def limit() -> None:
+        resource.setrlimit(resource.RLIMIT_FSIZE, (cap, cap))
+
+    result = subprocess.run(["qemu-img", "convert", "-O", "qcow2", str(source), str(candidate)],
+                            preexec_fn=limit, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise SystemExit(f"conversion failed or exceeded {cap} bytes (exit {result.returncode}): "
+                         f"{result.stderr.strip()[-300:]}")
+
+
+def prune(keep_names: set[str]) -> None:
+    """Remove old generations that no slot overlay references."""
+    referenced = set()
+    for overlay in STORE.glob("slot*/overlay.qcow2"):
+        info = subprocess.run(["qemu-img", "info", "--backing-chain", "--output=json", str(overlay)],
+                              capture_output=True, text=True)
+        if info.returncode == 0:
+            referenced |= {Path(i.get("filename", "")).name for i in json.loads(info.stdout)}
+    for old in sorted(IMAGES.glob("gen-*.qcow2")):
+        if old.name in keep_names or old.name in referenced:
+            continue
+        old.unlink()
+        Path(f"{old}.manifest").unlink(missing_ok=True)
+        print(f"removed {old.name}")
+
+
 def main() -> int:
     if os.geteuid() != 0:
         raise SystemExit("run as root")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--deadline-seconds", type=int, default=3 * 3600)
+    parser.add_argument("--image-cap-bytes", type=int, default=IMAGE_CAP)
+    args = parser.parse_args()
+    deadline = time.monotonic() + args.deadline_seconds
+    _locks = take_locks(deadline)
+    while not slots_quiet():
+        if time.monotonic() > deadline:
+            raise SystemExit("CI slots did not become quiet before the deadline; nothing built")
+        time.sleep(10)
+    free = shutil.disk_usage(STORE).free
+    if free < BUILD_RESERVE:
+        raise SystemExit(f"CI store has {free / 2**30:.0f} GiB free; a build reserves {BUILD_RESERVE / 2**30:.0f} GiB")
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     work = IMAGES / f"build-{stamp}"
     work.mkdir(parents=True)
+    candidate = IMAGES / f"candidate-{stamp}.qcow2"
     try:
         base = cloud_image(work)
         runner = release_asset("actions/runner", r"actions-runner-linux-x64-[0-9.]+\.tar\.gz")
@@ -243,10 +332,11 @@ def main() -> int:
             tail = "\n".join(console.splitlines()[-40:])
             raise SystemExit(f"image build failed; console tail:\n{tail}")
         manifest = console.split("TOS-CI-MANIFEST-BEGIN", 1)[1].split("TOS-CI-MANIFEST-END", 1)[0]
+        convert_capped(work / "build.qcow2", candidate, args.image_cap_bytes)
         image = IMAGES / f"gen-{stamp}.qcow2"
-        subprocess.run(["qemu-img", "convert", "-O", "qcow2", str(work / "build.qcow2"), str(image)], check=True)
-        os.chmod(image, 0o644)
-        shutil.chown(image, "root", "root")
+        os.chmod(candidate, 0o644)
+        shutil.chown(candidate, "root", "root")
+        os.replace(candidate, image)
         digest = sha256_file(image)
         Path(f"{image}.manifest").write_text(
             f"image {image.name}\nsha256 {digest}\nbase {CLOUD_IMAGE} {sha256_file(base)}\n"
@@ -261,15 +351,10 @@ def main() -> int:
         print(f"image {image.name} sha256 {digest} runner {runner[0]} uv {uv[0]}")
     finally:
         shutil.rmtree(work, ignore_errors=True)
-    # Keep the newest generations; never one that a running overlay may use.
+        candidate.unlink(missing_ok=True)
+    # Keep current and the previous generation, and anything an overlay uses.
     generations = sorted(IMAGES.glob("gen-*.qcow2"))
-    in_use = subprocess.run(["pgrep", "-c", "-f", "qemu-system-x86_64 -name tos-ci-vm"], capture_output=True, text=True).stdout.strip()
-    for old in generations[:-KEEP]:
-        if in_use not in ("", "0"):
-            print(f"keeping {old.name}: CI VMs are running")
-            continue
-        old.unlink()
-        Path(f"{old}.manifest").unlink(missing_ok=True)
+    prune({g.name for g in generations[-KEEP:]})
     return 0
 
 

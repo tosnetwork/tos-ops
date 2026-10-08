@@ -1,16 +1,22 @@
 """CI runner supervisor: single-use VMs in three fixed slots.
 
-Runs as the unprivileged account tos-ci. It holds the GitHub token, asks for
-one just-in-time runner configuration per VM, writes each VM's seed, starts
-and stops slots only through the root slot-control helper, and answers each
-VM's admission request under the same lock that guards allowlist changes.
+Runs as the unprivileged account tos-ci. The main loop never blocks: every
+external operation (GitHub, the root slot-control helper, seed writing) is a
+child process (op.py) with a hard deadline, killed when it expires. Deadlines
+are enforced from the local monotonic clock, whatever GitHub does. All slot
+state changes and the admission decision happen under one lock; a result is
+applied only if the slot's generation and operation still match.
+
+Each slot moves through: init -> idle -> launching -> running -> stopping -> idle.
 """
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
+import pwd
 import re
 import secrets
 import select
@@ -20,37 +26,27 @@ import socket
 import struct
 import subprocess
 import sys
-import tempfile
 import threading
 import time
-import urllib.error
-import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 CONFIG_PATH = Path("/etc/tos-ci/config.json")
+OP = "/usr/lib/tos-ci/op.py"
 LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
 HEX32 = re.compile(r"[0-9a-f]{32}")
 HEX64 = re.compile(r"[0-9a-f]{64}")
 DIGITS = re.compile(r"[0-9]{1,20}")
 JOB = re.compile(r"[A-Za-z0-9_.-]{1,100}")
 REQUEST_KEYS = frozenset(
-    {
-        "slot",
-        "vm_nonce",
-        "run_id",
-        "run_attempt",
-        "job",
-        "event",
-        "repository",
-        "author",
-        "triggering_actor",
-        "sender",
-        "allowlist_sha256",
-    }
+    {"slot", "vm_nonce", "run_id", "run_attempt", "job", "event", "repository",
+     "author", "triggering_actor", "sender", "allowlist_sha256"}
 )
 MAX_FRAME = 4096
 FRAME_DEADLINE = 2.0
+OP_DEADLINES = {"slot-up": 60, "slot-down": 60, "slot-status": 15, "slot-cleanup": 150,
+                "jit": 20, "runner-status": 20, "runner-delete": 20, "reconcile": 60, "seed": 60}
 
 
 def log(event: str, **fields: object) -> None:
@@ -130,15 +126,8 @@ def parse_request(frame: bytes) -> dict[str, object]:
     return request
 
 
-def decide(
-    request: dict[str, object],
-    *,
-    slot: int,
-    nonce: str | None,
-    admitted: bool,
-    repository: str,
-    allowlist: Allowlist,
-) -> None:
+def decide(request: dict[str, object], *, slot: int, nonce: str | None, admitted: bool,
+           repository: str, allowlist: Allowlist) -> None:
     """Raise Denied unless this request may be admitted now."""
     if request["slot"] != slot:
         raise Denied("request names another slot")
@@ -155,172 +144,89 @@ def decide(
             raise Denied(f"{key} is not a trusted login")
 
 
-# ------------------------------------------------------------------ GitHub
+# -------------------------------------------------------------- operations
 
 
-class GitHub:
-    def __init__(self, repository: str, token_path: Path) -> None:
-        self.repository = repository
-        self.token_path = token_path
+class Handle:
+    """A running op.py child. poll() -> None while running, else (ok, result)."""
 
-    def _request(self, method: str, path: str, body: object | None = None) -> object:
-        token = self.token_path.read_text().strip()
-        data = None if body is None else json.dumps(body).encode()
-        req = urllib.request.Request(
-            f"https://api.github.com/repos/{self.repository}{path}",
-            data=data,
-            method=method,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/vnd.github+json",
-                "X-GitHub-Api-Version": "2022-11-28",
-                "Content-Type": "application/json",
-                "User-Agent": "tos-ci-supervisor",
-            },
+    def __init__(self, argv: list[str], stdin: bytes | None, op: str = OP) -> None:
+        self.proc = subprocess.Popen(
+            ["/usr/bin/python3", "-I", op, *argv],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            raw = resp.read()
-        return json.loads(raw) if raw else None
-
-    def jit_config(self, name: str, labels: list[str]) -> tuple[int, str]:
-        result = self._request(
-            "POST",
-            "/actions/runners/generate-jitconfig",
-            {"name": name, "runner_group_id": 1, "labels": labels, "work_folder": "_work"},
-        )
-        assert isinstance(result, dict)
-        return int(result["runner"]["id"]), str(result["encoded_jit_config"])
-
-    def runner(self, runner_id: int) -> dict | None:
         try:
-            result = self._request("GET", f"/actions/runners/{runner_id}")
-        except urllib.error.HTTPError as error:
-            if error.code == 404:
-                return None
-            raise
-        return result if isinstance(result, dict) else None
+            if stdin:
+                self.proc.stdin.write(stdin)
+            self.proc.stdin.close()
+        except OSError:
+            pass
 
-    def delete_runner(self, runner_id: int) -> None:
+    def poll(self) -> tuple[bool, dict | str] | None:
+        if self.proc.poll() is None:
+            return None
+        # The child has exited; its pipes are at EOF. (communicate() would try
+        # to flush the stdin pipe already closed in __init__.)
+        out, err = self.proc.stdout.read(), self.proc.stderr.read()
+        self.proc.stdout.close()
+        self.proc.stderr.close()
+        if self.proc.returncode != 0:
+            return False, (err.decode(errors="replace").strip().splitlines() or ["failed"])[-1][:300]
         try:
-            self._request("DELETE", f"/actions/runners/{runner_id}")
-        except urllib.error.HTTPError as error:
-            if error.code != 404:
-                raise
+            return True, json.loads(out.decode())
+        except ValueError:
+            return False, "unparsable op output"
 
-    def runners_with_label(self, label: str) -> list[dict]:
-        found, page = [], 1
-        while True:
-            result = self._request("GET", f"/actions/runners?per_page=100&page={page}")
-            assert isinstance(result, dict)
-            runners = result.get("runners", [])
-            found += [r for r in runners if label in {x["name"] for x in r.get("labels", [])}]
-            if len(runners) < 100:
-                return found
-            page += 1
+    def kill(self) -> None:
+        if self.proc.poll() is None:
+            self.proc.kill()
+        try:
+            self.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
 
 
-# ---------------------------------------------------------------- slot control
+@dataclass
+class Op:
+    kind: str
+    generation: int
+    op_id: int
+    handle: object
+    deadline: float
 
 
-def slotctl(path: str, verb: str, slot: int) -> str:
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
-        conn.settimeout(240)
-        conn.connect(path)
-        conn.sendall(f"{verb} {slot}\n".encode())
-        reply = b""
-        while not reply.endswith(b"\n"):
-            chunk = conn.recv(256)
-            if not chunk:
-                break
-            reply += chunk
-    return reply.decode().strip()
-
-
-# -------------------------------------------------------------------- seed
-
-
-def cloud_config(files: dict[str, tuple[str, str, str]]) -> str:
-    """A #cloud-config with write_files entries: path -> (content, owner, mode)."""
-    import base64
-
-    lines = ["#cloud-config", "write_files:"]
-    for path, (content, owner, mode) in files.items():
-        encoded = base64.b64encode(content.encode()).decode()
-        lines += [
-            f"  - path: {path}",
-            "    encoding: b64",
-            f"    content: {encoded}",
-            f"    owner: {owner}",
-            f"    permissions: '{mode}'",
-        ]
-    lines += ["runcmd:", "  - [/usr/lib/tos-ci-guest/start-job]"]
-    return "\n".join(lines) + "\n"
-
-
-def write_seed(
-    seed_dir: Path, *, slot: int, nonce: str, jit: str, allowlist: Allowlist, audit: bool
-) -> None:
-    user_data = cloud_config(
-        {
-            "/etc/tos-ci/jitconfig": (jit, "runner:runner", "0600"),
-            "/etc/tos-ci/trusted-logins": (allowlist.data.decode("ascii"), "root:root", "0644"),
-            "/etc/tos-ci/vm-nonce": (nonce + "\n", "root:root", "0644"),
-            "/etc/tos-ci/slot": (f"{slot}\n", "root:root", "0644"),
-            "/etc/tos-ci/audit": ("1\n" if audit else "0\n", "root:root", "0644"),
-        }
-    )
-    meta_data = f"instance-id: tos-ci-{nonce[:16]}\nlocal-hostname: tos-ci-s{slot}\n"
-    network = (
-        "version: 2\nethernets:\n  nic:\n    match:\n      name: \"en*\"\n"
-        "    dhcp4: true\n    dhcp6: false\n    accept-ra: false\n    link-local: []\n"
-    )
-    with tempfile.TemporaryDirectory(dir=seed_dir) as tmp:
-        work = Path(tmp)
-        (work / "user-data").write_text(user_data)
-        (work / "meta-data").write_text(meta_data)
-        (work / "network-config").write_text(network)
-        iso = work / "seed.iso"
-        subprocess.run(
-            [
-                "xorriso", "-as", "mkisofs", "-quiet", "-output", str(iso),
-                "-volid", "cidata", "-joliet", "-rock",
-                str(work / "user-data"), str(work / "meta-data"), str(work / "network-config"),
-            ],
-            check=True,
-            timeout=60,
-        )
-        os.chmod(iso, 0o640)
-        os.replace(iso, seed_dir / "seed.iso")
-
-
-def remove_seed(seed_dir: Path) -> None:
-    for entry in seed_dir.iterdir():
-        if entry.is_dir() and not entry.is_symlink():
-            shutil.rmtree(entry)
-        else:
-            entry.unlink()
-
-
-# ---------------------------------------------------------------- supervisor
+# ---------------------------------------------------------------- the slot
 
 
 @dataclass
 class Slot:
     number: int
-    state: str = "idle"  # idle | running
+    state: str = "init"
+    generation: int = 0
+    phase: str = ""
     runner_id: int | None = None
     runner_name: str | None = None
     nonce: str | None = None
-    allowlist_sha256: str | None = None
+    jit: str | None = None
+    allowlist: Allowlist | None = None
     started: float = 0.0
     online_at: float = 0.0
     admitted_at: float = 0.0
-    busy_since_unadmitted: float = 0.0
     binding: tuple[str, str, str] | None = None
-    listener: socket.socket | None = None
+    qemu_pid: int = 0
     stop_reason: str | None = None
-    last_api_check: float = 0.0
-    threads: list[threading.Thread] = field(default_factory=list)
+    launch_failed: bool = False
+    down_acked: bool = False
+    unit_down: bool = False
+    op: Op | None = None
+    next_status: float = 0.0
+    next_api: float = 0.0
+    busy_since: float = 0.0
+    failures: int = 0
+    not_before: float = 0.0
+    listener: socket.socket | None = None
+    conns: list = field(default_factory=list)
+    maint_fd: object = None
 
     @property
     def admitted(self) -> bool:
@@ -328,30 +234,56 @@ class Slot:
 
 
 class Supervisor:
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: dict, *, spawn: Callable | None = None,
+                 clock: Callable[[], float] = time.monotonic) -> None:
         self.config = config
         self.repository = config["repository"]
-        self.labels = config["labels"]
-        self.label = config["label"]
-        self.slotctl_path = config["slotctl_socket"]
         self.store = Path(config["store"])
         self.allowlist_path = Path(config["allowlist"])
         self.drain_path = Path(config["drain_file"])
+        self.maintenance_path = Path(config.get("maintenance_lock", "/run/tos-ci/maintenance.lock"))
         self.hard_cap = config["hard_cap_minutes"] * 60
-        self.github = GitHub(self.repository, Path(config["token"]))
-        self.lock = threading.Lock()
+        self.spawn = spawn or (lambda argv, stdin: Handle(argv, stdin))
+        self.now = clock
+        self.lock = threading.RLock()
         self.allowlist = Allowlist.read(self.allowlist_path)
         self.slots = {n: Slot(n) for n in (1, 2, 3)}
+        self.next_op_id = 0
+        self.global_op: Op | None = None
+        self.pending_deletes: list[int] = []
+        self.next_reconcile = 0.0
         self.stopping = threading.Event()
+        self.shutdown_started = 0.0
         self.disk_drain = False
-        self.last_reconcile = 0.0
-        # Per-slot launch backoff after a failure: (failures, not before).
-        self.backoff: dict[int, tuple[int, float]] = {n: (0, 0.0) for n in (1, 2, 3)}
 
-    # -- allowlist, always under self.lock
+    # -- operations
 
-    def _refresh_allowlist_locked(self) -> bool:
-        """Re-read the allowlist; on a change stop every slot not yet admitted."""
+    def _start_op(self, slot: Slot | None, kind: str, argv: list[str], stdin: bytes | None = None) -> Op:
+        self.next_op_id += 1
+        op = Op(kind, slot.generation if slot else 0, self.next_op_id,
+                self.spawn(argv, stdin), self.now() + OP_DEADLINES[kind])
+        if slot is not None:
+            slot.op = op
+        else:
+            self.global_op = op
+        return op
+
+    def _kill_op(self, slot: Slot) -> None:
+        if slot.op is not None:
+            slot.op.handle.kill()
+            log("op_superseded", slot=slot.number, kind=slot.op.kind)
+            slot.op = None
+
+    def _poll_op(self, op: Op) -> tuple[bool, dict | str] | None:
+        result = op.handle.poll()
+        if result is None and self.now() > op.deadline:
+            op.handle.kill()
+            return False, f"{op.kind} exceeded its {OP_DEADLINES[op.kind]} s deadline"
+        return result
+
+    # -- allowlist (under the lock)
+
+    def _refresh_allowlist(self) -> bool:
         try:
             current = Allowlist.read(self.allowlist_path)
         except (OSError, ValueError) as error:
@@ -362,32 +294,38 @@ class Supervisor:
         if current is not None:
             self.allowlist = current
         for slot in self.slots.values():
-            if slot.state == "running" and not slot.admitted:
-                self._stop(slot, "allowlist changed before admission")
+            if slot.state in ("launching", "running") and not slot.admitted:
+                self._mark_stop(slot, "allowlist changed before admission")
         log("allowlist_changed", sha256=current.sha256 if current else None)
         return True
 
     # -- admission
 
-    def _peer_ok(self, conn: socket.socket, slot: Slot) -> bool:
+    def _peer_ok(self, conn: socket.socket, number: int, generation: int) -> bool:
         creds = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
         pid, uid, _gid = struct.unpack("3i", creds)
-        import pwd
-
-        if uid != pwd.getpwnam(f"tos-ci-slot{slot.number}").pw_uid:
+        with self.lock:
+            slot = self.slots[number]
+            expected = slot.qemu_pid if slot.generation == generation else 0
+        if not expected or pid != expected:
             return False
-        status = slotctl(self.slotctl_path, "status", slot.number).split()
-        return len(status) == 2 and status[0] == "active" and status[1] == str(pid)
+        if uid != pwd.getpwnam(f"tos-ci-slot{number}").pw_uid:
+            return False
+        try:
+            cgroup = Path(f"/proc/{pid}/cgroup").read_text()
+        except OSError:
+            return False
+        return f"/tos-ci.slice/tos-ci-vm@{number}.service" in cgroup
 
     def _read_frame(self, conn: socket.socket) -> bytes | None:
-        """One newline-terminated frame; the deadline starts at its first byte."""
-        data = b""
+        """One newline-terminated frame; one absolute deadline from its first byte."""
+        data, deadline = b"", 0.0
         while not self.stopping.is_set():
             timeout = 1.0 if not data else max(0.0, deadline - time.monotonic())
             ready, _, _ = select.select([conn], [], [], timeout)
             if not ready:
                 if data and time.monotonic() >= deadline:
-                    return data  # incomplete within the deadline: parse will deny
+                    return data
                 continue
             chunk = conn.recv(MAX_FRAME + 1 - len(data))
             if not chunk:
@@ -399,296 +337,351 @@ class Supervisor:
                 return data
         return None
 
-    def _serve_admission(self, slot: Slot, listener: socket.socket, nonce: str) -> None:
-        while not self.stopping.is_set() and slot.nonce == nonce:
+    def _serve_listener(self, number: int, generation: int, listener: socket.socket) -> None:
+        while not self.stopping.is_set():
             try:
                 ready, _, _ = select.select([listener], [], [], 1.0)
                 if not ready:
                     continue
                 conn, _ = listener.accept()
             except (OSError, ValueError):
-                return  # the slot finished and its listener was closed
-            # Every connection is checked as soon as it is accepted, so a
-            # wrong peer is refused at once rather than left queued.
-            if not self._peer_ok(conn, slot):
-                log("admission_peer_refused", slot=slot.number)
+                return
+            if not self._peer_ok(conn, number, generation):
+                log("admission_peer_refused", slot=number)
                 conn.close()
                 continue
-            threading.Thread(
-                target=self._serve_conn, args=(slot, conn, nonce), daemon=True
-            ).start()
+            with self.lock:
+                slot = self.slots[number]
+                if slot.generation != generation or slot.state != "running":
+                    conn.close()
+                    continue
+                slot.conns.append(conn)
+            threading.Thread(target=self._serve_conn, args=(number, generation, conn), daemon=True).start()
 
-    def _serve_conn(self, slot: Slot, conn: socket.socket, nonce: str) -> None:
-        with conn:
-            while slot.nonce == nonce and not self.stopping.is_set():
-                try:
-                    frame = self._read_frame(conn)
-                except (OSError, ValueError):
-                    return
+    def _serve_conn(self, number: int, generation: int, conn: socket.socket) -> None:
+        try:
+            while not self.stopping.is_set():
+                frame = self._read_frame(conn)
                 if frame is None:
                     return
-                reply = self._admit(slot, frame)
-                try:
-                    conn.sendall((json.dumps(reply, sort_keys=True) + "\n").encode())
-                except OSError:
-                    return
+                reply = self._admit(number, generation, frame)
+                conn.sendall((json.dumps(reply, sort_keys=True) + "\n").encode())
+        except (OSError, ValueError):
+            return
 
-    def _admit(self, slot: Slot, frame: bytes) -> dict:
+    def _admit(self, number: int, generation: int, frame: bytes) -> dict:
         with self.lock:
+            slot = self.slots[number]
             try:
                 request = parse_request(frame)
-                if self._refresh_allowlist_locked():
+                if self._refresh_allowlist():
                     raise Denied("allowlist changed while the request was pending")
-                if slot.state != "running":
+                if slot.generation != generation:
+                    raise Denied("connection belongs to an earlier VM")
+                if slot.state != "running" or slot.stop_reason is not None:
                     raise Denied("slot is not running")
-                decide(
-                    request,
-                    slot=slot.number,
-                    nonce=slot.nonce,
-                    admitted=slot.admitted,
-                    repository=self.repository,
-                    allowlist=self.allowlist,
-                )
+                decide(request, slot=number, nonce=slot.nonce, admitted=slot.admitted,
+                       repository=self.repository, allowlist=self.allowlist)
             except Denied as denial:
-                log("admission_denied", slot=slot.number, reason=str(denial))
+                log("admission_denied", slot=number, reason=str(denial))
                 return {"verdict": "denied", "reason": str(denial)}
             slot.binding = (str(request["run_id"]), str(request["run_attempt"]), str(request["job"]))
-            slot.admitted_at = time.monotonic()
-            log(
-                "admission_allowed",
-                slot=slot.number,
-                runner=slot.runner_name,
-                run_id=request["run_id"],
-                run_attempt=request["run_attempt"],
-                job=request["job"],
-                event_name=request["event"],
-                author=request["author"],
-                triggering_actor=request["triggering_actor"],
-                sender=request["sender"],
-            )
-            return {
-                "verdict": "allowed",
-                "vm_nonce": request["vm_nonce"],
-                "run_id": request["run_id"],
-                "run_attempt": request["run_attempt"],
-                "job": request["job"],
-            }
+            slot.admitted_at = self.now()
+            log("admission_allowed", slot=number, runner=slot.runner_name, run_id=request["run_id"],
+                run_attempt=request["run_attempt"], job=request["job"], event_name=request["event"],
+                author=request["author"], triggering_actor=request["triggering_actor"], sender=request["sender"])
+            return {"verdict": "allowed", "vm_nonce": request["vm_nonce"], "run_id": request["run_id"],
+                    "run_attempt": request["run_attempt"], "job": request["job"]}
 
-    # -- slot lifecycle
+    # -- transitions (under the lock)
 
-    def _launch(self, slot: Slot) -> None:
-        nonce = secrets.token_hex(16)
-        name = f"tos-ci-s{slot.number}-{nonce[:8]}"
-        seed_dir = self.store / f"seed{slot.number}"
-        sock_path = Path(f"/run/tos-ci/slot{slot.number}/admission.sock")
-        runner_id = None
-        try:
-            runner_id, jit = self.github.jit_config(name, self.labels)
-            with self.lock:
-                allowlist = self.allowlist
-            write_seed(
-                seed_dir,
-                slot=slot.number,
-                nonce=nonce,
-                jit=jit,
-                allowlist=allowlist,
-                audit=bool(self.config.get("audit", False)),
-            )
-            if sock_path.exists() or sock_path.is_symlink():
-                sock_path.unlink()
-            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            listener.bind(str(sock_path))
-            os.chmod(sock_path, 0o660)
-            listener.listen(1)
-            slot.__dict__.update(
-                state="running",
-                runner_id=runner_id,
-                runner_name=name,
-                nonce=nonce,
-                allowlist_sha256=allowlist.sha256,
-                started=time.monotonic(),
-                online_at=0.0,
-                admitted_at=0.0,
-                busy_since_unadmitted=0.0,
-                binding=None,
-                listener=listener,
-                stop_reason=None,
-            )
-            thread = threading.Thread(
-                target=self._serve_admission, args=(slot, listener, nonce), daemon=True
-            )
-            thread.start()
-            slot.threads = [thread]
-            reply = slotctl(self.slotctl_path, "start", slot.number)
-            if reply != "ok":
-                raise RuntimeError(f"slot start failed: {reply}")
-            log("slot_started", slot=slot.number, runner=name, runner_id=runner_id)
-            self.backoff[slot.number] = (0, 0.0)
-        except Exception as error:  # noqa: BLE001 - any failure tears the slot down
-            failures = self.backoff[slot.number][0] + 1
-            delay = min(120 * 2 ** (failures - 1), 1800)
-            self.backoff[slot.number] = (failures, time.monotonic() + delay)
-            log(
-                "slot_launch_failed",
-                slot=slot.number,
-                error=f"{type(error).__name__}: {error}",
-                retry_in_s=delay,
-            )
-            slot.state = "running"
-            slot.runner_id = runner_id
-            self._stop(slot, "launch failed")
-            self._finish(slot)
+    def _mark_stop(self, slot: Slot, reason: str, *, launch_failed: bool = False) -> None:
+        if slot.state not in ("launching", "running"):
+            return
+        self._kill_op(slot)
+        slot.state, slot.stop_reason = "stopping", reason
+        slot.launch_failed = launch_failed
+        slot.down_acked = slot.unit_down = False
+        log("slot_stopping", slot=slot.number, generation=slot.generation, reason=reason, runner=slot.runner_name)
 
-    def _stop(self, slot: Slot, reason: str) -> None:
-        if slot.stop_reason is None:
-            slot.stop_reason = reason
-            log("slot_stopping", slot=slot.number, reason=reason, runner=slot.runner_name)
-        try:
-            slotctl(self.slotctl_path, "stop", slot.number)
-        except OSError as error:
-            log("slot_stop_failed", slot=slot.number, error=str(error))
-
-    def _finish(self, slot: Slot) -> None:
-        """The VM is gone: deregister its runner and forget the slot's secrets."""
-        if slot.runner_id is not None:
+    def _release_maintenance(self, slot: Slot) -> None:
+        if slot.maint_fd is not None:
             try:
-                self.github.delete_runner(slot.runner_id)
-            except Exception as error:  # noqa: BLE001 - reconcile retries later
-                log("deregister_failed", slot=slot.number, error=str(error))
+                fcntl.flock(slot.maint_fd, fcntl.LOCK_UN)
+                slot.maint_fd.close()
+            except OSError:
+                pass
+            slot.maint_fd = None
+
+    def _close_admission(self, slot: Slot) -> None:
+        for conn in slot.conns:
+            try:
+                conn.close()
+            except OSError:
+                pass
+        slot.conns = []
         if slot.listener is not None:
             slot.listener.close()
+            slot.listener = None
+
+    def _cleanup_confirmed(self, slot: Slot) -> bool:
+        """The last generation that started in this slot has been cleaned.
+
+        Markers hold generations and are compared exactly; file timestamps are
+        too coarse to order a start and a cleanup written close together.
+        """
+        state = self.store / "state"
         try:
-            remove_seed(self.store / f"seed{slot.number}")
+            started = (state / f"start-{slot.number}").read_text().strip()
+        except FileNotFoundError:
+            return True
+        except OSError as error:
+            log("marker_unreadable", slot=slot.number, error=str(error))
+            return False
+        try:
+            return (state / f"cleanup-{slot.number}").read_text().strip() == started
+        except OSError:
+            return False
+
+    def _finish(self, slot: Slot) -> None:
+        """Teardown confirmed: forget the VM, keeping the slot's generation."""
+        self._close_admission(slot)
+        self._release_maintenance(slot)
+        if slot.runner_id is not None:
+            self.pending_deletes.append(slot.runner_id)
+        seed = self.store / f"seed{slot.number}" / "seed.iso"
+        try:
+            seed.unlink(missing_ok=True)
         except OSError as error:
             log("seed_cleanup_failed", slot=slot.number, error=str(error))
-        log(
-            "slot_finished",
-            slot=slot.number,
-            runner=slot.runner_name,
-            admitted=slot.admitted,
-            reason=slot.stop_reason or "vm exited",
-            lifetime_s=round(time.monotonic() - slot.started) if slot.started else 0,
-        )
-        self.slots[slot.number] = Slot(slot.number)
+        log("slot_finished", slot=slot.number, generation=slot.generation, runner=slot.runner_name,
+            admitted=slot.admitted, reason=slot.stop_reason or "vm exited",
+            lifetime_s=round(self.now() - slot.started) if slot.started else 0)
+        if slot.launch_failed:
+            slot.failures += 1
+            slot.not_before = self.now() + min(120 * 2 ** (slot.failures - 1), 1800)
+        else:
+            slot.failures, slot.not_before = 0, 0.0
+        keep = {"generation": slot.generation, "failures": slot.failures, "not_before": slot.not_before}
+        self.slots[slot.number] = Slot(slot.number, state="idle", **keep)
 
-    def _cleanup_done(self, slot: Slot) -> bool:
-        state = self.store / "state"
-        start, cleanup = state / f"start-{slot.number}", state / f"cleanup-{slot.number}"
-        if not start.exists():
-            return True
-        return cleanup.exists() and cleanup.stat().st_mtime >= start.stat().st_mtime
+    # -- the per-slot state machine (under the lock)
 
-    def _check(self, slot: Slot, now: float) -> None:
-        status = slotctl(self.slotctl_path, "status", slot.number).split()
-        if not status or status[0] not in ("active", "activating", "deactivating"):
-            self._finish(slot)
+    def _on_result(self, slot: Slot, op: Op, ok: bool, result: dict | str) -> None:
+        slot.op = None
+        kind = op.kind
+        if kind == "slot-status":
+            if not ok:
+                return
+            active, pid = result["active"], int(result["pid"])
+            if slot.state == "init":
+                slot.generation = int(result["latest"])
+                slot.state = "stopping"
+                slot.stop_reason = "supervisor start"
+                return
+            if slot.state == "running":
+                if active in ("active", "activating"):
+                    slot.qemu_pid = pid if active == "active" else 0
+                else:
+                    self._mark_stop(slot, "vm exited")
+            elif slot.state == "stopping":
+                slot.unit_down = active not in ("active", "activating", "deactivating")
             return
-        age = now - slot.started
-        if slot.admitted:
-            if now - slot.admitted_at > self.hard_cap:
-                self._stop(slot, "job exceeded the hard cap")
+        if slot.state == "launching":
+            if not ok:
+                self._mark_stop(slot, f"launch failed: {kind}: {result}", launch_failed=True)
+                return
+            if kind == "reconcile":
+                slot.phase = "jit"
+                self._start_op(slot, "jit", ["jit", str(slot.number), slot.nonce])
+            elif kind == "jit":
+                slot.runner_id, slot.runner_name = result["runner_id"], result["name"]
+                slot.jit = result["encoded_jit_config"]
+                slot.phase = "seed"
+                stdin = json.dumps({"nonce": slot.nonce, "jit": slot.jit, "allowlist": slot.allowlist.data.decode(),
+                                    "audit": bool(self.config.get("audit", False))}).encode()
+                self._start_op(slot, "seed", ["seed", str(slot.number)], stdin)
+            elif kind == "seed":
+                slot.jit = None
+                self._open_listener(slot)
+                slot.phase = "up"
+                self._start_op(slot, "slot-up", ["slot", "up", str(slot.number), str(slot.generation)])
+            elif kind == "slot-up":
+                if result.get("reply") != "ok":
+                    self._mark_stop(slot, f"launch failed: up: {result.get('reply')}", launch_failed=True)
+                    return
+                slot.state = "running"
+                slot.started = self.now()
+                slot.next_status = 0.0
+                self._release_maintenance(slot)
+                log("slot_started", slot=slot.number, generation=slot.generation, runner=slot.runner_name,
+                    runner_id=slot.runner_id)
             return
-        if age > self.hard_cap + 35 * 60:
-            self._stop(slot, "VM exceeded its lifetime")
+        if slot.state == "running" and kind == "runner-status" and ok:
+            if result.get("status") == "online" and not slot.online_at:
+                slot.online_at = self.now()
+                log("runner_online", slot=slot.number, runner=slot.runner_name,
+                    boot_s=round(self.now() - slot.started))
+            if result.get("busy") and not slot.admitted:
+                slot.busy_since = slot.busy_since or self.now()
             return
-        if now - slot.last_api_check < 15:
-            return
-        slot.last_api_check = now
+        if slot.state == "stopping":
+            if kind == "slot-down" and ok and result.get("reply") in ("ok", "stale"):
+                slot.down_acked = True
+                slot.next_status = 0.0
+            elif kind == "slot-cleanup":
+                if not ok or result.get("reply") != "ok":
+                    log("teardown_unconfirmed", slot=slot.number, generation=slot.generation,
+                        detail=result if not ok else result.get("reply"))
+                    slot.not_before = self.now() + 30
+            elif not ok:
+                log("teardown_op_failed", slot=slot.number, kind=kind, error=result)
+
+    def _open_listener(self, slot: Slot) -> None:
+        path = Path(f"/run/tos-ci/slot{slot.number}/admission.sock")
+        if path.exists() or path.is_symlink():
+            path.unlink()
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(str(path))
+        os.chmod(path, 0o660)
+        listener.listen(4)
+        slot.listener = listener
+        threading.Thread(target=self._serve_listener, args=(slot.number, slot.generation, listener),
+                         daemon=True).start()
+
+    def _try_maintenance_shared(self) -> object | None:
         try:
-            info = self.github.runner(slot.runner_id) if slot.runner_id else None
-        except Exception as error:  # noqa: BLE001 - try again next tick
-            log("runner_status_failed", slot=slot.number, error=str(error))
+            fd = open(self.maintenance_path, "r")
+        except OSError:
+            return None
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            return fd
+        except OSError:
+            fd.close()
+            return None
+
+    def _launch(self, slot: Slot) -> None:
+        fd = self._try_maintenance_shared()
+        if fd is None:
+            log("launch_skipped", slot=slot.number, reason="image maintenance in progress")
+            slot.not_before = self.now() + 30
             return
-        online = bool(info and info.get("status") == "online")
-        busy = bool(info and info.get("busy"))
-        if online and not slot.online_at:
-            slot.online_at = now
-            log("runner_online", slot=slot.number, runner=slot.runner_name, boot_s=round(age))
-        if not slot.online_at and age > self.config["boot_deadline_seconds"]:
-            self._stop(slot, "no registration within the boot deadline")
-        elif slot.online_at and not busy and age > self.config["idle_deadline_seconds"]:
-            self._stop(slot, "never assigned a job")
-        elif busy:
-            if not slot.busy_since_unadmitted:
-                slot.busy_since_unadmitted = now
-            elif now - slot.busy_since_unadmitted > self.config["unadmitted_busy_seconds"]:
-                self._stop(slot, "violation: job activity without admission")
+        slot.maint_fd = fd
+        slot.generation += 1
+        slot.nonce = secrets.token_hex(16)
+        slot.allowlist = self.allowlist
+        slot.state, slot.phase, slot.started = "launching", "sweep", self.now()
+        keep = [s.runner_name for s in self.slots.values() if s.runner_name]
+        self._start_op(slot, "reconcile", ["reconcile"], json.dumps({"keep": keep}).encode())
+
+    def _tick_slot(self, slot: Slot, now: float, draining: bool) -> None:
+        if slot.op is not None:
+            result = self._poll_op(slot.op)
+            if result is not None:
+                op = slot.op
+                try:
+                    self._on_result(slot, op, *result)
+                except (KeyError, TypeError, ValueError) as error:
+                    # A malformed result is that operation failing, never a crash.
+                    log("op_result_invalid", slot=slot.number, kind=op.kind, error=f"{type(error).__name__}: {error}")
+                    slot.op = None
+                    if slot.state == "launching":
+                        self._mark_stop(slot, f"launch failed: {op.kind}: invalid result", launch_failed=True)
+        slot = self.slots[slot.number]
+        if slot.state == "init":
+            if slot.op is None:
+                self._start_op(slot, "slot-status", ["slot", "status", str(slot.number)])
+        elif slot.state == "idle":
+            if not draining and now >= slot.not_before and not self.stopping.is_set():
+                self._launch(slot)
+        elif slot.state in ("launching", "running"):
+            age = now - slot.started
+            if draining and not slot.admitted:
+                self._mark_stop(slot, "draining")
+            elif slot.admitted and now - slot.admitted_at > self.hard_cap:
+                self._mark_stop(slot, "job exceeded the hard cap")
+            elif not slot.admitted and not slot.online_at and age > self.config["boot_deadline_seconds"]:
+                self._mark_stop(slot, "no registration within the boot deadline")
+            elif not slot.admitted and age > self.config["idle_deadline_seconds"]:
+                self._mark_stop(slot, "never admitted a job")
+            elif age > self.hard_cap + 35 * 60:
+                self._mark_stop(slot, "VM exceeded its lifetime")
+            elif slot.busy_since and not slot.admitted and now - slot.busy_since > self.config["unadmitted_busy_seconds"]:
+                self._mark_stop(slot, "violation: job activity without admission")
+            elif slot.state == "running" and slot.op is None:
+                if now >= slot.next_status:
+                    slot.next_status = now + 5
+                    self._start_op(slot, "slot-status", ["slot", "status", str(slot.number)])
+                elif now >= slot.next_api and slot.runner_id is not None:
+                    slot.next_api = now + 15
+                    self._start_op(slot, "runner-status", ["runner-status", str(slot.runner_id)])
+        if slot.state == "stopping" and slot.op is None:
+            if not slot.down_acked:
+                self._start_op(slot, "slot-down", ["slot", "down", str(slot.number), str(slot.generation)])
+            elif not slot.unit_down:
+                if now >= slot.next_status:
+                    slot.next_status = now + 2
+                    self._start_op(slot, "slot-status", ["slot", "status", str(slot.number)])
+            elif self._cleanup_confirmed(slot):
+                self._finish(slot)
+            elif now >= slot.not_before:
+                self._start_op(slot, "slot-cleanup", ["slot", "cleanup", str(slot.number), str(slot.generation)])
+
+    def _tick_global(self, now: float) -> None:
+        if self.global_op is not None:
+            result = self._poll_op(self.global_op)
+            if result is None:
+                return
+            if not result[0]:
+                log("global_op_failed", kind=self.global_op.kind, error=result[1])
+            elif self.global_op.kind == "reconcile" and result[1].get("deleted"):
+                log("orphan_registrations_removed", names=result[1]["deleted"])
+            self.global_op = None
+        if self.pending_deletes:
+            self._start_op(None, "runner-delete", ["runner-delete", str(self.pending_deletes.pop(0))])
+        elif now >= self.next_reconcile:
+            self.next_reconcile = now + 300
+            keep = [s.runner_name for s in self.slots.values() if s.runner_name]
+            self._start_op(None, "reconcile", ["reconcile"], json.dumps({"keep": keep}).encode())
 
     def _disk_ok(self) -> bool:
-        pool = shutil.disk_usage(self.store)
-        root = shutil.disk_usage("/")
+        pool, root = shutil.disk_usage(self.store), shutil.disk_usage("/")
         pool_free = pool.free / pool.total
         drain = pool_free < 0.15 or root.free < 120e9
-        halt = pool_free < 0.08 or root.free < 60e9
         if drain != self.disk_drain:
             log("disk_drain" if drain else "disk_ok", pool_free=round(pool_free, 3), root_free_gb=round(root.free / 1e9))
             self.disk_drain = drain
-        if halt:
+        if pool_free < 0.08 or root.free < 60e9:
             for slot in self.slots.values():
-                if slot.state == "running":
-                    self._stop(slot, "disk below the halt threshold")
+                self._mark_stop(slot, "disk below the halt threshold")
         return not drain
 
-    def _reconcile(self, initial: bool) -> None:
-        tracked = {s.runner_id for s in self.slots.values() if s.runner_id is not None}
-        try:
-            for runner in self.github.runners_with_label(self.label):
-                if runner["id"] not in tracked and (initial or runner.get("status") != "online" or not runner.get("busy")):
-                    self.github.delete_runner(runner["id"])
-                    log("orphan_registration_removed", runner=runner.get("name"))
-        except Exception as error:  # noqa: BLE001 - next reconcile retries
-            log("reconcile_failed", error=str(error))
+    def tick(self) -> None:
+        now = self.now()
+        with self.lock:
+            self._refresh_allowlist()
+            draining = self.drain_path.exists() or not self._disk_ok() or self.stopping.is_set()
+            if self.stopping.is_set():
+                waited = now - self.shutdown_started
+                for slot in self.slots.values():
+                    if not slot.admitted or waited > 600:
+                        self._mark_stop(slot, "supervisor stopping")
+            for number in (1, 2, 3):
+                self._tick_slot(self.slots[number], now, draining)
+            self._tick_global(now)
 
-    def start(self) -> None:
-        log("supervisor_starting", allowlist_sha256=self.allowlist.sha256)
-        for number in self.slots:
-            slotctl(self.slotctl_path, "stop", number)
-            remove_seed(self.store / f"seed{number}")
-        self._reconcile(initial=True)
+    def all_quiet(self) -> bool:
+        with self.lock:
+            return all(s.state == "idle" for s in self.slots.values()) and self.global_op is None and not self.pending_deletes
 
     def run(self) -> None:
-        self.start()
-        while not self.stopping.is_set():
-            now = time.monotonic()
-            with self.lock:
-                self._refresh_allowlist_locked()
-            disk_ok = self._disk_ok()
-            draining = self.drain_path.exists() or not disk_ok
-            for slot in list(self.slots.values()):
-                if slot.state == "running":
-                    if draining and not slot.admitted and slot.stop_reason is None:
-                        self._stop(slot, "draining")
-                    self._check(slot, now)
-                elif (
-                    not draining
-                    and now >= self.backoff[slot.number][1]
-                    and self._cleanup_done(slot)
-                ):
-                    self._launch(slot)
-            if now - self.last_reconcile > 300:
-                self.last_reconcile = now
-                self._reconcile(initial=False)
-            self.stopping.wait(2.0)
-
-    def shutdown(self) -> None:
-        """Drain, give admitted jobs up to ten minutes, then stop every slot."""
-        log("supervisor_stopping")
-        deadline = time.monotonic() + 600
-        for slot in self.slots.values():
-            if slot.state == "running" and not slot.admitted:
-                self._stop(slot, "supervisor stopping")
-        while time.monotonic() < deadline:
-            running = [s for s in self.slots.values() if s.state == "running"]
-            if not running:
+        log("supervisor_starting", allowlist_sha256=self.allowlist.sha256)
+        while True:
+            self.tick()
+            if self.stopping.is_set() and (self.all_quiet() or self.now() - self.shutdown_started > 660):
                 break
-            for slot in running:
-                self._check(slot, time.monotonic())
-            time.sleep(2)
-        for slot in self.slots.values():
-            if slot.state == "running":
-                self._stop(slot, "supervisor stop deadline")
-                self._finish(slot)
-        self._reconcile(initial=True)
+            time.sleep(1.0)
         log("supervisor_stopped")
 
 
@@ -696,8 +689,7 @@ def verify_manifest(path: Path) -> None:
     """Refuse to run if any installed unit, drop-in or script changed."""
     for line in path.read_text().splitlines():
         digest, name = line.split(None, 1)
-        actual = hashlib.sha256(Path(name).read_bytes()).hexdigest()
-        if actual != digest:
+        if hashlib.sha256(Path(name).read_bytes()).hexdigest() != digest:
             raise SystemExit(f"manifest mismatch: {name}")
 
 
@@ -705,20 +697,16 @@ def main() -> int:
     config = json.loads(CONFIG_PATH.read_text())
     verify_manifest(Path(config["manifest"]))
     supervisor = Supervisor(config)
-    worker = threading.Thread(target=supervisor.run, daemon=True)
 
     def on_term(_signum: int, _frame: object) -> None:
-        supervisor.stopping.set()
+        if not supervisor.stopping.is_set():
+            supervisor.shutdown_started = supervisor.now()
+            supervisor.stopping.set()
+            log("supervisor_stopping")
 
     signal.signal(signal.SIGTERM, on_term)
     signal.signal(signal.SIGINT, on_term)
-    worker.start()
-    while worker.is_alive():
-        worker.join(1.0)
-        if supervisor.stopping.is_set():
-            break
-    worker.join(30)
-    supervisor.shutdown()
+    supervisor.run()
     return 0
 
 

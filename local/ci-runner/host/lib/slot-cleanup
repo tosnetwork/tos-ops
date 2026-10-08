@@ -18,9 +18,13 @@ rm -f -- "/run/tos-ci/slot$slot/admission.sock" || ok=0
 [[ ! -e $dir && ! -e /sys/class/net/tci$slot ]] || ok=0
 
 if [[ $ok == 1 ]]; then
+  # The cleanup marker names the generation it cleaned: the one that started.
   install -d -m 0755 -o root -g root "$STATE"
-  touch "$STATE/cleanup-$slot"
-  echo "slot $slot cleaned"
+  cleaned=$(cat "$STATE/start-$slot" 2> /dev/null || echo 0)
+  printf '%s\n' "$cleaned" > "$STATE/cleanup-$slot.tmp"
+  chmod 0644 "$STATE/cleanup-$slot.tmp"  # read by the supervisor; holds only a generation
+  mv "$STATE/cleanup-$slot.tmp" "$STATE/cleanup-$slot"
+  echo "slot $slot generation $cleaned cleaned"
 else
   echo "slot-cleanup: slot $slot cleanup incomplete" >&2
   exit 1

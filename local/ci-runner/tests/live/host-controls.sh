@@ -64,8 +64,11 @@ expect_no "slot 1 cannot read slot 2's memory" as_slot_in_sandbox 1 head -c 1 "/
 expect_ok "slot 1 opens /dev/kvm (positive control)" as_slot_in_sandbox 1 sh -c 'exec 3<> /dev/kvm'
 
 echo "== slot control helper"
-[[ $(slotctl_as tos-ci $'status 1\n') == "active $(pid_of 1)" ]] && pass "tos-ci: status 1 answered (positive control)" || fail "tos-ci status 1"
-for req in $'start 4\n' $'start 1; id\n' $'start 01\n' $'restart 1\n' "$(printf 'start %0100d\n' 1)" $'start 1'; do
+status=$(slotctl_as tos-ci $'status 1\n')
+[[ $(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(d["active"], d["pid"])' "$status" 2>/dev/null) == "active $(pid_of 1)" ]] \
+  && pass "tos-ci: status 1 answered (positive control)" || fail "tos-ci status 1 -> $status"
+for req in $'start 1\n' $'up 4 1\n' $'up 1 5; id\n' $'up 01 1\n' $'up 1\n' $'status 1 2\n' \
+           $'restart 1 1\n' "$(printf 'up 1 %0100d\n' 1)" $'up 1 1'; do
   reply=$(slotctl_as tos-ci "$req" 2>&1 | tail -1)
   [[ $reply == "refused request" ]] && pass "slotctl refuses $(printf %q "$req" | cut -c1-24)" || fail "slotctl accepted $(printf %q "$req") -> $reply"
 done
