@@ -24,7 +24,7 @@ from pathlib import Path
 
 ARCHIVE = Path("/var/lib/tos-ci/audit")
 CLOSED_BUDGET = 5 * 2**30
-MAX_CLOSED = 20
+MAX_CLOSED = 200
 
 
 def closed(path: Path) -> bool:

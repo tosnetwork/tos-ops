@@ -3,7 +3,7 @@
     op.py jit SLOT NAME                   -> {"runner_id", "name", "encoded_jit_config"}
     op.py runner-status ID                -> {"status", "busy"} or {"missing": true}
     op.py runner-delete ID                -> {"ok": true}
-    op.py reconcile                       -> {"deleted": [...]}   (stdin: {"keep": [names], "prefix"?})
+    op.py reconcile                       -> {"deleted": [...], "deferred": [...]}   (stdin: {"keep": [names], "prefix"?})
     op.py seed SLOT                       -> {"ok": true}         (stdin: {"nonce", "jit", "allowlist", "audit"})
     op.py slot VERB SLOT [GEN]            -> {"reply": "..."}
 
@@ -159,13 +159,22 @@ def main(argv: list[str]) -> dict:
         prefix = args.get("prefix", NAME_PREFIX)
         if not prefix.startswith(NAME_PREFIX):
             raise SystemExit("reconcile prefix outside the CI runner namespace")
-        deleted = []
+        deleted, deferred = [], []
         for runner in all_runners():
             name = runner.get("name", "")
             if name.startswith(prefix) and name not in keep:
-                delete_runner(runner["id"])
+                try:
+                    delete_runner(runner["id"])
+                except urllib.error.HTTPError as error:
+                    # GitHub refuses to delete a runner it still counts as busy
+                    # (its VM died mid-job). Leave it to a later pass; any other
+                    # error still fails the op.
+                    if error.code != 422:
+                        raise
+                    deferred.append(name)
+                    continue
                 deleted.append(name)
-        return {"deleted": deleted}
+        return {"deleted": deleted, "deferred": deferred}
     if verb == "seed":
         args = json.load(sys.stdin)
         write_seed(int(argv[1]), args["nonce"], args["jit"], args["allowlist"], bool(args["audit"]))

@@ -302,7 +302,7 @@ class Machine(unittest.TestCase):
         slot = self.sup.slots[n]
         if slot.state == "idle":
             self.sup.tick()
-        self.answer(n, {"deleted": []})  # reconcile sweep
+        self.answer(n, {"deleted": [], "deferred": []})  # reconcile sweep
         self.answer_jit(n)
         self.answer(n, {"ok": True})  # seed
         self.answer(n, {"reply": "ok"})  # up
@@ -361,7 +361,7 @@ class StateMachineTest(Machine):
     def test_a_stop_supersedes_a_hanging_launch_step(self) -> None:
         self.to_idle(1)
         self.sup.tick()
-        self.answer(1, {"deleted": []})
+        self.answer(1, {"deleted": [], "deferred": []})
         hanging = self.op(1)  # the JIT request never returns
         self.assertEqual(hanging.argv[0], "jit")
         Path(self.config["drain_file"]).write_text("")
@@ -373,7 +373,7 @@ class StateMachineTest(Machine):
     def test_a_late_launch_result_cannot_undo_stopping(self) -> None:
         self.to_idle(1)
         self.sup.tick()
-        self.answer(1, {"deleted": []})
+        self.answer(1, {"deleted": [], "deferred": []})
         self.answer_jit(1)
         self.answer(1, {"ok": True})
         up = self.op(1)
@@ -426,7 +426,7 @@ class StateMachineTest(Machine):
         slot = self.sup.slots[3]
         self.to_idle(3)
         self.sup.tick()
-        self.answer(3, {"deleted": []})
+        self.answer(3, {"deleted": [], "deferred": []})
         self.answer(3, {"unexpected": True})  # a JIT result without its fields
         self.assertEqual(self.sup.slots[3].state, "stopping")
         self.assertTrue(self.sup.slots[3].launch_failed)
@@ -457,19 +457,19 @@ class CoordinationTest(Machine):
         sweep = self.op(1)
         self.assertEqual(sweep.argv, ["reconcile"])
         self.assertEqual(json.loads(sweep.stdin), {"keep": [slot.runner_name], "prefix": "tos-ci-s1-"})
-        self.answer(1, {"deleted": []})
+        self.answer(1, {"deleted": [], "deferred": []})
         self.assertEqual(self.op(1).argv, ["jit", "1", slot.runner_name])
 
     def test_a_jit_result_for_another_name_fails_the_launch(self) -> None:
         self.launch(1)
-        self.answer(1, {"deleted": []})
+        self.answer(1, {"deleted": [], "deferred": []})
         self.answer_jit(1, name="tos-ci-s1-deadbeef")
         self.assertEqual(self.sup.slots[1].state, "stopping")
         self.assertTrue(self.sup.slots[1].launch_failed)
 
     def test_a_sweep_keeps_every_reserved_name(self) -> None:
         self.launch(1)
-        self.answer(1, {"deleted": []})  # slot 1 now requests its JIT
+        self.answer(1, {"deleted": [], "deferred": []})  # slot 1 now requests its JIT
         self.to_idle(2)
         self.sup.tick()
         # Slot 2's sweep waits while slot 1's JIT request is in flight.
@@ -486,17 +486,17 @@ class CoordinationTest(Machine):
         self.to_idle(2)
         self.sup.tick()  # slot 2 sweeps while slot 1 still sweeps
         self.assertEqual(self.op(2).argv, ["reconcile"])
-        self.answer(1, {"deleted": []})
+        self.answer(1, {"deleted": [], "deferred": []})
         self.assertIsNone(self.sup.slots[1].op)  # slot 2's sweep still runs
         self.assertEqual(self.sup.slots[1].phase, "jit")
-        self.answer(2, {"deleted": []})
+        self.answer(2, {"deleted": [], "deferred": []})
         self.sup.tick()  # slot 1 was ticked before slot 2's sweep finished
         kinds = sorted(self.sup.slots[n].op.kind for n in (1, 2))
         self.assertEqual(kinds, ["jit", "jit"])
 
     def test_global_reconcile_waits_for_jit_and_keeps_reserved_names(self) -> None:
         self.launch(1)
-        self.answer(1, {"deleted": []})
+        self.answer(1, {"deleted": [], "deferred": []})
         self.assertEqual(self.op(1).argv[0], "jit")
         self.sup.next_reconcile = 0.0
         self.sup.tick()
@@ -509,9 +509,9 @@ class CoordinationTest(Machine):
         self.sup.next_reconcile = 0.0
         self.launch(1)
         self.assertEqual(self.sup.global_op.kind, "reconcile")
-        self.answer(1, {"deleted": []})
+        self.answer(1, {"deleted": [], "deferred": []})
         self.assertIsNone(self.sup.slots[1].op)
-        self.sup.global_op.handle.result = (True, {"deleted": []})
+        self.sup.global_op.handle.result = (True, {"deleted": [], "deferred": []})
         self.sup.tick()  # the global op finishes after the slots were ticked
         self.sup.tick()
         self.assertEqual(self.op(1).argv[0], "jit")
@@ -528,10 +528,22 @@ class CoordinationTest(Machine):
         self.sup.tick()
         self.assertNotIn(sweep, self.sup.reaping)
 
+    def test_a_busy_stale_registration_does_not_block_the_launch(self) -> None:
+        self.launch(1)
+        self.answer(1, {"deleted": [], "deferred": ["tos-ci-s1-0badf00d"]})
+        self.assertEqual(self.op(1).argv[0], "jit")
+        self.assertEqual(self.sup.slots[1].state, "launching")
+
+    def test_the_own_name_deferred_fails_the_launch(self) -> None:
+        self.launch(1)
+        self.answer(1, {"deleted": [], "deferred": [self.sup.slots[1].runner_name]})
+        self.assertEqual(self.sup.slots[1].state, "stopping")
+        self.assertTrue(self.sup.slots[1].launch_failed)
+
     def test_a_result_that_only_the_schema_rejects_fails_the_launch(self) -> None:
         # Every field is present, so nothing downstream would notice.
         self.launch(1)
-        self.answer(1, {"deleted": []})
+        self.answer(1, {"deleted": [], "deferred": []})
         self.answer_jit(1, runner_id=True)
         self.assertEqual(self.sup.slots[1].state, "stopping")
         self.assertTrue(self.sup.slots[1].launch_failed)
@@ -558,7 +570,7 @@ class ResultSchemaTest(unittest.TestCase):
         "slot-up": {"reply": "ok"},
         "seed": {"ok": True},
         "runner-delete": {"ok": True},
-        "reconcile": {"deleted": ["tos-ci-s1-abcdef01"]},
+        "reconcile": {"deleted": ["tos-ci-s1-abcdef01"], "deferred": ["tos-ci-s2-deadbeef"]},
     }
     INVALID = {
         "jit": [{"runner_id": True, "name": "n", "encoded_jit_config": "x"},
@@ -574,7 +586,8 @@ class ResultSchemaTest(unittest.TestCase):
         "slot-up": [{"reply": 1}, {}],
         "seed": [{"ok": 1}, {"ok": "true"}],
         "runner-delete": [{"ok": False}],
-        "reconcile": [{"deleted": "x"}, {"deleted": [1]}, {}],
+        "reconcile": [{"deleted": "x", "deferred": []}, {"deleted": [1], "deferred": []}, {},
+                      {"deleted": []}, {"deleted": [], "deferred": [2]}],
     }
 
     def test_valid_results(self) -> None:

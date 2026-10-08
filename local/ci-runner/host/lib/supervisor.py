@@ -280,8 +280,8 @@ def valid_result(kind: str, result: object) -> bool:
     if kind in ("seed", "runner-delete"):
         return result.get("ok") is True
     if kind == "reconcile":
-        deleted = result.get("deleted")
-        return isinstance(deleted, list) and all(isinstance(n, str) for n in deleted)
+        lists = (result.get("deleted"), result.get("deferred"))
+        return all(isinstance(names, list) and all(isinstance(n, str) for n in names) for names in lists)
     return False
 
 
@@ -616,6 +616,13 @@ class Supervisor:
             # Each step only records the next phase; _advance_launch starts it
             # when the coordination rules allow.
             if kind == "reconcile":
+                # A busy stale registration carries another nonce and cannot
+                # collide with this launch's name; the periodic pass retries it.
+                if slot.runner_name in result["deferred"]:
+                    self._mark_stop(slot, "launch failed: own runner name deferred", launch_failed=True)
+                    return
+                if result["deferred"]:
+                    log("registrations_deferred", slot=slot.number, names=result["deferred"])
                 slot.phase = "jit"
             elif kind == "jit":
                 if result["name"] != slot.runner_name:
@@ -781,8 +788,11 @@ class Supervisor:
                 return
             if not result[0]:
                 log("global_op_failed", kind=self.global_op.kind, error=result[1])
-            elif self.global_op.kind == "reconcile" and result[1].get("deleted"):
-                log("orphan_registrations_removed", names=result[1]["deleted"])
+            elif self.global_op.kind == "reconcile":
+                if result[1]["deleted"]:
+                    log("orphan_registrations_removed", names=result[1]["deleted"])
+                if result[1]["deferred"]:
+                    log("registrations_deferred", names=result[1]["deferred"])
             self.global_op = None
         if self.pending_deletes:
             self._start_op(None, "runner-delete", ["runner-delete", str(self.pending_deletes.pop(0))])
