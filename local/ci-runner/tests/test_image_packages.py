@@ -49,6 +49,26 @@ class ParserTest(unittest.TestCase):
     def test_comments_install_nothing(self) -> None:
         self.assertEqual(self.parse("# sudo apt-get install -y nothing\nrun: echo # apt-get install no\n"), set())
 
+    def workflow(self, text: str) -> set[str]:
+        return wp.workflow_packages(text, "fixture.yml")
+
+    def test_a_folded_block_is_joined_as_yaml_defines(self) -> None:
+        text = "jobs:\n  a:\n    steps:\n      - run: >\n          sudo apt-get install -y\n          gperf\n          tmux\n"
+        self.assertEqual(self.workflow(text), {"gperf", "tmux"})
+
+    def test_a_long_option_with_an_argument_before_install(self) -> None:
+        self.assertEqual(self.parse("run: sudo apt-get --option Dpkg::Use-Pty=0 install -y tmux\n"), {"tmux"})
+        self.assertEqual(self.parse("run: apt-get --target-release noble install -y lld\n"), {"lld"})
+
+    def test_an_install_outside_the_decoded_strings_is_refused(self) -> None:
+        # Written in a mapping key, it is in the file but in no decoded value.
+        with self.assertRaises(wp.DynamicPackage) as caught:
+            self.workflow("jobs:\n  a:\n    sudo apt-get install -y gperf: x\n")
+        self.assertIn("1 install commands in the file, 0 in its decoded strings", str(caught.exception))
+
+    def test_the_pin_names_its_source_commit(self) -> None:
+        self.assertRegex(json.loads(wp.PINNED.read_text())["tos_commit"], r"^[0-9a-f]{40}$")
+
     def test_dynamic_packages_are_rejected(self) -> None:
         for token in ("$PACKAGES", "${{ matrix.pkg }}", "`cat list`", "lib*-dev", "'quoted'", "\"quoted\""):
             with self.subTest(token), self.assertRaises(wp.DynamicPackage) as caught:
@@ -80,7 +100,10 @@ class PinnedRegenerationTest(unittest.TestCase):
     def test_the_pin_matches_tos_root_workflows(self) -> None:
         root = os.environ.get("TOS_ROOT")
         self.assertTrue(root, "TOS_ROOT is required: set it to a tos checkout at the pinned workflows")
-        self.assertEqual(wp.derive(Path(root)), json.loads(wp.PINNED.read_text()),
+        derived = wp.derive(Path(root))
+        pinned = json.loads(wp.PINNED.read_text())
+        # The digest and the list are what must match; the commit names the source.
+        self.assertEqual(derived, {k: pinned.get(k) for k in derived},
                          "image-packages.json differs from TOS_ROOT's workflows; regenerate with --write")
 
     def test_a_new_workflow_package_breaks_the_pin(self) -> None:
