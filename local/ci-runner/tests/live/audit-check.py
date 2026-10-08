@@ -255,11 +255,13 @@ def exec_events(kept: list[str]) -> list[Exec]:
     return events
 
 
-# The runner version of the image the lifetimes ran on; set by main.
+# The runner version of the image the lifetime being judged ran on, as
+# recorded when its VM was prepared; None when that is not known, which
+# leaves every version-scoped rule unapplied. Set per lifetime by main.
 active_runner: str | None = None
 
 
-def matches(r: Rule, e: Exec, relations: set[str]) -> bool:
+def matches(r: Rule, e: Exec, relations: set[str], parent: Exec | None = None) -> bool:
     if r.runner is not None and r.runner != active_runner:
         return False
     if e.uid != r.uid or e.exe != r.exe or e.argv is None or len(e.argv) != len(r.argv):
@@ -270,6 +272,9 @@ def matches(r: Rule, e: Exec, relations: set[str]) -> bool:
         return False
     # The archive is unpacked in its own action's staging directory.
     if r.name == "action-unpack-tar" and not e.argv[2].startswith(e.cwd.rsplit("/_staging", 1)[0] + "/"):
+        return False
+    # The decompressor works where its own tar does.
+    if r.name == "action-unpack-gzip" and (parent is None or parent.cwd != e.cwd):
         return False
     return bool(r.parents & relations)
 
@@ -296,7 +301,7 @@ def classify(events: list[Exec]) -> list[Exec]:
             elif parent.rule:
                 relations.add(parent.rule.name)
         if e.known_syscall and e.exe != WORKER_EXE:
-            e.rule = next((r for r in RULES if matches(r, e, relations)), None)
+            e.rule = next((r for r in RULES if matches(r, e, relations, parent)), None)
         e.in_worker = e.exe == WORKER_EXE or bool(parent and (parent.in_worker or parent.exe == WORKER_EXE))
         if e.rule and e.rule.name == "hook":
             hook_seen = True
@@ -417,14 +422,27 @@ def consoles(since: str) -> dict[tuple[int, str], list[str]]:
     return groups
 
 
-def image_runner_version(images: Path = Path("/var/lib/tos-ci/images")) -> str | None:
-    """The runner version recorded in the current image's manifest."""
+PREPARED = re.compile(r"prepared on (gen-[0-9TZ]+\.qcow2)(?: \(runner (v[0-9.]+|unknown)\))?")
+
+
+def lifetime_runner(console: str, images: Path = Path("/var/lib/tos-ci/images")) -> str | None:
+    """The runner version this lifetime's VM was prepared with.
+
+    slot-prepare records it (as root, before QEMU starts) in the lifetime's
+    own unit journal. An older record names only the image; its manifest is
+    used while it is still on disk. Otherwise the version is unknown.
+    """
+    m = PREPARED.search(console)
+    if not m:
+        return None
+    if m.group(2):
+        return None if m.group(2) == "unknown" else m.group(2)
     try:
-        manifest = (images / f"{(images / 'current.qcow2').readlink()}.manifest").read_text()
+        manifest = (images / f"{m.group(1)}.manifest").read_text()
     except OSError:
         return None
-    m = re.search(r"^runner (v[0-9.]+) ", manifest, re.M)
-    return m.group(1) if m else None
+    found = re.search(r"^runner (v[0-9.]+) ", manifest, re.M)
+    return found.group(1) if found else None
 
 
 def parse_expect(values: list[str]) -> dict[str, dict[str, int]]:
@@ -445,12 +463,9 @@ def main() -> int:
     parser.add_argument("--since", required=True)
     parser.add_argument("--expect", action="append", default=[], help="RUN_ID=allowed:N,denied:M")
     parser.add_argument("--as-denied", action="append", default=[], help="test only: judge this run's lifetimes as denied")
-    parser.add_argument("--runner-version", help="the image's actions runner version (default: from the current image manifest)")
     args = parser.parse_args()
     global active_runner
-    active_runner = args.runner_version or image_runner_version()
-    print(f"image runner {active_runner}; version-scoped rules verified on {VERIFIED_RUNNER}"
-          + ("" if active_runner == VERIFIED_RUNNER else ": NOT APPLIED, re-verify"))
+    print(f"version-scoped rules verified on runner {VERIFIED_RUNNER}; each lifetime is judged by its own recorded runner")
     expected = parse_expect(args.expect)
     violations = checked = 0
     counts: dict[str, dict[str, int]] = defaultdict(lambda: {"allowed": 0, "denied": 0})
@@ -471,7 +486,8 @@ def main() -> int:
         verdict = verdicts[0]["tos_ci_admission"]
         if run in args.as_denied:
             verdict = "denied"
-        label += f" run {run} {verdict}"
+        active_runner = lifetime_runner(console)
+        label += f" run {run} {verdict} runner {active_runner or 'unknown'}"
         on = AUDIT_ON.search(console)
         kept: list[str] = []
         if not on:

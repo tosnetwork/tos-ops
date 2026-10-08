@@ -64,4 +64,7 @@ install -d -m 0755 -o root -g root "$STATE"
 printf '%s\n' "$generation" > "$STATE/start-$slot.tmp"
 chmod 0644 "$STATE/start-$slot.tmp"  # read by the supervisor; holds only a generation
 mv "$STATE/start-$slot.tmp" "$STATE/start-$slot"
-echo "slot $slot generation $generation prepared on $(basename "$base")"
+# The runner version is recorded here, from the image's own manifest, so
+# what a lifetime ran stays known after its image is pruned.
+runner=$(awk '$1 == "runner" && $2 ~ /^v[0-9.]+$/ {print $2; exit}' "$base.manifest" 2> /dev/null || true)
+echo "slot $slot generation $generation prepared on $(basename "$base") (runner ${runner:-unknown})"

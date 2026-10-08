@@ -588,6 +588,14 @@ class ActionUnpackTest(unittest.TestCase):
                 passed, detail = self.judge(events)
                 self.assertFalse(passed, detail)
 
+    def test_gzip_must_work_where_its_tar_does(self) -> None:
+        other = f"/opt/actions-runner/_work/_actions/_temp_{T2}/_staging"
+        events = [ex(0, 1677, 1658, 1000, "/usr/bin/tar", ["/usr/bin/tar", "-xzf", TARBALL], cwd=STAGING),
+                  ex(0, 1679, 1677, 1000, "/usr/bin/gzip", ["gzip", "-d"], cwd=other)]
+        passed, detail = self.judge(events)
+        self.assertFalse(passed, detail)
+        self.assertIn("/usr/bin/gzip", detail)
+
     def test_an_unpack_outside_the_worker_is_not_one(self) -> None:
         # Under another parent the rule does not apply: after the hook it is
         # simply unexplained, and before it, outside the Worker, not counted.
@@ -647,6 +655,35 @@ class ReportTest(unittest.TestCase):
     def test_checking_nothing_fails(self) -> None:
         code, out = self.run_main({}, {})
         self.assertEqual(code, 1, out)
+
+    def test_each_lifetime_is_judged_by_its_own_runner(self) -> None:
+        # One window, two runner versions: only the verified one explains the unpack.
+        archives, consoles = {}, {}
+        for slot, (nonce, runner) in enumerate(((NONCE, "v2.338.0"), ("e" * 32, "v2.339.0"), ("d" * 32, None)), 1):
+            # The third has no prepared record, so its runner is unknown.
+            prepared = [f"slot {slot} generation 7 prepared on gen-20261008T184938Z.qcow2 (runner {runner})"] if runner else []
+            consoles[(slot, f"{slot}" * 8)] = prepared + [f"audit on nonce={nonce}: x", self.VERDICT, "audit drained",
+                                                          f"end-of-life {nonce}"]
+            archives[nonce] = data(lifetime(end_nonce=nonce, before_hook=unpack()))
+        code, out = self.run_main(consoles, archives)
+        lines = {l.split()[1]: l for l in out.splitlines() if l.startswith(("PASS", "FAIL"))}
+        self.assertTrue(lines["slot1"].startswith("PASS"), out)
+        self.assertIn("runner v2.338.0", lines["slot1"])
+        self.assertIn("action unpacks before the hook: 1", lines["slot1"])
+        self.assertTrue(lines["slot2"].startswith("FAIL"), out)
+        self.assertIn("runner v2.339.0", lines["slot2"])
+        self.assertTrue(lines["slot3"].startswith("FAIL"), out)
+        self.assertIn("runner unknown", lines["slot3"])
+
+    def test_an_old_record_falls_back_to_its_image_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            images = Path(tmp)
+            line = "slot 1 generation 7 prepared on gen-20261008T184938Z.qcow2"
+            self.assertIsNone(check_mod.lifetime_runner(line, images))  # its image is gone
+            (images / "gen-20261008T184938Z.qcow2.manifest").write_text("image x\nrunner v2.338.0 sha256 ab\n")
+            self.assertEqual(check_mod.lifetime_runner(line, images), "v2.338.0")
+            self.assertIsNone(check_mod.lifetime_runner(line + " (runner unknown)", images))
+            self.assertIsNone(check_mod.lifetime_runner("no prepared line", images))
 
     def test_as_denied_rejudges_an_allowed_run(self) -> None:
         allowed = [f"audit on nonce={NONCE}: x", self.VERDICT.replace("denied", "allowed"), "audit drained", "end-of-life x"]
