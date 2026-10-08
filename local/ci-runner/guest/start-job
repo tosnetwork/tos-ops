@@ -3,17 +3,40 @@
 # turn on execution auditing, then start the single-job runner.
 set -euo pipefail
 
-if [[ $(cat /etc/tos-ci/audit 2> /dev/null) == 1 ]]; then
-  # Verification mode: every execve, by every UID, streamed to the console.
-  install -d /etc/systemd/journald.conf.d
-  printf '[Journal]\nMaxLevelConsole=info\n' > /etc/systemd/journald.conf.d/90-tos-ci-audit.conf
-  systemctl restart systemd-journald
-  sed -i 's/^active = .*/active = yes/' /etc/audit/plugins.d/syslog.conf
+nonce=$(cat /etc/tos-ci/vm-nonce)
+
+if [[ $(cat /etc/tos-ci/audit 2> /dev/null) == 1 ]] && ! grep -qw 'audit=1' /proc/cmdline; then
+  # Without audit=1 the kernel drops records it cannot deliver without
+  # counting them: no evidence this lifetime could produce would be complete.
+  logger -p user.notice -t tos-ci "audit unavailable: kernel booted without audit=1"
+  exit 1
+elif [[ $(cat /etc/tos-ci/audit 2> /dev/null) == 1 ]]; then
+  # Verification mode: every execve, by every UID, into auditd's own log,
+  # which the forwarder streams to the host's audit port from its first byte.
+  # The log never rotates: at its size limit, or on a disk error, auditd
+  # stops writing, the end marker never lands, and the run is invalid.
+  conf=/etc/audit/auditd.conf
+  set_conf() {
+    grep -qE "^$1 *=" "$conf" || { echo "auditd.conf has no $1" >&2; exit 1; }
+    sed -i -E "s/^$1 *=.*/$1 = $2/" "$conf"
+  }
+  set_conf flush data
+  set_conf max_log_file 512
+  set_conf max_log_file_action suspend
+  set_conf disk_full_action suspend
+  set_conf disk_error_action suspend
+  rm -f /var/log/audit/audit.log /var/log/audit/audit.log.*
   systemctl restart auditd
+  for _ in $(seq 100); do [[ -s /var/log/audit/audit.log ]] && break; sleep 0.1; done
+  if [[ ! -s /var/log/audit/audit.log ]]; then
+    logger -p user.notice -t tos-ci "audit unavailable: auditd wrote no log"
+    exit 1
+  fi
   auditctl -b 16384 -f 1
   auditctl -a always,exit -F arch=b64 -S execve,execveat -k tos-ci-exec
   auditctl -a always,exit -F arch=b32 -S execve -k tos-ci-exec
-  logger -p user.notice -t tos-ci "audit on: $(auditctl -s | tr '\n' ' ')"
+  systemctl start tos-ci-audit-forward.service
+  logger -p user.notice -t tos-ci "audit on nonce=$nonce: $(auditctl -s | tr '\n' ' ')"
 fi
 
 logger -p user.notice -t tos-ci "runner starting"

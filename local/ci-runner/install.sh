@@ -36,7 +36,7 @@ install -d -m 0755 -o root -g root "$STORE"
 
 echo "== files"
 install -d -m 0755 -o root -g root "$LIB" "$LIB/guest" "$ETC"
-for f in slot-prepare slot-cleanup slot-qemu net-setup; do
+for f in slot-prepare slot-cleanup slot-qemu net-setup audit-prune audit-writer; do
   install -m 0755 -o root -g root "$HERE/host/lib/$f" "$LIB/$f"
 done
 for f in slotctl.py supervisor.py op.py build-image.py; do
@@ -77,7 +77,9 @@ echo "== manifest"
   for f in /etc/systemd/system/tos-ci-vm@.service /etc/systemd/system/tos-ci-vm@{1,2,3}.service.d/cpus.conf \
            /etc/systemd/system/tos-ci.slice /etc/systemd/system/tos-ci-slotctl.socket \
            /etc/systemd/system/tos-ci-slotctl@.service /etc/systemd/system/tos-ci-supervisor.service \
-           /etc/systemd/system/tos-ci-net.service "$LIB"/slot-prepare "$LIB"/slot-cleanup "$LIB"/slot-qemu \
+           /etc/systemd/system/tos-ci-net.service /etc/systemd/system/tos-ci-audit@.socket \
+           /etc/systemd/system/tos-ci-audit@.service "$LIB"/audit-prune "$LIB"/audit-writer \
+           "$LIB"/slot-prepare "$LIB"/slot-cleanup "$LIB"/slot-qemu \
            "$LIB"/net-setup "$LIB"/slotctl.py "$LIB"/supervisor.py "$LIB"/op.py "$LIB"/tos-ci.nft \
            "$ETC"/config.json; do
     printf '%s  %s\n' "$(sha256sum < "$f" | cut -d' ' -f1)" "$f"
@@ -92,6 +94,11 @@ networkctl reload
 systemctl enable --now 'var-lib-tos\x2dci.mount'
 for d in images state; do install -d -m 0755 -o root -g root "$STORE/$d"; done
 for n in 1 2 3; do install -d -m 2750 -o tos-ci -g "tos-ci-slot$n" "$STORE/seed$n"; done
+# Verification-mode audit archive: root prunes it, each slot's writer owns its
+# own directory, and the global lock serializes file creation with pruning.
+install -d -m 0755 -o root -g root "$STORE/audit"
+[[ -e $STORE/audit/.lock ]] || install -m 0644 -o root -g root /dev/null "$STORE/audit/.lock"
+for n in 1 2 3; do install -d -m 0700 -o "tos-ci-slot$n" -g "tos-ci-slot$n" "$STORE/audit/slot$n"; done
 systemctl enable --now tos-ci-net.service tos-ci-dnsmasq.service tos-ci-net-refresh.timer tos-ci-slotctl.socket
 systemctl restart tos-ci-net.service tos-ci-dnsmasq.service
 echo "installed; next: sudo python3 -I $LIB/build-image.py, then systemctl enable --now tos-ci-supervisor"

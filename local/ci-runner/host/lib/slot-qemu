@@ -29,5 +29,7 @@ exec /usr/bin/qemu-system-x86_64 \
   -device virtio-serial-pci \
   -chardev "socket,id=admission,path=/run/tos-ci/slot$slot/admission.sock,reconnect=1" \
   -device virtserialport,chardev=admission,name=org.tosnetwork.admission \
+  -chardev "socket,id=audit,path=/run/tos-ci-audit/slot$slot.sock" \
+  -device virtserialport,chardev=audit,name=org.tosnetwork.audit \
   -device virtio-rng-pci \
   -sandbox on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny

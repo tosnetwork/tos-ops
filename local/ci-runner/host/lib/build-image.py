@@ -113,6 +113,11 @@ def user_data(runner: tuple[str, str, str], uv: tuple[str, str, str]) -> str:
     files += guest_file("/usr/lib/tos-ci-guest/start-job", "start-job", "root:root", "0755")
     files += guest_file("/usr/lib/tos-ci-guest/end-job", "end-job", "root:root", "0755")
     files += guest_file("/etc/systemd/system/tos-ci-runner.service", "tos-ci-runner.service", "root:root", "0644")
+    # Verification mode's audit stream: forwarder, closer, and the forwarder's unit.
+    files += guest_file("/usr/lib/tos-ci-guest/audit-forward", "audit-forward", "root:root", "0755")
+    files += guest_file("/usr/lib/tos-ci-guest/audit-close", "audit-close", "root:root", "0755")
+    files += guest_file("/etc/systemd/system/tos-ci-audit-forward.service", "tos-ci-audit-forward.service",
+                        "root:root", "0644")
     files += guest_file("/etc/udev/rules.d/90-tos-ci-admission.rules", "90-tos-ci-admission.rules", "root:root", "0644")
     files += guest_file("/etc/systemd/journald.conf.d/90-tos-ci-console.conf", "90-tos-ci-console.conf", "root:root", "0644")
     files += guest_file("/etc/sysctl.d/90-tos-ci-noipv6.conf", "90-tos-ci-noipv6.conf", "root:root", "0644")
@@ -149,6 +154,12 @@ install -m 0755 /tmp/uv-x86_64-unknown-linux-gnu/uv /tmp/uv-x86_64-unknown-linux
 systemctl disable --now ssh.service ssh.socket unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer motd-news.timer || true
 systemctl mask ssh.service ssh.socket || true
 systemctl enable auditd
+# audit=1: a record the kernel cannot hand to auditd is held and resent, and
+# an overflow is counted as lost; without it such records are dropped silently.
+printf 'GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT audit=1 audit_backlog_limit=16384"\\n' \\
+  > /etc/default/grub.d/99-tos-ci-audit.cfg
+update-grub
+grep -E '^\\s*linux\\s.*\\baudit=1\\b.*\\baudit_backlog_limit=16384\\b' /boot/grub/grub.cfg
 echo "TOS-CI-MANIFEST-BEGIN"
 echo "runner {runner_tag} sha256 {runner_sha}"
 echo "uv {uv_tag} sha256 {uv_sha}"

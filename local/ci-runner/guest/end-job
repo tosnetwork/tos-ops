@@ -1,8 +1,11 @@
 #!/bin/bash
-# After the runner exits, for any reason: write the end-of-life record to the
-# console and power off. The host deletes the VM when QEMU exits.
+# After the runner exits, for any reason: close the audit stream (verification
+# mode), write the end-of-life record to the console and power off. The host
+# deletes the VM when QEMU exits.
 if [[ $(cat /etc/tos-ci/audit 2> /dev/null) == 1 ]]; then
-  logger -p user.notice -t tos-ci "audit status at end: $(auditctl -s | tr '\n' ' ')"
+  # Reports "audit drained", or why not, on the console. A failure makes the
+  # run invalid; it never holds up the poweroff.
+  /usr/bin/python3 -I /usr/lib/tos-ci-guest/audit-close || true
 fi
 logger -p user.notice -t tos-ci "end-of-life $(cat /etc/tos-ci/vm-nonce 2> /dev/null)"
 sleep 1

@@ -1,0 +1,15 @@
+[Unit]
+Description=TOS CI audit stream listener, slot %i
+Documentation=file:///usr/lib/tos-ci/README.md
+# Only slots 1-3 exist.
+ConditionPathExists=/etc/systemd/system/tos-ci-vm@%i.service.d/cpus.conf
+
+[Socket]
+# Root-managed: the listener exists before the slot's QEMU starts, and only
+# that slot's account can connect to it.
+ListenStream=/run/tos-ci-audit/slot%i.sock
+SocketUser=tos-ci-slot%i
+SocketGroup=tos-ci-slot%i
+SocketMode=0600
+Accept=no
+RemoveOnStop=yes
