@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import base64
 import fcntl
+import hashlib
 import importlib.util
 import json
 import math
@@ -79,40 +80,141 @@ def verify_withdrawal(before, after, amount, fee, sent, received, pool, recipien
         )
 
 
-def choose(state, rng, sequence):
-    notes = state["notes"]
-    operation = (
-        ("deposit", "deposit", "transfer", "withdraw")[sequence]
-        if sequence < 4
-        else rng.choice(("deposit", "transfer", "withdraw"))
+# The pool's deposit and withdrawal denominations. The generator is the
+# authority: run() checks at start that it accepts each of these and refuses
+# a value outside them.
+DENOMINATIONS = (NANO, 10 * NANO, 100 * NANO, 1000 * NANO)
+WALLETS = 3
+
+
+def gas_fee(gas):
+    """The value attached for an operation with this gas ceiling, as the generator computes it."""
+    return 667 + ((max(gas - 100, 0) * 436907 + 65535) // 65536)
+
+
+class Costs:
+    """What each operation takes from its sending wallet, from the generator's resources."""
+
+    def __init__(self, resources):
+        self.withdrawal_fee = int(resources["withdrawal_fee"])
+        self.deposit_gas = gas_fee(int(resources["deposit_gas_ceiling"]))
+        self.transact_value = gas_fee(int(resources["transact_gas_ceiling"]))
+        # A sender keeps this much after paying an operation's attached value.
+        self.reserve = NANO + self.transact_value
+
+    def deposit_value(self, amount):
+        return amount + self.deposit_gas
+
+
+def plan_operation(notes, liability, balances, costs, setpoint, rng):
+    """The next operation, or {"exhausted": reason} when none is feasible.
+
+    The pool's liability is steered around `setpoint`: above it value is
+    withdrawn (or concentrated so it can be), below half of it a deposit is
+    made, and in between operations are random among the feasible ones.
+    Senders are the richest wallet able to pay; a withdrawal pays the poorest
+    other wallet, so the three wallets refill one another and lose only fees.
+    """
+    order = sorted(range(WALLETS), key=lambda i: (-balances[i], i))
+    can_transact = [i for i in order if balances[i] >= costs.transact_value + costs.reserve]
+    smallest = DENOMINATIONS[0]
+    can_deposit = [i for i in order if balances[i] >= costs.deposit_value(smallest) + costs.reserve]
+    positive = sorted((n for n in notes if n["amount"] > 0), key=lambda n: (-n["amount"], n["index"]))
+
+    def poorest_except(sender):
+        return min((i for i in range(WALLETS) if i != sender), key=lambda i: (balances[i], i))
+
+    def other_owner(note):
+        return rng.choice([i for i in range(WALLETS) if i != note["owner"]])
+
+    withdraw = consolidate = transfer = None
+    if len(positive) >= 2 and can_transact:
+        best = positive[:2]
+        total = best[0]["amount"] + best[1]["amount"]
+        payable = [d for d in DENOMINATIONS if d <= total - costs.withdrawal_fee - 2]
+        if payable:
+            withdraw = {"operation": "withdraw", "amount": payable[-1], "owner": other_owner(best[0]),
+                        "inputs": [best[0]["index"], best[1]["index"]]}
+        # Value that could still be withdrawn one day: each note keeps 1 nano.
+        # Below the smallest withdrawal, private operations can never return
+        # value to the wallets, so none is issued and the state is terminal
+        # unless a deposit is affordable.
+        excess = sum(n["amount"] - 1 for n in positive)
+        recoverable = excess >= smallest + costs.withdrawal_fee
+        # Concentrating value moves the smaller input into the larger. It is used
+        # only above the set-point, where the excess is far above one withdrawal,
+        # and only when no withdrawal is payable, which with a dust smaller input
+        # cannot happen (the largest note alone then funds one).
+        consolidate = {"operation": "transfer", "amount": 1, "owner": other_owner(best[0]),
+                       "inputs": [best[0]["index"], best[1]["index"]]}
+        pair = rng.sample(positive, 2)
+        pair_total = pair[0]["amount"] + pair[1]["amount"]
+        if pair_total >= 2 and recoverable:
+            transfer = {"operation": "transfer", "amount": rng.randint(1, min(NANO, pair_total - 1)),
+                        "owner": other_owner(pair[0]), "inputs": [pair[0]["index"], pair[1]["index"]]}
+    deposit = ({"operation": "deposit", "amount": smallest, "owner": rng.randrange(WALLETS)}
+               if can_deposit else None)
+
+    if liability > setpoint and (withdraw or consolidate):
+        chosen = withdraw or consolidate
+    elif liability < setpoint // 2 and deposit:
+        chosen = deposit
+    else:
+        feasible = [op for op in (deposit, transfer, withdraw) if op]
+        if not feasible:
+            if not can_transact and not can_deposit:
+                return {"exhausted": "no-funding"}
+            if len(positive) < 2 and not can_deposit:
+                return {"exhausted": "no-inputs"}
+            return {"exhausted": "no-private-value"}
+        chosen = rng.choice(feasible)
+    sender = (can_deposit if chosen["operation"] == "deposit" else can_transact)[0]
+    return {**chosen, "sender": sender, "recipient": poorest_except(sender)}
+
+
+def canonical_sha256(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def last_confirmed(output):
+    """The newest confirmed record, searching transfers.jsonl and then its rotations."""
+    for name in ["transfers.jsonl"] + [f"transfers.jsonl.{i}" for i in range(1, 5)]:
+        path = output / name
+        if not path.exists(follow_symlinks=False):
+            continue
+        rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        confirmed = [r for r in rows if r.get("kind") == "confirmed"]
+        if confirmed:
+            return confirmed[-1]
+    return None
+
+
+def verify_checkpoint(model, row, network, address, recomputed, onchain, pool_last_tx_hash, pending):
+    """Refuse to resume unless the private model, the last confirmed record and the chain agree.
+
+    `recomputed` is the generator's view of the model's state; `pool_last_tx_hash`
+    the hash of the pool account's last transaction. A record written before
+    state_sha256 existed has no global_id: the pool contract holding exactly its
+    expected state, with that record's transaction as its last, identifies the
+    chain together with the model's zerostate root.
+    """
+    require(not pending, "pending private operation requires review before resuming")
+    require(
+        model["zerostate_root"] == network["zerostate_root"] and model["pool"] == address,
+        "model belongs to another chain or pool",
     )
-    if len(notes) < 2:
-        operation = "deposit"
-    if operation == "deposit":
-        return {
-            "operation": operation,
-            "amount": rng.choice((NANO, NANO, NANO, 10 * NANO)),
-            "owner": rng.randrange(3),
-        }
-    inputs = rng.sample(notes, 2)
-    total = sum(n["amount"] for n in inputs)
-    fee = 20_000_000 if operation == "withdraw" else 0
-    maximum = min(NANO, total - fee - 2)
-    if maximum < 1 or (operation == "withdraw" and total - fee - 2 < NANO):
-        return {"operation": "deposit", "amount": NANO, "owner": rng.randrange(3)}
-    owner = rng.choice([i for i in range(3) if i != inputs[0]["owner"]])
-    return {
-        "operation": operation,
-        "amount": (
-            rng.choice(
-                [v for v in (NANO, 10 * NANO, 100 * NANO, 1000 * NANO) if v <= total - fee - 2]
-            )
-            if operation == "withdraw"
-            else rng.randint(1, maximum)
-        ),
-        "owner": owner,
-        "inputs": [n["index"] for n in inputs],
-    }
+    require(row is not None and row.get("kind") == "confirmed", "no confirmed record to resume from")
+    if "state_sha256" in row:
+        require(row["state_sha256"] == canonical_sha256(model["state"]),
+                "private model differs from the last confirmed record")
+        require(row["global_id"] == network["global_id"] and row["pool"] == address,
+                "last confirmed record belongs to another network or pool")
+    boc = base64.b64decode(row["transaction_bocs"][0])
+    require(Cell.one_from_boc(boc).hash == pool_last_tx_hash,
+            "the pool's last transaction is not the last confirmed one")
+    verify_state(recomputed, row["expected"])
+    verify_state(model["expected"], row["expected"])
+    verify_state(onchain, row["expected"])
 
 
 async def pool_state(args, address):
@@ -174,12 +276,14 @@ async def run(args):
                 await transfers.bootstrap(args, clients[0], wallets)
                 return
             status = json.loads((args.output / "status.json").read_text())
+            resuming = status["kind"] == "failed" and args.resume_after_failure
             require(
-                status["kind"] in ("bootstrapped", "confirmed"),
-                "previous operation unresolved; inspect private receipts",
+                status["kind"] in ("bootstrapped", "confirmed", "resumed") or resuming,
+                "previous operation unresolved; inspect private receipts"
+                + (" (or resume with --resume-after-failure)" if status["kind"] == "failed" else ""),
             )
             require(
-                not (args.output / "pending.json").exists(),
+                resuming or not (args.output / "pending.json").exists(),
                 "pending private operation requires review before restarting",
             )
             sequence = status.get("sequence", 0)
@@ -222,17 +326,59 @@ async def run(args):
                     require(sequence == 0, "confirmed operations but missing private model")
                     initial = await generate(generator, {"operation": "init"})
                     state, expected = initial["state"], initial["expected"]
+                costs = Costs(await generate(generator, {"operation": "resources"}))
+
+                def probe(amount):
+                    # A deposit plan for this state, used only to check the generator's rules.
+                    return generate(generator, {
+                        "operation": "deposit", "amount": amount, "owner": 0, "state": state,
+                        "global_id": network["global_id"], "pool": address.split(":")[1],
+                        "recipient": address.split(":")[1], "valid_until": int(time.time()) + 1800,
+                    })
+
+                # The denominations and the attached-value formula this driver plans
+                # with must be the generator's own.
+                for amount in DENOMINATIONS:
+                    require((await probe(amount))["value"] == costs.deposit_value(amount),
+                            "generator's attached deposit value differs from this driver's")
+                try:
+                    await probe(DENOMINATIONS[0] + 1)
+                    require(False, "generator accepted a value outside the denominations")
+                except ValueError as exc:
+                    require("denomination" in str(exc), f"unexpected refusal: {exc}")
+                if resuming:
+                    row = last_confirmed(args.output)
+                    recomputed = (await probe(DENOMINATIONS[0]))["before"]
+                    pool_account = await clients[0].raw_get_account_state(Address(address))
+                    verify_checkpoint(
+                        json.loads(statepath.read_text()), row, network, address, recomputed,
+                        await pool_state(args, address), pool_account.last_transaction_id.hash,
+                        (args.output / "pending.json").exists(),
+                    )
+                    kept = args.output / f"status.failed-{int(time.time())}.json"
+                    local.write_json(kept, status, 0o600)
+                    sequence, counts = row["sequence"], row["counts"]
+                    record(args.output, {"kind": "resumed", "sequence": sequence, "counts": counts,
+                                         "failure": status.get("error"), "failed_status": kept.name})
                 verify_state(await pool_state(args, address), expected)
                 rng = random.Random(args.seed)
                 done = 0
                 while args.count == 0 or done < args.count:
                     await asyncio.sleep(rng.uniform(args.min_interval, args.max_interval))
-                    request = choose(state, rng, sequence)
                     client = clients[sequence % len(clients)]
-                    source = rng.randrange(3)
-                    recipient_index = (source + 1) % 3
-                    sender = wallets[source].materialize(client)
-                    recipient = wallets[recipient_index].materialize(client)
+                    accounts = [w.materialize(client) for w in wallets]
+                    balances = [(await client.raw_get_account_state(a.address)).balance for a in accounts]
+                    chosen = plan_operation(state["notes"], int(state["liability"]), balances, costs,
+                                            args.liability_setpoint, rng)
+                    if "exhausted" in chosen:
+                        record(args.output, {"kind": "exhausted", "reason": chosen["exhausted"],
+                                             "sequence": sequence, "counts": counts, "balances": balances,
+                                             "liability": int(state["liability"]),
+                                             "notes": len(state["notes"])})
+                        return
+                    request = {k: chosen[k] for k in ("operation", "amount", "owner", "inputs") if k in chosen}
+                    sender = accounts[chosen["sender"]]
+                    recipient = accounts[chosen["recipient"]]
                     recipient_raw = recipient.address.to_str(is_user_friendly=False)
                     request.update(
                         state=state,
@@ -249,7 +395,7 @@ async def run(args):
                         client.raw_get_account_state(recipient.address),
                     )
                     require(
-                        before_s.balance >= plan["value"] + NANO,
+                        before_s.balance >= plan["value"] + costs.reserve,
                         "private traffic funding wallet too low",
                     )
                     body = Cell.one_from_boc(bytes.fromhex(plan["body_hex"]))
@@ -394,6 +540,9 @@ async def run(args):
                             "elapsed_seconds": round(time.monotonic() - started, 3),
                             "nodes_agree": len(clients),
                             "expected": expected,
+                            "state_sha256": canonical_sha256(state),
+                            "global_id": network["global_id"],
+                            "pool": address,
                             "transaction_bocs": [base64.b64encode(tx.data).decode(), payout_boc],
                         },
                     )
@@ -424,6 +573,10 @@ def main():
     p.add_argument("--min-interval", type=float, default=20)
     p.add_argument("--max-interval", type=float, default=60)
     p.add_argument("--seed", type=int)
+    p.add_argument("--liability-setpoint", type=int, default=50 * NANO,
+                   help="pool liability, in nanotos, the traffic steers towards")
+    p.add_argument("--resume-after-failure", action="store_true",
+                   help="resume a failed run once the private model, the last record and the chain agree")
     args = p.parse_args()
     os.umask(0o077)
     try:
