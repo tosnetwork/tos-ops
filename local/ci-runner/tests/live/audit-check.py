@@ -63,6 +63,11 @@ class Rule:
     process image; "PID1"; "UNRECORDED" for a parent whose own exec is not in
     the record (forked without exec, or exec'd before the rules were loaded).
     argv: one regex per argument, each a full match; the count must match.
+    cwd: a full-match regex for the working directory, when it matters.
+    in_worker: allowed inside Runner.Worker's tree (the hook, the runner's own
+    action unpack); everything else there is job-controlled.
+    runner: the actions runner version the rule was verified against; the
+    rule applies only while the image runs that version.
     """
 
     name: str
@@ -71,15 +76,21 @@ class Rule:
     argv: tuple[str, ...]
     parents: frozenset[str]
     hook: bool = False
+    cwd: str | None = None
+    in_worker: bool = False
+    runner: str | None = None
 
 
-def rule(name, uid, exe, argv, parents, hook=False):
-    return Rule(name, uid, exe, tuple(argv), frozenset(parents), hook)
+def rule(name, uid, exe, argv, parents, hook=False, cwd=None, in_worker=False, runner=None):
+    return Rule(name, uid, exe, tuple(argv), frozenset(parents), hook, cwd, in_worker or hook, runner)
 
 
 EXECUTOR = ["/usr/lib/systemd/systemd-executor", "--deserialize", r"\d+", "--log-level", "info",
             "--log-target", "journal-or-kmsg"]
 FINGERPRINTS = r"/etc/ssh/ssh_host_(ecdsa|ed25519|rsa)_key\.pub"
+UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+# The actions runner version the version-scoped rules were verified against.
+VERIFIED_RUNNER = "v2.338.0"
 
 # Every rule comes from an observed record of a real lifetime; extend the
 # table only from such a record, never by widening a pattern.
@@ -139,6 +150,17 @@ RULES = [
          ["fingerprints"]),
     rule("fingerprints-keygen", "0", "/usr/bin/ssh-keygen", ["ssh-keygen", "-l", "-f", FINGERPRINTS], ["fingerprints"]),
     rule("fingerprints-cat", "0", "/usr/bin/cat", ["cat", FINGERPRINTS], ["fingerprints"]),
+    # Accepted pre-admission exposure, verified on runner v2.338.0: before the
+    # job-started hook runs, Runner.Worker unpacks each remotely referenced
+    # action's tarball (tar, then gzip as its decompressor) in that action's
+    # _temp_<uuid>/_staging directory. It parses job-chosen archives; no job
+    # code runs (a remote Dockerfile or JavaScript action builds and starts
+    # only after the hook). Re-verify when the runner version changes: these
+    # rules apply only to the version they were verified on.
+    rule("action-unpack-tar", "1000", "/usr/bin/tar", ["/usr/bin/tar", "-xzf", rf"/opt/actions-runner/_work/_actions/_temp_{UUID}/{UUID}\.tar\.gz"],
+         ["WORKER"], cwd=rf"/opt/actions-runner/_work/_actions/_temp_{UUID}/_staging", in_worker=True, runner=VERIFIED_RUNNER),
+    rule("action-unpack-gzip", "1000", "/usr/bin/gzip", ["gzip", "-d"], ["action-unpack-tar"],
+         cwd=rf"/opt/actions-runner/_work/_actions/_temp_{UUID}/_staging", in_worker=True, runner=VERIFIED_RUNNER),
     # Console getty respawns.
     rule("agetty-tty", "0", "/usr/sbin/agetty", ["/sbin/agetty", "-o", r"-p -- \\u", "--noclear", "-", "linux"], ["PID1"]),
     rule("agetty-serial", "0", "/usr/sbin/agetty",
@@ -155,6 +177,7 @@ class Exec:
     exe: str
     argv: list[str] | None
     known_syscall: bool
+    cwd: str | None = None
     rule: Rule | None = None
     in_worker: bool = False
     after_hook: bool = False
@@ -208,6 +231,7 @@ def execve_argv(bodies: list[str]) -> list[str] | None:
 def exec_events(kept: list[str]) -> list[Exec]:
     syscalls: dict[int, dict[str, str]] = {}
     execves: dict[int, list[str]] = defaultdict(list)
+    cwds: dict[int, str | None] = {}
     for line in kept:
         m = RECORD.match(line.split("\x1d")[0])
         if not m:
@@ -217,20 +241,35 @@ def exec_events(kept: list[str]) -> list[Exec]:
             syscalls[serial] = {k: v.strip('"') for k, v in re.findall(r'(\w+)=("[^"]*"|\S+)', body)}
         elif kind == "EXECVE":
             execves[serial].append(body)
+        elif kind == "CWD":
+            m = re.match(r'cwd=("[^"]*"|[0-9A-Fa-f]+)$', body)
+            cwds[serial] = decode_arg(m.group(1)) if m else None
     events = []
     for serial in sorted(syscalls):
         f = syscalls[serial]
         if f.get("success") != "yes":
             continue  # a failed attempt executes nothing
         events.append(Exec(serial, f.get("pid", "?"), f.get("ppid", "?"), f.get("uid", "?"), f.get("exe", "?"),
-                           execve_argv(execves.get(serial, [])), (f.get("arch"), f.get("syscall")) in EXEC_SYSCALLS))
+                           execve_argv(execves.get(serial, [])), (f.get("arch"), f.get("syscall")) in EXEC_SYSCALLS,
+                           cwds.get(serial)))
     return events
 
 
+# The runner version of the image the lifetimes ran on; set by main.
+active_runner: str | None = None
+
+
 def matches(r: Rule, e: Exec, relations: set[str]) -> bool:
+    if r.runner is not None and r.runner != active_runner:
+        return False
     if e.uid != r.uid or e.exe != r.exe or e.argv is None or len(e.argv) != len(r.argv):
         return False
     if not all(re.fullmatch(p, a, re.S) for p, a in zip(r.argv, e.argv)):
+        return False
+    if r.cwd is not None and (e.cwd is None or not re.fullmatch(r.cwd, e.cwd)):
+        return False
+    # The archive is unpacked in its own action's staging directory.
+    if r.name == "action-unpack-tar" and not e.argv[2].startswith(e.cwd.rsplit("/_staging", 1)[0] + "/"):
         return False
     return bool(r.parents & relations)
 
@@ -271,7 +310,7 @@ def job_controlled(events: list[Exec]) -> list[Exec]:
     for e in events:
         if e.exe == WORKER_EXE and e.known_syscall:
             continue
-        if e.in_worker and not (e.rule and e.rule.hook):
+        if e.in_worker and not (e.rule and e.rule.in_worker):
             found.append(e)
         elif e.after_hook and e.rule is None:
             found.append(e)
@@ -341,12 +380,15 @@ def judge(verdict: str, kept: list[str]) -> tuple[bool, str]:
     """(passed, detail) for a valid lifetime."""
     events = classify(exec_events(kept))
     found = job_controlled(events)
+    # Accepted exposure stays visible in every verdict.
+    unpacks = sum(1 for e in events if e.rule and e.rule.name == "action-unpack-tar")
     if verdict == "denied":
         if found:
-            return False, f"job-controlled execution after a denial: {found[0].describe()} (+{len(found) - 1} more)"
-        return True, f"denied, no job-controlled execution ({len(events)} execs explained)"
+            return False, (f"job-controlled execution after a denial: {found[0].describe()} (+{len(found) - 1} more); "
+                           f"action unpacks before the hook: {unpacks}")
+        return True, f"denied, no job-controlled execution ({len(events)} execs explained; action unpacks before the hook: {unpacks})"
     if found:
-        return True, f"allowed, job-controlled execution visible ({len(found)} execs)"
+        return True, f"allowed, job-controlled execution visible ({len(found)} execs; action unpacks: {unpacks})"
     return False, "allowed but no job-controlled execution was seen; the logger is blind"
 
 
@@ -375,6 +417,16 @@ def consoles(since: str) -> dict[tuple[int, str], list[str]]:
     return groups
 
 
+def image_runner_version(images: Path = Path("/var/lib/tos-ci/images")) -> str | None:
+    """The runner version recorded in the current image's manifest."""
+    try:
+        manifest = (images / f"{(images / 'current.qcow2').readlink()}.manifest").read_text()
+    except OSError:
+        return None
+    m = re.search(r"^runner (v[0-9.]+) ", manifest, re.M)
+    return m.group(1) if m else None
+
+
 def parse_expect(values: list[str]) -> dict[str, dict[str, int]]:
     expected = {}
     for value in values:
@@ -393,7 +445,12 @@ def main() -> int:
     parser.add_argument("--since", required=True)
     parser.add_argument("--expect", action="append", default=[], help="RUN_ID=allowed:N,denied:M")
     parser.add_argument("--as-denied", action="append", default=[], help="test only: judge this run's lifetimes as denied")
+    parser.add_argument("--runner-version", help="the image's actions runner version (default: from the current image manifest)")
     args = parser.parse_args()
+    global active_runner
+    active_runner = args.runner_version or image_runner_version()
+    print(f"image runner {active_runner}; version-scoped rules verified on {VERIFIED_RUNNER}"
+          + ("" if active_runner == VERIFIED_RUNNER else ": NOT APPLIED, re-verify"))
     expected = parse_expect(args.expect)
     violations = checked = 0
     counts: dict[str, dict[str, int]] = defaultdict(lambda: {"allowed": 0, "denied": 0})

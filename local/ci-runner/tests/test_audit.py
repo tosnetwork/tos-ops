@@ -296,7 +296,7 @@ def hexarg(text: str) -> str:
 
 
 def ex(serial: int, pid: int, ppid: int, uid: int, exe: str, argv: list[str], *,
-       arch: str = "c000003e", syscall: int = 59, success: str = "yes") -> list[str]:
+       arch: str = "c000003e", syscall: int = 59, success: str = "yes", cwd: str | None = None) -> list[str]:
     """SYSCALL + EXECVE records of one exec event, as auditd writes them."""
     lines = [f"type=SYSCALL msg=audit(1791485696.000:{serial}): arch={arch} syscall={syscall} success={success} exit=0 "
              f"a0=0 a1=0 a2=0 a3=0 items=2 ppid={ppid} pid={pid} auid=4294967295 uid={uid} gid={uid} euid={uid} "
@@ -306,6 +306,8 @@ def ex(serial: int, pid: int, ppid: int, uid: int, exe: str, argv: list[str], *,
         args = " ".join(f'a{i}="{a}"' if a and " " not in a and '"' not in a else f"a{i}={hexarg(a)}"
                         for i, a in enumerate(argv))
         lines.append(f"type=EXECVE msg=audit(1791485696.000:{serial}): argc={len(argv)} {args}")
+    if cwd is not None:
+        lines.append(f'type=CWD msg=audit(1791485696.000:{serial}): cwd="{cwd}"')
     lines.append(f"type=PROCTITLE msg=audit(1791485696.000:{serial}): proctitle={hexarg(' '.join(argv))}")
     return lines
 
@@ -532,6 +534,69 @@ class ExecutionTest(unittest.TestCase):
         bodies = ['argc=2 a0="cat" a1_len=8 a1[0]=2F657463 a1[1]=2F6F7300']
         self.assertEqual(check_mod.execve_argv(bodies), ["cat", "/etc/os\x00"])
         self.assertIsNone(check_mod.execve_argv(['argc=3 a0="cat" a1="x"']))
+
+
+T1 = "00ecb0fd-cee1-404b-9f8c-661eb0000001"
+T2 = "54d5a02b-866b-4110-be8c-3c0547e00002"
+STAGING = f"/opt/actions-runner/_work/_actions/_temp_{T1}/_staging"
+TARBALL = f"/opt/actions-runner/_work/_actions/_temp_{T1}/{T2}.tar.gz"
+
+
+def unpack(*, uid: int = 1000, ppid: int = 1658, argv: list[str] | None = None, cwd: str = STAGING) -> list[list[str]]:
+    """As observed: Runner.Worker runs tar, whose decompressor child is gzip."""
+    return [ex(0, 1677, ppid, uid, "/usr/bin/tar", argv or ["/usr/bin/tar", "-xzf", TARBALL], cwd=cwd),
+            ex(0, 1679, 1677, uid, "/usr/bin/gzip", ["gzip", "-d"], cwd=cwd)]
+
+
+class ActionUnpackTest(unittest.TestCase):
+    """The runner's own pre-hook unpack: explained only on the verified runner, and only exactly."""
+
+    def setUp(self) -> None:
+        self.saved = check_mod.active_runner
+        check_mod.active_runner = check_mod.VERIFIED_RUNNER
+
+    def tearDown(self) -> None:
+        check_mod.active_runner = self.saved
+
+    def judge(self, events: list[list[str]]) -> tuple[bool, str]:
+        problems, kept = check_mod.evidence(data(lifetime(before_hook=events)), NONCE)
+        self.assertEqual(problems, [])
+        return check_mod.judge("denied", kept)
+
+    def test_the_observed_unpack_is_explained_and_counted(self) -> None:
+        passed, detail = self.judge(unpack())
+        self.assertTrue(passed, detail)
+        self.assertIn("action unpacks before the hook: 1", detail)
+
+    def test_another_runner_version_does_not_explain_it(self) -> None:
+        check_mod.active_runner = "v2.339.0"
+        passed, detail = self.judge(unpack())
+        self.assertFalse(passed)
+        self.assertIn("/usr/bin/tar", detail)
+
+    def test_only_the_exact_unpack_is_explained(self) -> None:
+        other_temp = f"/opt/actions-runner/_work/_actions/_temp_{T2}/{T2}.tar.gz"
+        cases = {
+            "another working directory": unpack(cwd="/opt/actions-runner/_work/_temp"),
+            "a tarball from another staging area": unpack(argv=["/usr/bin/tar", "-xzf", other_temp]),
+            "an extra argument": unpack(argv=["/usr/bin/tar", "-xzf", TARBALL, "-C", "/"]),
+            "root instead of the runner account": unpack(uid=0),
+            "no working directory record": [ex(0, 1677, 1658, 1000, "/usr/bin/tar", ["/usr/bin/tar", "-xzf", TARBALL])],
+        }
+        for name, events in cases.items():
+            with self.subTest(name):
+                passed, detail = self.judge(events)
+                self.assertFalse(passed, detail)
+
+    def test_an_unpack_outside_the_worker_is_not_one(self) -> None:
+        # Under another parent the rule does not apply: after the hook it is
+        # simply unexplained, and before it, outside the Worker, not counted.
+        problems, kept = check_mod.evidence(data(lifetime(unpack(ppid=1613))), NONCE)
+        self.assertEqual(problems, [])
+        passed, detail = check_mod.judge("denied", kept)
+        self.assertFalse(passed, detail)
+        passed, detail = self.judge(unpack(ppid=1613))
+        self.assertIn("action unpacks before the hook: 0", detail)
 
 
 class ReportTest(unittest.TestCase):

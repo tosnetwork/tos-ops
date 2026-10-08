@@ -50,15 +50,49 @@ Nothing runs a real job until the repository variable `SELF_HOSTED_LINUX` is
   - supervisor: `journalctl -u tos-ci-supervisor`, one JSON object per line;
   - a slot's guest console: `journalctl -u tos-ci-vm@N`.
 
+## Verification mode
+
+With auditing on, every `execve` in a VM is recorded:
+- auditd writes its own log, without rotation;
+- `audit-forward` streams it, from its first byte, over a flow-controlled virtio-serial port;
+- the host's `tos-ci-audit@N` writer archives it under `/var/lib/tos-ci/audit/slotN/`. The kernel caps each file at 1 GiB, and `audit-prune` keeps closed files within 5 GiB and 200 files.
+
+The guest kernel boots with `audit=1`, so no record is dropped without being counted.
+
+`tests/live/audit-check.py` judges each lifetime from its console and its archive:
+- **Valid** needs one nonce-bound end marker, contiguous serials, `lost=0` and the hook's own execution.
+- **Denied** passes only with no job-controlled execution.
+- **Allowed** passes only if job-controlled execution is visible.
+
+Every exec must match an explicit rule in its table. The live controls are `tests/live/*-controls.sh` and the rounds in the memo.
+
+The archives hold each VM's one-time runner registration: its JIT config appears in the runner's argv. They are readable only by root and the slot account, and are never copied out of the host.
+
+### Accepted exposure: actions are unpacked before admission
+
+Before the job-started hook runs, the runner downloads every remotely referenced action and unpacks its tarball, as the `runner` account inside the VM: `tar -xzf …/_actions/_temp_<uuid>/<uuid>.tar.gz` in `…/_temp_<uuid>/_staging`, with `gzip -d`.
+
+So a denied job can make the runner parse an archive it chose. No job code runs: verified on runner v2.338.0, a remote Dockerfile action is built and a JavaScript action is started only after the hook.
+
+The checker explains exactly this unpack, only for the verified runner version, and reports the count in every verdict.
+
+**When the image's runner version changes, rerun the pre-admission and `--as-denied` controls before raising `VERIFIED_RUNNER` in the checker.** Until then the unpack fails every denied lifetime.
+
+## Activation checklist
+
+- [ ] The owner decides whether to restrict the repository's Actions policy to "Allow select actions" (GitHub-owned, verified creators, `tosnetwork/*`). That narrows which archives can reach the pre-admission unpack. It is an owner decision, and nothing here changes it.
+- [ ] `"audit": false` installed (verification mode off).
+- [ ] Repository variables `SELF_HOSTED_LINUX` and `CI_TRUSTED_LOGINS` set.
+
 ## Deviations from the memo design
 
 - The code lives under `local/ci-runner/` in this repository, rather than a
   top-level `ci-runner/`, because this repository is organised per network and
   the runner host is the local development host.
-- Execution auditing (every `execve` streamed to the console) is switched on
-  only for verification runs (`"audit": true` in `config.json`). A real build
-  executes millions of processes, so auditing every job would flood the
-  console. The verification tests that need the audit stream run with it on.
+- Execution auditing is switched on only for verification runs (`"audit":
+  true` in `config.json`, set through `install.sh` so the install manifest
+  matches). A real build executes millions of processes. See "Verification
+  mode" below.
 - A job that shows as busy on GitHub without an admission record is stopped
   after `unadmitted_busy_seconds`. This is the host-side form of the
   "activity without admission" violation.
