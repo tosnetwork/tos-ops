@@ -408,19 +408,30 @@ class Supervisor:
                 conn, _ = listener.accept()
             except (OSError, ValueError):
                 return  # the slot finished and its listener was closed
-            with conn:
-                if not self._peer_ok(conn, slot):
-                    log("admission_peer_refused", slot=slot.number)
-                    continue
-                while slot.nonce == nonce:
+            # Every connection is checked as soon as it is accepted, so a
+            # wrong peer is refused at once rather than left queued.
+            if not self._peer_ok(conn, slot):
+                log("admission_peer_refused", slot=slot.number)
+                conn.close()
+                continue
+            threading.Thread(
+                target=self._serve_conn, args=(slot, conn, nonce), daemon=True
+            ).start()
+
+    def _serve_conn(self, slot: Slot, conn: socket.socket, nonce: str) -> None:
+        with conn:
+            while slot.nonce == nonce and not self.stopping.is_set():
+                try:
                     frame = self._read_frame(conn)
-                    if frame is None:
-                        break
-                    reply = self._admit(slot, frame)
-                    try:
-                        conn.sendall((json.dumps(reply, sort_keys=True) + "\n").encode())
-                    except OSError:
-                        break
+                except (OSError, ValueError):
+                    return
+                if frame is None:
+                    return
+                reply = self._admit(slot, frame)
+                try:
+                    conn.sendall((json.dumps(reply, sort_keys=True) + "\n").encode())
+                except OSError:
+                    return
 
     def _admit(self, slot: Slot, frame: bytes) -> dict:
         with self.lock:

@@ -54,8 +54,10 @@ AmbientCapabilities=
 DevicePolicy=closed
 DeviceAllow=/dev/kvm rw
 DeviceAllow=/dev/net/tun rw
-# "-": the slot directory does not exist until slot-prepare creates it, and
-# systemd sets up the namespace before every command, "+" ones included.
-# QEMU starts after slot-prepare, when the path exists and the rule applies.
-ReadWritePaths=-/var/lib/tos-ci/slot%i -/run/tos-ci/slot%i
+# The store root, not the slot directory: a ReadWritePaths entry is a bind
+# mount in this unit's namespace, and a bind on the slot directory makes it a
+# mount point that slot-cleanup cannot remove. Writes stay limited by file
+# permissions: only this slot's directory (0700) is writable by this account;
+# images and state are root's, seeds are the supervisor's.
+ReadWritePaths=/var/lib/tos-ci
 UMask=0077
