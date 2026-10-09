@@ -35,6 +35,13 @@ CLOUD = "https://cloud-images.ubuntu.com/noble/current"
 CLOUD_IMAGE = "noble-server-cloudimg-amd64.img"
 KEYRING = "/usr/share/keyrings/ubuntu-cloudimage-keyring.gpg"
 LLVM_KEY_FINGERPRINT = "6084F3CF814B57C1CF12EFD515CF4D18AF4F7421"
+# Exactly the keyring, list file and deb line tos's
+# scripts/install-llvm-toolchain.sh writes (tests/test_llvm_source.py derives
+# them from it). A job running that script then rewrites the same files; a
+# second Signed-By for the same source would make apt refuse every source.
+LLVM_KEYRING = "/usr/share/keyrings/apt-llvm-org.gpg"
+LLVM_SOURCE_LIST = "/etc/apt/sources.list.d/apt-llvm-org.list"
+LLVM_SOURCE_LINE = f"deb [signed-by={LLVM_KEYRING}] https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main"
 BUILD_USER = "tos-ci-build"
 TAP = "tcib"
 BUILD_TIMEOUT = 45 * 60
@@ -146,9 +153,9 @@ export DEBIAN_FRONTEND=noninteractive
 keys=$(gpg --show-keys --with-colons /root/llvm.asc)
 [ "$(printf '%s\\n' "$keys" | grep -c '^pub:')" = 1 ]
 [ "$(printf '%s\\n' "$keys" | awk -F: '/^pub:/ {{getline; print $10; exit}}')" = '{LLVM_KEY_FINGERPRINT}' ]
-gpg --dearmor -o /usr/share/keyrings/llvm.gpg /root/llvm.asc
+gpg --dearmor -o {LLVM_KEYRING} /root/llvm.asc
 rm -f /root/llvm.asc
-echo 'deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main' > /etc/apt/sources.list.d/llvm.list
+echo '{LLVM_SOURCE_LINE}' > {LLVM_SOURCE_LIST}
 apt-get update -q
 apt-get install -y -q {" ".join(LLVM_PACKAGES)}
 apt-get install -y -q {" ".join(WORKFLOW_PACKAGES)}
