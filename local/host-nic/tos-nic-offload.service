@@ -1,0 +1,12 @@
+[Unit]
+Description=Disable TSO/GSO on the e1000e uplink (I219 transmit hang workaround)
+BindsTo=sys-subsystem-net-devices-eno1.device
+After=sys-subsystem-net-devices-eno1.device
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/ethtool -K eno1 tso off gso off
+
+[Install]
+WantedBy=sys-subsystem-net-devices-eno1.device multi-user.target

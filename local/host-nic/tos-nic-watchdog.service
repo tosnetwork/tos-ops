@@ -1,0 +1,15 @@
+[Unit]
+Description=Recover the e1000e uplink when its transmit queue wedges
+After=network-online.target tos-nic-offload.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -I /usr/local/lib/tos-host-nic/nic-watchdog.py --interface eno1 --driver e1000e
+Restart=always
+RestartSec=5
+# Must keep running under memory pressure from the CI VMs and the nodes.
+OOMScoreAdjust=-900
+
+[Install]
+WantedBy=multi-user.target
