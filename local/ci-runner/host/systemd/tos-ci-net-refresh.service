@@ -1,8 +1,0 @@
-[Unit]
-Description=Refresh the host public IPv4 blocked for CI VMs
-Requires=tos-ci-net.service
-After=tos-ci-net.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/lib/tos-ci/net-setup refresh

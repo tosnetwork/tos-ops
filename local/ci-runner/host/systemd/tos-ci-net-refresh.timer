@@ -1,9 +1,0 @@
-[Unit]
-Description=Refresh the host public IPv4 blocked for CI VMs
-
-[Timer]
-OnBootSec=10min
-OnUnitActiveSec=1h
-
-[Install]
-WantedBy=timers.target
