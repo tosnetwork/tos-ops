@@ -91,6 +91,11 @@ MANAGER_RATE, MANAGER_BURST = 32, 128
 # is 7). Its 22 clients, 7 probes, 7 native polls, 7 collectors and the witness
 # comparer, each hold one request at a time.
 MANAGER_REGULAR_REQUESTS = 32
+# The manager refuses every write once evidence.db reaches its quota, and its
+# retention pass needs to write to free space, so a full database stays full.
+# With every source delivered, six hours of evidence is about 250 MB on disk;
+# 1 GiB keeps the six-hour window at a quarter of the quota.
+EVIDENCE_QUOTA_BYTES = 1 << 30
 WITNESS_LAG_BLOCKS = 150
 USER_UNIT_DIR = Path.home() / ".config/systemd/user"
 ROOT_UNIT_DIR = Path("/etc/systemd/system")
@@ -331,7 +336,7 @@ def configs(state: Path, network: str, pins: dict[str, str]) -> dict[str, dict]:
         "control_db": str(state / "control/control.db"),
         "evidence_db": str(state / "evidence/evidence.db"),
         "control_quota_bytes": "67108864",
-        "evidence_quota_bytes": "268435456",
+        "evidence_quota_bytes": str(EVIDENCE_QUOTA_BYTES),
         "listen": MANAGER,
         "ingest_token_file": ingest,
         "read_token_file": str(config / "manager-read.token"),
