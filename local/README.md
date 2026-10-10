@@ -337,6 +337,57 @@ Keep node health collection running independently of the bounded election
 submission driver. Resetting the chain again requires repeating this binding
 procedure, not merely restarting the previous monitoring units.
 
+### Health monitoring certificates
+
+The stack authenticates every hop with a private development CA in `pki/`: a
+server certificate for the eight TLS ingress listeners (SAN `localhost`,
+`127.0.0.1`) and two client identities, probe and reader. The eight ingress
+configs pin the two client certificates by the SHA-256 of their DER encoding.
+The CA key is not kept, so a renewal re-issues the whole set. A certificate that
+expires stops monitoring without a clear error, as it did on 2026-10-06.
+
+`local/scripts/health-pki.py` renews it:
+
+```bash
+local/scripts/health-pki.py check            # expiry of the four certificates
+local/scripts/health-pki.py rotate           # renew now
+```
+
+A rotation issues the new set (30 days by default), moves the pins in the
+eight ingress configs, restarts the ingress units and then the other stack
+units (never the edges, timers or itself), and proves monitoring works: every
+listener serves the new server certificate for both names, both new
+identities pass their routes, the replaced identities and an unpinned
+certificate from the new CA are refused, `observe.py` sees all seven nodes
+healthy and the manager's evaluation sequence advances. Verification is never
+disabled to rotate.
+
+It is a journaled transaction (`pki-rotation.json`) under a lock. Each live
+file is replaced atomically, so an interrupted run is finished or undone by the
+next one. If verification fails and the old certificates are still valid, the
+old set is restored and verified (exit 1). If that fails too, or the old set has
+expired, the run ends in `recovery_failed` (exit 3), keeps every artifact, and
+reports the same failure on each later run until an operator chooses:
+
+```bash
+local/scripts/health-pki.py rotate --resolve keep-new     # or restore-old
+```
+
+Backups of the replaced files are kept under `retired/` (newest two).
+
+Install the daily timer once. It rotates when a certificate has seven days
+left, so it has seven attempts before expiry:
+
+```bash
+cp local/systemd/user/tos-local-health-pki.* ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now tos-local-health-pki.timer
+systemctl --user list-timers tos-local-health-pki.timer
+journalctl --user -u tos-local-health-pki.service
+```
+
+The units expect this repository at `~/network-settings`.
+
 ## Services and configuration
 
 | Service | Database | JSON-RPC |
