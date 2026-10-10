@@ -87,6 +87,10 @@ QUERY = "127.0.0.1:19690"
 # per 15 s tick about 7 probe, 7 collector, 7 witness and 70 native-poll frames,
 # sent together. 32/s with a burst of 128 absorbs a whole tick with room to spare.
 MANAGER_RATE, MANAGER_BURST = 32, 128
+# Concurrent non-heartbeat requests the manager ingress serves (the node default
+# is 7). Its 22 clients, 7 probes, 7 native polls, 7 collectors and the witness
+# comparer, each hold one request at a time.
+MANAGER_REGULAR_REQUESTS = 32
 WITNESS_LAG_BLOCKS = 150
 USER_UNIT_DIR = Path.home() / ".config/systemd/user"
 ROOT_UNIT_DIR = Path("/etc/systemd/system")
@@ -315,6 +319,7 @@ def configs(state: Path, network: str, pins: dict[str, str]) -> dict[str, dict]:
         **ingress(state, f"127.0.0.1:{MANAGER_TLS}", MANAGER, pins, ("manager_ingest", "manager_reader")),
         "rate_per_second": MANAGER_RATE,
         "burst": MANAGER_BURST,
+        "regular_request_limit": MANAGER_REGULAR_REQUESTS,
     }
     try:
         inventory = json.loads(

@@ -158,6 +158,9 @@ def test_first_start_generates_a_complete_bound_stack(env):
         assert {p["alias"]: p["certificate_sha256"] for p in peers} == pins
     ingress = json.loads((state / "config/manager-ingress.json").read_text())
     assert (ingress["rate_per_second"], ingress["burst"]) == (deploy.MANAGER_RATE, deploy.MANAGER_BURST)
+    assert ingress["regular_request_limit"] == 32
+    for index in range(1, 8):
+        assert "regular_request_limit" not in json.loads((state / f"config/edge-ingress-{index}.json").read_text())
     witness = json.loads((state / "config/witness-compare.json").read_text())
     assert witness["observers"] == ["observer5", "observer6"] and len(witness["validators"]) == 5
     manager = json.loads((state / "config/manager.json").read_text())
