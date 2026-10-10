@@ -307,28 +307,36 @@ old retained evidence as current health.
 ### Rebinding the local health stack
 
 The local stack lives in `~/.local/state/tos-local-health/<first 12 hex of the
-network ID>/`. It has 31 user units (`tos-local-health-*`) and seven system
-units (`tos-local-health-edge-<i>`, bound to the validator's PID). To rebind it
-after a reset:
+network ID>/`. It has 32 user units (`tos-local-health-*`, including the
+witness comparer) and seven system units (`tos-local-health-edge-<i>`, bound to
+the node's PID). `local/scripts/health-deploy.py` builds all of it from this
+repository: every config and unit is generated, the manager's rule inventory
+comes from `local/health/manager-inventory.json`, and certificate pins are
+computed from the live PKI. After a reset, once `setup-testnet.sh` has
+finished and the nodes run:
 
-1. Take the network ID from the **new** chain:
-   `sudo jq -r .zerostate_root /data/network.json`. It must equal the
-   `payload.network_id` that a node reports at
-   `http://127.0.0.1:901<i>/health-snapshot`. Read it only after
-   `setup-testnet.sh` has finished: a value read before the reset belongs to
-   the previous chain. The symptom is an edge logging
-   `native sample refused: native v3 identity or generation mismatch` every
-   minute, with every MCP snapshot at `CACHE_MISS`.
-2. Stop the user units and the edges. Create the new directory with copies of
-   `bin/`, `pki/`, `config/` and `observe.py`, and empty `control/`,
-   `evidence/`, `query/` and `sockets/`, so that no old database is reused.
-   Replace the old network ID and directory name in the copied `config/*` and
-   in all 38 unit files.
-3. `daemon-reload` both managers, start the units, wait about three minutes,
-   then run `observe.py` from the new directory. Expected: all seven nodes
-   answer, observers `ok` and validators `partial` with the known gaps listed
-   above. `host` and `telemetry` answer `CACHE_MISS` on this deployment: no
-   collector feeds them, and they did not before the reset either.
+```bash
+(cd "$TOS_ROOT/tools/node-health-monitor" && cargo build --release --locked --features tos-health-services/mcp)
+TOS_ROOT="$TOS_ROOT" local/scripts/health-deploy.py configure --start
+```
+
+It refuses (exit 2, nothing changed) unless `network.json`, the zero state in
+`/data/tos-global.json` and all seven node units agree, each unit running with
+its `--health-node-id` and `--exporter-address`. A new network gets a new
+directory with fresh databases and tokens; the previous directory is left as
+it was. Tokens, the PKI and databases of an existing directory are kept, so
+running it again only regenerates configs and units. With `--start` it
+restarts the whole stack, waits until every edge's native sample reports the
+expected alias and network ID, and until `health-observe.py` sees all seven
+nodes, and only then records the directory in `~/.local/state/tos-local-health/active`
+(exit 1 if that fails). Switching to a new network needs `--start`; until the
+switch verifies, `activation-pending` there stops PKI rotation. Without
+`--start` it rewrites the files of the active stack and restarts nothing.
+
+`local/scripts/health-observe.py` takes one MCP snapshot of every node and saves
+it under the state directory's `observe/`. Expected: all seven nodes answer,
+observers `ok` and validators `partial` with the known gaps listed above;
+`host` answers `CACHE_MISS` until the query serves it.
 
 The validator restart in a reset stops the edges (`BindsTo=`). Start them again
 after `setup-testnet.sh`, even when the network ID does not change.
@@ -358,7 +366,7 @@ eight ingress configs, restarts the ingress units and then the other stack
 units (never the edges, timers or itself), and proves monitoring works: every
 listener serves the new server certificate for both names, both new
 identities pass their routes, the replaced identities and an unpinned
-certificate from the new CA are refused, `observe.py` sees all seven nodes
+certificate from the new CA are refused, `health-observe.py` sees all seven nodes
 healthy and the manager's evaluation sequence advances. Verification is never
 disabled to rotate.
 

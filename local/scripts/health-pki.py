@@ -64,9 +64,13 @@ OPERATIONS = {
 }
 INGRESS_CONFIGS = tuple(f"edge-ingress-{i}.json" for i in range(1, 8)) + ("manager-ingress.json",)
 CORE_SCOPES = ("process", "consensus", "storage", "chain")
-CACHE_ONLY_SCOPES = ("host", "telemetry")
+CACHE_ONLY_SCOPES = ("host",)
 PKI_UNITS = ("tos-local-health-pki.service", "tos-local-health-pki.timer")
 JOURNAL = "pki-rotation.json"
+OBSERVE = Path(__file__).resolve().parent / "health-observe.py"
+# Shared with health-deploy.py, in the health root: the lock both take first, the
+# pointer to the active state directory, and the marker of an unfinished switch.
+ROOT_LOCK, ACTIVE, PENDING = "deploy.lock", "active", "activation-pending"
 KEEP_RETIRED = 2
 REJECTED, TRANSPORT, DROPPED = "rejected", "transport", "dropped"
 # TLS alerts in which a server refuses the client's certificate (RFC 8446 6.2);
@@ -304,12 +308,11 @@ class Stack:
             connection.close()
 
     def observe(self) -> list[dict]:
-        script = self.state / "observe.py"
-        result = run([sys.executable, str(script)], timeout=300)
+        result = run([sys.executable, str(OBSERVE), "--state-dir", str(self.state)], timeout=300)
         text = result.stdout.decode(errors="replace")
         match = re.search(r"^saved (\S+)$", text, re.M)
         if result.returncode != 0 or not match:
-            raise Unhealthy(f"observe.py failed: {(text + result.stderr.decode(errors='replace')).strip()[-300:]}")
+            raise Unhealthy(f"health-observe failed: {(text + result.stderr.decode(errors='replace')).strip()[-300:]}")
         return json.loads(Path(match.group(1)).read_text())
 
     def sleep(self, seconds: float) -> None:
@@ -405,7 +408,11 @@ def stack_units(state: Path, present: list[str]) -> tuple[list[str], list[str]]:
         clients.append(f"tos-local-health-collector-{number.group(1)}.service")
     for prefix in ("probe", "native-poll"):
         clients += [f"tos-local-health-{path.stem}.service" for path in sorted(config.glob(f"{prefix}-*.json"))]
-    for config_name, unit in (("manager.json", "manager"), ("query-inventory.json", "query")):
+    for config_name, unit in (
+        ("manager.json", "manager"),
+        ("query-inventory.json", "query"),
+        ("witness-compare.json", "witness-compare"),
+    ):
         if (config / config_name).exists():
             clients.append(f"tos-local-health-{unit}.service")
     expected = set(ingress) | set(clients)
@@ -538,7 +545,7 @@ def healthy(rows: list[dict], nodes: set[str]) -> str | None:
         for scope in CORE_SCOPES + CACHE_ONLY_SCOPES:
             result = results.get(scope) or {}
             good = result.get("status") in ("ok", "partial") and not result.get("error")
-            # The one allowed exception: no collector feeds host and telemetry.
+            # The one allowed exception: the query does not serve host yet.
             cache_miss = (
                 scope in CACHE_ONLY_SCOPES
                 and result.get("status") == "error"
@@ -861,12 +868,19 @@ class Rotation:
 # --- command line -------------------------------------------------------------
 
 
-def state_dir(given: Path | None) -> Path:
+def state_dir(given: Path | None, root: Path = HEALTH_ROOT) -> Path:
+    """--state-dir, else the directory health-deploy published as active, else the only one."""
     if given:
         return given.resolve()
-    candidates = [path for path in HEALTH_ROOT.iterdir() if path.is_dir()] if HEALTH_ROOT.is_dir() else []
+    pointer = root / ACTIVE
+    if pointer.exists():
+        name = pointer.read_text().strip()
+        if not name or "/" in name or name in (".", "..") or not (root / name).is_dir():
+            raise Refusal(f"{pointer} names {name!r}, not a state directory under {root}")
+        return root / name
+    candidates = [path for path in root.iterdir() if path.is_dir()] if root.is_dir() else []
     if len(candidates) != 1:
-        raise Refusal(f"expected one state directory under {HEALTH_ROOT}, found {len(candidates)}; pass --state-dir")
+        raise Refusal(f"expected one state directory under {root}, found {len(candidates)}; pass --state-dir")
     return candidates[0]
 
 
@@ -881,7 +895,7 @@ def check(state: Path, within_days: float, now: float) -> int:
     return 1 if due else 0
 
 
-def main(argv: list[str] | None = None, stack_factory=Stack) -> int:
+def main(argv: list[str] | None = None, stack_factory=Stack, root: Path = HEALTH_ROOT) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("check", "rotate"):
@@ -892,19 +906,30 @@ def main(argv: list[str] | None = None, stack_factory=Stack) -> int:
     sub.choices["rotate"].add_argument("--days", type=int, default=30)
     sub.choices["rotate"].add_argument("--resolve", choices=("keep-new", "restore-old"))
     args = parser.parse_args(argv)
+    if args.state_dir:
+        root = args.state_dir.resolve().parent
     try:
-        state = state_dir(args.state_dir)
-        stack = stack_factory(state)
         if args.command == "check":
-            return check(state, args.within_days, stack.now())
+            state = state_dir(args.state_dir, root)
+            return check(state, args.within_days, stack_factory(state).now())
         if not 2 <= args.days <= 365:
             raise Refusal("--days must be between 2 and 365")
-        with open(state / "pki.lock", "w") as lock:
+        # The health-root lock first (health-deploy takes it too), then the state's own.
+        with open(root / ROOT_LOCK, "w") as root_lock:
             try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(root_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                raise Refusal("another rotation is in progress") from None
-            return Rotation(state, stack).rotate(args.days, args.if_due_within_days, args.resolve)
+                raise Refusal("a deployment or another rotation holds the health-root lock") from None
+            if (root / PENDING).exists():
+                raise Refusal(f"a stack switch is unfinished ({root / PENDING}); finish it with health-deploy.py first")
+            state = state_dir(args.state_dir, root)
+            stack = stack_factory(state)
+            with open(state / "pki.lock", "w") as lock:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    raise Refusal("another rotation is in progress") from None
+                return Rotation(state, stack).rotate(args.days, args.if_due_within_days, args.resolve)
     except Refusal as error:
         log(f"REFUSED: {error}")
         return EXIT_REFUSED
