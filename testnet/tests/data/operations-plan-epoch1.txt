@@ -1,0 +1,32 @@
+Kind 4 renewal (deposit by deficit; every other field replaces the stored one)
+────────────────────────────────────────────────────────────────────────
+  Inputs:              read at masterchain block 5175 (root hash c6068e61faca608113b041d3013218d6bff3cce3a0351d0e6e3f57a6bb2e63e6); a relay or root action after that block changes the funds, epoch or nonce and invalidates this plan, so re-run it immediately before signing
+  Payer:               -1:294974d03f4c811d5b550812f633d188d7c035923151e267fe208ec52b2fd4d6
+  Deposit:             20.000000000 TOS
+  Funds after:         20.000000000 TOS
+  Allowance:           20.000000000 TOS
+  Per-request limit:   8.589600000 TOS
+  Storage floor:       5.000000000 TOS
+  Expires at:          1792651469
+  Required value:      22.558960000 TOS (deposit + gas_fee(-1, 200000) + control_value)
+  Message value:       23.558960000 TOS
+  Balance after:       34.990990000 TOS
+  Storage forecast:    1.463047496 TOS (a forecast of the storage charged from the controller's last payment through the expiry 1792651469, plus any recorded storage debt, at the occupancy and prices of block 5175; the request rewrites the controller's data and relays add state, so actual charges can differ. It is not a guarantee)
+  Capital required:    26.463047496 TOS (funds + floor + storage forecast)
+  Root epoch / nonce:  0 / 0
+  Valid until:         1791789269
+  [WARNING] after renewal: the funded runway is 262144 s (warning below 648000 s); renew by deficit
+
+1. Where the controller root seed is held (offline), run:
+
+   tos-pq-controller fund-operations ROOTSEED 2 21380987703eb9b03e8ec236bf23a457a44aea36118c4f467bfd082ca1d32a77 0 0 1791789269 te6ccgEBAQEAPgAAd5/lKS6aB+mQI6tqoQJexnoxGvgGskYqPEz/xBHYpWX6msoJUC+QAKCVAvkACgP/9coAoCVAvkANWzYZsA==
+
+2. Send its output as the body of a bounceable message from the payer wallet
+   (-1:294974d03f4c811d5b550812f633d188d7c035923151e267fe208ec52b2fd4d6) to the controller, with exactly the message value, before
+   valid_until. For a wallet configured in tosctl:
+
+   tosctl wallet send --from <PAYER_WALLET> --to -1:21380987703eb9b03e8ec236bf23a457a44aea36118c4f467bfd082ca1d32a77 --amount-nanotos 23558960000 --body-boc <SIGNED_BODY_B64> --bounce
+
+3. Run `tosctl controller operations status --controller -1:21380987703eb9b03e8ec236bf23a457a44aea36118c4f467bfd082ca1d32a77` and check
+   that the nonce advanced, the recorded values are the ones above, and no
+   [BLOCKING] capital warning remains.

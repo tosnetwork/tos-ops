@@ -13,9 +13,10 @@ It follows two documents and does not restate them:
   node roles, key custody, the two-phase first start, retention and forbidden
   options. A testnet node is a production node on a different chain.
 
-**Status: proposed, not yet run on real hosts.** The scripts have been run end
-to end on one host by `scripts/rehearse-loopback.sh` (see "Verification").
-Nothing here has produced a public network yet.
+**Status: epoch 1 ran on five hosts on 2026-10-12 for 5.2 hours and was
+stopped for a reset.** What it found, and what epoch 2 waits on, is memo
+`public-testnet/EPOCH-1-FINDINGS.md`. The ceremony scripts also run end to end
+on one host by `scripts/rehearse-loopback.sh` (see "Verification").
 
 ## What differs from production and from local
 
@@ -51,11 +52,17 @@ testnet/
 │   ├── build-node-binaries.sh    compile the role's binaries on the host itself
 │   ├── setup-time.sh             first on every host: ntpsec over IPv4, proven to follow a server
 │   ├── preflight.py              before installing: host floors, time source, ufw, and the UDP mesh between hosts
+│   ├── build-tosctl.sh           compile tosctl on a validator host from the node's commit
+│   ├── init-operator.sh          tosctl vault, console key and operator wallet on a validator host (root)
+│   ├── enable-elections.sh       election policy and the election task on a validator host (root)
+│   ├── testnet-elections.py      fund | onboard: bring a genesis validator into elections (coordinator)
+│   ├── retire-host.sh            archive a host's evidence, then retire it from an ended epoch (root)
 │   └── rehearse-loopback.sh      the whole ceremony on one host, unprivileged
 ├── systemd/
 │   ├── tos-testnet-validator.service
 │   ├── tos-testnet-fullnode.service
-│   └── tos-testnet-dht.service
+│   ├── tos-testnet-dht.service
+│   └── tos-testnet-elections.service
 ├── firewall/tos-testnet.nft      inbound policy example
 └── tests/                        pytest for the scripts
 ```
@@ -149,13 +156,13 @@ reuse across resets, and the validator schedule checks.
 
 ## What is still open
 
-- A real multi-host rehearsal with four operators, then the plan's two
-  independent G0 rehearsal receipts.
-- Elections after genesis: controller deployment, operating authorization and
-  stakes follow `Production-Node.md` section 9 with `tosctl`. Nothing here
-  automates them. Funding the four controllers from the bootstrap wallet is a
-  separate, reviewed step, and it must finish before the first election opens
-  at T + 4 h (`genesis.json` `first_election`).
+- The plan's two independent G0 rehearsal receipts. Epoch 1 was a real
+  multi-host run, but by one coordinator acting for all four operators.
+- Elections: `testnet-elections.py onboard` (CEREMONY.md section 8.1) codifies
+  what epoch 1 ran by hand. Its parsers are pinned to real `tosctl` output, but
+  the whole command has not yet run end to end; its first run is the next
+  epoch, and it must finish before the first election opens at T + 4 h
+  (`genesis.json` `first_election`).
 - Authenticated global-config distribution (production gap G7) and a refresh
   schedule for `init_block` (`scripts/refresh-global-config-init-block.py` in
   tos, run with `--global-id 2`).

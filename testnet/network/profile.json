@@ -42,6 +42,15 @@
     "validator": {"state_ttl": 3600, "archive_ttl": 86400},
     "fullnode": {"state_ttl": 86400, "archive_ttl": 604800}
   },
+  "elections": {
+    "note": "What onboard-validator.sh moves for each genesis validator, as run in epoch 1. The bootstrap wallet holds 100,000 TOS: four operators at 20,100 leave 19,600, burned after the second election. Each pool holds two fixed stakes of 10,002 (the Elector subtracts 1 TOS before it compares with the 10,000 minimum), for the first and the overlapping second election.",
+    "operator_funding_tos": 20100,
+    "controller_deploy_tos": 15,
+    "pool_tos": 20010,
+    "stake_tos": 10002,
+    "max_factor": "1.0",
+    "authorization": {"floor_nanotos": 5000000000, "funds_target_nanotos": 20000000000, "expires_in_days": 10}
+  },
   "paths": {
     "global_config": "/etc/tos/global-config.json",
     "db_root": "/var/lib/tos",

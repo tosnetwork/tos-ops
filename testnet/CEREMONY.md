@@ -263,6 +263,44 @@ no consensus database was deleted, and at about 145 GB a day the 99 GB disks
 would have filled in 15 hours. That is why this testnet runs a shorter
 schedule and a 3,600 s validator `state_ttl`.
 
+### 8.1 Onboarding a genesis validator for elections
+
+On each validator host, once (after `build-node-binaries.sh`, same commit):
+
+```bash
+sudo /opt/tos-testnet/scripts/build-tosctl.sh --rev <TOS_COMMIT>
+```
+
+Then, from the coordinator's machine, with an SSH tunnel to one validator's
+loopback JSON-RPC (`ssh -L 18081:127.0.0.1:8081 root@<validator>`), once per
+validator:
+
+```bash
+python3 /opt/tos-testnet/scripts/testnet-elections.py onboard \
+  --name node-1 --host <HOST> --ssh-key <KEY> \
+  --ceremony ./ceremony --controller controllers/node-1.json \
+  --root-seed offline/root-node-1.seed --controller-tool "$TOS_ROOT/build/crypto/tos-pq-controller" \
+  --tos-root "$TOS_ROOT" --fift "$TOS_ROOT/build/crypto/fift" \
+  --rpc http://127.0.0.1:18081/jsonRPC
+```
+
+It runs `init-operator.sh` on the host (vault, console key, operator wallet),
+funds the wallet from the bootstrap wallet, activates it, deploys the
+controller and the pool, binds them, imports the controller's birth, plans the
+operating authorization on the host, signs it locally with the root seed and
+sends it, and runs `enable-elections.sh`, which installs
+`systemd/tos-testnet-elections.service` (`Restart=always`). The amounts are
+`elections` in the profile. A rerun continues where a failed run stopped. The
+root seed and `ceremony/secret/main-wallet.pk` never leave the coordinator;
+every signed bootstrap transfer is kept in `ceremony/sent/`.
+
+`testnet-elections.py fund` sends from the bootstrap wallet on its own (with
+`--dry-run` it only signs).
+
+The operating authorization funds relays for a limited time (the first epoch's
+gave about three days of runway). `tosctl controller operations status
+--controller <C>` on the host shows the runway; renew it before it ends.
+
 If the first election cannot be conducted, the Elector cancels it at
 `elect_at` and refunds the stakes. The chain does not stop: the genesis set
 keeps validating past its `utime_until`. But no key block is produced and state
