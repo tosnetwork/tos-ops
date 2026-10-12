@@ -4,6 +4,10 @@
 #   install-node.sh prepare  --role validator|fullnode|dht --public-ip IP [--release DIR]
 #   install-node.sh activate --role validator|fullnode|dht --global-config FILE --sha256 HEX
 #                            [--genesis DIR] [--validator-id HEX]
+#   install-node.sh binaries --role validator|fullnode|dht --release DIR
+#
+# The release DIR is what build-node-binaries.sh wrote on this host: each host
+# compiles its own binaries from the pinned tos commit.
 #
 # prepare (before genesis for a genesis validator; any time for other roles):
 #   installs release binaries verified against the release's SHA256SUMS,
@@ -35,7 +39,7 @@ die() { echo "install-node: $*" >&2; exit 1; }
 profile() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); [d:=d[k] for k in sys.argv[2:]]; print(d)' "$PROFILE" "$@"; }
 
 [ "$(id -u)" = 0 ] || die "run as root"
-[ $# -ge 1 ] || die "usage: install-node.sh prepare|activate --role ROLE ..."
+[ $# -ge 1 ] || die "usage: install-node.sh prepare|activate|binaries --role ROLE ..."
 STEP=$1; shift
 ROLE="" PUBLIC_IP="" RELEASE="" GLOBAL_CONFIG="" SHA256="" GENESIS="" VALIDATOR_ID=""
 while [ $# -gt 0 ]; do
@@ -59,15 +63,44 @@ has_console() {
   python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("control") else 1)' "$DB/config.json"
 }
 
+ALL_BINARIES=(validator-engine validator-engine-console dht-server lite-client generate-random-id tos-pq-consensus-key)
+role_binaries() {
+  case "$ROLE" in
+    dht) echo dht-server generate-random-id ;;
+    *) echo validator-engine validator-engine-console lite-client generate-random-id tos-pq-consensus-key ;;
+  esac
+}
+
 install_release() {
-  local dir=$1
+  local dir=$1 name
   [ -f "$dir/SHA256SUMS" ] || die "$dir/SHA256SUMS is missing; install only a verified release"
   (cd "$dir" && sha256sum --check --strict SHA256SUMS) || die "release digest check failed"
-  local name
-  for name in validator-engine validator-engine-console dht-server lite-client generate-random-id tos-pq-consensus-key; do
-    [ -f "$dir/$name" ] || die "release lacks $name"
-    install -m 0755 -o root -g root "$dir/$name" "$BIN/$name"
+  for name in $(role_binaries); do
+    [ -f "$dir/$name" ] || die "release lacks $name, which a $ROLE node needs"
   done
+  # Install every binary the release carries, so a host running two roles
+  # (a validator and a DHT node) keeps them from one build.
+  for name in "${ALL_BINARIES[@]}"; do
+    if [ -f "$dir/$name" ]; then
+      grep -q " $name\$" "$dir/SHA256SUMS" || die "$name is not covered by SHA256SUMS"
+      install -m 0755 -o root -g root "$dir/$name" "$BIN/$name"
+    fi
+  done
+  [ -f "$dir/BUILD-INFO" ] && install -D -m 0644 "$dir/BUILD-INFO" /etc/tos/BUILD-INFO
+  return 0
+}
+
+# Replace the installed binaries with another verified release. The node must
+# be stopped: a running engine keeps the old file open, and a restart picks up
+# whatever is installed.
+binaries() {
+  [ -n "$RELEASE" ] || die "--release DIR is required"
+  local unit
+  for unit in tos-testnet-validator tos-testnet-fullnode tos-testnet-dht; do
+    if systemctl is-active --quiet "$unit"; then die "$unit is running; stop it first"; fi
+  done
+  install_release "$RELEASE"
+  "$BIN/$(role_binaries | cut -d' ' -f1)" -V | head -1
 }
 
 prepare() {
@@ -77,7 +110,7 @@ prepare() {
   runuser -u tos -- test -r "$HERE/testnet_lib.py" \
     || die "the tos account cannot read $HERE; copy testnet/ to a root-owned, world-readable path such as /opt/tos-testnet"
   if [ -n "$RELEASE" ]; then install_release "$RELEASE"; fi
-  for name in generate-random-id tos-pq-consensus-key; do
+  for name in $(role_binaries); do
     [ -x "$BIN/$name" ] || die "$BIN/$name is missing; pass --release DIR"
   done
   install -d -m 0755 -o root -g root "$ETC" "$DB_ROOT" "$LOG_ROOT"
@@ -163,5 +196,6 @@ activate() {
 case "$STEP" in
   prepare) prepare ;;
   activate) activate ;;
+  binaries) binaries ;;
   *) die "unknown step $STEP" ;;
 esac

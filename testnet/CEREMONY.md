@@ -20,18 +20,31 @@ world-readable) and release binaries in `/usr/local/bin`.
 - Decision D03: the global id is 2, confirmed 2026-10-12 (`network/profile.json`,
   status `CONFIRMED`; `genesis` refuses any other status). Freeze the genesis
   epoch, and announce both.
-- Name the tos release tag and its `SHA256SUMS`. Every party installs that
-  release; the coordinator builds `create-state`, `fift` and `gen_fif` from the
-  same commit (`cmake --build build --target create-state gen_fif fift tos-pq-controller`).
+- Name the tos commit (full 40-character id). Every host compiles its own
+  binaries from that commit (step 1). The coordinator builds `create-state`,
+  `fift` and `gen_fif` from the same commit
+  (`cmake --build build --target create-state gen_fif fift tos-pq-controller`).
 - Confirm the four operators' identities out of band. The ceremony checks that
   each record is self-consistent; it cannot prove who sent it.
 
-## 1. Operator: prepare the validator host
+## 1. Operator: build and prepare the validator host
+
+Compile the binaries on this host from the ceremony commit, then prepare:
 
 ```bash
+sudo /opt/tos-testnet/scripts/build-node-binaries.sh --rev <COMMIT> --role validator
 sudo /opt/tos-testnet/scripts/install-node.sh prepare --role validator \
-  --public-ip <PUBLIC_IPV4> --release /path/to/verified/release
+  --public-ip <PUBLIC_IPV4> --release /var/lib/tos-build/release-<COMMIT>
 ```
+
+Never copy binaries from another machine. RocksDB compiles for the build
+machine's CPU unless told otherwise, and a binary built on a newer Xeon
+stopped with SIGILL (illegal instruction) on these hosts.
+`build-node-binaries.sh` builds for `x86-64-v2`, as tos CI does, so a VM
+migrated to an older CPU keeps working. It needs about 2.5 GiB of memory per
+compile job and takes tens of minutes on a 6-core VM. To replace the binaries
+of a prepared node later, stop it and run
+`install-node.sh binaries --role <role> --release <dir>`.
 
 This creates `/var/lib/tos/validator` and `/var/log/tos/validator` owned by
 `tos`. It runs the first start with `-I <PUBLIC_IPV4>:30001` on a placeholder
@@ -88,9 +101,13 @@ authenticates you.
 ## 4. DHT host (at least two, run by the team)
 
 ```bash
+sudo /opt/tos-testnet/scripts/build-node-binaries.sh --rev <COMMIT> --role dht --jobs 2
 sudo /opt/tos-testnet/scripts/install-node.sh prepare --role dht \
-  --public-ip <PUBLIC_IPV4> --release /path/to/verified/release
+  --public-ip <PUBLIC_IPV4> --release /var/lib/tos-build/release-<COMMIT>
 ```
+
+A validator host that also serves DHT builds both with
+`build-node-binaries.sh --role validator --with-dht`.
 
 Send `/var/lib/tos/dht/dht-node.json` (a signed, public `dht.node`) to the
 coordinator.
@@ -151,6 +168,19 @@ A full node started at genesis passes `--genesis`; a later one syncs from the
 network instead.
 
 Apply the firewall: `firewall/tos-testnet.nft`, with the role block uncommented.
+
+The host firewall is not the only one. Most VPS providers also filter traffic
+outside the VM, with a stateful security group that by default admits only
+SSH. Add **inbound** IPv4 UDP rules there too: 30001 and 31001 on validators
+and full nodes, and 30300 on DHT hosts. Outbound is usually open already, and
+IPv6 is not needed, because nodes announce IPv4 addresses only. Without these
+rules the first deployment ran, but every validator stayed at height 0 with
+`get_peer_node: timeout`. DHT nodes that both send to each other can still
+talk, because each packet looks like a reply to the other side's state; that
+hides the problem. To prove reachability, capture on each target with
+`tcpdump -n -i eth0 'udp and dst port 30001'` while another host sends to it.
+tcpdump sees a packet before the host firewall, so if it never appears, the
+packet was dropped outside the VM.
 
 ## 7. Coordinator: the chain is live
 

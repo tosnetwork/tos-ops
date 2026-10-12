@@ -96,7 +96,7 @@ scripts refuse or flag it rather than choose silently.
 | D03 first two election schedules | canonical ConfigParam 15 (65,536 s terms) | unchanged from the template; the initial set lives 131,072 s from the epoch |
 | D05 privacy | the template deploys no pool | disabled; version 16 (no `quantum-network-tag`) |
 | D02 distribution | how operators receive `global-config.json` | the coordinator publishes it with its SHA-256; nodes install it only on a matching digest |
-| Release binaries | `install-node.sh prepare --release DIR` | a tagged release with `SHA256SUMS`; no build is installed from a developer tree |
+| Node binaries | `build-node-binaries.sh --rev <commit>`, then `install-node.sh prepare|binaries --release DIR` | every host compiles its own binaries from the pinned tos commit, for `x86-64-v2` (as tos CI does). Binaries are never copied from another machine: a build made on a Sapphire Rapids Xeon stopped with SIGILL on these Icelake VMs, because RocksDB defaults to `-march=native` |
 | D11 faucet funding | nothing in genesis; the faucet wallet is ordinary | decided 2026-10-12: validator-donated rewards, canonical genesis. The first rewards unfreeze about T + 63.7 h, so the faucet opens on day 3 at the earliest |
 | D13 release evidence | capacity and timing reports | decided 2026-10-12: not release evidence; labelled `NON-RELEASE` |
 
