@@ -4,6 +4,12 @@
 #
 #   TOS_ROOT=<tos checkout> TOS_BUILD=<its build dir> rehearse-loopback.sh WORKDIR [SECONDS]
 #
+# With REHEARSAL_HOLD_SECONDS=N the network stays up for N seconds after the
+# check passes, for fault experiments: each validator's exact command is in
+# WORKDIR/node-<i>.start and its PID in WORKDIR/node-<i>.pid, so one can be
+# stopped and later restarted with `bash WORKDIR/node-<i>.start &`. Every
+# process, restarted ones included, is stopped on exit.
+#
 # It runs the same scripts the operators and the coordinator run, in the same
 # order, with four operators, two DHT nodes and the testnet global id from
 # network/profile.json:
@@ -31,6 +37,7 @@ TESTNET="$(dirname "$HERE")"
 [ $# -ge 1 ] || { echo "usage: rehearse-loopback.sh WORKDIR [SECONDS]" >&2; exit 2; }
 WORK=$1
 RUN_SECONDS=${2:-300}
+HOLD_SECONDS=${REHEARSAL_HOLD_SECONDS:-0}
 BASE_PORT=${REHEARSAL_BASE_PORT:-42000}
 [ -e "$WORK" ] && { echo "$WORK exists; use a new directory" >&2; exit 2; }
 mkdir -m 0700 -p "$WORK"
@@ -40,9 +47,16 @@ export TESTNET_REHEARSAL_ALLOW_PRIVATE=1
 export TOS_BIN="$WORK/bin"
 PIDS=()
 cleanup() {
-  local pid
+  local pid file
+  # A validator restarted by hand during a hold is not a child of this shell;
+  # its node-<i>.pid names it.
+  for file in "$WORK"/node-*.pid; do
+    [ -f "$file" ] && PIDS+=("$(cat "$file")")
+  done
   for pid in "${PIDS[@]}"; do kill "$pid" 2>/dev/null || true; done
-  for pid in "${PIDS[@]}"; do wait "$pid" 2>/dev/null || true; done
+  for pid in "${PIDS[@]}"; do
+    wait "$pid" 2>/dev/null || while kill -0 "$pid" 2>/dev/null; do sleep 1; done
+  done
 }
 trap cleanup EXIT
 log() { echo "== $*"; }
@@ -134,17 +148,25 @@ for i in 1 2 3 4; do
   python3 "$OP" --profile "$WORK/profile-$i.json" configure --db "$db" --role validator \
     --client-dir "$WORK/console-$i" >/dev/null
   mkdir -m 0700 "$WORK/log$i"
-  "$TOS_BIN/validator-engine" -C "$GLOBAL" -D "$db" -l "$WORK/log$i/node.log" \
-    --session-logs "$WORK/log$i/session-stats" -t 4 --state-ttl 3600 --archive-ttl 86400 \
-    --json-rpc-address "127.0.0.1:$(port "$i" 4)" --exporter-address "127.0.0.1:$(port "$i" 5)" &
+  # The start script records its own PID and execs the engine, so the PID file
+  # names the engine also after a restart by hand.
+  {
+    echo "#!/usr/bin/env bash"
+    echo "echo \$\$ > $(printf '%q' "$WORK/node-$i.pid")"
+    printf 'exec %q -C %q -D %q -l %q --session-logs %q -t 4 --state-ttl 3600 --archive-ttl 86400 --json-rpc-address %q --exporter-address %q\n' \
+      "$TOS_BIN/validator-engine" "$GLOBAL" "$db" "$WORK/log$i/node.log" "$WORK/log$i/session-stats" \
+      "127.0.0.1:$(port "$i" 4)" "127.0.0.1:$(port "$i" 5)"
+  } > "$WORK/node-$i.start"
+  bash "$WORK/node-$i.start" &
   PIDS+=($!)
 done
 
 log "waiting up to $RUN_SECONDS s for a common, fresh head"
 args=(--genesis "$WORK/ceremony/genesis.json" --genesis-set "$WORK/ceremony/genesis-records.json" --max-age 30)
 for i in 1 2 3 4; do args+=(--rpc "http://127.0.0.1:$(port "$i" 4)"); done
-# Decoding ConfigParam 34 needs the tos Python environment.
-CHECK_PY="$TOS_ROOT/.venv/bin/python"
+# Decoding ConfigParam 34 needs the tos Python environment. A tos worktree has
+# no .venv of its own; REHEARSAL_PYTHON names another checkout's.
+CHECK_PY="${REHEARSAL_PYTHON:-$TOS_ROOT/.venv/bin/python}"
 [ -x "$CHECK_PY" ] || CHECK_PY=python3
 deadline=$(($(date +%s) + RUN_SECONDS))
 result=1
@@ -161,4 +183,8 @@ for i in 1 2 3 4; do
   grep -m1 "post-quantum consensus custody" "$WORK/log$i/node.log"* 2>/dev/null | sed "s/^/node$i: /" || true
 done
 if [ "$result" = 0 ]; then log "REHEARSAL PASSED"; else log "REHEARSAL FAILED (evidence in $WORK)"; fi
+if [ "$result" = 0 ] && [ "$HOLD_SECONDS" -gt 0 ]; then
+  log "holding the network for $HOLD_SECONDS s; validator commands in $WORK/node-<i>.start, PIDs in $WORK/node-<i>.pid"
+  sleep "$HOLD_SECONDS"
+fi
 exit "$result"
