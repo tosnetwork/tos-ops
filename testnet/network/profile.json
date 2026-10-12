@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "network": "tos-public-testnet",
+  "status": "PROPOSED",
+  "global_id": {
+    "value": 2,
+    "status": "PROPOSED",
+    "note": "Signature replay domain (ConfigParam 19). Mainnet is 1 and the local development network is 3; 2 is reserved nowhere in tos. Owner decision D03 in memo public-testnet/README.md must confirm it before the ceremony."
+  },
+  "genesis": {
+    "template": "crypto/smartcont/gen-zerostate.fif",
+    "validators": 4,
+    "global_version": 16,
+    "initial_set_valid_for_seconds": 131072,
+    "source_date_epoch": null,
+    "source_date_epoch_note": "Chosen and frozen by the coordinator at the ceremony (decision D03). It must lie in the future when the ceremony runs and leave the initial validator set enough lifetime to complete the first two elections."
+  },
+  "features": {
+    "shielded_pool": "disabled",
+    "energy": "disabled",
+    "note": "Neither may be activated on the public testnet until its own acceptance gate passes (memo public-testnet/README.md section 3.2)."
+  },
+  "ports": {
+    "adnl_udp": 30001,
+    "quic_udp_offset": 1000,
+    "console_tcp": 30002,
+    "liteserver_tcp": 30003,
+    "dht_udp": 30300,
+    "json_rpc_loopback": 8081,
+    "exporter_loopback": 9100
+  },
+  "retention": {
+    "validator": {"state_ttl": 86400, "archive_ttl": 86400},
+    "fullnode": {"state_ttl": 86400, "archive_ttl": 604800}
+  },
+  "paths": {
+    "global_config": "/etc/tos/global-config.json",
+    "db_root": "/var/lib/tos",
+    "log_root": "/var/log/tos",
+    "bin": "/usr/local/bin"
+  },
+  "dht": {"k": 6, "a": 3, "network_id": -1}
+}

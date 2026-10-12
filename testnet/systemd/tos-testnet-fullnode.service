@@ -1,0 +1,37 @@
+[Unit]
+Description=TOS public testnet full node (lite server and JSON-RPC)
+Documentation=file:///opt/tos-testnet/README.md
+After=network-online.target time-sync.target
+Wants=network-online.target
+
+[Service]
+User=tos
+Group=tos
+UMask=0077
+WorkingDirectory=/var/lib/tos/fullnode
+# The lite server port comes from config.json (testnet-operator.py configure).
+# JSON-RPC listens on loopback; publish it only through an authenticating
+# reverse proxy, or switch to --json-rpc-readonly on a public address.
+ExecStart=/usr/local/bin/validator-engine \
+  -C /etc/tos/global-config.json \
+  -D /var/lib/tos/fullnode \
+  -l /var/log/tos/fullnode/node.log \
+  -t 16 \
+  --state-ttl 86400 --archive-ttl 604800 \
+  --json-rpc-address 127.0.0.1:8081 \
+  --exporter-address 127.0.0.1:9100
+Restart=on-failure
+RestartSec=10
+RestartPreventExitStatus=2
+KillMode=control-group
+TimeoutStopSec=120
+LimitNOFILE=1572864
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/tos/fullnode /var/log/tos/fullnode
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

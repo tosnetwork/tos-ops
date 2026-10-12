@@ -1,0 +1,32 @@
+[Unit]
+Description=TOS public testnet DHT bootstrap node
+Documentation=file:///opt/tos-testnet/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=tos
+Group=tos
+UMask=0077
+WorkingDirectory=/var/lib/tos/dht
+# config.json and the keyring were written by testnet-dht.py prepare; the
+# address it announces is the one signed into the published dht.node record.
+ExecStart=/usr/local/bin/dht-server \
+  -C /etc/tos/global-config.json \
+  -c /var/lib/tos/dht/config.json \
+  -D /var/lib/tos/dht \
+  -l /var/log/tos/dht/dht.log \
+  -t 2
+Restart=on-failure
+RestartSec=10
+KillMode=control-group
+TimeoutStopSec=30
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/tos/dht /var/log/tos/dht
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

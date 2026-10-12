@@ -1,7 +1,7 @@
 # Working in this repository
 
 This private repository holds the team's node service settings, operating
-documents and scripts, one subdirectory per network (`local/`, `development/`,
+documents and scripts, one subdirectory per network (`local/`, `testnet/`,
 `production/`). See [README.md](README.md) for the layout.
 
 ## Commit directly to `main`. Do not open pull requests.
@@ -30,7 +30,10 @@ here. Use `$HOME`, `$TOS_ROOT` or a placeholder.
   Run the tests in `local/tests` against the tos revision you changed things
   for, and name that revision in the commit message.
 - Keep development-only material (deterministic seeds, faucet wallets, the local
-  drivers, acceptance-only options) out of `production/`.
+  drivers, acceptance-only options) out of `testnet/` and `production/`.
+- `testnet/` tests need only pytest: `"$TOS_ROOT/.venv/bin/python" -m pytest -q testnet/tests`. Its
+  end-to-end check is `testnet/scripts/rehearse-loopback.sh`; name the tos
+  revision it passed on in the commit message.
 
 `CLAUDE.md` is a symlink to this file, so every agent reads the same
 instructions.

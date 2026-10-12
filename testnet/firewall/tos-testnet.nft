@@ -1,0 +1,34 @@
+#!/usr/sbin/nft -f
+# Inbound policy for a public testnet host. Load with `nft -f`, after
+# adjusting the role block and the SSH source range for your host.
+# Ports follow testnet/network/profile.json:
+#   30001/udp  ADNL (validator, full node)
+#   31001/udp  QUIC = ADNL port + 1000 (validator, full node)
+#   30300/udp  DHT bootstrap node
+#   30003/tcp  lite server (full node only)
+#   30002/tcp  console: never public; the engine listens on all interfaces, so
+#              this file is what keeps it on loopback
+#   8081/tcp, 9100/tcp  JSON-RPC and exporter are bound to 127.0.0.1 already
+
+table inet tos_testnet {
+  chain input {
+    type filter hook input priority 0; policy drop;
+
+    iif "lo" accept
+    ct state established,related accept
+    ct state invalid drop
+    meta l4proto { icmp, ipv6-icmp } accept
+
+    # Administration: replace with the operator's management range.
+    tcp dport 22 ip saddr 192.0.2.0/24 accept
+
+    # --- validator and full node ---
+    udp dport { 30001, 31001 } accept
+
+    # --- full node only: public lite server ---
+    # tcp dport 30003 accept
+
+    # --- DHT bootstrap host only ---
+    # udp dport 30300 accept
+  }
+}

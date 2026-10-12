@@ -1,0 +1,43 @@
+[Unit]
+Description=TOS public testnet validator
+Documentation=file:///opt/tos-testnet/README.md
+After=network-online.target time-sync.target
+Wants=network-online.target
+
+[Service]
+User=tos
+Group=tos
+UMask=0077
+WorkingDirectory=/var/lib/tos/validator
+# Production design section 7, plus a loopback-only JSON-RPC listener for the
+# operator's own checks (write methods are refused off loopback by the engine).
+# No public lite server: a validator serves no public clients.
+# No -v: INFO records the consensus-cleanup evidence.
+# No --quic-flood-control -1 and no --initial-sync-delay override: the engine
+# defaults are kept on a public network.
+ExecStart=/usr/local/bin/validator-engine \
+  -C /etc/tos/global-config.json \
+  -D /var/lib/tos/validator \
+  -l /var/log/tos/validator/node.log \
+  --session-logs /var/log/tos/validator/session-stats \
+  -t 16 \
+  --state-ttl 86400 --archive-ttl 86400 \
+  --json-rpc-address 127.0.0.1:8081 \
+  --exporter-address 127.0.0.1:9100
+Restart=on-failure
+RestartSec=10
+# Exit 2 is a configuration refusal (lock held, both cleanup flags, bad
+# config); restarting cannot fix it.
+RestartPreventExitStatus=2
+KillMode=control-group
+TimeoutStopSec=120
+LimitNOFILE=1572864
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/tos/validator /var/log/tos/validator
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

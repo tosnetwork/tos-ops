@@ -43,8 +43,14 @@ node software; this repository holds how we configure, deploy and operate it.
 │   │   ├── tos-pq-observer@.service
 │   │   └── tos-pq-lite-client.service
 │   └── tests/                   driver and installer tests (pytest)
-├── development/                 shared multi-host development network (empty)
-│   └── README.md
+├── testnet/                     multi-host public testnet: genesis ceremony and node bring-up
+│   ├── README.md                scope, roles, ports, open decisions, verification
+│   ├── CEREMONY.md              step by step: operators, DHT hosts, coordinator
+│   ├── network/profile.json     global id, ports, retention, paths
+│   ├── scripts/                 operator, DHT, coordinator, installer, checker, loopback rehearsal
+│   ├── systemd/                 validator, full node and DHT units
+│   ├── firewall/                inbound nftables example
+│   └── tests/                   script tests (pytest)
 └── production/                  production network design and templates
     ├── README.md
     ├── Production-Node.md       design: roles, keys, binding, retention, cleanup, validator lifecycle, votes, gaps
@@ -64,4 +70,5 @@ node software; this repository holds how we configure, deploy and operate it.
   find them through the `TOS_ROOT` environment variable. Record the tos
   revision a change was verified against in its commit message.
 - **One network per directory.** Do not copy development-only material
-  (deterministic seeds, faucet wallets, the local drivers) into `production/`.
+  (deterministic seeds, faucet wallets, the local drivers) into `testnet/` or
+  `production/`.
