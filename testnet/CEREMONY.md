@@ -286,7 +286,16 @@ hash (`validator.zero_state.root_hash` in its `global-config.json`):
 sudo /opt/tos-testnet/scripts/retire-host.sh --confirm-zerostate <ROOT_HASH_BASE64>
 ```
 
-It refuses unless the installed global config names that zero state. It stops
-and disables every testnet unit and deletes the node databases, logs, the
-global config and the operator tool's vault. It keeps the binaries, so a reset
-on the same tos commit starts again at step 0.4 without a rebuild.
+It refuses unless the installed global config names that zero state. It first
+writes an evidence archive to `/var/lib/tos-retired/<epoch>/`: logs, unit
+journals, kernel logs of this and the previous boot, and a live snapshot taken
+before the units stop. It holds no database and no key, and if the archive
+cannot be written, nothing is deleted. Then it stops and disables every
+testnet unit and deletes the node databases, logs, the global config and the
+operator tool's vault. It keeps the binaries, so a reset on the same tos
+commit starts again at step 0.4 without a rebuild.
+
+The coordinator copies every host's archive, with its `.sha256`, into the
+retired epoch's record before the next ceremony starts. An incident that was
+not yet analysed must not lose its logs to a reset; the first reset did
+exactly that (memo `public-testnet/EPOCH-1-FINDINGS.md`, E1-10).

@@ -40,7 +40,7 @@ class FakeNodes:
             return {
                 "id": node.get("blocks", {}).get(seqno, block(seqno)),
                 "global_id": node.get("global_id", 2),
-                "gen_utime": node.get("gen_utime", NOW - 5),
+                "gen_utime": node.get("times", {}).get(seqno, node.get("gen_utime", NOW - 5)),
             }
         raise AssertionError(method)
 
@@ -90,6 +90,31 @@ def test_stale_head_is_refused(tmp_path):
     nodes = {"a": {"head": 5, "gen_utime": NOW - 600}, "b": {"head": 5, "gen_utime": NOW - 600}}
     with pytest.raises(lib.TestnetError, match="stalled"):
         run(tmp_path, nodes)
+
+
+def test_one_node_behind_is_named_not_called_a_stall(tmp_path):
+    # Epoch 1: one validator lagged, and the checker called the whole network stalled.
+    nodes = {
+        "a": {"head": 2000, "gen_utime": NOW - 3},
+        "b": {"head": 2000, "gen_utime": NOW - 3},
+        "lagging": {"head": 1340, "times": {1340: NOW - 660}, "gen_utime": NOW - 3},
+    }
+    with pytest.raises(lib.TestnetError) as refused:
+        run(tmp_path, nodes)
+    message = str(refused.value)
+    assert "stalled" not in message
+    assert "lagging at 1340 (660 blocks behind, head 660 s old)" in message
+    assert "a at" not in message and "b at" not in message
+
+
+def test_a_fresh_node_slightly_behind_passes(tmp_path):
+    nodes = {
+        "a": {"head": 2000, "gen_utime": NOW - 2},
+        "b": {"head": 1998, "times": {1998: NOW - 6}, "gen_utime": NOW - 2},
+    }
+    summary = run(tmp_path, nodes)
+    assert summary["heads"] == {"a": 2000, "b": 1998}
+    assert summary["head_ages"] == {"a": 2, "b": 6}
 
 
 def test_no_block_after_zero_state_is_refused(tmp_path):

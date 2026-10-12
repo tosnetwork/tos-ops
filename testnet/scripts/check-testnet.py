@@ -12,7 +12,10 @@ itself proves nothing. The check refuses unless:
   * every node's zero state is the ceremony's (getMasterchainInfo.init);
   * at the lowest head among them, every node returns the same full block id
     (workchain, shard, seqno, root hash, file hash), not merely the same height;
-  * that block carries the testnet global id and is younger than --max-age;
+  * that block carries the testnet global id;
+  * every node's own head is younger than --max-age. When none is, the
+    network has stalled; when only some are, those nodes are behind, and the
+    refusal names them with their lag;
   * with --genesis-set (and TOS_ROOT naming a tos checkout to decode with),
     live ConfigParam 34 is exactly the four genesis identities. Use it only
     before the first ordinary election replaces the genesis set.
@@ -94,10 +97,29 @@ def check(args: argparse.Namespace, rpc=lib.rpc, now=time.time) -> dict:
             f"block {height} carries global id {header['global_id']}, expected {global_id}"
         )
     age = int(now()) - int(header["gen_utime"])
-    if age > args.max_age:
+
+    # Freshness is judged per node, at each node's own head: one node behind is
+    # not the network stalled, and the two need different responses.
+    nodes = {}
+    for url, info in infos.items():
+        head = int(info["last"]["seqno"])
+        own = rpc(url, "getBlockHeader", workchain=lib.MASTERCHAIN, shard=SHARD, seqno=head)
+        nodes[url] = {"head": head, "age_seconds": int(now()) - int(own["gen_utime"])}
+    newest = max(node["head"] for node in nodes.values())
+    newest_age = min(node["age_seconds"] for node in nodes.values())
+    if newest_age > args.max_age:
         raise lib.TestnetError(
-            f"the common head {height} is {age} s old (limit {args.max_age} s): progress stalled"
+            f"no node has a head younger than {args.max_age} s; the newest, {newest}, "
+            f"is {newest_age} s old: progress stalled"
         )
+    behind = {url: node for url, node in nodes.items() if node["age_seconds"] > args.max_age}
+    if behind:
+        detail = "; ".join(
+            f"{url} at {node['head']} ({newest - node['head']} blocks behind, "
+            f"head {node['age_seconds']} s old)"
+            for url, node in behind.items()
+        )
+        raise lib.TestnetError(f"the network is at {newest}, but a node is behind: {detail}")
 
     summary = {
         "height": height,
@@ -107,7 +129,8 @@ def check(args: argparse.Namespace, rpc=lib.rpc, now=time.time) -> dict:
         "age_seconds": age,
         "global_id": global_id,
         "nodes": len(args.rpc),
-        "heads": {url: int(info["last"]["seqno"]) for url, info in infos.items()},
+        "heads": {url: node["head"] for url, node in nodes.items()},
+        "head_ages": {url: node["age_seconds"] for url, node in nodes.items()},
     }
     if args.genesis_set:
         records = lib.check_operator_set(json.loads(Path(args.genesis_set).read_text()))

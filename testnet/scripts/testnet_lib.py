@@ -113,7 +113,11 @@ def validator_schedule(profile: dict[str, Any]) -> dict[str, int]:
     for name, value in values.items():
         if not isinstance(value, int) or isinstance(value, bool) or not 0 < value < 2**32:
             raise TestnetError(f"genesis schedule {name} is missing or out of range: {value!r}")
-    if not values["elections_end_before"] < values["elections_start_before"] < values["elected_for"]:
+    if (
+        not values["elections_end_before"]
+        < values["elections_start_before"]
+        < values["elected_for"]
+    ):
         raise TestnetError(
             "election params need elections_end_before < elections_start_before < elected_for"
         )
