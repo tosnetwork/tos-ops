@@ -27,6 +27,28 @@ world-readable) and release binaries in `/usr/local/bin`.
 - Confirm the four operators' identities out of band. The ceremony checks that
   each record is self-consistent; it cannot prove who sent it.
 
+## 0.4 Every host: set the clock first
+
+On every host, before anything else:
+
+```bash
+sudo /opt/tos-testnet/scripts/setup-time.sh
+```
+
+The script:
+
+- installs ntpsec and disables systemd-timesyncd and chrony;
+- runs ntpd on IPv4 only, with a nearby stratum-1 server beside the pool;
+- exits non-zero unless ntpd has selected a reachable server.
+
+`install-node.sh prepare` runs it again before anything else, so a host
+whose clock is not following NTP never gets a node.
+
+The kernel flag `NTPSynchronized=yes` is not proof that time is followed. On
+the first testnet hosts that flag said yes while ntpsec had no server at all.
+The VMs had IPv6 addresses but no working IPv6 path, so ntpd chose IPv6
+servers, dropped them, and kept nothing.
+
 ## 0.5 Coordinator: preflight every host
 
 Before anything is installed, run the preflight from the coordinator's

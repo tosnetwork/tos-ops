@@ -22,7 +22,7 @@ provider. Section 3 records what happened and section 4 turns it into rules.
 | Memory | At least 16 GiB; ECC recommended | A validator process measured about 6.0 GB RSS (6.1 GB peak) on the local network. 16 GiB leaves room for the page cache RocksDB relies on. ECC is a recommendation; the proposal does not require it. |
 | Storage | NVMe SSD, database on its own device, logs on another volume | Production-Node.md section 4. Size the capacity by section 6.3 of the design, and choose models by write endurance (section 1.3 below). |
 | Network | At least 1 Gbit/s; a static public IPv4, preferably on the interface | The engine announces the configured address but binds ADNL and QUIC by port on all interfaces (tos `adnl/adnl-network-manager.cpp` `add_self_addr`, `quic/quic-sender.cpp`). Behind NAT it works only with UDP forwarding for the ADNL port and the QUIC port (ADNL + 1000), and that adds a router to the failure path. Open UDP for both. |
-| Time | NTP synchronised | Multi-key consensus validity (`valid_from`/`expire_at`) reads the wall clock (Production-Node.md section 9). |
+| Time | ntpd following a selected server over IPv4, set up first with `../testnet/scripts/setup-time.sh` | Multi-key consensus validity (`valid_from`/`expire_at`) and consensus timeouts read the wall clock (Production-Node.md section 9). `NTPSynchronized=yes` alone is not enough: on the testnet hosts it stayed yes while ntpd had no server, because it picked IPv6 servers on hosts without a working IPv6 path. `preflight.py` checks for a selected source. |
 | Architecture | Linux x86-64 or arm64 | The only platforms tos builds and releases for. |
 
 These are minimums for a 21-validator network, not the measured production

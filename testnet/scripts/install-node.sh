@@ -105,6 +105,8 @@ binaries() {
 
 prepare() {
   [ -n "$PUBLIC_IP" ] || die "--public-ip is required"
+  # Time first: consensus timeouts and consensus-key validity read the wall clock.
+  bash "$HERE/setup-time.sh" || die "the clock is not following NTP; fix it before preparing a node"
   id tos >/dev/null 2>&1 || useradd --system --home-dir "$DB_ROOT" --shell /usr/sbin/nologin tos
   # The service account runs these scripts; a checkout under a private home is unreadable to it.
   runuser -u tos -- test -r "$HERE/testnet_lib.py" \

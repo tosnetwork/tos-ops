@@ -49,7 +49,8 @@ testnet/
 │   ├── install-node.sh           prepare | activate one node (root)
 │   ├── check-testnet.py          independent nodes agree on one live chain
 │   ├── build-node-binaries.sh    compile the role's binaries on the host itself
-│   ├── preflight.py              before installing: host floors, ufw, and the UDP mesh between hosts
+│   ├── setup-time.sh             first on every host: ntpsec over IPv4, proven to follow a server
+│   ├── preflight.py              before installing: host floors, time source, ufw, and the UDP mesh between hosts
 │   └── rehearse-loopback.sh      the whole ceremony on one host, unprivileged
 ├── systemd/
 │   ├── tos-testnet-validator.service

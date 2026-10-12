@@ -26,6 +26,7 @@ GOOD_FACTS = {
     "disk_free_kib": str(88 * 1048576),
     "ipv4": "203.0.113.10 ",
     "ntp": "yes",
+    "ntp_source": "ntpd:1",
     "ufw": "Status: active||To Action From|-- ------ ----|OpenSSH ALLOW Anywhere|30001/udp ALLOW Anywhere|31001/udp ALLOW Anywhere|30001/udp (v6) ALLOW Anywhere (v6)|",
     # ss truncates process names to 15 characters, exactly as on the real hosts.
     "udp_listen": '0.0.0.0:30001@users:(("validator-engin",pid=1,fd=5)) 127.0.0.53%lo:53@users:(("systemd-resolve",pid=2,fd=3))',
@@ -62,6 +63,19 @@ def test_a_good_validator_passes_every_host_check():
 def test_each_floor_fails_when_not_met(key, value, check):
     facts = dict(GOOD_FACTS, **{key: value})
     assert statuses(preflight.evaluate_host(host(), facts, PROFILE))[check] == "FAIL"
+
+
+@pytest.mark.parametrize("source", ["ntpd:0", "chrony:0", "none:0", ""])
+def test_a_synchronized_flag_without_a_selected_server_fails(source):
+    """The kernel said synchronized while ntpsec had no server at all; that must not pass."""
+    facts = dict(GOOD_FACTS, ntp_source=source)
+    assert statuses(preflight.evaluate_host(host(), facts, PROFILE))["time"] == "FAIL"
+
+
+@pytest.mark.parametrize("source", ["ntpd:1", "chrony:1", "timesyncd:1"])
+def test_any_daemon_with_a_selected_server_passes(source):
+    facts = dict(GOOD_FACTS, ntp_source=source)
+    assert statuses(preflight.evaluate_host(host(), facts, PROFILE))["time"] == "PASS"
 
 
 def test_a_4gb_vm_is_enough_for_dht_but_not_for_a_validator():

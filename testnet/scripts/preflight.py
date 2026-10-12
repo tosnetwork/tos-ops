@@ -79,6 +79,17 @@ d=/var/lib; [ -d /var/lib/tos ] && d=/var/lib/tos
 echo "disk_free_kib=$(df -Pk "$d" | awk 'NR==2 {print $4}')"
 echo "ipv4=$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | tr '\n' ' ')"
 echo "ntp=$(timedatectl show -p NTPSynchronized --value 2>/dev/null)"
+# The kernel flag alone can stay "yes" while the daemon has no server at all (seen with ntpsec
+# preferring unreachable IPv6 servers), so also count the daemon's selected source.
+if command -v ntpq >/dev/null; then
+  echo "ntp_source=ntpd:$(ntpq -pn 2>/dev/null | grep -c '^\*')"
+elif command -v chronyc >/dev/null; then
+  echo "ntp_source=chrony:$(chronyc -n sources 2>/dev/null | grep -c '^\^\*')"
+elif systemctl is-active --quiet systemd-timesyncd; then
+  echo "ntp_source=timesyncd:$(timedatectl timesync-status 2>/dev/null | grep -c 'Server:')"
+else
+  echo "ntp_source=none:0"
+fi
 echo "ufw=$( (ufw status 2>/dev/null || echo 'Status: absent') | tr '\n' '|')"
 echo "udp_listen=$(ss -H -lunp 2>/dev/null | awk '{print $4 "@" $NF}' | tr '\n' ' ')"
 echo "tcpdump=$(command -v tcpdump || true)"
@@ -263,7 +274,18 @@ def evaluate_host(host: Host, facts: dict[str, str], profile: dict) -> list[Resu
         else f"{host.address} not on any interface ({facts.get('ipv4', '').strip()}): behind NAT, forward the UDP ports",
         warn=True,
     )
-    add("time", facts.get("ntp") == "yes", f"NTPSynchronized={facts.get('ntp')}")
+    daemon, _, selected = facts.get("ntp_source", "none:0").partition(":")
+    has_source = selected.isdigit() and int(selected) > 0
+    add(
+        "time",
+        facts.get("ntp") == "yes" and has_source,
+        f"NTPSynchronized={facts.get('ntp')}, {daemon} selected sources={selected or 0}"
+        + (
+            ""
+            if has_source
+            else " (no server in use: check the daemon's servers and IPv4/IPv6 reachability)"
+        ),
+    )
 
     ports = role_udp_ports(host.roles, profile)
     state, rules = parse_ufw(facts.get("ufw", ""))
