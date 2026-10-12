@@ -80,6 +80,21 @@ def load_profile(path: Path = PROFILE_PATH) -> dict[str, Any]:
     return profile
 
 
+def confirmed_global_id(profile: dict[str, Any]) -> int:
+    """The global id a genesis may be generated with: valid, and confirmed by the owner.
+
+    A zero state carries its global id forever; every block and every wallet
+    signature commits to it. An unconfirmed value must never reach one.
+    """
+    entry = profile.get("global_id", {})
+    if entry.get("status") != "CONFIRMED":
+        raise TestnetError(
+            f"global id {entry.get('value')!r} is {entry.get('status')!r}, not CONFIRMED; "
+            "the owner decides it (decision D03) before any genesis"
+        )
+    return check_global_id(entry.get("value"))
+
+
 def check_global_id(value: Any) -> int:
     """A testnet global id is a signed int32 that is neither mainnet's nor local's."""
     if not isinstance(value, int) or isinstance(value, bool):

@@ -21,7 +21,7 @@ Nothing here has produced a public network yet.
 
 | | Local (`local/`) | Public testnet (here) | Production |
 | --- | --- | --- | --- |
-| Global id (ConfigParam 19) | 3 | **2, proposed** (decision D03) | 1 |
+| Global id (ConfigParam 19) | 3 | **2**, confirmed 2026-10-12 (decision D03) | 1 |
 | Genesis | test harness, keys made by the installer | operator ceremony, `validator-pq.pub` | operator ceremony |
 | Genesis template | harness template | canonical `gen-zerostate.fif` with only global id and epoch replaced | canonical template |
 | Hosts | one | one validator per host, separate DHT hosts | same |
@@ -90,7 +90,7 @@ choose silently.
 
 | Decision | Where it is used | Current value |
 | --- | --- | --- |
-| D03 global id | `network/profile.json` `global_id` | 2, `PROPOSED`. The scripts refuse 1 and 3 |
+| D03 global id | `network/profile.json` `global_id` | 2, `CONFIRMED` 2026-10-12 (mainnet 1). The scripts refuse 1 and 3, and `genesis` refuses any global id not marked `CONFIRMED` |
 | D03 genesis epoch | `testnet-coordinator.py genesis --epoch` | chosen at the ceremony; refused if older than one hour or more than 14 days ahead |
 | D03 first two election schedules | canonical ConfigParam 15 (65,536 s terms) | unchanged from the template; the initial set lives 131,072 s from the epoch |
 | D05 privacy | the template deploys no pool | disabled; version 16 (no `quantum-network-tag`) |

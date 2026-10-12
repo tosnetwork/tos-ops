@@ -131,7 +131,7 @@ def create_state(run_dir: Path, args: argparse.Namespace, script: Path) -> str:
 
 def cmd_genesis(args: argparse.Namespace) -> None:
     profile = lib.load_profile(args.profile)
-    global_id = lib.check_global_id(profile["global_id"]["value"])
+    global_id = lib.confirmed_global_id(profile)
     ceremony = args.ceremony
     manifest = ceremony / "validator-pq.pub"
     if not manifest.is_file():

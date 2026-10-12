@@ -17,8 +17,9 @@ world-readable) and release binaries in `/usr/local/bin`.
 
 ## 0. Before anything (coordinator)
 
-- Freeze decision D03: the global id in `network/profile.json` (`value` and
-  `status`) and the genesis epoch. Announce both.
+- Decision D03: the global id is 2, confirmed 2026-10-12 (`network/profile.json`,
+  status `CONFIRMED`; `genesis` refuses any other status). Freeze the genesis
+  epoch, and announce both.
 - Name the tos release tag and its `SHA256SUMS`. Every party installs that
   release; the coordinator builds `create-state`, `fift` and `gen_fif` from the
   same commit (`cmake --build build --target create-state gen_fif fift tos-pq-controller`).

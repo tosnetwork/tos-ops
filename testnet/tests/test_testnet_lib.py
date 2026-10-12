@@ -41,6 +41,7 @@ def public_record(n: int) -> dict:
 def test_repository_profile_loads():
     profile = lib.load_profile()
     assert profile["global_id"]["value"] == 2
+    assert lib.confirmed_global_id(profile) == 2
     assert profile["genesis"]["validators"] == 4
     assert profile["features"]["shielded_pool"] == "disabled"
 
@@ -54,6 +55,22 @@ def test_global_id_refuses_mainnet_local_and_malformed(value):
 @pytest.mark.parametrize("value", [2, -2, 7002, 2**31 - 1, -(2**31)])
 def test_global_id_accepts_other_int32(value):
     assert lib.check_global_id(value) == value
+
+
+@pytest.mark.parametrize("status", ["PROPOSED", "confirmed", None])
+def test_genesis_refuses_an_unconfirmed_global_id(status):
+    profile = lib.load_profile()
+    profile["global_id"]["status"] = status
+    with pytest.raises(lib.TestnetError, match="not CONFIRMED"):
+        lib.confirmed_global_id(profile)
+
+
+def test_confirmation_does_not_admit_mainnet_or_local():
+    profile = lib.load_profile()
+    for value in (1, 3):
+        profile["global_id"]["value"] = value
+        with pytest.raises(lib.TestnetError):
+            lib.confirmed_global_id(profile)
 
 
 def test_profile_refuses_colliding_ports(tmp_path):

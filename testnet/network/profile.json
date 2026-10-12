@@ -4,8 +4,9 @@
   "status": "PROPOSED",
   "global_id": {
     "value": 2,
-    "status": "PROPOSED",
-    "note": "Signature replay domain (ConfigParam 19). Mainnet is 1 and the local development network is 3; 2 is reserved nowhere in tos. Owner decision D03 in memo public-testnet/README.md must confirm it before the ceremony."
+    "status": "CONFIRMED",
+    "confirmed": "2026-10-12",
+    "note": "Signature replay domain (ConfigParam 19), confirmed by the owner (decision D03 in memo public-testnet/README.md): public testnet 2, mainnet 1, local development network 3. No other TOS network and neither TON network (mainnet -239, testnet -3) uses 2."
   },
   "genesis": {
     "template": "crypto/smartcont/gen-zerostate.fif",
