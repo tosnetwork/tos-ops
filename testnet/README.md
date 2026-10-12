@@ -77,16 +77,17 @@ Validators serve no public clients. A validator's console (30002/tcp) and its
 JSON-RPC (8081) and exporter (9100) stay on loopback; reach them over SSH.
 QUIC always uses the ADNL port plus 1000; open both.
 
-The proposed starting hardware is the plan's section 5.3 profile: 8 vCPU (8
-physical cores for release measurements, governor `performance`, boost off),
-16 GiB RAM, 200 GiB NVMe, 1 Gbit/s. Measured on the local network, one
-validator writes about 190 GB a day to disk; choose NVMe by endurance, not
-only size.
+The starting hardware is the plan's section 5.3 profile: 8 vCPU, 16 GiB RAM,
+200 GiB NVMe, 1 Gbit/s. Virtual machines are fine. The public testnet's
+capacity and timing numbers are not release evidence (decision D13); reports
+label them `NON-RELEASE` and record the virtualization. Measured on the local
+network, one validator writes about 190 GB a day to disk, so choose NVMe by
+endurance, not only size.
 
 ## Decisions this directory needs before the ceremony
 
-These are open in the memo plan; the scripts refuse or flag them rather than
-choose silently.
+These come from the memo plan's decision register. Where one is still open, the
+scripts refuse or flag it rather than choose silently.
 
 | Decision | Where it is used | Current value |
 | --- | --- | --- |
@@ -96,6 +97,8 @@ choose silently.
 | D05 privacy | the template deploys no pool | disabled; version 16 (no `quantum-network-tag`) |
 | D02 distribution | how operators receive `global-config.json` | the coordinator publishes it with its SHA-256; nodes install it only on a matching digest |
 | Release binaries | `install-node.sh prepare --release DIR` | a tagged release with `SHA256SUMS`; no build is installed from a developer tree |
+| D11 faucet funding | nothing in genesis; the faucet wallet is ordinary | decided 2026-10-12: validator-donated rewards, canonical genesis. The first rewards unfreeze about T + 63.7 h, so the faucet opens on day 3 at the earliest |
+| D13 release evidence | capacity and timing reports | decided 2026-10-12: not release evidence; labelled `NON-RELEASE` |
 
 The template's other mainnet constants are kept on purpose: ConfigParams
 8/12/14/15/16/17/30/47, supply and the bootstrap wallet. A testnet that changes
@@ -133,19 +136,23 @@ naming release binaries they exercise the console set-up:
 TOS_ROOT=$TOS_ROOT "$TOS_ROOT/.venv/bin/python" -m pytest -q testnet/tests
 ```
 
-Each guard was broken once on purpose (identity uniqueness, template line
-count, key id match, block agreement, global id, staleness, the config lock)
-and the tests failed every time.
+Each guard was broken once on purpose and the tests failed every time:
+identity uniqueness, template line count, key id match, block agreement,
+global id, staleness, the config lock, the confirmed-global-id gate, and
+key reuse across resets.
 
 ## What is still open
 
 - A real multi-host rehearsal with four operators, then the plan's two
   independent G0 rehearsal receipts.
 - Elections after genesis: controller deployment, operating authorization and
-  stakes follow `Production-Node.md` section 9 with `tosctl`; nothing here
-  automates them, and the faucet that funds the four controllers from the
-  bootstrap wallet is a separate, reviewed step.
+  stakes follow `Production-Node.md` section 9 with `tosctl`. Nothing here
+  automates them. Funding the four controllers from the bootstrap wallet is a
+  separate, reviewed step, and it must finish before the first election opens
+  at T + 27.3 h.
 - Authenticated global-config distribution (production gap G7) and a refresh
   schedule for `init_block` (`scripts/refresh-global-config-init-block.py` in
   tos, run with `--global-id 2`).
-- Public RPC proxy, faucet, explorer and monitoring placement (plan D07).
+- Public RPC proxy, explorer and monitoring placement (plan D07).
+- The faucet service: donating operators, wallet custody, grant size and rate
+  limits sized from measured issuance (plan D11, section 5.5).
