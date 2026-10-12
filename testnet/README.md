@@ -39,7 +39,8 @@ no `local-pq-*` drivers, no development pool key.
 testnet/
 ├── README.md                     this file
 ├── CEREMONY.md                   step-by-step genesis ceremony and validator bring-up
-├── network/profile.json          global id, ports, retention, paths: the one source scripts read
+├── network/profile.json          global id, ports, retention, paths, host floors: the one source scripts read
+├── network/inventory.example.json  host inventory format for preflight.py (real one stays outside)
 ├── scripts/
 │   ├── testnet_lib.py            shared checks and encodings (standard library only)
 │   ├── testnet-operator.py       pregenesis-config | controller | record | configure
@@ -47,6 +48,8 @@ testnet/
 │   ├── testnet-coordinator.py    manifest | genesis | global-config
 │   ├── install-node.sh           prepare | activate one node (root)
 │   ├── check-testnet.py          independent nodes agree on one live chain
+│   ├── build-node-binaries.sh    compile the role's binaries on the host itself
+│   ├── preflight.py              before installing: host floors, ufw, and the UDP mesh between hosts
 │   └── rehearse-loopback.sh      the whole ceremony on one host, unprivileged
 ├── systemd/
 │   ├── tos-testnet-validator.service

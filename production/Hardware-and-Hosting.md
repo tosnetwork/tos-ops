@@ -207,6 +207,15 @@ After every election, compute each ASN's, provider's, data center's and
 country's share of effective weight from ConfigParam 34. Compare the shares
 with section 4.2, and alert when a target is exceeded.
 
+Before a new host joins, run `../testnet/scripts/preflight.py` against it and
+the hosts it must reach. It checks the OS, CPU instructions, memory, disk,
+time sync and host firewall, and proves the UDP mesh between hosts by
+capturing probes below the host firewall. That is how a provider security
+group that admits only SSH shows up before deployment instead of as a stuck
+chain. Pass `--profile` a copy of `network/profile.json` whose
+`host_requirements` carry this document's production floors (section 1.1);
+the default floors are the testnet's.
+
 ### 4.6 Be ready to move
 
 Solana operators recovered from the Hetzner ban by moving. For TOS:

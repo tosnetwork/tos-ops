@@ -1,0 +1,254 @@
+import importlib.util
+import json
+import re
+import subprocess
+import sys
+
+import pytest
+import testnet_lib as lib
+from conftest import SCRIPTS
+
+spec = importlib.util.spec_from_file_location("preflight", SCRIPTS / "preflight.py")
+preflight = importlib.util.module_from_spec(spec)
+sys.modules["preflight"] = preflight  # dataclasses resolve their module through sys.modules
+spec.loader.exec_module(preflight)
+
+PROFILE = lib.load_profile()
+
+GOOD_FACTS = {
+    "os_id": "ubuntu",
+    "os_version": "24.04",
+    "arch": "x86_64",
+    "cpus": "6",
+    "cpu_model": "Intel Xeon Processor (Icelake)",
+    "cpu_flags": "fpu cx16 lahf_lm popcnt sse4_1 sse4_2 ssse3 avx2",
+    "mem_kib": str(int(11.6 * 1048576)),
+    "disk_free_kib": str(88 * 1048576),
+    "ipv4": "203.0.113.10 ",
+    "ntp": "yes",
+    "ufw": "Status: active||To Action From|-- ------ ----|OpenSSH ALLOW Anywhere|30001/udp ALLOW Anywhere|31001/udp ALLOW Anywhere|30001/udp (v6) ALLOW Anywhere (v6)|",
+    # ss truncates process names to 15 characters, exactly as on the real hosts.
+    "udp_listen": '0.0.0.0:30001@users:(("validator-engin",pid=1,fd=5)) 127.0.0.53%lo:53@users:(("systemd-resolve",pid=2,fd=3))',
+    "tcpdump": "/usr/bin/tcpdump",
+    "python3": "/usr/bin/python3",
+}
+
+
+def host(name="node-1", address="203.0.113.10", roles=("validator",)):
+    return preflight.Host(name=name, address=address, roles=list(roles))
+
+
+def statuses(results):
+    return {r.check: r.status for r in results}
+
+
+def test_a_good_validator_passes_every_host_check():
+    results = preflight.evaluate_host(host(), dict(GOOD_FACTS), PROFILE)
+    assert set(statuses(results).values()) == {"PASS"}, [r for r in results if r.status != "PASS"]
+
+
+@pytest.mark.parametrize(
+    "key,value,check",
+    [
+        ("os_version", "22.04", "os"),
+        ("arch", "riscv64", "arch"),
+        ("cpus", "2", "cpu"),
+        ("cpu_flags", "fpu sse2", "cpu"),
+        ("mem_kib", str(4 * 1048576), "memory"),
+        ("disk_free_kib", str(10 * 1048576), "disk"),
+        ("ntp", "no", "time"),
+    ],
+)
+def test_each_floor_fails_when_not_met(key, value, check):
+    facts = dict(GOOD_FACTS, **{key: value})
+    assert statuses(preflight.evaluate_host(host(), facts, PROFILE))[check] == "FAIL"
+
+
+def test_a_4gb_vm_is_enough_for_dht_but_not_for_a_validator():
+    facts = dict(GOOD_FACTS, mem_kib=str(int(3.8 * 1048576)), cpus="4")
+    assert (
+        statuses(preflight.evaluate_host(host(roles=["dht"]), facts, PROFILE))["memory"] == "PASS"
+    )
+    assert statuses(preflight.evaluate_host(host(), facts, PROFILE))["memory"] == "FAIL"
+
+
+def test_a_host_with_two_roles_takes_the_stricter_floor_and_both_port_sets():
+    assert preflight.role_floor(["dht", "validator"], PROFILE)["min_memory_gib"] == 11
+    assert preflight.role_udp_ports(["validator", "dht"], PROFILE) == [30001, 30300, 31001]
+    assert preflight.role_udp_ports(["dht"], PROFILE) == [30300]
+
+
+def test_nat_is_a_warning_not_a_failure():
+    facts = dict(GOOD_FACTS, ipv4="192.168.1.156 ")
+    assert statuses(preflight.evaluate_host(host(), facts, PROFILE))["address"] == "WARN"
+
+
+def test_ufw_missing_quic_port_fails():
+    facts = dict(GOOD_FACTS, ufw="Status: active|30001/udp ALLOW Anywhere|")
+    results = preflight.evaluate_host(host(), facts, PROFILE)
+    ufw = next(r for r in results if r.check == "ufw")
+    assert ufw.status == "FAIL" and "31001" in ufw.detail
+
+
+def test_ufw_only_v6_rule_does_not_count():
+    facts = dict(
+        GOOD_FACTS,
+        ufw="Status: active|30001/udp (v6) ALLOW Anywhere (v6)|31001/udp ALLOW Anywhere|",
+    )
+    assert statuses(preflight.evaluate_host(host(), facts, PROFILE))["ufw"] == "FAIL"
+
+
+def test_an_open_console_port_fails():
+    facts = dict(GOOD_FACTS, ufw=GOOD_FACTS["ufw"] + "30002/tcp ALLOW Anywhere|")
+    results = preflight.evaluate_host(host(), facts, PROFILE)
+    assert next(r for r in results if r.check == "ufw").status == "FAIL"
+
+
+def test_inactive_ufw_is_a_warning():
+    facts = dict(GOOD_FACTS, ufw="Status: inactive|")
+    assert statuses(preflight.evaluate_host(host(), facts, PROFILE))["ufw"] == "WARN"
+
+
+def test_a_port_held_by_another_program_fails():
+    facts = dict(GOOD_FACTS, udp_listen='0.0.0.0:30001@users:(("someapp",pid=9,fd=3))')
+    assert statuses(preflight.evaluate_host(host(), facts, PROFILE))["ports"] == "FAIL"
+
+
+def test_probe_payload_is_found_in_a_tcpdump_ascii_capture():
+    capture = (
+        "06:10:01.1 eth0 In  IP 198.51.100.7.40123 > 203.0.113.10.30001: UDP, length 20\n"
+        "E..0..@.@.....PROB:node-2:30001\n"
+        "06:10:01.2 eth0 In  IP 10.0.0.5.40123 > 203.0.113.10.31001: UDP, length 20\n"
+        "E..0..@.@.....PROB:node-nat:31001\n"
+    )
+    assert preflight.received_probes(capture) == {("node-2", 30001), ("node-nat", 31001)}
+
+
+def test_probe_command_names_every_target():
+    command = preflight.probe_command("node-1", [("203.0.113.11", 30001), ("203.0.113.12", 30300)])
+    assert "203.0.113.11:30001" in command and "203.0.113.12:30300" in command
+    assert "PROB:%s:%s" in command
+
+
+class FakeNetwork:
+    """Runs commands as if on real hosts; `blocked` lists (sender, target, port) that are dropped."""
+
+    def __init__(self, hosts, blocked=()):
+        self.hosts = {h.name: h for h in hosts}
+        self.by_address = {h.address: h for h in hosts}
+        self.blocked = set(blocked)
+        self.sent = []
+
+    def __call__(self, h, command, timeout):
+        if command == preflight.FACTS_SCRIPT:
+            facts = dict(GOOD_FACTS, ipv4=h.address + " ")
+            return subprocess.CompletedProcess(
+                [], 0, "\n".join(f"{k}={v}" for k, v in facts.items()), ""
+            )
+        if command.startswith("python3 -c"):
+            sender = command.split('" ', 1)[1].split()[0]
+            for pair in command.split('" ', 1)[1].split()[1:]:
+                address, port = pair.rsplit(":", 1)
+                self.sent.append((sender, self.by_address[address].name, int(port)))
+            return subprocess.CompletedProcess([], 0, "", "")
+        if command.startswith("timeout"):
+            import time
+
+            time.sleep(6)  # the probes are sent while the capture runs
+            ports = [int(p) for p in re.findall(r"dst port (\d+)", command)]
+            lines = [
+                f"PROB:{s}:{p}"
+                for s, t, p in self.sent
+                if t == h.name and p in ports and (s, t, p) not in self.blocked
+            ]
+            return subprocess.CompletedProcess([], 0, "\n".join(lines), "")
+        raise AssertionError(command)
+
+
+@pytest.fixture
+def quick(monkeypatch):
+    monkeypatch.setattr(preflight, "CAPTURE_SECONDS", 1)
+
+
+def test_full_mesh_passes(quick):
+    hosts = [host("a", "203.0.113.1"), host("b", "203.0.113.2"), host("c", "203.0.113.3", ["dht"])]
+    results = preflight.check_udp(hosts, PROFILE, FakeNetwork(hosts))
+    assert {r.status for r in results} == {"PASS"}
+    assert {r.check for r in results if r.host == "c"} == {"udp:30300"}
+
+
+def test_a_dropped_path_names_the_target_port_and_sender(quick):
+    hosts = [host("a", "203.0.113.1"), host("b", "203.0.113.2"), host("c", "203.0.113.3")]
+    net = FakeNetwork(hosts, blocked={("a", "c", 31001)})
+    results = preflight.check_udp(hosts, PROFILE, net)
+    failed = [r for r in results if r.status == "FAIL"]
+    assert len(failed) == 1
+    assert failed[0].host == "c" and failed[0].check == "udp:31001" and "['a']" in failed[0].detail
+
+
+def test_a_provider_that_admits_only_ssh_fails_every_port(quick):
+    hosts = [host("a", "203.0.113.1"), host("b", "203.0.113.2")]
+    net = FakeNetwork(
+        hosts, blocked={(s, t, p) for s in "ab" for t in "ab" for p in (30001, 31001)}
+    )
+    results = preflight.check_udp(hosts, PROFILE, net)
+    assert {r.status for r in results} == {"FAIL"} and len(results) == 4
+
+
+def test_run_preflight_reports_an_unreachable_host(quick):
+    hosts = [host("a", "203.0.113.1"), host("b", "203.0.113.2")]
+    net = FakeNetwork(hosts)
+
+    def run(h, command, timeout):
+        if h.name == "b" and command == preflight.FACTS_SCRIPT:
+            return subprocess.CompletedProcess([], 255, "", "Host key verification failed.")
+        return net(h, command, timeout)
+
+    results = preflight.run_preflight(hosts, PROFILE, run, install_tools=False)
+    ssh_b = next(r for r in results if r.host == "b" and r.check == "ssh")
+    assert ssh_b.status == "FAIL" and "Host key verification failed" in ssh_b.detail
+    assert not any(r.check.startswith("udp") for r in results), (
+        "one reachable host cannot test a mesh"
+    )
+
+
+def test_inventory_validation(tmp_path):
+    path = tmp_path / "inv.json"
+    path.write_text(
+        json.dumps({"hosts": [{"name": "a", "address": "203.0.113.1", "roles": ["miner"]}]})
+    )
+    with pytest.raises(lib.TestnetError, match="roles"):
+        preflight.load_inventory(path)
+    path.write_text(
+        json.dumps(
+            {
+                "hosts": [
+                    {"name": "a", "address": "203.0.113.1", "roles": ["dht"]},
+                    {"name": "a", "address": "203.0.113.2", "roles": ["dht"]},
+                ]
+            }
+        )
+    )
+    with pytest.raises(lib.TestnetError, match="name"):
+        preflight.load_inventory(path)
+    path.write_text(
+        json.dumps(
+            {
+                "hosts": [
+                    {
+                        "name": "a",
+                        "address": "203.0.113.1",
+                        "roles": ["dht"],
+                        "ssh_key": "~/.ssh/k.pem",
+                    }
+                ]
+            }
+        )
+    )
+    loaded = preflight.load_inventory(path)
+    assert not loaded[0].ssh_key.startswith("~")
+
+
+def test_the_example_inventory_loads():
+    hosts = preflight.load_inventory(lib.PROFILE_PATH.parent / "inventory.example.json")
+    assert {r for h in hosts for r in h.roles} == {"validator", "dht"}

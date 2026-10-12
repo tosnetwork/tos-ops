@@ -1,0 +1,10 @@
+{
+  "note": "Example only (documentation addresses). Keep the real inventory outside the repository: it names hosts and key paths. Used by scripts/preflight.py.",
+  "hosts": [
+    {"name": "node-1", "address": "203.0.113.11", "roles": ["validator", "dht"], "ssh_user": "root", "ssh_key": "~/.ssh/testnet.pem", "ssh_port": 22},
+    {"name": "node-2", "address": "203.0.113.12", "roles": ["validator"], "ssh_user": "root", "ssh_key": "~/.ssh/testnet.pem", "ssh_port": 22},
+    {"name": "node-3", "address": "203.0.113.13", "roles": ["validator"], "ssh_user": "root", "ssh_key": "~/.ssh/testnet.pem", "ssh_port": 22},
+    {"name": "node-4", "address": "203.0.113.14", "roles": ["validator"], "ssh_user": "root", "ssh_key": "~/.ssh/testnet.pem", "ssh_port": 22},
+    {"name": "node-dht", "address": "203.0.113.20", "roles": ["dht"], "ssh_user": "root", "ssh_key": "~/.ssh/testnet.pem", "ssh_port": 22}
+  ]
+}

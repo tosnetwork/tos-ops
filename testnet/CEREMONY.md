@@ -27,6 +27,32 @@ world-readable) and release binaries in `/usr/local/bin`.
 - Confirm the four operators' identities out of band. The ceremony checks that
   each record is self-consistent; it cannot prove who sent it.
 
+## 0.5 Coordinator: preflight every host
+
+Before anything is installed, run the preflight from the coordinator's
+machine against an inventory of every host (format:
+`network/inventory.example.json`; keep the real one outside the repository):
+
+```bash
+python3 /opt/tos-testnet/scripts/preflight.py --inventory hosts.json --accept-new-host-keys --install-tools
+```
+
+It checks, per host:
+
+- SSH, Ubuntu 24.04, and x86-64-v2 on x86_64;
+- CPUs, memory and free disk against the role floors in `network/profile.json`;
+- whether the public address is on an interface;
+- NTP;
+- ufw rules for the role's UDP ports, and that the console port is closed;
+- whether another program already holds those ports.
+
+It then has every host send UDP probes to every other host's role ports, while
+each target captures with tcpdump. A probe that never arrives was dropped
+outside the VM. Fix every FAIL before step 1. It is safe to rerun on live
+nodes; a port held by `validator-engine` or `dht-server` passes.
+`--accept-new-host-keys` accepts only a first-seen host key; a changed key
+still stops SSH, and must be checked against the provider console first.
+
 ## 1. Operator: build and prepare the validator host
 
 Compile the binaries on this host from the ceremony commit, then prepare:
