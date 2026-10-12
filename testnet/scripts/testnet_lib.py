@@ -36,12 +36,26 @@ PQ_ALGORITHM_MLDSA44 = 1
 ED25519_PUBLIC_TL_PREFIX = bytes.fromhex("c6b41348")
 ED25519_PRIVATE_TL_PREFIX = bytes.fromhex("17236849")
 
-# The three lines of the canonical template that pin it to mainnet. A testnet
-# ceremony replaces exactly these and nothing else; any other difference in
-# the template is a change the ceremony did not review, so it is refused.
+# The lines of the canonical template a testnet ceremony replaces: the three
+# that pin it to mainnet, and the two that set the validator schedule. Exactly
+# these and nothing else; any other difference in the template is a change the
+# ceremony did not review, so it is refused.
 TEMPLATE_GLOBAL_ID_LINE = "1 setglobalid   // TOS mainnet global_id"
 TEMPLATE_EPOCH_LINE = "1789434000 constant mainnet_genesis_utime"
 TEMPLATE_EPOCH_ABORT_LINE = 'now mainnet_genesis_utime = not abort"SOURCE_DATE_EPOCH must be 1789434000 for TOS mainnet genesis"'
+TEMPLATE_ELECTION_PARAMS_LINE = "65536 32768 8192 32768 config.election_params!"
+TEMPLATE_INITIAL_SET_LINE = "131072 =: orig_vset_valid_for"
+
+# ConfigParam 15, in the order config.election_params! takes it.
+ELECTION_PARAM_NAMES = (
+    "elected_for",
+    "elections_start_before",
+    "elections_end_before",
+    "stake_held_for",
+)
+# Operators deploy, fund and authorize their controllers after the chain is
+# live and before the first election opens; this is the least time they get.
+MIN_FIRST_ELECTION_LEAD_SECONDS = 3600
 
 
 class TestnetError(Exception):
@@ -60,6 +74,7 @@ def load_profile(path: Path = PROFILE_PATH) -> dict[str, Any]:
     genesis = profile.get("genesis", {})
     if genesis.get("validators") != GENESIS_VALIDATORS:
         raise TestnetError("the canonical genesis commits exactly four validators")
+    validator_schedule(profile)
     ports = profile.get("ports", {})
     required = (
         "adnl_udp",
@@ -78,6 +93,37 @@ def load_profile(path: Path = PROFILE_PATH) -> dict[str, Any]:
     if ports["adnl_udp"] + ports["quic_udp_offset"] > 65535 or len(set(public)) != len(public):
         raise TestnetError("profile UDP ports collide or the derived QUIC port is out of range")
     return profile
+
+
+def validator_schedule(profile: dict[str, Any]) -> dict[str, int]:
+    """The initial set's lifetime and ConfigParam 15, checked against each other.
+
+    Returns {"initial_set_valid_for": s, "elected_for": s, ...}. A schedule the
+    Elector would accept but that cannot work is refused here, before a zero
+    state commits to it: an election window that is empty or does not end
+    before the term starts, or a first election that opens before operators
+    can have their controllers ready.
+    """
+    genesis = profile.get("genesis", {})
+    params = genesis.get("election_params", {})
+    if not isinstance(params, dict) or set(params) != set(ELECTION_PARAM_NAMES):
+        raise TestnetError(f"genesis election_params must name exactly {ELECTION_PARAM_NAMES}")
+    values = {"initial_set_valid_for": genesis.get("initial_set_valid_for_seconds")}
+    values.update({name: params[name] for name in ELECTION_PARAM_NAMES})
+    for name, value in values.items():
+        if not isinstance(value, int) or isinstance(value, bool) or not 0 < value < 2**32:
+            raise TestnetError(f"genesis schedule {name} is missing or out of range: {value!r}")
+    if not values["elections_end_before"] < values["elections_start_before"] < values["elected_for"]:
+        raise TestnetError(
+            "election params need elections_end_before < elections_start_before < elected_for"
+        )
+    lead = values["initial_set_valid_for"] - values["elections_start_before"]
+    if lead < MIN_FIRST_ELECTION_LEAD_SECONDS:
+        raise TestnetError(
+            f"the first election would open {lead} s after genesis; operators need at least "
+            f"{MIN_FIRST_ELECTION_LEAD_SECONDS} s to deploy and fund their controllers"
+        )
+    return values
 
 
 def confirmed_global_id(profile: dict[str, Any]) -> int:
@@ -421,15 +467,17 @@ def pack_manifest(records: list[dict[str, Any]]) -> bytes:
 # ---------------------------------------------------------------- genesis template
 
 
-def patch_template(text: str, global_id: int, epoch: int) -> str:
-    """Return the canonical template with only its mainnet pins replaced.
+def patch_template(text: str, global_id: int, epoch: int, schedule: dict[str, int]) -> str:
+    """Return the canonical template with its mainnet pins and schedule replaced.
 
-    Each pinned line must occur exactly once. A template that changed around
-    these lines has not been reviewed for a testnet ceremony and is refused.
+    `schedule` is what validator_schedule() returns. Each replaced line must
+    occur exactly once. A template that changed around these lines has not been
+    reviewed for a testnet ceremony and is refused.
     """
     check_global_id(global_id)
     if not isinstance(epoch, int) or epoch <= 1789434000:
         raise TestnetError("the testnet genesis epoch must be later than the mainnet template's")
+    params = " ".join(str(schedule[name]) for name in ELECTION_PARAM_NAMES)
     replacements = (
         (TEMPLATE_GLOBAL_ID_LINE, f"{global_id} setglobalid   // TOS public testnet global_id"),
         (TEMPLATE_EPOCH_LINE, f"{epoch} constant mainnet_genesis_utime"),
@@ -437,6 +485,8 @@ def patch_template(text: str, global_id: int, epoch: int) -> str:
             TEMPLATE_EPOCH_ABORT_LINE,
             f'now mainnet_genesis_utime = not abort"SOURCE_DATE_EPOCH must be {epoch} for this TOS testnet genesis"',
         ),
+        (TEMPLATE_ELECTION_PARAMS_LINE, f"{params} config.election_params!"),
+        (TEMPLATE_INITIAL_SET_LINE, f"{schedule['initial_set_valid_for']} =: orig_vset_valid_for"),
     )
     lines = text.split("\n")
     for old, new in replacements:

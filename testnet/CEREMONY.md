@@ -246,12 +246,22 @@ After the first ordinary election, drop `--genesis-set`.
 
 ## 8. After genesis
 
-The bootstrap set is valid for 131,072 s after the epoch T. The four operators
-must deploy their controllers, authorize operations and stake through two
-overlapping elections (Production-Node.md section 9). The first election opens
-at T + 27.3 h and closes at T + 34.1 h; the elected set takes office at
-T + 36.4 h. Everything has to be ready before the window opens. The timeline is
-in the memo plan, `public-testnet/README.md` section 5.4.
+The schedule is `genesis` in `network/profile.json`, and `genesis.json` prints
+its times. The bootstrap set is valid for 21,600 s after the epoch T, and each
+elected set for 14,400 s. The four operators must deploy their controllers,
+authorize operations and stake through two overlapping elections
+(Production-Node.md section 9). The first election opens at T + 4 h and closes
+at T + 5.5 h; the elected set takes office at T + 6 h. The next election opens
+at T + 8 h, and the set rotates every 4 h after that, each rotation a key
+block. Everything has to be ready before the first window opens: the first
+epoch's controllers were ready about 1.75 h after T.
+
+The first epoch used the canonical template's schedule unchanged: a 131,072 s
+bootstrap set and 65,536 s terms. Its first key block after genesis would have
+come at T + 34 h. Until then the GC checkpoint could not move, so no state and
+no consensus database was deleted, and at about 145 GB a day the 99 GB disks
+would have filled in 15 hours. That is why this testnet runs a shorter
+schedule and a 3,600 s validator `state_ttl`.
 
 If the first election cannot be conducted, the Elector cancels it at
 `elect_at` and refunds the stakes. The chain does not stop: the genesis set
@@ -268,3 +278,15 @@ earlier epoch's `genesis-records.json` to `manifest --previous`, which refuses
 any reused controller id, consensus key id or ADNL id. Validators that joined
 an earlier epoch after genesis are not in those files. Keep their records and
 pass them too.
+
+On every host of the ended epoch, with that epoch's published zero state root
+hash (`validator.zero_state.root_hash` in its `global-config.json`):
+
+```bash
+sudo /opt/tos-testnet/scripts/retire-host.sh --confirm-zerostate <ROOT_HASH_BASE64>
+```
+
+It refuses unless the installed global config names that zero state. It stops
+and disables every testnet unit and deletes the node databases, logs, the
+global config and the operator tool's vault. It keeps the binaries, so a reset
+on the same tos commit starts again at step 0.4 without a rebuild.

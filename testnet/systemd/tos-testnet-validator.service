@@ -21,7 +21,7 @@ ExecStart=/usr/local/bin/validator-engine \
   -l /var/log/tos/validator/node.log \
   --session-logs /var/log/tos/validator/session-stats \
   -t 16 \
-  --state-ttl 86400 --archive-ttl 86400 \
+  --state-ttl 3600 --archive-ttl 86400 \
   --json-rpc-address 127.0.0.1:8081 \
   --exporter-address 127.0.0.1:9100
 Restart=on-failure

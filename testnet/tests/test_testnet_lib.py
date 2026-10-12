@@ -249,37 +249,51 @@ TEMPLATE = "\n".join(
         "0x544F5301 default-subwallet-id!",
         lib.TEMPLATE_EPOCH_LINE,
         lib.TEMPLATE_EPOCH_ABORT_LINE,
-        "131072 =: orig_vset_valid_for",
+        lib.TEMPLATE_ELECTION_PARAMS_LINE,
+        "1 1 9 config.validator_num!",
+        lib.TEMPLATE_INITIAL_SET_LINE,
     ]
 )
+SCHEDULE = {
+    "initial_set_valid_for": 21600,
+    "elected_for": 14400,
+    "elections_start_before": 7200,
+    "elections_end_before": 1800,
+    "stake_held_for": 7200,
+}
 
 
-def test_patch_replaces_only_the_three_pins():
-    patched = lib.patch_template(TEMPLATE, 2, 1800000000)
+def test_patch_replaces_the_pins_and_the_schedule_only():
+    patched = lib.patch_template(TEMPLATE, 2, 1800000000, SCHEDULE)
     before, after = TEMPLATE.split("\n"), patched.split("\n")
     changed = [i for i, (a, b) in enumerate(zip(before, after)) if a != b]
-    assert changed == [1, 3, 4]
+    assert changed == [1, 3, 4, 5, 7]
     assert after[1].startswith("2 setglobalid")
     assert after[3] == "1800000000 constant mainnet_genesis_utime"
     assert "1800000000" in after[4]
-    assert after[5] == before[5]
+    assert after[5] == "14400 7200 1800 7200 config.election_params!"
+    assert after[7] == "21600 =: orig_vset_valid_for"
+    assert after[6] == before[6]
 
 
 def test_patch_refuses_a_changed_template():
     with pytest.raises(lib.TestnetError, match="exactly once"):
         lib.patch_template(
-            TEMPLATE.replace(lib.TEMPLATE_GLOBAL_ID_LINE, "1 setglobalid"), 2, 1800000000
+            TEMPLATE.replace(lib.TEMPLATE_GLOBAL_ID_LINE, "1 setglobalid"), 2, 1800000000, SCHEDULE
         )
     doubled = TEMPLATE + "\n" + lib.TEMPLATE_EPOCH_LINE
     with pytest.raises(lib.TestnetError, match="exactly once"):
-        lib.patch_template(doubled, 2, 1800000000)
+        lib.patch_template(doubled, 2, 1800000000, SCHEDULE)
+    for line in (lib.TEMPLATE_ELECTION_PARAMS_LINE, lib.TEMPLATE_INITIAL_SET_LINE):
+        with pytest.raises(lib.TestnetError, match="exactly once"):
+            lib.patch_template(TEMPLATE.replace(line, "// moved"), 2, 1800000000, SCHEDULE)
 
 
 def test_patch_refuses_mainnet_id_and_old_epoch():
     with pytest.raises(lib.TestnetError):
-        lib.patch_template(TEMPLATE, 1, 1800000000)
+        lib.patch_template(TEMPLATE, 1, 1800000000, SCHEDULE)
     with pytest.raises(lib.TestnetError, match="later"):
-        lib.patch_template(TEMPLATE, 2, 1789434000)
+        lib.patch_template(TEMPLATE, 2, 1789434000, SCHEDULE)
 
 
 def test_patch_matches_the_tos_template_when_available():
@@ -289,9 +303,79 @@ def test_patch_matches_the_tos_template_when_available():
     from pathlib import Path
 
     text = (Path(root) / "crypto/smartcont/gen-zerostate.fif").read_text()
-    patched = lib.patch_template(text, 2, 1800000000)
+    patched = lib.patch_template(text, 2, 1800000000, SCHEDULE)
     diff = [(a, b) for a, b in zip(text.split("\n"), patched.split("\n")) if a != b]
-    assert len(diff) == 3
+    assert len(diff) == 5
+
+
+# ---------------------------------------------------------------- validator schedule
+
+
+def schedule_profile(**changes):
+    profile = copy.deepcopy(lib.load_profile())
+    genesis = profile["genesis"]
+    for name, value in changes.items():
+        if name == "initial_set_valid_for":
+            genesis["initial_set_valid_for_seconds"] = value
+        else:
+            genesis["election_params"][name] = value
+    return profile
+
+
+def test_repository_schedule_is_the_decided_one():
+    assert lib.validator_schedule(lib.load_profile()) == SCHEDULE
+
+
+@pytest.mark.parametrize(
+    "changes, message",
+    [
+        ({"elections_end_before": 7200}, "end_before < elections_start_before"),
+        ({"elections_start_before": 14400}, "start_before < elected_for"),
+        ({"initial_set_valid_for": 7200 + 3599}, "at least 3600"),
+        ({"elected_for": 0}, "out of range"),
+        ({"stake_held_for": True}, "out of range"),
+        ({"elected_for": "14400"}, "out of range"),
+        ({"initial_set_valid_for": None}, "out of range"),
+    ],
+)
+def test_schedule_refuses_an_unworkable_profile(changes, message):
+    with pytest.raises(lib.TestnetError, match=message):
+        lib.validator_schedule(schedule_profile(**changes))
+
+
+def test_schedule_refuses_missing_or_extra_election_params():
+    profile = schedule_profile()
+    del profile["genesis"]["election_params"]["stake_held_for"]
+    with pytest.raises(lib.TestnetError, match="exactly"):
+        lib.validator_schedule(profile)
+    profile = schedule_profile()
+    profile["genesis"]["election_params"]["validators_elected_for"] = 1
+    with pytest.raises(lib.TestnetError, match="exactly"):
+        lib.validator_schedule(profile)
+
+
+def test_schedule_accepts_the_least_lead_time():
+    assert lib.validator_schedule(schedule_profile(initial_set_valid_for=7200 + 3600))
+
+
+def test_load_profile_refuses_an_unworkable_schedule(tmp_path):
+    # Every script loads the profile first, so a bad schedule must stop them all,
+    # not only the genesis step that patches the template.
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps(schedule_profile(elections_end_before=7200)))
+    with pytest.raises(lib.TestnetError, match="end_before"):
+        lib.load_profile(path)
+
+
+def test_units_use_the_profile_retention():
+    from pathlib import Path
+
+    retention = lib.load_profile()["retention"]
+    systemd = Path(lib.HERE).parent / "systemd"
+    for role in ("validator", "fullnode"):
+        unit = (systemd / f"tos-testnet-{role}.service").read_text()
+        ttl = retention[role]
+        assert f"--state-ttl {ttl['state_ttl']} --archive-ttl {ttl['archive_ttl']}" in unit, role
 
 
 # ---------------------------------------------------------------- global config

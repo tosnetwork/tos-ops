@@ -97,7 +97,8 @@ scripts refuse or flag it rather than choose silently.
 | --- | --- | --- |
 | D03 global id | `network/profile.json` `global_id` | 2, `CONFIRMED` 2026-10-12 (mainnet 1). The scripts refuse 1 and 3, and `genesis` refuses any global id not marked `CONFIRMED` |
 | D03 genesis epoch | `testnet-coordinator.py genesis --epoch` | chosen at the ceremony; refused if older than one hour or more than 14 days ahead |
-| D03 first two election schedules | canonical ConfigParam 15 (65,536 s terms) | unchanged from the template; the initial set lives 131,072 s from the epoch |
+| D03 validator schedule | `network/profile.json` `genesis.initial_set_valid_for_seconds` and `genesis.election_params`; `genesis` replaces the two template lines and records them in `genesis.json` | decided 2026-10-12 after the first epoch: initial set 21,600 s, ConfigParam 15 = 14,400 / 7,200 / 1,800 / 7,200 (first election T + 4 h to T + 5.5 h, a new set and a key block every 4 h). The canonical 131,072 s / 65,536 s schedule left the first epoch without GC for 34 h |
+| Validator retention | `network/profile.json` `retention`, `systemd/tos-testnet-validator.service` | `state_ttl` 3,600 s, `archive_ttl` 86,400 s; a test keeps the unit and the profile equal |
 | D05 privacy | the template deploys no pool | disabled; version 16 (no `quantum-network-tag`) |
 | D02 distribution | how operators receive `global-config.json` | the coordinator publishes it with its SHA-256; nodes install it only on a matching digest |
 | Node binaries | `build-node-binaries.sh --rev <commit>`, then `install-node.sh prepare|binaries --release DIR` | every host compiles its own binaries from the pinned tos commit, for `x86-64-v2` (as tos CI does). Binaries are never copied from another machine: a build made on a Sapphire Rapids Xeon stopped with SIGILL on these Icelake VMs, because RocksDB defaults to `-march=native` |
@@ -113,9 +114,10 @@ one of them is a different genesis and needs its own review.
 The canonical `gen-zerostate.fif` pins mainnet: `1 setglobalid` and a
 `SOURCE_DATE_EPOCH` check for 1789434000, whose 131,072-second initial set
 expired on 2026-09-16. `testnet-coordinator.py genesis` copies the template
-into the ceremony directory and replaces exactly those three lines; if any of
-them is missing or appears twice, the template changed and the ceremony
-refuses. The patched copy, the original's SHA-256, the tos revision and the
+into the ceremony directory and replaces exactly those three lines, plus the
+two that set the validator schedule (`config.election_params!` and
+`orig_vset_valid_for`, from the profile); if any of them is missing or appears
+twice, the template changed and the ceremony refuses. The patched copy, the original's SHA-256, the tos revision and the
 `create-state` digest are recorded in `genesis.json`, and genesis is generated
 twice in separate directories and must be byte-identical. tos itself is not
 modified.
@@ -142,8 +144,8 @@ TOS_ROOT=$TOS_ROOT "$TOS_ROOT/.venv/bin/python" -m pytest -q testnet/tests
 
 Each guard was broken once on purpose and the tests failed every time:
 identity uniqueness, template line count, key id match, block agreement,
-global id, staleness, the config lock, the confirmed-global-id gate, and
-key reuse across resets.
+global id, staleness, the config lock, the confirmed-global-id gate, key
+reuse across resets, and the validator schedule checks.
 
 ## What is still open
 
@@ -153,7 +155,7 @@ key reuse across resets.
   stakes follow `Production-Node.md` section 9 with `tosctl`. Nothing here
   automates them. Funding the four controllers from the bootstrap wallet is a
   separate, reviewed step, and it must finish before the first election opens
-  at T + 27.3 h.
+  at T + 4 h (`genesis.json` `first_election`).
 - Authenticated global-config distribution (production gap G7) and a refresh
   schedule for `init_block` (`scripts/refresh-global-config-init-block.py` in
   tos, run with `--global-id 2`).

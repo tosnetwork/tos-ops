@@ -135,7 +135,7 @@ for i in 1 2 3 4; do
     --client-dir "$WORK/console-$i" >/dev/null
   mkdir -m 0700 "$WORK/log$i"
   "$TOS_BIN/validator-engine" -C "$GLOBAL" -D "$db" -l "$WORK/log$i/node.log" \
-    --session-logs "$WORK/log$i/session-stats" -t 4 --state-ttl 86400 --archive-ttl 86400 \
+    --session-logs "$WORK/log$i/session-stats" -t 4 --state-ttl 3600 --archive-ttl 86400 \
     --json-rpc-address "127.0.0.1:$(port "$i" 4)" --exporter-address "127.0.0.1:$(port "$i" 5)" &
   PIDS+=($!)
 done

@@ -15,7 +15,9 @@ a ceremony that has to change an input starts again in a new directory.
 
   genesis --ceremony DIR --tos-root DIR --tos-build DIR --epoch UNIX_SECONDS
       Copy the canonical template gen-zerostate.fif, replace only its mainnet
-      global id and genesis epoch (testnet_lib.patch_template), and run
+      global id and genesis epoch and the profile's validator schedule
+      (ConfigParam 15 and the initial set's lifetime;
+      testnet_lib.patch_template), and run
       create-state with SOURCE_DATE_EPOCH. Then run it a second time in a
       separate directory with the same inputs and the same main wallet key,
       and refuse unless every output is byte-identical. Writes genesis.json.
@@ -25,7 +27,8 @@ a ceremony that has to change an input starts again in a new directory.
       (testnet-dht.py prepare), and its SHA-256.
 
 The epoch is the chain's genesis time: blocks cannot be produced before it,
-and the four genesis validators are authorized for 131,072 s after it. Choose
+and the four genesis validators are authorized for the profile's
+genesis.initial_set_valid_for_seconds after it. Choose
 it so that the four nodes are installed and started before it, and announce it.
 """
 
@@ -154,7 +157,8 @@ def cmd_genesis(args: argparse.Namespace) -> None:
     revision = tos_revision(args.tos_root)
     template = args.tos_root / profile["genesis"]["template"]
     original = template.read_text()
-    patched = lib.patch_template(original, global_id, args.epoch)
+    schedule = lib.validator_schedule(profile)
+    patched = lib.patch_template(original, global_id, args.epoch, schedule)
 
     runs = [ceremony / "run-a", ceremony / "run-b"]
     for run_dir in runs:
@@ -182,17 +186,25 @@ def cmd_genesis(args: argparse.Namespace) -> None:
 
     rhash = (ceremony / "zerostate.rhash").read_bytes()
     fhash = (ceremony / "zerostate.fhash").read_bytes()
-    valid_for = profile["genesis"]["initial_set_valid_for_seconds"]
+    valid_for = schedule["initial_set_valid_for"]
     utc = datetime.timezone.utc
+
+    def at(seconds: int) -> str:
+        return datetime.datetime.fromtimestamp(args.epoch + seconds, utc).isoformat()
+
     summary = {
         "network": profile["network"],
         "global_id": global_id,
         "global_version": profile["genesis"]["global_version"],
         "source_date_epoch": args.epoch,
-        "genesis_utc": datetime.datetime.fromtimestamp(args.epoch, utc).isoformat(),
-        "initial_set_valid_until_utc": datetime.datetime.fromtimestamp(
-            args.epoch + valid_for, utc
-        ).isoformat(),
+        "genesis_utc": at(0),
+        "initial_set_valid_until_utc": at(valid_for),
+        "election_params": {name: schedule[name] for name in lib.ELECTION_PARAM_NAMES},
+        "first_election": {
+            "opens_utc": at(valid_for - schedule["elections_start_before"]),
+            "closes_utc": at(valid_for - schedule["elections_end_before"]),
+            "set_takes_office_utc": at(valid_for),
+        },
         "zero_state": lib.zero_state_entry(rhash, fhash),
         "zero_state_hex": {"root_hash": rhash.hex(), "file_hash": fhash.hex()},
         "basestate0_hex": {
@@ -211,7 +223,13 @@ def cmd_genesis(args: argparse.Namespace) -> None:
         "template": {
             "path": profile["genesis"]["template"],
             "sha256": lib.sha256_file(template),
-            "replaced": ["global id", "genesis epoch", "genesis epoch check"],
+            "replaced": [
+                "global id",
+                "genesis epoch",
+                "genesis epoch check",
+                "election params",
+                "initial set lifetime",
+            ],
         },
         "tos_revision": revision,
         "create_state_sha256": lib.sha256_file(args.tos_build / "crypto/create-state"),
