@@ -15,10 +15,18 @@ WorkingDirectory=/var/lib/tos/validator
 # No -v: INFO records the consensus-cleanup evidence.
 # No --quic-flood-control -1 and no --initial-sync-delay override: the engine
 # defaults are kept on a public network.
+# Logs: the engine writes one file per thread, 17 with -t 16. Each rotates at
+# 15 MiB and keeps 5 rotated files: 17 x 6 x 15 MiB = 1,530 MiB. With the
+# session stats file (rotated at 256 MiB with one .old, so 512 MiB at most)
+# that stays under the owner's 2 GiB per validator, about an hour of history
+# at the first epoch's volume (decision 2026-10-12; memo public-testnet
+# EPOCH-1-FINDINGS.md, E1-05). The two flags need a tos build that has
+# them; an older engine refuses to start (status 2). A test keeps the cap.
 ExecStart=/usr/local/bin/validator-engine \
   -C /etc/tos/global-config.json \
   -D /var/lib/tos/validator \
   -l /var/log/tos/validator/node.log \
+  --log-rotate-mb 15 --log-keep-files 5 \
   --session-logs /var/log/tos/validator/session-stats \
   -t 16 \
   --state-ttl 3600 --archive-ttl 86400 \

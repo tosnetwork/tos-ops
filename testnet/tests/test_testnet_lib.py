@@ -378,6 +378,24 @@ def test_units_use_the_profile_retention():
         assert f"--state-ttl {ttl['state_ttl']} --archive-ttl {ttl['archive_ttl']}" in unit, role
 
 
+def test_validator_logs_stay_under_the_owner_cap():
+    # The engine writes one log file per thread plus the main one, and each keeps
+    # keep_files rotated copies; the session stats file adds its own bound. The
+    # owner capped all of it at 2 GB per validator. A change to -t, the log
+    # flags or the profile that breaks the cap fails here.
+    import re
+    from pathlib import Path
+
+    logs = lib.load_profile()["retention"]["validator_logs"]
+    unit = (Path(lib.HERE).parent / "systemd" / "tos-testnet-validator.service").read_text()
+    threads = int(re.search(r"(?m)^\s+-t (\d+) \\$", unit).group(1))
+    rotate = int(re.search(r"--log-rotate-mb (\d+)", unit).group(1))
+    keep = int(re.search(r"--log-keep-files (\d+)", unit).group(1))
+    assert (rotate, keep) == (logs["rotate_mb"], logs["keep_files"])
+    total = (threads + 1) * (keep + 1) * rotate + logs["session_stats_max_mb"]
+    assert total <= logs["max_total_mb"] == 2048, total
+
+
 # ---------------------------------------------------------------- global config
 
 
