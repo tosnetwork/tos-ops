@@ -49,6 +49,7 @@ testnet/
 │   ├── testnet-coordinator.py    manifest | genesis | global-config
 │   ├── install-node.sh           prepare | activate one node (root)
 │   ├── check-testnet.py          independent nodes agree on one live chain
+│   ├── check-host-disk.py        a host's free disk and consensus/ size; refuses below a floor
 │   ├── build-node-binaries.sh    compile the role's binaries on the host itself
 │   ├── setup-time.sh             first on every host: ntpsec over IPv4, proven to follow a server
 │   ├── preflight.py              before installing: host floors, time source, ufw, and the UDP mesh between hosts
@@ -128,6 +129,19 @@ twice, the template changed and the ceremony refuses. The patched copy, the orig
 `create-state` digest are recorded in `genesis.json`, and genesis is generated
 twice in separate directories and must be byte-identical. tos itself is not
 modified.
+
+## Disk while consensus databases are not deleted early
+
+Until tos #183 merges, retired consensus sessions are deleted only once GC
+passes them. The testnet schedule bounds that to about 10 h, about 60 GB on
+a 99 GB disk. On each validator host, check during the epoch:
+
+```bash
+python3 /opt/tos-testnet/scripts/check-host-disk.py --min-free-gib 15
+```
+
+It prints free space, the size of `consensus/` and its session count, and
+exits 1 below the floor.
 
 ## Verification
 
