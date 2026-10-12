@@ -37,8 +37,11 @@ This creates `/var/lib/tos/validator` and `/var/log/tos/validator` owned by
 `tos`. It runs the first start with `-I <PUBLIC_IPV4>:30001` on a placeholder
 global config (`/etc/tos/pregenesis-global-config.json`, never used to run a
 node), and generates `/var/lib/tos/validator/keys/pq-consensus.seed`. It prints
-the consensus `key_id` and public key. The public IPv4 must be on the host's
-interface; the engine binds it.
+the consensus `key_id` and public key. `<PUBLIC_IPV4>` is the address the
+node announces; it must be static. The engine binds ADNL and QUIC by port on
+all interfaces, so a host behind NAT works if the router forwards UDP 30001
+and UDP 31001 to it. Two nodes behind the same NAT reach each other through
+the announced public address, so the router must also support NAT hairpinning.
 
 Back up the seed now, encrypted and offline (Production-Node.md section 3.1):
 

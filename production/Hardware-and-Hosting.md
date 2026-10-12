@@ -21,7 +21,7 @@ provider. Section 3 records what happened and section 4 turns it into rules.
 | Frequency policy | Governor `performance`; turbo/boost **disabled** | Thermal throttling and boost make block and signature timing vary from host to host and from hour to hour. Disabling boost keeps measurements comparable. |
 | Memory | At least 16 GiB; ECC recommended | A validator process measured about 6.0 GB RSS (6.1 GB peak) on the local network. 16 GiB leaves room for the page cache RocksDB relies on. ECC is a recommendation; the proposal does not require it. |
 | Storage | NVMe SSD, database on its own device, logs on another volume | Production-Node.md section 4. Size the capacity by section 6.3 of the design, and choose models by write endurance (section 1.3 below). |
-| Network | At least 1 Gbit/s; a static public IPv4 configured on the interface | The engine binds the address it announces; a NAT-only address does not work. Open UDP for ADNL and for QUIC at the ADNL port + 1000. |
+| Network | At least 1 Gbit/s; a static public IPv4, preferably on the interface | The engine announces the configured address but binds ADNL and QUIC by port on all interfaces (tos `adnl/adnl-network-manager.cpp` `add_self_addr`, `quic/quic-sender.cpp`). Behind NAT it works only with UDP forwarding for the ADNL port and the QUIC port (ADNL + 1000), and that adds a router to the failure path. Open UDP for both. |
 | Time | NTP synchronised | Multi-key consensus validity (`valid_from`/`expire_at`) reads the wall clock (Production-Node.md section 9). |
 | Architecture | Linux x86-64 or arm64 | The only platforms tos builds and releases for. |
 
@@ -176,7 +176,8 @@ Before renting, for every provider:
   court orders and contract terminations act on a whole jurisdiction at once.
 - **Hardware disclosure.** The provider must state the CPU model, physical
   core count, drive model and whether CPU and disk are dedicated.
-- **Network.** A static public IPv4 on the interface, unfiltered UDP
+- **Network.** A static public IPv4 (on the interface, or forwarded without
+  rewriting the UDP ports), unfiltered UDP
   (no "DDoS protection" that drops UDP), and a stated bandwidth or traffic
   allowance large enough for the validator's sustained traffic.
 - **Exit.** Know how quickly you can get an equivalent machine elsewhere.
