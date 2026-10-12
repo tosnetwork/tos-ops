@@ -165,7 +165,25 @@ After the first ordinary election, drop `--genesis-set`.
 
 ## 8. After genesis
 
-The bootstrap set is valid for 131,072 s after the epoch. Before it expires,
-the four operators must deploy their controllers, authorize operations and
-stake through two overlapping elections (Production-Node.md section 9). If the
-first election fails, the chain stops when the bootstrap set expires.
+The bootstrap set is valid for 131,072 s after the epoch T. The four operators
+must deploy their controllers, authorize operations and stake through two
+overlapping elections (Production-Node.md section 9). The first election opens
+at T + 27.3 h and closes at T + 34.1 h; the elected set takes office at
+T + 36.4 h. Everything has to be ready before the window opens. The timeline is
+in the memo plan, `public-testnet/README.md` section 5.4.
+
+If the first election cannot be conducted, the Elector cancels it at
+`elect_at` and refunds the stakes. The chain does not stop: the genesis set
+keeps validating past its `utime_until`. But no key block is produced and state
+GC stops behind the last one, so disks grow until a later election succeeds.
+Treat it as an incident.
+
+## 9. Resetting the testnet
+
+A reset is a new genesis with the same global id 2, so it shares the old
+epoch's replay domain. Every operator generates a new controller root key and
+a new consensus seed; never carry them over. The coordinator passes every
+earlier epoch's `genesis-records.json` to `manifest --previous`, which refuses
+any reused controller id, consensus key id or ADNL id. Validators that joined
+an earlier epoch after genesis are not in those files. Keep their records and
+pass them too.

@@ -187,6 +187,41 @@ def test_operator_set_refuses_two_validators_on_one_host(monkeypatch):
         lib.check_operator_set(records)
 
 
+@pytest.mark.parametrize("field", ["controller_id", "key_id", "adnl_id"])
+def test_reset_refuses_an_identity_from_an_earlier_epoch(field):
+    earlier = [public_record(n) for n in range(1, 5)]
+    fresh = lib.check_operator_set([public_record(n) for n in range(5, 9)])
+    lib.check_fresh_identities(fresh, [earlier])
+    fresh[2][field] = earlier[0][field]
+    with pytest.raises(lib.TestnetError, match=f"reuses {field}"):
+        lib.check_fresh_identities(fresh, [earlier])
+
+
+def test_reset_compares_identities_case_insensitively():
+    earlier = [public_record(n) for n in range(1, 5)]
+    for record in earlier:
+        record["key_id"] = record["key_id"].upper()
+    fresh = lib.check_operator_set([public_record(n) for n in range(5, 9)])
+    fresh[0]["key_id"] = earlier[3]["key_id"].lower()
+    with pytest.raises(lib.TestnetError, match="reuses key_id"):
+        lib.check_fresh_identities(fresh, [earlier])
+
+
+def test_reset_checks_every_earlier_epoch():
+    first = [public_record(n) for n in range(1, 5)]
+    second = [public_record(n) for n in range(5, 9)]
+    fresh = lib.check_operator_set([public_record(n) for n in range(9, 13)])
+    fresh[1]["controller_id"] = first[2]["controller_id"]
+    with pytest.raises(lib.TestnetError, match="reuses controller_id"):
+        lib.check_fresh_identities(fresh, [second, first])
+
+
+def test_reset_refuses_a_malformed_previous_file():
+    fresh = lib.check_operator_set([public_record(n) for n in range(1, 5)])
+    with pytest.raises(lib.TestnetError, match="JSON list"):
+        lib.check_fresh_identities(fresh, [{"controller_id": "x"}])
+
+
 def test_manifest_packs_index_order_and_size():
     records = lib.check_operator_set([public_record(n) for n in range(1, 5)])
     packed = lib.pack_manifest(records)

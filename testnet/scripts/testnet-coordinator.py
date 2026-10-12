@@ -4,11 +4,14 @@
 Every output is public except main-wallet.pk, and nothing is ever overwritten:
 a ceremony that has to change an input starts again in a new directory.
 
-  manifest --ceremony DIR --tos-root DIR RECORD RECORD RECORD RECORD
+  manifest --ceremony DIR --tos-root DIR [--previous FILE ...] RECORD RECORD RECORD RECORD
       Check the four operator records (testnet-operator.py record) and pack
       validator-pq.pub with tos scripts/prepare-pq-genesis-manifest.py. The
       record order is the validator index order. The packed bytes are checked
-      against an independent packing of the same records.
+      against an independent packing of the same records. After a reset, pass
+      every earlier epoch's genesis-records.json with --previous: all epochs
+      share global id 2, so no controller id, consensus key id or ADNL id may
+      be reused.
 
   genesis --ceremony DIR --tos-root DIR --tos-build DIR --epoch UNIX_SECONDS
       Copy the canonical template gen-zerostate.fif, replace only its mainnet
@@ -60,6 +63,8 @@ MAX_EPOCH_BEHIND = 3600
 def cmd_manifest(args: argparse.Namespace) -> None:
     ceremony = lib.empty_dir(args.ceremony)
     records = lib.check_operator_set([json.loads(Path(p).read_text()) for p in args.records])
+    previous = [json.loads(Path(p).read_text()) for p in args.previous]
+    lib.check_fresh_identities(records, previous)
     lib.write_new_json(ceremony / "operators.json", lib.manifest_input(records))
     lib.write_new_json(ceremony / "genesis-records.json", records)
     packer = args.tos_root / "scripts/prepare-pq-genesis-manifest.py"
@@ -244,6 +249,14 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("manifest")
     p.add_argument("--ceremony", type=Path, required=True)
     p.add_argument("--tos-root", type=Path, required=True)
+    p.add_argument(
+        "--previous",
+        type=Path,
+        action="append",
+        default=[],
+        help="genesis-records.json of an earlier testnet epoch (repeat for each); a reset "
+        "genesis must reuse none of their identities",
+    )
     p.add_argument("records", nargs=4)
     p.set_defaults(func=cmd_manifest)
 

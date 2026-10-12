@@ -360,6 +360,39 @@ def check_operator_set(records: list[Any]) -> list[dict[str, Any]]:
     return checked
 
 
+REUSE_FIELDS = ("controller_id", "key_id", "adnl_id")
+
+
+def check_fresh_identities(records: list[dict[str, Any]], previous: list[list[Any]]) -> None:
+    """Refuse a genesis set that reuses any identity of an earlier testnet epoch.
+
+    Every testnet epoch uses global id 2, so epochs share one replay domain. A
+    reused root and consensus key give the same controller address with its
+    nonce back at 0, and an authorization signed for the old epoch would verify
+    on the new one. `previous` is the record lists of earlier epochs (their
+    genesis-records.json, plus records the coordinator kept for validators that
+    joined later); only identities in them can be checked.
+    """
+    seen: dict[str, set[str]] = {field: set() for field in REUSE_FIELDS}
+    for epoch in previous:
+        if not isinstance(epoch, list):
+            raise TestnetError("a previous-epoch file is a JSON list of operator records")
+        for record in epoch:
+            if not isinstance(record, dict):
+                raise TestnetError("a previous-epoch record is a JSON object")
+            for field in REUSE_FIELDS:
+                value = record.get(field)
+                if isinstance(value, str):
+                    seen[field].add(value.lower())
+    for record in records:
+        for field in REUSE_FIELDS:
+            if record[field] in seen[field]:
+                raise TestnetError(
+                    f"{record['operator']} reuses {field} {record[field]} from an earlier testnet "
+                    "epoch; a reset genesis needs fresh root and consensus keys"
+                )
+
+
 def manifest_input(records: list[dict[str, Any]]) -> list[dict[str, str]]:
     """The exact input tos scripts/prepare-pq-genesis-manifest.py accepts (order = index)."""
     return [
