@@ -10,6 +10,7 @@ a live multi-node key rotation and an accepted production unit are still open.
 | Path | Contents |
 | --- | --- |
 | `Production-Node.md` | Design: node roles, key custody, options, retention, joining, validator lifecycle, monitoring, gaps |
+| `Hardware-and-Hosting.md` | Physical requirements per role, disk endurance, bare metal vs VM, and hosting-provider diversity rules drawn from Solana's outages (proposal; gap G8) |
 | `systemd/tos-validator.service` | Proposed hardened validator unit (design section 7) |
 
 The unit assumes the layout from design section 4:

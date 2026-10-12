@@ -54,6 +54,7 @@ node software; this repository holds how we configure, deploy and operate it.
 └── production/                  production network design and templates
     ├── README.md
     ├── Production-Node.md       design: roles, keys, binding, retention, cleanup, validator lifecycle, votes, gaps
+    ├── Hardware-and-Hosting.md  physical requirements and hosting-provider diversity (lessons from Solana)
     └── systemd/
         └── tos-validator.service
 ```
