@@ -624,6 +624,61 @@ The lock catches a node that was not stopped; it does not replace stopping
 it, and nothing recovers an installation interrupted by a crash: start again
 from a new database.
 
+### 8.3 Choosing the genesis time
+
+The genesis time (the `--epoch` passed to genesis, written into the zero state
+as its `utime`) is the earliest time the chain can produce a block. No option
+says "wait until genesis". Two consensus rules produce that behaviour together:
+
+1. **Block time never goes backwards.** The collator sets a new block's
+   `gen_utime` to the later of the previous state's time plus one second and
+   the local clock (tos `validator/impl/collator.cpp`, `Collator::init_utime`).
+   The previous state of the first block is the zero state, so the first block
+   is dated at least genesis + 1 s, even when it is collated hours early.
+   Validators reject a block dated before the previous state
+   (`validate-query.cpp`, "creation time is not monotonic").
+2. **No block from the future.** Each validator refuses to vote for a candidate
+   whose `gen_utime` is more than 30 s ahead of its own clock
+   (`validate-query.cpp`, "gen_utime ... is too far in the future"). The cap
+   stops a leader from parking unbounded future-dated candidates in waits.
+
+Before genesis, every candidate is dated genesis + 1 s or later, so every
+validator rejects it as being from the future. Blocks start when the validators'
+clocks reach about genesis − 29 s. Nodes started earlier connect, exchange
+overlay traffic and wait at height 0; that is the expected state, not a stall.
+
+Consequences for the ceremony:
+
+- **Start every genesis validator before the genesis time.** A validator whose
+  last applied masterchain block is at least 300 s old when it starts enters
+  startup archive catch-up (tos `validator/startup-catchup.h`,
+  `kStaleValidatorAgeSeconds`). A validator that first starts well after
+  genesis therefore takes a different path from the rest of the genesis set.
+  Leave enough time between the genesis step and the genesis time to publish
+  the global config, copy it to every host and activate every node; the
+  testnet runbooks use at least 60 minutes.
+- **Clocks decide the first block.** The 30 s cap is checked against each
+  validator's own clock. Synchronise clocks before activation (the testnet
+  preflight requires NTP synchronisation with a selected server, and the
+  epoch-2 hosts measured offsets under 2 ms); a validator
+  whose clock runs more than 30 s slow keeps rejecting fresh blocks as being
+  from the future, and one that runs fast collates blocks the others reject.
+- **The genesis time fixes the schedule.** The first election opens at
+  genesis + (initial set lifetime − `elections_start_before`) and the initial
+  set expires at genesis + its lifetime. Choose the genesis time so that this
+  window falls in staffed hours, and so that every operator's onboarding can
+  finish before the election opens.
+- **Allowed range.** The testnet coordinator accepts a genesis time between
+  1 h in the past and 14 days ahead (`MAX_EPOCH_BEHIND`, `MAX_EPOCH_AHEAD` in
+  `testnet/scripts/testnet-coordinator.py`). A time in the past makes the
+  chain start as soon as the validators run, but it also makes any validator
+  started 300 s or more after genesis enter archive catch-up.
+- **Mainnet template.** The canonical `gen-zerostate.fif` pins
+  `SOURCE_DATE_EPOCH` 1789434000 (2026-09-15 01:00:00 UTC). That date is
+  already in the past; tos `doc/validator-genesis-bootstrap.md` requires it to
+  be reviewed and updated, with the initial-set lifetime rehearsed, before the
+  mainnet ceremony.
+
 ## 9. Validator lifecycle
 
 Prerequisites: a synced full node (section 8) on the validator host, and an

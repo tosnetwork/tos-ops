@@ -188,6 +188,12 @@ Publish, together and signed or attested by the release process:
 
 Anyone can regenerate the zero state from these and the named tos commit.
 
+The epoch is the earliest time a block can be produced: until the validators'
+clocks reach about epoch − 29 s, every candidate is rejected as being from the
+future, and the nodes wait at height 0. Choose it at least 60 minutes after
+this step, so that every node is activated before it. See
+`production/Production-Node.md` section 8.3 for the rules behind this.
+
 ## 6. Everyone: activate before the epoch
 
 Validator (operator), with the controller id from step 2:
