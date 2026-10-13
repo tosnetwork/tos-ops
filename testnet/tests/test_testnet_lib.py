@@ -12,6 +12,8 @@ import hashlib
 import json
 import os
 import stat
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 import testnet_lib as lib
@@ -506,3 +508,35 @@ def test_empty_dir_refuses_content(tmp_path):
     (used / "file").write_text("x")
     with pytest.raises(lib.TestnetError, match="not empty"):
         lib.empty_dir(used)
+
+
+def serve_jsonrpc(result):
+    """A one-shot local JSON-RPC server; returns its URL and the list it records request bodies into."""
+    seen = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            seen.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            body = json.dumps({"jsonrpc": "2.0", "id": 1, "result": result}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.handle_request, daemon=True).start()
+    return f"http://127.0.0.1:{server.server_port}/jsonRPC", seen
+
+
+def test_rpc_passes_a_parameter_named_method_through():
+    # runGetMethod names its getter `method`; that must reach the node as a
+    # parameter, not collide with the JSON-RPC method name.
+    url, seen = serve_jsonrpc({"exit_code": 0, "stack": [["num", "0x5"]]})
+    result = lib.rpc(url, "runGetMethod", address="-1:" + "11" * 32, method="seqno", stack=[])
+    assert result["stack"] == [["num", "0x5"]]
+    assert seen[0]["method"] == "runGetMethod"
+    assert seen[0]["params"] == {"address": "-1:" + "11" * 32, "method": "seqno", "stack": []}

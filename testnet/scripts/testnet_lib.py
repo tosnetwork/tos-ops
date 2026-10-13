@@ -605,8 +605,12 @@ def is_pregenesis(config: dict[str, Any]) -> bool:
 # ---------------------------------------------------------------- JSON-RPC
 
 
-def rpc(url: str, method: str, timeout: float = 10, **params: Any) -> Any:
-    """One JSON-RPC 2.0 call. Environment proxies are ignored: the named node must answer."""
+def rpc(url: str, method: str, /, timeout: float = 10, **params: Any) -> Any:
+    """One JSON-RPC 2.0 call. Environment proxies are ignored: the named node must answer.
+
+    `url` and `method` are positional-only, so a call's own parameters may use
+    those names: `runGetMethod` takes the getter as its `method` parameter.
+    """
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
     request = urllib.request.Request(url, body, {"Content-Type": "application/json"}, method="POST")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
