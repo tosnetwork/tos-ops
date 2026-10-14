@@ -17,6 +17,7 @@ import os
 import re
 import stat
 import subprocess
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -614,8 +615,15 @@ def rpc(url: str, method: str, /, timeout: float = 10, **params: Any) -> Any:
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
     request = urllib.request.Request(url, body, {"Content-Type": "application/json"}, method="POST")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open(request, timeout=timeout) as response:
-        answer = json.load(response)
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            answer = json.load(response)
+    except urllib.error.HTTPError as exc:
+        # A refused call answers with an error status and the reason in a JSON body.
+        try:
+            answer = json.load(exc)
+        except ValueError:
+            raise TestnetError(f"{url} {method}: HTTP {exc.code}") from exc
     if answer.get("error") or "result" not in answer:
         raise TestnetError(f"{url} {method}: {answer.get('error', answer)}")
     return answer["result"]

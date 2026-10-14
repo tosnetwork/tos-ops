@@ -56,7 +56,8 @@ testnet/
 │   ├── build-tosctl.sh           compile tosctl on a validator host from the node's commit
 │   ├── init-operator.sh          tosctl vault, console key and operator wallet on a validator host (root)
 │   ├── enable-elections.sh       election policy and the election task on a validator host (root)
-│   ├── testnet-elections.py      fund | onboard: bring a genesis validator into elections (coordinator)
+│   ├── testnet-elections.py      fund | onboard: bring a genesis validator into elections;
+│   │                             load: load test through a post-quantum high-volume wallet (coordinator)
 │   ├── retire-host.sh            archive a host's evidence, then retire it from an ended epoch (root)
 │   └── rehearse-loopback.sh      the whole ceremony on one host, unprivileged
 ├── systemd/
