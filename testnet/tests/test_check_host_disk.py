@@ -47,3 +47,60 @@ def test_database_without_consensus_directory(tmp_path, capsys):
     assert check_host_disk.main(["--db", str(db), "--min-free-gib", "0"]) == 0
     report = json.loads(capsys.readouterr().out)
     assert report["consensus_sessions"] == 0 and report["consensus_bytes"] == 0
+
+
+def test_metrics_are_parsed_and_an_absent_series_is_none():
+    text = "\n".join(
+        [
+            "# HELP tos_masterchain_head_age_seconds age",
+            "tos_masterchain_head_age_seconds 0.42",
+            'tos_shard_client_age_seconds{shard="0"} 3',
+            "tos_wait_block_data_net_failures_total 17",
+            "unrelated_metric 5",
+        ]
+    )
+    parsed = check_host_disk.parse_metrics(text)
+    assert parsed["head_age_seconds"] == 0.42
+    assert parsed["shard_client_age_seconds"] == 3.0
+    assert parsed["net_failures_total"] == 17.0
+    assert parsed["refusal_answers_total"] is None
+
+
+def test_cpu_usage_from_two_readings():
+    readings = iter([[100, 0, 100, 700, 100, 0, 0], [200, 0, 200, 1300, 300, 0, 0]])
+    usage = check_host_disk.cpu_usage(3, sleep=lambda _s: None, read=lambda: next(readings))
+    # delta: user 100, system 100, idle 600, iowait 200 of 1000.
+    assert usage == {"cpu_busy_pct": 20.0, "cpu_iowait_pct": 20.0}
+
+
+def test_cpu_usage_skipped_is_unobserved_not_zero():
+    assert check_host_disk.cpu_usage(0) == {"cpu_busy_pct": None, "cpu_iowait_pct": None}
+
+
+def test_unreachable_sources_are_null_not_zero(tmp_path, capsys):
+    db = make_db(tmp_path)
+    argv = ["--db", str(db), "--min-free-gib", "0", "--unit", "", "--rpc", "", "--metrics", ""]
+    assert check_host_disk.main(argv) == 0
+    report = json.loads(capsys.readouterr().out)
+    for key in ("unit_active", "rss_bytes", "head_seqno", "head_age_seconds", "cpu_busy_pct"):
+        assert report[key] is None
+
+
+def test_closed_endpoints_are_null_not_zero(tmp_path, capsys):
+    db = make_db(tmp_path)
+    closed = "http://127.0.0.1:9/x"
+    argv = [
+        "--db",
+        str(db),
+        "--min-free-gib",
+        "0",
+        "--unit",
+        "",
+        "--rpc",
+        closed,
+        "--metrics",
+        closed,
+    ]
+    assert check_host_disk.main(argv) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["head_seqno"] is None and report["head_age_seconds"] is None

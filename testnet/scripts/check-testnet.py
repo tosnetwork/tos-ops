@@ -2,7 +2,8 @@
 """Check that independent nodes agree on one live public testnet.
 
   check-testnet.py --genesis genesis.json --rpc URL --rpc URL [--rpc URL ...]
-                   [--max-age 120] [--genesis-set genesis-records.json]
+                   [--max-age 120]
+                   [--genesis-set genesis-records.json | --elected-set genesis-records.json]
 
 Each URL is a JSON-RPC endpoint of a node the checker trusts to answer for
 itself (a validator's loopback listener through an SSH tunnel, or a full
@@ -18,7 +19,13 @@ itself proves nothing. The check refuses unless:
     refusal names them with their lag;
   * with --genesis-set (and TOS_ROOT naming a tos checkout to decode with),
     live ConfigParam 34 is exactly the four genesis identities. Use it only
-    before the first ordinary election replaces the genesis set.
+    before the first ordinary election replaces the genesis set;
+  * with --elected-set (same records file, same TOS_ROOT), after a rotation:
+    live ConfigParam 34 has as many members as the records, all of them main
+    validators, and its controllers are exactly the records' controllers. The
+    consensus keys are not compared: an election may register new ones. The
+    summary reports the set's term (utime_since, utime_until) so a run record
+    can tie it to an election.
 
 Agreement among observers is detection, not a consensus proof: the nodes are
 trusted to report what they hold. Prints a JSON summary; exits 1 on refusal.
@@ -64,7 +71,7 @@ def decode_config34(boc_b64: str) -> dict:
     return decode_validator_set(Cell.one_from_boc(base64.b64decode(boc_b64)))
 
 
-def check(args: argparse.Namespace, rpc=lib.rpc, now=time.time) -> dict:
+def check(args: argparse.Namespace, rpc=lib.rpc, now=time.time, decode=decode_config34) -> dict:
     if len(set(args.rpc)) < 2:
         raise lib.TestnetError("name at least two distinct nodes")
     genesis = json.loads(Path(args.genesis).read_text())
@@ -135,7 +142,7 @@ def check(args: argparse.Namespace, rpc=lib.rpc, now=time.time) -> dict:
     if args.genesis_set:
         records = lib.check_operator_set(json.loads(Path(args.genesis_set).read_text()))
         param = rpc(args.rpc[0], "getConfigParam", param=34, seqno=height)
-        decoded = decode_config34(param["config"]["bytes"])
+        decoded = decode(param["config"]["bytes"])
         actual = {
             (v["controller_id_hex"], v["consensus_key_id_hex"]) for v in decoded["validators"]
         }
@@ -143,6 +150,30 @@ def check(args: argparse.Namespace, rpc=lib.rpc, now=time.time) -> dict:
         if decoded["total"] != lib.GENESIS_VALIDATORS or actual != expected:
             raise lib.TestnetError("live ConfigParam 34 is not the four genesis identities")
         summary["config34"] = "the four genesis identities"
+    if args.elected_set:
+        records = lib.check_operator_set(json.loads(Path(args.elected_set).read_text()))
+        param = rpc(args.rpc[0], "getConfigParam", param=34, seqno=height)
+        decoded = decode(param["config"]["bytes"])
+        actual = {v["controller_id_hex"] for v in decoded["validators"]}
+        expected = {r["controller_id"] for r in records}
+        if decoded["total"] != len(records) or decoded["main"] != decoded["total"]:
+            raise lib.TestnetError(
+                f"live ConfigParam 34 has {decoded['total']} members ({decoded['main']} main), "
+                f"expected {len(records)}, all main"
+            )
+        if actual != expected:
+            missing = sorted(c[:16] for c in expected - actual)
+            foreign = sorted(c[:16] for c in actual - expected)
+            raise lib.TestnetError(
+                f"live ConfigParam 34 controllers differ: missing {missing}, unexpected {foreign}"
+            )
+        summary["config34"] = {
+            "utime_since": decoded["utime_since"],
+            "utime_until": decoded["utime_until"],
+            "total": decoded["total"],
+            "main": decoded["main"],
+            "controllers": "exactly the records' controllers",
+        }
     return summary
 
 
@@ -153,7 +184,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--genesis", type=Path, required=True)
     parser.add_argument("--rpc", action="append", required=True)
     parser.add_argument("--max-age", type=int, default=120)
-    parser.add_argument("--genesis-set", type=Path)
+    sets = parser.add_mutually_exclusive_group()
+    sets.add_argument("--genesis-set", type=Path)
+    sets.add_argument("--elected-set", type=Path)
     args = parser.parse_args(argv)
     try:
         summary = check(args)

@@ -48,8 +48,9 @@ testnet/
 │   ├── testnet-dht.py            prepare a DHT bootstrap identity and its signed record
 │   ├── testnet-coordinator.py    manifest | genesis | global-config
 │   ├── install-node.sh           prepare | activate one node (root)
-│   ├── check-testnet.py          independent nodes agree on one live chain
-│   ├── check-host-disk.py        a host's free disk and consensus/ size; refuses below a floor
+│   ├── check-testnet.py          independent nodes agree on one live chain; ConfigParam 34 after a rotation
+│   ├── check-host-disk.py        one host's disk, consensus/, unit, memory, head and CPU; refuses below a floor
+│   ├── watch-testnet.py          coordinator: sample every validator on a schedule, keep a TSV, report anomalies
 │   ├── build-node-binaries.sh    compile the role's binaries on the host itself
 │   ├── setup-time.sh             first on every host: ntpsec over IPv4, proven to follow a server
 │   ├── preflight.py              before installing: host floors, time source, ufw, and the UDP mesh between hosts
@@ -131,18 +132,55 @@ twice, the template changed and the ceremony refuses. The patched copy, the orig
 twice in separate directories and must be byte-identical. tos itself is not
 modified.
 
-## Disk while consensus databases are not deleted early
+## Watching the network
 
-Until tos #183 merges, retired consensus sessions are deleted only once GC
-passes them. The testnet schedule bounds that to about 10 h, about 60 GB on
-a 99 GB disk. On each validator host, check during the epoch:
+Retired consensus sessions are deleted at every key block, so `consensus/`
+grows between elections and shrinks after each one (epoch 3: about 10 MB a
+minute idle, 31 MB a minute at ~6.4M gas per block, back to about 750 MB after
+each election). One host, on the host:
 
 ```bash
-python3 /opt/tos-testnet/scripts/check-host-disk.py --min-free-gib 15
+python3 /opt/tos-testnet/scripts/check-host-disk.py --min-free-gib 15 --cpu-sample 3
 ```
 
-It prints free space, the size of `consensus/` and its session count, and
-exits 1 below the floor.
+It prints free space, `consensus/` size and session count, the validator
+unit's state, restarts and memory, the head seqno and age, the block-download
+net failures and refused answers, and CPU busy and iowait; it exits 1 below
+the floor. A value it could not observe is null, not 0.
+
+All validators, from the coordinator (the hosts need nothing installed; the
+probe is piped over SSH):
+
+```bash
+testnet/scripts/watch-testnet.py --inventory hosts.json --out epoch/series.tsv \
+    --interval 60 --duration 1800
+```
+
+It appends one TSV row per host per round and prints `ANOMALY` / `RECOVERED`
+lines when the set of anomalies changes (unreachable, unit not active, restart
+count changed, head older than 120 s, head unchanged for three rounds, a burst
+of five or more net failures in one round, free space below 20 GiB) and a
+`SUMMARY` of heights every 15 minutes. Typical uses:
+
+- the epoch watch: `--interval 60`, re-armed for as long as the epoch runs;
+- the `consensus/` and memory series: `--interval 900`;
+- a load test: `--interval 60 --cpu-sample 3` for the load window;
+- a restarted validator's catch-up (CON-06): start it right after the
+  restart with `--hosts node-4 --interval 30 --until-current node-4
+  --duration 2400`; it prints `CURRENT ... after N s` once the shard client
+  age falls below 60 s, or `NOT CURRENT` and exits 1.
+
+After each rotation, confirm the elected set with the same records file used
+at genesis (TOS_ROOT names a tos checkout to decode with):
+
+```bash
+TOS_ROOT=$TOS_ROOT "$TOS_ROOT/.venv/bin/python" testnet/scripts/check-testnet.py \
+    --genesis genesis.json --rpc URL --rpc URL --elected-set genesis-records.json
+```
+
+It requires as many members as records, all main validators, with exactly the
+records' controllers (consensus keys may change at an election), and prints
+the set's `utime_since`/`utime_until`.
 
 ## Verification
 

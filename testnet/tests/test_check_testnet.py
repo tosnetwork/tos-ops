@@ -48,7 +48,9 @@ class FakeNodes:
 def args(tmp_path, urls, max_age=120):
     genesis = tmp_path / "genesis.json"
     genesis.write_text(json.dumps({"global_id": 2, "zero_state": ZERO}))
-    return argparse.Namespace(genesis=genesis, rpc=urls, max_age=max_age, genesis_set=None)
+    return argparse.Namespace(
+        genesis=genesis, rpc=urls, max_age=max_age, genesis_set=None, elected_set=None
+    )
 
 
 def run(tmp_path, nodes, **kwargs):
@@ -120,3 +122,89 @@ def test_a_fresh_node_slightly_behind_passes(tmp_path):
 def test_no_block_after_zero_state_is_refused(tmp_path):
     with pytest.raises(lib.TestnetError, match="no masterchain block"):
         run(tmp_path, {"a": {"head": 0}, "b": {"head": 3}})
+
+
+# ---------------------------------------------------------------- ConfigParam 34 after a rotation
+
+
+def records(n=4):
+    from test_testnet_lib import public_record
+
+    return [public_record(i + 1) for i in range(n)]
+
+
+def decoded_set(controllers, main=None, since=1_800_000_000, until=1_800_014_400):
+    return {
+        "utime_since": since,
+        "utime_until": until,
+        "total": len(controllers),
+        "main": len(controllers) if main is None else main,
+        "validators": [
+            {"controller_id_hex": c, "consensus_key_id_hex": f"{i:064x}"}
+            for i, c in enumerate(controllers)
+        ],
+    }
+
+
+class FakeNodesWithConfig(FakeNodes):
+    def __call__(self, url, method, **params):
+        if method == "getConfigParam":
+            return {"config": {"bytes": "unused"}}
+        return super().__call__(url, method, **params)
+
+
+def run_elected(tmp_path, decoded, recs=None):
+    recs = records() if recs is None else recs
+    path = tmp_path / "records.json"
+    path.write_text(json.dumps(recs))
+    a = args(tmp_path, ["a", "b"])
+    a.elected_set = path
+    nodes = {"a": {"head": 50}, "b": {"head": 50}}
+    return check_testnet.check(
+        a, rpc=FakeNodesWithConfig(nodes), now=lambda: NOW, decode=lambda _boc: decoded
+    )
+
+
+def test_elected_set_with_the_records_controllers_passes_and_reports_its_term(tmp_path):
+    recs = records()
+    summary = run_elected(tmp_path, decoded_set([r["controller_id"] for r in recs]), recs)
+    assert summary["config34"]["utime_since"] == 1_800_000_000
+    assert summary["config34"]["utime_until"] == 1_800_014_400
+    assert summary["config34"]["total"] == 4
+
+
+def test_elected_set_missing_a_controller_is_refused(tmp_path):
+    recs = records()
+    controllers = [r["controller_id"] for r in recs[:3]] + ["ab" * 32]
+    with pytest.raises(lib.TestnetError, match="controllers differ"):
+        run_elected(tmp_path, decoded_set(controllers), recs)
+
+
+def test_elected_set_of_three_is_refused(tmp_path):
+    recs = records()
+    with pytest.raises(lib.TestnetError, match="has 3 members"):
+        run_elected(tmp_path, decoded_set([r["controller_id"] for r in recs[:3]]), recs)
+
+
+def test_elected_set_with_a_non_main_member_is_refused(tmp_path):
+    recs = records()
+    with pytest.raises(lib.TestnetError, match="3 main"):
+        run_elected(tmp_path, decoded_set([r["controller_id"] for r in recs], main=3), recs)
+
+
+def test_genesis_and_elected_set_are_exclusive(capsys):
+    with pytest.raises(SystemExit):
+        check_testnet.main(
+            [
+                "--genesis",
+                "g",
+                "--rpc",
+                "a",
+                "--rpc",
+                "b",
+                "--genesis-set",
+                "x",
+                "--elected-set",
+                "y",
+            ]
+        )
