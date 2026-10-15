@@ -8,6 +8,14 @@ User=tos
 Group=tos
 UMask=0077
 WorkingDirectory=/var/lib/tos/validator
+# RocksDB caches capped at 1 GiB each (owner decision 2026-10-15; memo
+# public-testnet E23-18). CellDb V2 otherwise raises its block cache to
+# max(1 GiB, cell cache entries x 5000), about 4.66 GiB with the defaults, and
+# it does so even when --celldb-cache-size is smaller unless
+# --celldb-cache-min-size is set too, so both flags carry the cap. The shared
+# block cache of the other databases defaults to 1 GiB; it is set here so the
+# cap does not depend on an engine default.
+Environment=TOS_ROCKSDB_BLOCK_CACHE_SIZE=1073741824
 ExecStart=/usr/local/bin/validator-engine \
   -C /etc/tos/global-config.json \
   -D /var/lib/tos/validator \
@@ -15,6 +23,7 @@ ExecStart=/usr/local/bin/validator-engine \
   --session-logs /var/log/tos/validator/session-stats \
   -t 16 \
   --state-ttl 86400 --archive-ttl 86400 \
+  --celldb-cache-size 1073741824 --celldb-cache-min-size 1073741824 \
   --exporter-address 127.0.0.1:9100
 Restart=on-failure
 RestartSec=10

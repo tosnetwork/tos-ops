@@ -351,7 +351,7 @@ network. Every client therefore needs a recent trusted `init_block`. Section
 | --- | --- | --- | --- |
 | Validator | 86400 (default) | 86400 | `--max-archive-fd` default 512 |
 | Full node / RPC | 86400 | 604800 (default) | enough history for wallet clients |
-| Archive | ≥ 30 d | as policy requires | `--permanent-celldb` only on a dedicated archive host; it cannot be turned off. At `state-ttl` ≥ 30 d CellDb raises its cache to at least 16 GiB. |
+| Archive | ≥ 30 d | as policy requires | `--permanent-celldb` only on a dedicated archive host; it cannot be turned off. At `state-ttl` ≥ 30 d CellDb raises its cache to at least 16 GiB. Do not copy the 1 GiB cache flags of section 7 to it. |
 
 ### 6.3 Disk sizing
 
@@ -457,6 +457,14 @@ User=tos
 Group=tos
 UMask=0077
 WorkingDirectory=/var/lib/tos/validator
+# RocksDB caches capped at 1 GiB each (owner decision 2026-10-15; memo
+# public-testnet E23-18). CellDb V2 otherwise raises its block cache to
+# max(1 GiB, cell cache entries x 5000), about 4.66 GiB with the defaults, and
+# it does so even when --celldb-cache-size is smaller unless
+# --celldb-cache-min-size is set too, so both flags carry the cap. The shared
+# block cache of the other databases defaults to 1 GiB; it is set here so the
+# cap does not depend on an engine default.
+Environment=TOS_ROCKSDB_BLOCK_CACHE_SIZE=1073741824
 ExecStart=/usr/local/bin/validator-engine \
   -C /etc/tos/global-config.json \
   -D /var/lib/tos/validator \
@@ -464,6 +472,7 @@ ExecStart=/usr/local/bin/validator-engine \
   --session-logs /var/log/tos/validator/session-stats \
   -t 16 \
   --state-ttl 86400 --archive-ttl 86400 \
+  --celldb-cache-size 1073741824 --celldb-cache-min-size 1073741824 \
   --exporter-address 127.0.0.1:9100
 Restart=on-failure
 RestartSec=10
@@ -488,6 +497,13 @@ Notes on each choice:
 - **No `MemoryMax`/`CPUQuota`.** No hard cap until steady-state memory has been
   measured on the production profile (tos `doc/Validator.md`). A cap set
   too low turns a load spike into a validator restart.
+- **RocksDB caches: 1 GiB each.** The CellDb block cache and the shared
+  block cache of the other databases are each capped at 1 GiB. Without
+  `--celldb-cache-min-size`, CellDb V2 raises its cache to about 4.66 GiB
+  whatever `--celldb-cache-size` says, so the unit sets both. This bounds the
+  caches only: memtables, the cell cache and allocator retention still add to
+  RSS. An archive host (`--state-ttl` ≥ 30 d) is sized separately; there the
+  engine's own floor is 16 GiB, and these flags would lower it.
 - **`TimeoutStopSec`.** Leaves RocksDB time to close cleanly. The engine holds
   `config.json.lock` until it has exited; a replacement started earlier exits
   with status 2.

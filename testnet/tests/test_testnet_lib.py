@@ -398,6 +398,32 @@ def test_validator_logs_stay_under_the_owner_cap():
     assert total <= logs["max_total_mb"] == 2048, total
 
 
+
+def test_engine_units_cap_rocksdb_caches_at_one_gib():
+    # Owner decision 2026-10-15: each RocksDB cache is capped at 1 GiB on
+    # validators and full nodes, testnet and production alike. CellDb V2 only
+    # honours a smaller --celldb-cache-size when --celldb-cache-min-size is
+    # set too; without it the cache is raised to about 4.66 GiB.
+    import re
+    from pathlib import Path
+
+    root = Path(lib.HERE).parent.parent
+    gib = 1 << 30
+    units = [
+        root / "testnet" / "systemd" / "tos-testnet-validator.service",
+        root / "testnet" / "systemd" / "tos-testnet-fullnode.service",
+        root / "production" / "systemd" / "tos-validator.service",
+    ]
+    for path in units:
+        unit = path.read_text()
+        assert re.findall(r"--celldb-cache-size (\d+)", unit) == [str(gib)], path
+        assert re.findall(r"--celldb-cache-min-size (\d+)", unit) == [str(gib)], path
+        assert re.findall(r"(?m)^Environment=TOS_ROCKSDB_BLOCK_CACHE_SIZE=(\d+)$", unit) == [str(gib)], path
+    # The design document embeds the production unit; the two must not drift.
+    doc = (root / "production" / "Production-Node.md").read_text()
+    assert units[2].read_text() in doc
+
+
 # ---------------------------------------------------------------- global config
 
 
