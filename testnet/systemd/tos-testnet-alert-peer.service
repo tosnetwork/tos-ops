@@ -1,0 +1,34 @@
+[Unit]
+Description=TOS public testnet alert relay, peer role (coordinator heartbeat watchdog)
+Documentation=file:///opt/tos-testnet/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# On the DHT host. The coordinator writes heartbeat-coordinator into the
+# state directory over SSH as root; this unit writes heartbeat-peer there and
+# alerts when the coordinator's beat goes stale. The bot token and chat id
+# are files under /etc/tos-alert, owned by root with mode 0600.
+User=root
+Group=root
+UMask=0077
+StateDirectory=tos-alert
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/tos-alert
+ExecStart=/usr/bin/python3 /opt/tos-testnet/scripts/alert-relay.py peer \
+  --token-file /etc/tos-alert/token \
+  --chat-file /etc/tos-alert/chat \
+  --state-dir /var/lib/tos-alert \
+  --interval 60 \
+  --dead-after 300
+Restart=always
+RestartSec=30
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/tos-alert
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,28 @@
+# User unit for the coordinator: copy to ~/.config/systemd/user/, then
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now tos-testnet-alert-coordinator
+#   loginctl enable-linger "$USER"   # keep it running without a login session
+# Adjust the checkout path, inventory and peer name. The token and chat files
+# must be mode 0600; the inventory's SSH key for the peer host must work
+# without a passphrase prompt (BatchMode).
+[Unit]
+Description=TOS public testnet alert relay, coordinator role (watch-testnet.py to Telegram)
+After=network-online.target
+
+[Service]
+UMask=0077
+ExecStartPre=/usr/bin/mkdir -p -m 0700 %h/.local/state/tos-alert
+ExecStart=/usr/bin/python3 %h/network-settings/testnet/scripts/alert-relay.py coordinator \
+  --token-file %h/.config/tos-alert/token \
+  --chat-file %h/.config/tos-alert/chat \
+  --state-dir %h/.local/state/tos-alert \
+  --inventory %h/.config/tos-alert/hosts.json \
+  --peer node-dht \
+  --interval 60 \
+  --dead-after 300
+Restart=always
+RestartSec=30
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

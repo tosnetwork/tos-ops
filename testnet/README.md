@@ -51,6 +51,7 @@ testnet/
 │   ├── check-testnet.py          independent nodes agree on one live chain; ConfigParam 34 after a rotation
 │   ├── check-host-disk.py        one host's disk, consensus/, unit, memory, head and CPU; refuses below a floor
 │   ├── watch-testnet.py          coordinator: sample every validator on a schedule, keep a TSV, report anomalies
+│   ├── alert-relay.py            coordinator | peer: watch anomalies and heartbeats to Telegram; silence | unsilence
 │   ├── build-node-binaries.sh    compile the role's binaries on the host itself
 │   ├── setup-time.sh             first on every host: ntpsec over IPv4, proven to follow a server
 │   ├── preflight.py              before installing: host floors, time source, ufw, and the UDP mesh between hosts
@@ -66,7 +67,9 @@ testnet/
 │   ├── tos-testnet-validator.service
 │   ├── tos-testnet-fullnode.service
 │   ├── tos-testnet-dht.service
-│   └── tos-testnet-elections.service
+│   ├── tos-testnet-elections.service
+│   ├── tos-testnet-alert-peer.service        DHT host, root
+│   └── tos-testnet-alert-coordinator.service user-unit example for the coordinator
 ├── firewall/tos-testnet.nft      inbound policy example
 └── tests/                        pytest for the scripts
 ```
@@ -182,6 +185,63 @@ TOS_ROOT=$TOS_ROOT "$TOS_ROOT/.venv/bin/python" testnet/scripts/check-testnet.py
 It requires as many members as records, all main validators, with exactly the
 records' controllers (consensus keys may change at an election), and prints
 the set's `utime_since`/`utime_until`.
+
+## Alerts
+
+`scripts/alert-relay.py` turns the watch into messages to a person over a
+Telegram bot. Two roles, on two hosts, each watching the other's heartbeat:
+
+- `coordinator` (on the coordinator, `systemd/tos-testnet-alert-coordinator.service`
+  as a user unit) runs `watch-testnet.py` with no duration and restarts it if
+  it exits. It sends a message when an anomaly key (`node-1:head_age`,
+  `node-3:unit`: host and kind, without the value) first appears, with the
+  full `ANOMALY` line; one reminder per key every 30 minutes while it
+  persists; and a recovery message naming what cleared. `SUMMARY` lines are
+  not sent (`--digest-hours N` sends one every N hours). Every minute it
+  touches `/var/lib/tos-alert/heartbeat-coordinator` on the `--peer` host over
+  SSH and reads the age of `heartbeat-peer` there.
+- `peer` (on the DHT host, `systemd/tos-testnet-alert-peer.service`, root)
+  touches `heartbeat-peer` every minute and alerts when the coordinator's beat
+  is older than 300 s, then reports its return.
+
+Either side alerts once when the other's beat is stale or unreadable for
+`--dead-after` (300 s) and sends a recovery when it is fresh. The bot token
+and chat id are files given by `--token-file` and `--chat-file`, mode 0600
+(the relay refuses anything group- or world-readable): `/etc/tos-alert/` on
+the DHT host, `~/.config/tos-alert/` on the coordinator. They never enter this
+repository.
+
+A reply in the chat is an acknowledgement: the coordinator reads replies
+every 30 s, records each in `acks.jsonl` with its time and the alert it
+follows, and confirms it.
+
+Planned work: silence each host whose alerts it would trigger before you
+start, for example on the coordinator and, over SSH, on the DHT host:
+
+```bash
+testnet/scripts/alert-relay.py silence --state-dir ~/.local/state/tos-alert \
+    --until +90 --reason "restart node-2 for the new build"
+ssh root@DHT-HOST python3 /opt/tos-testnet/scripts/alert-relay.py silence \
+    --until 2027-01-15T10:00 --reason "coordinator reboot"
+```
+
+While silenced, alerts are recorded but not sent; when the silence expires or
+`unsilence` removes it, one message lists what was suppressed and what is
+still active.
+
+Receipts: every alert, sent or silenced, is a line in `alerts.jsonl` in the
+state directory (`~/.local/state/tos-alert` on the coordinator,
+`/var/lib/tos-alert` on the DHT host) with its UTC time, kind, keys, text,
+Telegram message id and send latency; replies are in `acks.jsonl`. A message
+that cannot be sent is retried every cycle and recorded only once it goes
+out, so its latency shows the delay.
+
+Known gap: the peer has no chain access (the validators' JSON-RPC answers on
+loopback only), so it watches only the coordinator's heartbeat. It can say the
+coordinator's watch stopped, but while the coordinator is down nobody watches
+the chain, and the chain is only ever seen through the coordinator's SSH
+probes. An independent chain observer needs a public read-only endpoint, which
+is not deployed.
 
 ## Verification
 
