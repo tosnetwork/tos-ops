@@ -412,11 +412,31 @@ def test_load_records_its_wallets(tmp_path):
     driver = load_driver(tmp_path, [])
     wallet, relayers = driver.ensure_keys(2)
     assert wallet == HIGHLOAD
+    tag = "load-" + HIGHLOAD.split(":")[1][:8]
     assert json.loads((tmp_path / "ceremony" / "wallets.json").read_text()) == {
-        "highload": HIGHLOAD,
-        "relayer-0": RELAYER,
-        "relayer-1": "0:" + "17" * 32,
+        f"{tag}/highload": HIGHLOAD,
+        f"{tag}/relayer-0": RELAYER,
+        f"{tag}/relayer-1": "0:" + "17" * 32,
     }
+
+
+def test_load_accepts_a_second_state_directory_in_the_same_epoch(tmp_path):
+    # Another --state directory of the same epoch has other keys and records
+    # them under its own labels; the first directory's entries stay.
+    ceremony = tmp_path / "ceremony"
+    ceremony.mkdir(exist_ok=True)
+    (ceremony / "wallets.json").write_text(
+        json.dumps(
+            {
+                "load-00000000/highload": "0:" + "aa" * 32,
+                "load-00000000/relayer-0": "0:" + "bb" * 32,
+            }
+        )
+    )
+    load_driver(tmp_path, []).ensure_keys(2)
+    recorded = json.loads((ceremony / "wallets.json").read_text())
+    assert recorded["load-00000000/relayer-0"] == "0:" + "bb" * 32
+    assert len(recorded) == 5
 
 
 @pytest.mark.parametrize("label,identity", [("highload", HIGHLOAD), ("relayer-0", RELAYER)])
@@ -426,7 +446,7 @@ def test_load_refuses_a_state_directory_from_an_earlier_epoch(tmp_path, label, i
     (previous / "wallets.json").write_text(json.dumps({"bootstrap": KEY_A, label: identity}))
     driver = load_driver(tmp_path, [str(previous)])
     # run() asks the chain nothing before the keys are checked
-    with pytest.raises(lib.TestnetError, match=f"wallet {label} reuses"):
+    with pytest.raises(lib.TestnetError, match=f"wallet load-[0-9a-f]{{8}}/{label} reuses"):
         driver.run()
     assert not (tmp_path / "ceremony" / "wallets.json").exists()
 

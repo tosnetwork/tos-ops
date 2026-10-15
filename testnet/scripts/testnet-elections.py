@@ -38,8 +38,8 @@ and drive load through a post-quantum high-volume wallet.
       are created in the --state directory (0700, keys 0600; never put it in
       a repository), N wallet-v3 relayers on the basechain get their own keys
       there, and the bootstrap wallet funds and deploys all of them through
-      `fund`. Their addresses go to DIR/wallets.json as highload and
-      relayer-I, and an address an earlier epoch recorded is refused, so a
+      `fund`. Their addresses go to DIR/wallets.json as
+      load-<wallet address prefix>/highload and .../relayer-I, and an address an earlier epoch recorded is refused, so a
       --state directory is never carried over a reset. The wallet has no external handler: a relayer forwards each
       signed request in an internal message whose value pays the compute, and
       gets the rest back. Batches of K transfers are signed with tos-pq-key
@@ -938,8 +938,11 @@ class LoadDriver:
             os.chmod(self.state / f"{relayer_base}.pk", 0o600)
             out.append(Relayer(index, address_from_file(self.state / f"{relayer_base}.addr")))
         # A --state directory carried over a reset would reuse every key in it.
-        wallets = {"highload": wallet}
-        wallets.update({r.base: r.address for r in out})
+        # Labels carry the high-load wallet's address, so a second --state
+        # directory in the same epoch records its own wallets beside the first.
+        tag = f"load-{wallet.split(':')[1][:8]}"
+        wallets = {f"{tag}/highload": wallet}
+        wallets.update({f"{tag}/{r.base}": r.address for r in out})
         record_fresh_wallets(Path(self.args.ceremony), wallets, self.previous)
         return wallet, out
 

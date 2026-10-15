@@ -619,7 +619,10 @@ def record_wallets(ceremony: Path, wallets: dict[str, str]) -> dict[str, str]:
     path = ceremony / WALLETS_FILE
     lock_path = ceremony / f".{WALLETS_FILE}.lock"
     flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
-    lock = os.open(lock_path, flags, 0o644)
+    try:
+        lock = os.open(lock_path, flags, 0o644)
+    except OSError as exc:
+        raise TestnetError(f"cannot lock {lock_path}: {exc}") from exc
     try:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if path.is_symlink():
