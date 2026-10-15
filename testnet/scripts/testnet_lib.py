@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import fcntl
 import hashlib
 import ipaddress
 import json
@@ -17,6 +18,7 @@ import os
 import re
 import stat
 import subprocess
+import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -442,6 +444,206 @@ def check_fresh_identities(records: list[dict[str, Any]], previous: list[list[An
                     f"{record['operator']} reuses {field} {record[field]} from an earlier testnet "
                     "epoch; a reset genesis needs fresh root and consensus keys"
                 )
+
+
+# ---------------------------------------------------------------- wallet identities
+
+
+WALLETS_FILE = "wallets.json"
+GENESIS_FILE = "genesis.json"
+BOOTSTRAP_WALLET_LABEL = "bootstrap"
+WALLET_PUBKEY_PREFIX = "pubkey:"
+RAW_ADDRESS = re.compile(r"^-?[0-9]+:[0-9a-f]{64}$")
+FIFT_PUBLIC_MARKER = "WALLET-PUBLIC-KEY"
+# Prints the Ed25519 public key of the 32-byte private key file named by the
+# first argument, with the same loader create-state uses for main-wallet.pk.
+# Only the public key is printed.
+FIFT_PUBLIC_PROGRAM = (
+    f'"TosUtil.fif" include\n$1 load-keypair drop ."{FIFT_PUBLIC_MARKER} " Bx. cr\n'
+)
+
+
+def check_raw_address(address: str) -> str:
+    """A raw `workchain:hex` address, lower-cased; anything else is refused."""
+    address = str(address).lower()
+    if not RAW_ADDRESS.match(address):
+        raise TestnetError(f"not a raw workchain:hex address: {address!r}")
+    return address
+
+
+def wallet_identity(value: Any) -> str:
+    """A wallet identity in one canonical spelling.
+
+    Either `pubkey:<64 hex>` (an Ed25519 public key, for a wallet whose address
+    does not depend on its key, like the bootstrap wallet at -1:111...1) or a
+    raw `workchain:hex` address (for a wallet whose address is a function of its
+    key). Hex is lower-cased and the workchain written as a plain integer, so
+    one account spelled two ways compares equal.
+    """
+    if not isinstance(value, str):
+        raise TestnetError(f"a wallet identity is a string, got {value!r}")
+    if value[: len(WALLET_PUBKEY_PREFIX)].lower() == WALLET_PUBKEY_PREFIX:
+        key = parse_hex(value[len(WALLET_PUBKEY_PREFIX) :], 32, "wallet public key")
+        return WALLET_PUBKEY_PREFIX + key.hex()
+    workchain, account = check_raw_address(value).split(":")
+    return f"{int(workchain)}:{account}"
+
+
+def check_wallet_map(value: Any, what: str) -> dict[str, str]:
+    """A label -> identity map, each identity normalized."""
+    if not isinstance(value, dict):
+        raise TestnetError(f"{what} is a JSON object of wallet label -> identity")
+    out = {}
+    for label, identity in value.items():
+        if not isinstance(label, str) or not label:
+            raise TestnetError(f"{what} has an empty or non-string wallet label")
+        out[label] = wallet_identity(identity)
+    return out
+
+
+def check_fresh_wallets(wallets: dict[str, str], previous: list[dict[str, str]]) -> dict[str, str]:
+    """Refuse wallets that reuse a wallet identity of an earlier testnet epoch.
+
+    Every testnet epoch uses global id 2, so epochs share one replay domain. A
+    wallet whose key comes back on a new epoch accepts again any message signed
+    for it on an earlier one while the message is still valid; for the
+    bootstrap wallet the address is fixed, so only its key tells two epochs
+    apart. `previous` is one label -> identity map per earlier epoch. An empty
+    one is refused: a check that saw nothing would otherwise pass. Returns
+    `wallets` normalized.
+    """
+    seen: dict[str, str] = {}
+    for index, epoch in enumerate(previous):
+        checked = check_wallet_map(epoch, "a previous epoch's wallet record")
+        if not checked:
+            raise TestnetError(
+                f"previous epoch {index + 1} names no wallet identity; refusing to pass a check "
+                "that saw nothing"
+            )
+        for label, identity in checked.items():
+            seen.setdefault(identity, label)
+    fresh = check_wallet_map(wallets, "the wallet record")
+    for label, identity in fresh.items():
+        if identity in seen:
+            raise TestnetError(
+                f"wallet {label} reuses {identity} (wallet {seen[identity]} of an earlier testnet "
+                "epoch); a reset needs fresh wallet keys"
+            )
+    return fresh
+
+
+def parse_fift_public_key(text: str) -> bytes:
+    """The public key FIFT_PUBLIC_PROGRAM prints: exactly one marker line with 32 bytes."""
+    lines = [line.split() for line in text.splitlines() if line.startswith(FIFT_PUBLIC_MARKER)]
+    if len(lines) != 1 or len(lines[0]) != 2:
+        raise TestnetError("fift did not print exactly one wallet public key")
+    return parse_hex(lines[0][1], 32, "wallet public key")
+
+
+def wallet_public_key(fift: Path, fift_lib: Path, key: Path, runner: Any = None) -> bytes:
+    """The Ed25519 public key of a wallet private key file, derived with fift.
+
+    The private key is read by fift in place; it is never copied or printed.
+    """
+    key = Path(key)
+    if key.is_symlink() or not key.is_file():
+        raise TestnetError(f"{key} is not a regular file")
+    if key.stat().st_size != 32:
+        raise TestnetError(f"{key} is not a 32-byte private key")
+    runner = runner or run
+    with tempfile.TemporaryDirectory(prefix="wallet-pub-") as work:
+        script = Path(work) / "wallet-public.fif"
+        script.write_text(FIFT_PUBLIC_PROGRAM)
+        result = runner(
+            [str(fift), "-I", str(fift_lib), "-s", str(script), str(key.resolve())],
+            timeout=60,
+        )
+    return parse_fift_public_key(result.stdout)
+
+
+def previous_wallets(ceremony: Path, derive_public: Any = None) -> dict[str, str]:
+    """The wallet identities an earlier epoch's ceremony directory records.
+
+    Reads wallets.json and genesis.json's main_wallet_public_key. A ceremony
+    from before either existed gives its bootstrap key through
+    secret/main-wallet.pk, from which `derive_public(path) -> bytes` takes the
+    public key. A directory that yields nothing is refused.
+    """
+    ceremony = Path(ceremony)
+    if not ceremony.is_dir():
+        raise TestnetError(f"previous ceremony {ceremony} is not a directory")
+    wallets: dict[str, str] = {}
+    path = ceremony / WALLETS_FILE
+    if path.is_file():
+        wallets = check_wallet_map(json.loads(path.read_text()), str(path))
+    genesis_path = ceremony / GENESIS_FILE
+    genesis = json.loads(genesis_path.read_text()) if genesis_path.is_file() else {}
+    if not isinstance(genesis, dict):
+        raise TestnetError(f"{genesis_path} is not a JSON object")
+    bootstrap = None
+    if "main_wallet_public_key" in genesis:
+        key = parse_hex(genesis["main_wallet_public_key"], 32, f"{genesis_path} main wallet key")
+        bootstrap = WALLET_PUBKEY_PREFIX + key.hex()
+    elif BOOTSTRAP_WALLET_LABEL not in wallets:
+        secret = ceremony / "secret" / "main-wallet.pk"
+        if secret.exists():
+            if derive_public is None:
+                raise TestnetError(f"{secret} needs fift to derive its public key")
+            bootstrap = WALLET_PUBKEY_PREFIX + bytes(derive_public(secret)).hex()
+    if bootstrap is not None:
+        if wallets.get(BOOTSTRAP_WALLET_LABEL, bootstrap) != bootstrap:
+            raise TestnetError(
+                f"previous ceremony {ceremony}: {WALLETS_FILE} and {GENESIS_FILE} disagree "
+                "on the bootstrap wallet key"
+            )
+        wallets[BOOTSTRAP_WALLET_LABEL] = bootstrap
+    if not wallets:
+        raise TestnetError(
+            f"previous ceremony {ceremony} records no wallet identity (no {WALLETS_FILE}, "
+            f"no main_wallet_public_key in {GENESIS_FILE}, no secret/main-wallet.pk); "
+            "refusing to pass a check that saw nothing"
+        )
+    return wallets
+
+
+def record_wallets(ceremony: Path, wallets: dict[str, str]) -> dict[str, str]:
+    """Add wallets to the ceremony's public wallets.json; never change an entry.
+
+    A label already recorded with the same identity is accepted (a rerun); with
+    a different identity it is refused. The file is replaced atomically under a
+    lock, so concurrent runs against one ceremony do not lose entries. Returns
+    the whole record.
+    """
+    ceremony = Path(ceremony)
+    fresh = check_wallet_map(wallets, "the wallet record")
+    path = ceremony / WALLETS_FILE
+    lock_path = ceremony / f".{WALLETS_FILE}.lock"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    lock = os.open(lock_path, flags, 0o644)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if path.is_symlink():
+            raise TestnetError(f"{path} is a symlink")
+        existing = (
+            check_wallet_map(json.loads(path.read_text()), str(path)) if path.exists() else {}
+        )
+        merged = dict(existing)
+        for label, identity in fresh.items():
+            if label in existing and existing[label] != identity:
+                raise TestnetError(
+                    f"{path} records wallet {label} as {existing[label]}, not {identity}; "
+                    "a recorded wallet identity is never changed"
+                )
+            merged[label] = identity
+        if merged != existing or not path.exists():
+            tmp = ceremony / f".{WALLETS_FILE}.{os.getpid()}.tmp"
+            if tmp.exists() or tmp.is_symlink():
+                tmp.unlink()
+            write_new_json(tmp, merged)
+            os.replace(tmp, path)
+        return merged
+    finally:
+        os.close(lock)
 
 
 def manifest_input(records: list[dict[str, Any]]) -> list[dict[str, str]]:

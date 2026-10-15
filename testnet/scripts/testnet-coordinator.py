@@ -3,6 +3,9 @@
 
 Every output is public except main-wallet.pk, and nothing is ever overwritten:
 a ceremony that has to change an input starts again in a new directory.
+wallets.json (wallet label -> public key or address) is only ever extended:
+testnet-elections.py adds the operator and load-test wallets to it, and a
+later reset reads it through --previous-ceremony to refuse reused wallet keys.
 
   manifest --ceremony DIR --tos-root DIR [--previous FILE ...] RECORD RECORD RECORD RECORD
       Check the four operator records (testnet-operator.py record) and pack
@@ -11,16 +14,25 @@ a ceremony that has to change an input starts again in a new directory.
       against an independent packing of the same records. After a reset, pass
       every earlier epoch's genesis-records.json with --previous: all epochs
       share global id 2, so no controller id, consensus key id or ADNL id may
-      be reused.
+      be reused. Wallet keys are checked by genesis, onboard and load
+      (--previous-ceremony).
 
   genesis --ceremony DIR --tos-root DIR --tos-build DIR --epoch UNIX_SECONDS
+          [--previous-ceremony DIR ...]
       Copy the canonical template gen-zerostate.fif, replace only its mainnet
       global id and genesis epoch and the profile's validator schedule
       (ConfigParam 15 and the initial set's lifetime;
       testnet_lib.patch_template), and run
-      create-state with SOURCE_DATE_EPOCH. Then run it a second time in a
-      separate directory with the same inputs and the same main wallet key,
-      and refuse unless every output is byte-identical. Writes genesis.json.
+      create-state with SOURCE_DATE_EPOCH. The bootstrap wallet's public key
+      is derived from the new main-wallet.pk and, after a reset, checked
+      against every earlier epoch's ceremony directory given with
+      --previous-ceremony (repeat for each): the bootstrap wallet sits at the
+      fixed address -1:111...1 on every epoch, so only a fresh key keeps a
+      transfer signed on an earlier epoch from replaying on this one. Then
+      create-state runs a second time in a separate directory with the same
+      inputs and the same main wallet key, and the step refuses unless every
+      output is byte-identical. Writes genesis.json (with
+      main_wallet_public_key), main-wallet.pub and wallets.json.
 
   global-config --ceremony DIR DHT_NODE.json [DHT_NODE.json ...]
       Build global-config.json from the zero state and the signed DHT records
@@ -137,10 +149,19 @@ def create_state(run_dir: Path, args: argparse.Namespace, script: Path) -> str:
     return result.stdout
 
 
+def wallet_key_deriver(args: argparse.Namespace):
+    """Derive a wallet private key file's public key with this build's fift."""
+    fift = args.tos_build / "crypto/fift"
+    fift_lib = args.tos_root / "crypto/fift/lib"
+    return lambda key: lib.wallet_public_key(fift, fift_lib, key)
+
+
 def cmd_genesis(args: argparse.Namespace) -> None:
     profile = lib.load_profile(args.profile)
     global_id = lib.confirmed_global_id(profile)
     ceremony = args.ceremony
+    derive_public = wallet_key_deriver(args)
+    previous = [lib.previous_wallets(d, derive_public) for d in args.previous_ceremony]
     manifest = ceremony / "validator-pq.pub"
     if not manifest.is_file():
         raise lib.TestnetError(f"{manifest} is missing; run the manifest step first")
@@ -170,6 +191,10 @@ def cmd_genesis(args: argparse.Namespace) -> None:
     if not wallet_key.is_file():
         raise lib.TestnetError("create-state did not write main-wallet.pk")
     os.chmod(wallet_key, 0o600)
+    # Before the key is used again or anything is published.
+    main_public = derive_public(wallet_key)
+    bootstrap = {lib.BOOTSTRAP_WALLET_LABEL: lib.WALLET_PUBKEY_PREFIX + main_public.hex()}
+    lib.check_fresh_wallets(bootstrap, previous)
     lib.write_new(runs[1] / "main-wallet.pk", wallet_key.read_bytes(), 0o600)
     create_state(runs[1], args, runs[1] / "gen-zerostate-testnet.fif")
     for name in OUTPUTS:
@@ -183,6 +208,7 @@ def cmd_genesis(args: argparse.Namespace) -> None:
     for name in OUTPUTS:
         shutil.copyfile(runs[0] / name, ceremony / name)
     lib.write_new(ceremony / "gen-zerostate-testnet.fif", patched.encode())
+    lib.write_new(ceremony / "main-wallet.pub", main_public)
 
     rhash = (ceremony / "zerostate.rhash").read_bytes()
     fhash = (ceremony / "zerostate.fhash").read_bytes()
@@ -205,6 +231,7 @@ def cmd_genesis(args: argparse.Namespace) -> None:
             "closes_utc": at(valid_for - schedule["elections_end_before"]),
             "set_takes_office_utc": at(valid_for),
         },
+        "main_wallet_public_key": main_public.hex(),
         "zero_state": lib.zero_state_entry(rhash, fhash),
         "zero_state_hex": {"root_hash": rhash.hex(), "file_hash": fhash.hex()},
         "basestate0_hex": {
@@ -236,6 +263,7 @@ def cmd_genesis(args: argparse.Namespace) -> None:
         "reproduced": "two independent create-state runs produced identical outputs",
     }
     lib.write_new_json(ceremony / "genesis.json", summary)
+    lib.record_wallets(ceremony, bootstrap)
     (ceremony / "create-state.out").write_text(stdout)
     print(json.dumps(summary, indent=2))
     print(
@@ -283,6 +311,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--tos-root", type=Path, required=True)
     p.add_argument("--tos-build", type=Path, required=True)
     p.add_argument("--epoch", type=int, required=True)
+    p.add_argument(
+        "--previous-ceremony",
+        type=Path,
+        action="append",
+        default=[],
+        help="ceremony directory of an earlier testnet epoch (repeat for each); the bootstrap "
+        "wallet key must be fresh",
+    )
     p.set_defaults(func=cmd_genesis)
 
     p = sub.add_parser("global-config")

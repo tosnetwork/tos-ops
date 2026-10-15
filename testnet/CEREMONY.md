@@ -173,9 +173,17 @@ python3 $S/testnet-coordinator.py genesis --ceremony ./ceremony --tos-root "$TOS
 python3 $S/testnet-coordinator.py global-config --ceremony ./ceremony dht-1.json dht-2.json
 ```
 
+After a reset, add the earlier epochs to both steps, once per earlier epoch
+(section 9): `manifest --previous <old>/genesis-records.json` and
+`genesis --previous-ceremony <old>`.
+
 `genesis` refuses a dirty tos checkout and a template whose mainnet lines
-changed. It generates the zero state twice and compares the outputs. It moves
-`main-wallet.pk`, the only secret output, to `ceremony/secret/`. Take that key
+changed. It generates the zero state twice and compares the outputs. Between
+the two runs it derives the bootstrap wallet's public key from the new
+`main-wallet.pk` and refuses one that an earlier epoch named with
+`--previous-ceremony` used. It records the key as `main_wallet_public_key` in
+`genesis.json`, in `main-wallet.pub` and as `bootstrap` in `wallets.json`. It
+moves `main-wallet.pk`, the only secret output, to `ceremony/secret/`. Take that key
 offline: it funds the four controllers for the first elections (genesis
 bootstrap document, "First ordinary elections") and nothing else.
 
@@ -183,6 +191,9 @@ Publish, together and signed or attested by the release process:
 
 - `global-config.json` and `global-config.json.sha256`
 - `genesis.json`, `genesis-records.json`, `validator-pq.pub`
+- `main-wallet.pub` and `wallets.json` (public keys and addresses only;
+  `wallets.json` grows as `onboard` and `load` add their wallets, and the next
+  reset reads it)
 - `zerostate.boc`, `basestate0.boc` and their `.fhash`/`.rhash`
 - `gen-zerostate-testnet.fif`, the exact template that ran
 
@@ -287,10 +298,14 @@ python3 /opt/tos-testnet/scripts/testnet-elections.py onboard \
   --ceremony ./ceremony --controller controllers/node-1.json \
   --root-seed offline/root-node-1.seed --controller-tool "$TOS_ROOT/build/crypto/tos-pq-controller" \
   --tos-root "$TOS_ROOT" --fift "$TOS_ROOT/build/crypto/fift" \
-  --rpc http://127.0.0.1:18081/jsonRPC
+  --rpc http://127.0.0.1:18081/jsonRPC \
+  --previous-ceremony ../epoch-1/ceremony   # after a reset: once per earlier epoch
 ```
 
 It runs `init-operator.sh` on the host (vault, console key, operator wallet),
+records the operator wallet's address as `op-<name>` in
+`ceremony/wallets.json` and refuses an address an earlier epoch recorded (a
+host that kept `/var/lib/tos-ctl` over a reset still has the old wallet key),
 funds the wallet from the bootstrap wallet, activates it, deploys the
 controller and the pool, binds them, imports the controller's birth, plans the
 operating authorization on the host, signs it locally with the root seed and
@@ -322,6 +337,19 @@ earlier epoch's `genesis-records.json` to `manifest --previous`, which refuses
 any reused controller id, consensus key id or ADNL id. Validators that joined
 an earlier epoch after genesis are not in those files. Keep their records and
 pass them too.
+
+Wallet keys are checked the same way. Keep every epoch's ceremony directory
+(its `wallets.json`, `genesis.json` and `secret/`), and pass each one with
+`--previous-ceremony` to `testnet-coordinator.py genesis` (the bootstrap
+wallet: always at -1:111...1, so only its key differs between epochs),
+`testnet-elections.py onboard` (operator wallets) and `testnet-elections.py
+load` (the high-volume wallet and its relayers; start every epoch with a new
+`--state` directory). Each refuses a wallet key or address the earlier epoch
+recorded. A ceremony from before `wallets.json` existed gives its bootstrap
+key through `secret/main-wallet.pk`, whose public key fift derives in place; a
+previous ceremony that yields no wallet at all is refused rather than counted
+as checked. Every operator must also let `retire-host.sh` delete the operator
+tool's vault, so `init-operator.sh` creates a new wallet key.
 
 On every host of the ended epoch, with that epoch's published zero state root
 hash (`validator.zero_state.root_hash` in its `global-config.json`):

@@ -366,6 +366,7 @@ def load_args(tmp_path, **extra):
         relayers=4,
         send_rpc=None,
         dry_run=True,
+        previous_ceremony=[],
     )
     args.update(extra)
     return elections.argparse.Namespace(**args)

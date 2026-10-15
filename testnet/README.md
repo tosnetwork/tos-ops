@@ -205,7 +205,13 @@ TOS_ROOT=$TOS_ROOT "$TOS_ROOT/.venv/bin/python" -m pytest -q testnet/tests
 Each guard was broken once on purpose and the tests failed every time:
 identity uniqueness, template line count, key id match, block agreement,
 global id, staleness, the config lock, the confirmed-global-id gate, key
-reuse across resets, and the validator schedule checks.
+reuse across resets (validator identities and wallet keys), and the validator
+schedule checks.
+
+After a reset, every coordinator step that creates or onboards a wallet takes
+`--previous-ceremony DIR` once per earlier epoch (`testnet-coordinator.py
+genesis`, `testnet-elections.py onboard` and `load`), beside `manifest
+--previous`; see CEREMONY.md section 9.
 
 ## What is still open
 

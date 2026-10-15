@@ -13,9 +13,11 @@ and drive load through a post-quantum high-volume wallet.
 
   onboard --name NAME --host HOST --ssh-key FILE --ceremony DIR
           --controller FILE --root-seed FILE --controller-tool PATH
-          --tos-root DIR --fift PATH --rpc URL
+          --tos-root DIR --fift PATH --rpc URL [--previous-ceremony DIR]...
       For one genesis validator, in order, stopping at the first failure:
-      init-operator.sh on the host; fund the operator wallet from the
+      init-operator.sh on the host; record the operator wallet address as
+      op-NAME in DIR/wallets.json, refusing an address an earlier epoch's
+      ceremony recorded (see "Resets" below); fund the operator wallet from the
       bootstrap wallet; activate it; deploy the controller (its state init
       from testnet-operator.py controller); deploy the pool with the stake
       money and bind node, wallet and pool; import the controller's birth;
@@ -29,13 +31,16 @@ and drive load through a post-quantum high-volume wallet.
           [--actions-per-batch K] [--duration S] [--relayers N]
           [--send-rpc URL]... [--watch-rpc URL]... [--transfers skip|deliver]
           [--deploy-amount TOS] [--relayer-amount TOS] [--dry-run]
+          [--previous-ceremony DIR]...
       Load test through a post-quantum high-volume wallet
       (crypto/smartcont/pq-highload-wallet-code.fc). Once: an ML-DSA-44 key
       (tos-pq-key keygen) and the wallet state (new-pq-highload-wallet.fif)
       are created in the --state directory (0700, keys 0600; never put it in
       a repository), N wallet-v3 relayers on the basechain get their own keys
       there, and the bootstrap wallet funds and deploys all of them through
-      `fund`. The wallet has no external handler: a relayer forwards each
+      `fund`. Their addresses go to DIR/wallets.json as highload and
+      relayer-I, and an address an earlier epoch recorded is refused, so a
+      --state directory is never carried over a reset. The wallet has no external handler: a relayer forwards each
       signed request in an internal message whose value pays the compute, and
       gets the rest back. Batches of K transfers are signed with tos-pq-key
       and go out up to four per relayer external message, spread over the
@@ -57,6 +62,16 @@ and drive load through a post-quantum high-volume wallet.
       in flight on SIGINT, and on its own when a --rpc or --watch-rpc node's
       masterchain head is older than 60 s or a balance falls below its floor.
       --dry-run signs one batch into DIR/dry-run-<time>/ and broadcasts nothing.
+
+Resets. Every testnet epoch uses global id 2, so a wallet key that survives a
+reset accepts again whatever was signed for it on an earlier epoch. onboard and
+load take --previous-ceremony once for every earlier epoch's ceremony directory
+and refuse a wallet identity recorded there (its wallets.json, the bootstrap key
+in its genesis.json, or for a ceremony older than both its secret/main-wallet.pk,
+whose public key fift derives). A previous ceremony that records nothing is
+refused. An operator whose host kept /var/lib/tos-ctl over the reset still has
+the old wallet key; init-operator.sh then prints the old address and onboard
+stops before funding it.
 
 URL is a JSON-RPC endpoint of a live node (for example a validator's loopback
 listener through an SSH tunnel, http://127.0.0.1:18081/jsonRPC). The amounts
@@ -89,7 +104,6 @@ import testnet_lib as lib  # noqa: E402
 
 BOOTSTRAP_WALLET = "-1:" + "1" * 64
 NANO = 10**9
-RAW_ADDRESS = re.compile(r"^-?[0-9]+:[0-9a-f]{64}$")
 
 
 # ---------------------------------------------------------------- pure helpers
@@ -106,11 +120,24 @@ def raw_from_friendly(friendly: str) -> str:
     return f"{workchain}:{data[2:34].hex()}"
 
 
-def check_raw_address(address: str) -> str:
-    address = address.lower()
-    if not RAW_ADDRESS.match(address):
-        raise lib.TestnetError(f"not a raw workchain:hex address: {address!r}")
-    return address
+check_raw_address = lib.check_raw_address
+
+
+def previous_wallets(args: argparse.Namespace) -> list[dict[str, str]]:
+    """The wallet identities of every earlier epoch named with --previous-ceremony."""
+    fift_lib = Path(args.tos_root) / "crypto" / "fift" / "lib"
+
+    def derive(key: Path) -> bytes:
+        return lib.wallet_public_key(Path(args.fift), fift_lib, key)
+
+    return [lib.previous_wallets(Path(d), derive) for d in args.previous_ceremony or []]
+
+
+def record_fresh_wallets(
+    ceremony: Path, wallets: dict[str, str], previous: list[dict[str, str]]
+) -> None:
+    """Refuse a wallet an earlier epoch used, then add it to this epoch's wallets.json."""
+    lib.record_wallets(ceremony, lib.check_fresh_wallets(wallets, previous))
 
 
 def parse_operations_plan(text: str, global_id: int, controller_hex: str) -> dict:
@@ -301,6 +328,7 @@ class Host:
 
 def onboard(args: argparse.Namespace, chain: Chain, global_id: int, profile: dict) -> None:
     name = args.name
+    previous = previous_wallets(args)
     elections = profile["elections"]
     controller_doc = json.loads(Path(args.controller).read_text())
     controller_hex = controller_doc["controller_id"]
@@ -320,6 +348,9 @@ def onboard(args: argparse.Namespace, chain: Chain, global_id: int, profile: dic
     )
     operator = raw_from_friendly(last.split()[1])
     step(f"operator wallet {operator}")
+    # A host that kept its tosctl state over a reset still has the old key, and
+    # a wallet-v3 address is a function of key, subwallet and workchain.
+    record_fresh_wallets(Path(args.ceremony), {f"op-{name}": operator}, previous)
 
     state, balance = chain.account(operator)
     funding = int(elections["operator_funding_tos"])
@@ -800,6 +831,7 @@ class LoadDriver:
             (Chain(url, chain.rpc), SendWindow()) for url in (args.send_rpc or [chain.url])
         ]
         self.saved = self.load_state()
+        self.previous: list[dict[str, str]] = []
 
     # -- files
 
@@ -905,6 +937,10 @@ class LoadDriver:
                     raise lib.TestnetError(f"relayer {index}: {result.stdout[-400:]}")
             os.chmod(self.state / f"{relayer_base}.pk", 0o600)
             out.append(Relayer(index, address_from_file(self.state / f"{relayer_base}.addr")))
+        # A --state directory carried over a reset would reuse every key in it.
+        wallets = {"highload": wallet}
+        wallets.update({r.base: r.address for r in out})
+        record_fresh_wallets(Path(self.args.ceremony), wallets, self.previous)
         return wallet, out
 
     # -- deployment
@@ -1186,6 +1222,7 @@ class LoadDriver:
         relayer_count = int(self.args.relayers)
         if not 1 <= relayer_count <= 64:
             raise lib.TestnetError("--relayers must be 1..64")
+        self.previous = previous_wallets(self.args)
         if self.args.dry_run:
             self.dry_run()
             return {}
@@ -1486,7 +1523,9 @@ def main(argv: list[str] | None = None) -> int:
         "--controller-tool",
     ):
         p_onboard.add_argument(flag, required=True)
+    p_onboard.add_argument("--previous-ceremony", action="append", default=[])
     p_load = sub.add_parser("load", parents=[common])
+    p_load.add_argument("--previous-ceremony", action="append", default=[])
     p_load.add_argument("--key-tool", "--signer", dest="key_tool", required=True)
     p_load.add_argument("--state", required=True)
     p_load.add_argument("--deploy-amount", default="50")
