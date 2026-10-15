@@ -58,6 +58,7 @@ testnet/
 │   ├── init-operator.sh          tosctl vault, console key and operator wallet on a validator host (root)
 │   ├── enable-elections.sh       election policy and the election task on a validator host (root)
 │   ├── testnet-elections.py      fund | onboard: bring a genesis validator into elections;
+│   │                             refund: top up a controller's operating funds (CEREMONY.md 8.1);
 │   │                             load: load test through a post-quantum high-volume wallet (coordinator)
 │   ├── retire-host.sh            archive a host's evidence, then retire it from an ended epoch (root)
 │   └── rehearse-loopback.sh      the whole ceremony on one host, unprivileged
@@ -221,7 +222,8 @@ genesis`, `testnet-elections.py onboard` and `load`), beside `manifest
   what epoch 1 ran by hand. Its parsers are pinned to real `tosctl` output, but
   the whole command has not yet run end to end; its first run is the next
   epoch, and it must finish before the first election opens at T + 4 h
-  (`genesis.json` `first_election`).
+  (`genesis.json` `first_election`). `refund` replaces the hand-run renewal of
+  the operating authorization the same way and has not run end to end either.
 - Authenticated global-config distribution (production gap G7) and a refresh
   schedule for `init_block` (`scripts/refresh-global-config-init-block.py` in
   tos, run with `--global-id 2`).

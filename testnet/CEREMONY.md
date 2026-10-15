@@ -320,7 +320,45 @@ every signed bootstrap transfer is kept in `ceremony/sent/`.
 
 The operating authorization funds relays for a limited time (the first epoch's
 gave about three days of runway). `tosctl controller operations status
---controller <C>` on the host shows the runway; renew it before it ends.
+--controller <C>` on the host shows the runway; renew it before it ends, once
+per validator, with the same arguments as `onboard`:
+
+```bash
+python3 /opt/tos-testnet/scripts/testnet-elections.py refund \
+  --name node-1 --host <HOST> --ssh-key <KEY> \
+  --ceremony ./ceremony --controller controllers/node-1.json \
+  --root-seed offline/root-node-1.seed --controller-tool "$TOS_ROOT/build/crypto/tos-pq-controller" \
+  --tos-root "$TOS_ROOT" --fift "$TOS_ROOT/build/crypto/fift" \
+  --rpc http://127.0.0.1:18081/jsonRPC \
+  [--target-nanotos 260000000000] [--dry-run]
+```
+
+It plans the renewal on the host (funds target
+`elections.authorization.funds_target_nanotos`, or `--target-nanotos`), signs
+it locally with the root seed, stops `tos-testnet-elections` (it holds the
+tosctl vault lock) only around the send from the operator wallet and always
+starts it again, then checks that the root authority nonce advanced, the
+stakes remaining grew and no `[BLOCKING]` warning remains. Each sent refund is
+appended to `ceremony/refunds.jsonl`. `--dry-run` plans, checks and signs, and
+sends nothing.
+
+Two refusals guard the next election:
+
+- The operator wallet pays both the refund and every stake: the election task
+  sends 20 TOS with each stake and will not stake below 20.2 TOS. A refund that
+  left 17.77 TOS once kept all four validators out of an election. `refund`
+  therefore refuses, before signing, when the wallet would keep less than
+  `elections.authorization.operator_reserve_nanotos` (30 TOS) after the
+  message value and a 1 TOS fee allowance, and names the top-up to send first
+  with `testnet-elections.py fund`.
+- It runs only in the quiet part of a term: not while the Elector has an
+  election open (or finished but not yet installed), and not within 10 minutes
+  after the current set took office or before the next election opens
+  (ConfigParam 34 `utime_until` minus `elections_start_before`). The times come
+  from the chain, not from `genesis.json`, because a failed election moves
+  every later rotation; while an election keeps failing, `refund` keeps
+  refusing. `--i-checked-the-window` overrides this after a manual check, for
+  example when a controller's exhausted funds are what blocks the stakes.
 
 If the first election cannot be conducted, the Elector cancels it at
 `elect_at` and refunds the stakes. The chain does not stop: the genesis set

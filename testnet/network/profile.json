@@ -50,7 +50,7 @@
     "pool_tos": 20010,
     "stake_tos": 10002,
     "max_factor": "1.0",
-    "authorization": {"floor_nanotos": 5000000000, "funds_target_nanotos": 20000000000, "expires_in_days": 10}
+    "authorization": {"floor_nanotos": 5000000000, "funds_target_nanotos": 20000000000, "expires_in_days": 10, "operator_reserve_nanotos": 30000000000, "operator_reserve_note": "What testnet-elections.py refund leaves in the operator wallet at least. The election task sends 20 TOS (POOL_RELAY_BUDGET) with every stake and refuses to stake below 20.2 TOS (that plus WALLET_COMPUTE_FEE, 0.2 TOS), tos tosctl/src/node-control/elections/src/runner.rs send_stake; 30 TOS is that plus a margin. A refund that left 17.77 TOS kept all four validators out of an election."}
   },
   "paths": {
     "global_config": "/etc/tos/global-config.json",

@@ -437,3 +437,324 @@ def test_load_arguments_are_checked():
         setattr(bad, field, value)
         with pytest.raises(lib.TestnetError):
             elections.check_load_args(bad)
+
+
+# ---------------------------------------------------------------- refund
+
+OPERATOR = "-1:294974d03f4c811d5b550812f633d188d7c035923151e267fe208ec52b2fd4d6"
+PLAN_VALUE = 23_558_960_000
+NANO = 10**9
+# ConfigParam 34 as a loopback network's JSON-RPC getConfigParam returned it (tos
+# test/pq-native/x02-config34-fixtures, sha256 8209f080...bf1b); the tos decoder
+# reads utime_since 1790358449 and utime_until 1790359049 from it.
+CONFIG34 = (DATA / "config34-since-1790358449.boc").read_bytes()
+SINCE = 1_790_000_000
+UNTIL = SINCE + 14_400  # the profile's elected_for
+
+
+def status_text(stakes, nonce, epoch=0, warnings=()):
+    """`tosctl controller operations status` in print_status's layout (with the colour
+    codes it may print)."""
+    lines = [
+        "",
+        "\x1b[1mController operating authorization\x1b[0m",
+        "─" * 72,
+        f"  {'Controller:':<24} -1:{CONTROLLER}",
+        f"  {'Funds:':<24} 20.000000000 TOS",
+        f"  {'Root authority:':<24} epoch {epoch} nonce {nonce}",
+        f"  {'Relay pending:':<24} false",
+        f"  {'Stakes remaining:':<24} {stakes}",
+        f"  {'Runway:':<24} 3.0 days",
+        "",
+    ]
+    lines += [f"  \x1b[1;31m[BLOCKING]\x1b[0m {w}" for w in warnings] or ["  OK no warnings"]
+    return "\n".join(lines) + "\n"
+
+
+class FakeHost:
+    """The validator host: answers status and plan, records every command in order."""
+
+    def __init__(self, statuses, send_error=None, start_error=None):
+        self.statuses = list(statuses)
+        self.send_error = send_error
+        self.start_error = start_error
+        self.calls = []
+
+    def run(self, command, timeout=300):
+        self.calls.append(("run", command))
+        if command.startswith("systemctl start") and self.start_error:
+            raise lib.TestnetError(self.start_error)
+        return ""
+
+    def tosctl(self, arguments, timeout=240):
+        self.calls.append(("tosctl", arguments))
+        if arguments.startswith("controller operations status"):
+            return self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
+        if arguments.startswith("controller operations plan"):
+            return PLAN
+        if arguments.startswith("wallet send"):
+            if self.send_error:
+                raise lib.TestnetError(self.send_error)
+            return "sent\n"
+        raise AssertionError(f"unexpected tosctl {arguments}")
+
+    def commands(self):
+        return [c[1].split(" --")[0] for c in self.calls]
+
+
+class FakeChain:
+    def __init__(self, balances, active=0, term=(SINCE, UNTIL)):
+        self.balances = list(balances)
+        self.active = active
+        self.term = term
+
+    def validator_term(self):
+        return self.term
+
+    def active_election(self):
+        return self.active
+
+    def account(self, address):
+        assert address == OPERATOR
+        balance = self.balances.pop(0) if len(self.balances) > 1 else self.balances[0]
+        return "active", balance
+
+
+def refund_setup(tmp_path, **extra):
+    ceremony = tmp_path / "ceremony"
+    ceremony.mkdir(parents=True)
+    (ceremony / "genesis-records.json").write_text(json.dumps([{"controller_id": CONTROLLER}]))
+    (ceremony / "wallets.json").write_text(json.dumps({"op-node-1": OPERATOR}))
+    controller = tmp_path / "node-1.json"
+    controller.write_text(json.dumps({"controller_id": CONTROLLER}))
+    args = dict(
+        name="node-1",
+        host="h",
+        ssh_key="k",
+        ceremony=str(ceremony),
+        controller=str(controller),
+        root_seed="root.seed",
+        controller_tool="tos-pq-controller",
+        target_nanotos=None,
+        dry_run=False,
+        i_checked_the_window=False,
+    )
+    args.update(extra)
+    return elections.argparse.Namespace(**args)
+
+
+class Signer:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, tool, seed, gid, controller, plan):
+        self.calls.append((gid, controller, plan["nonce"], plan["value_nanotos"]))
+        return "te6signedbody"
+
+
+def run_refund(args, host, chain, signer=None, now=SINCE + 3600):
+    return elections.refund(
+        args,
+        chain,
+        2,
+        lib.load_profile(),
+        host=host,
+        now=lambda: now,
+        sleep=lambda s: None,
+        sign=signer or Signer(),
+    )
+
+
+def test_refund_sends_with_the_service_stopped_and_records_it(tmp_path):
+    args = refund_setup(tmp_path, target_nanotos=260 * NANO)
+    host = FakeHost([status_text(2, 0), status_text(12, 1)])
+    signer = Signer()
+    record = run_refund(args, host, FakeChain([100 * NANO, 76 * NANO]), signer)
+    assert host.commands() == [
+        "controller operations status",
+        "controller operations plan",
+        "systemctl stop tos-testnet-elections",
+        "wallet send",
+        "systemctl start tos-testnet-elections",
+        "controller operations status",
+    ]
+    plan_call = host.calls[1][1]
+    assert f"--payer {OPERATOR}" in plan_call and "--funds-target-nanotos 260000000000" in plan_call
+    send = host.calls[3][1]
+    assert f"--amount-nanotos {PLAN_VALUE}" in send and "--body-boc te6signedbody" in send
+    assert "--from op-node-1" in send and f"--to -1:{CONTROLLER}" in send
+    assert signer.calls == [(2, CONTROLLER, "0", PLAN_VALUE)]
+    assert record["verified"] and record["problems"] == []
+    assert record["stakes_remaining_after"] == 12 and record["authority_after"] == [0, 1]
+    [line] = (tmp_path / "ceremony" / "refunds.jsonl").read_text().splitlines()
+    assert json.loads(line)["value_nanotos"] == PLAN_VALUE
+
+
+def test_refund_starts_the_service_again_when_the_send_fails(tmp_path):
+    host = FakeHost([status_text(2, 0)], send_error="vault locked")
+    with pytest.raises(lib.TestnetError, match="vault locked"):
+        run_refund(refund_setup(tmp_path), host, FakeChain([100 * NANO]))
+    assert host.commands()[-3:] == [
+        "systemctl stop tos-testnet-elections",
+        "wallet send",
+        "systemctl start tos-testnet-elections",
+    ]
+    assert not (tmp_path / "ceremony" / "refunds.jsonl").exists()
+
+
+def test_refund_says_so_when_the_service_does_not_start_again(tmp_path):
+    host = FakeHost([status_text(2, 0)], send_error="timeout", start_error="unit failed")
+    with pytest.raises(lib.TestnetError, match="did not start again.*by hand"):
+        run_refund(refund_setup(tmp_path), host, FakeChain([100 * NANO]))
+
+
+def test_refund_that_would_drain_the_operator_wallet_is_refused(tmp_path):
+    # 23.56 TOS value + 1 TOS fee allowance + 30 TOS reserve = 54.56 TOS; half a TOS short.
+    balance = PLAN_VALUE + NANO + 30 * NANO - NANO // 2
+    host = FakeHost([status_text(2, 0)])
+    signer = Signer()
+    with pytest.raises(lib.TestnetError) as refused:
+        run_refund(refund_setup(tmp_path), host, FakeChain([balance]), signer)
+    message = str(refused.value)
+    assert "short by 0.500000000 TOS" in message
+    assert f"fund --to {OPERATOR} --amount 1 " in message
+    assert signer.calls == []
+    assert not any(c.startswith(("systemctl", "wallet send")) for c in host.commands())
+    # control: the same wallet with that half TOS more goes through
+    host = FakeHost([status_text(2, 0), status_text(12, 1)])
+    assert run_refund(refund_setup(tmp_path / "ok"), host, FakeChain([balance + NANO // 2]))
+
+
+def test_reserve_formula():
+    reserve = 30 * NANO
+    assert elections.reserve_shortfall(100 * NANO, 20 * NANO, reserve) == 0
+    assert elections.reserve_shortfall(51 * NANO, 20 * NANO, reserve) == 0
+    assert elections.reserve_shortfall(51 * NANO - 1, 20 * NANO, reserve) == 1
+    with pytest.raises(lib.TestnetError):
+        elections.reserve_shortfall(-1, 1, reserve)
+
+
+def test_operator_reserve_comes_from_the_profile_and_covers_a_stake():
+    authorization = lib.load_profile()["elections"]["authorization"]
+    assert elections.operator_reserve(authorization) == authorization["operator_reserve_nanotos"]
+    assert authorization["operator_reserve_nanotos"] >= elections.STAKE_WALLET_MINIMUM_NANOTOS
+    assert elections.STAKE_WALLET_MINIMUM_NANOTOS == 20_200_000_000
+    assert elections.operator_reserve({}) == elections.DEFAULT_OPERATOR_RESERVE_NANOTOS
+    for bad in (20 * NANO, "30000000000", True):
+        with pytest.raises(lib.TestnetError):
+            elections.operator_reserve({"operator_reserve_nanotos": bad})
+
+
+def test_refund_dry_run_signs_and_sends_nothing(tmp_path):
+    host = FakeHost([status_text(2, 0)])
+    signer = Signer()
+    # a dry run inside an election only reports the window
+    record = run_refund(
+        refund_setup(tmp_path, dry_run=True), host, FakeChain([100 * NANO], active=7), signer
+    )
+    assert host.commands() == ["controller operations status", "controller operations plan"]
+    assert len(signer.calls) == 1
+    assert record["value_nanotos"] == PLAN_VALUE and "election 7" in record["window"]
+    assert not (tmp_path / "ceremony" / "refunds.jsonl").exists()
+
+
+@pytest.mark.parametrize("target", [0, -1])
+def test_refund_refuses_a_target_that_is_not_positive(tmp_path, target):
+    host = FakeHost([status_text(2, 0)])
+    with pytest.raises(lib.TestnetError, match="must be positive"):
+        run_refund(refund_setup(tmp_path, target_nanotos=target), host, FakeChain([100 * NANO]))
+    assert host.calls == []
+
+
+def test_refund_reports_a_refund_the_status_does_not_show(tmp_path):
+    host = FakeHost([status_text(2, 0), status_text(2, 1)])
+    with pytest.raises(lib.TestnetError, match="stakes remaining did not increase"):
+        run_refund(refund_setup(tmp_path), host, FakeChain([100 * NANO, 76 * NANO]))
+    [line] = (tmp_path / "ceremony" / "refunds.jsonl").read_text().splitlines()
+    record = json.loads(line)
+    assert record["verified"] is False
+    assert record["problems"] == ["stakes remaining did not increase"]
+
+
+def test_refund_reports_a_nonce_that_did_not_move_and_a_blocking_warning(tmp_path):
+    host = FakeHost([status_text(2, 0), status_text(12, 0, warnings=["funds below floor"])])
+    with pytest.raises(lib.TestnetError, match="nonce did not advance.*BLOCKING"):
+        run_refund(refund_setup(tmp_path), host, FakeChain([100 * NANO, 76 * NANO]))
+
+
+def test_refund_waits_for_the_quiet_part_of_a_term(tmp_path):
+    for chain, now, reason in (
+        (FakeChain([100 * NANO], active=1790372800), SINCE + 3600, "election 1790372800"),
+        (FakeChain([100 * NANO]), SINCE + 599, "took office 599 s ago"),
+        (FakeChain([100 * NANO]), UNTIL - 7200 - 600, "next election opens"),
+        (FakeChain([100 * NANO]), UNTIL + 50, "next election opens"),  # a failed election
+    ):
+        host = FakeHost([status_text(2, 0)])
+        with pytest.raises(lib.TestnetError, match=reason):
+            run_refund(refund_setup(tmp_path / str(now)), host, chain, now=now)
+        assert host.calls == []
+    # control: the first and the last quiet second, and an override, all go through
+    for now in (SINCE + 600, UNTIL - 7801):
+        host = FakeHost([status_text(2, 0), status_text(12, 1)])
+        assert run_refund(
+            refund_setup(tmp_path / f"quiet-{now}"), host, FakeChain([100 * NANO]), now=now
+        )
+    host = FakeHost([status_text(2, 0), status_text(12, 1)])
+    args = refund_setup(tmp_path / "override", i_checked_the_window=True)
+    assert run_refund(args, host, FakeChain([100 * NANO], active=5))
+
+
+def test_refund_needs_an_onboarded_operator(tmp_path):
+    args = refund_setup(tmp_path)
+    (tmp_path / "ceremony" / "wallets.json").write_text(json.dumps({"op-node-2": OPERATOR}))
+    with pytest.raises(lib.TestnetError, match="records no op-node-1"):
+        run_refund(args, FakeHost([status_text(2, 0)]), FakeChain([100 * NANO]))
+
+
+def test_validator_set_term_from_a_real_config_cell():
+    assert elections.validator_set_term(CONFIG34) == (1790358449, 1790359049)
+    bad_tag = bytearray(CONFIG34)
+    bad_tag[CONFIG34.index(bytes.fromhex("126ab6b3b1"))] = 0x13
+    with pytest.raises(lib.TestnetError, match="not a validator set"):
+        elections.validator_set_term(bytes(bad_tag))
+    with pytest.raises(lib.TestnetError):
+        elections.validator_set_term(CONFIG34[:12])
+    with pytest.raises(lib.TestnetError, match="bag of cells"):
+        elections.validator_set_term(b"\x00" + CONFIG34[1:])
+
+
+def test_chain_reads_the_term_and_the_open_election():
+    def rpc(url, method, /, **params):
+        if method == "getConfigParam":
+            assert params == {"param": 34}
+            return {"config": {"bytes": base64.b64encode(CONFIG34).decode()}}
+        assert params["address"] == elections.ELECTOR and params["method"] == "active_election_id"
+        return {"exit_code": 0, "stack": [["num", "0x6ab6d8f1"]]}
+
+    chain = elections.Chain("http://fake", rpc)
+    assert chain.validator_term() == (1790358449, 1790359049)
+    assert chain.active_election() == 0x6AB6D8F1
+
+
+def test_operations_status_is_parsed_through_colour_codes():
+    status = elections.parse_operations_status(status_text(7, 3, epoch=1, warnings=["x"]))
+    assert status == {
+        "stakes_remaining": 7,
+        "epoch": 1,
+        "nonce": 3,
+        "blocking": True,
+        "unset": False,
+    }
+    with pytest.raises(lib.TestnetError, match="Stakes remaining"):
+        elections.parse_operations_status("Controller operating authorization\n")
+
+
+def test_refund_needs_an_operating_authorization_to_renew(tmp_path):
+    unset = status_text(0, 0).replace(
+        "  Funds:", f"  {'Authorization:':<24} \x1b[1;31mnone recorded\x1b[0m\n  Funds:"
+    )
+    assert elections.parse_operations_status(unset)["unset"]
+    host = FakeHost([unset])
+    with pytest.raises(lib.TestnetError, match="no operating authorization"):
+        run_refund(refund_setup(tmp_path), host, FakeChain([100 * NANO]))
+    assert host.commands() == ["controller operations status"]

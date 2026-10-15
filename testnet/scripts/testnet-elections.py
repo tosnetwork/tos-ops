@@ -26,7 +26,31 @@ and drive load through a post-quantum high-volume wallet.
       enable-elections.sh. Each step checks its result first, so a rerun
       continues where the last one stopped.
 
-  load    --ceremony DIR --tos-root DIR --fift PATH --rpc URL --key-tool PATH
+  refund  --name NAME --host HOST --ssh-key FILE --ceremony DIR
+          --controller FILE --root-seed FILE --controller-tool PATH
+          --tos-root DIR --fift PATH --rpc URL [--target-nanotos N]
+          [--dry-run] [--i-checked-the-window]
+      Top up an onboarded validator controller's operating funds (a kind-4
+      fund_operations renewal), paid by the operator wallet op-NAME recorded in
+      DIR/wallets.json. It runs only in the quiet part of a term: it refuses
+      while the Elector has an election open, and within 10 minutes of the
+      current set taking office (ConfigParam 34 utime_since) or of the next
+      election opening (utime_until - elections_start_before); a failed
+      election keeps refusing. --i-checked-the-window overrides that after you
+      have checked by hand. It plans on the host (funds target
+      elections.authorization.funds_target_nanotos, or --target-nanotos), and
+      refuses before signing when the operator wallet would keep less than
+      elections.authorization.operator_reserve_nanotos after the message value
+      and a 1 TOS fee allowance: the election task needs 20.2 TOS there to
+      stake. The error names the top-up to `fund` first. Then it signs here
+      with the root seed, stops tos-testnet-elections (it holds the tosctl
+      vault lock), sends from the operator wallet, starts the service again
+      whatever the send did, and checks that the root authority nonce advanced,
+      the stakes remaining grew and no [BLOCKING] warning remains. Each sent
+      refund is appended to DIR/refunds.jsonl. --dry-run plans, checks the
+      reserve and signs, reports the window, and sends nothing.
+
+  load   --ceremony DIR --tos-root DIR --fift PATH --rpc URL --key-tool PATH
           --state DIR [--target-gas-per-block N | --batches-per-second R]
           [--actions-per-batch K] [--duration S] [--relayers N]
           [--send-rpc URL]... [--watch-rpc URL]... [--transfers skip|deliver]
@@ -225,6 +249,20 @@ class Chain:
     def transactions(self, address: str, limit: int = 50) -> list:
         return self.rpc(self.url, "getTransactions", address=address, limit=limit)
 
+    def validator_term(self) -> tuple[int, int]:
+        """utime_since and utime_until of the current validator set (ConfigParam 34)."""
+        param = self.rpc(self.url, "getConfigParam", param=34)
+        return validator_set_term(base64.b64decode(param["config"]["bytes"]))
+
+    def active_election(self) -> int:
+        """The Elector's open election id, 0 when none is open."""
+        result = self.rpc(
+            self.url, "runGetMethod", address=ELECTOR, method="active_election_id", stack=[]
+        )
+        if result.get("exit_code") != 0:
+            raise lib.TestnetError(f"active_election_id failed: {result}")
+        return int(result["stack"][0][1], 0)
+
     def wait_active(self, address: str, seconds: int = 90) -> int:
         deadline = time.time() + seconds
         while time.time() < deadline:
@@ -326,15 +364,44 @@ class Host:
         subprocess.run(self.scp + [str(local), f"{self.target}:{remote}"], check=True)
 
 
-def onboard(args: argparse.Namespace, chain: Chain, global_id: int, profile: dict) -> None:
-    name = args.name
-    previous = previous_wallets(args)
-    elections = profile["elections"]
+def genesis_controller(args: argparse.Namespace) -> dict:
+    """The controller document --controller names, refused unless the genesis records list it."""
     controller_doc = json.loads(Path(args.controller).read_text())
     controller_hex = controller_doc["controller_id"]
     records = json.loads((Path(args.ceremony) / "genesis-records.json").read_text())
     if controller_hex not in {r["controller_id"] for r in records}:
         raise lib.TestnetError(f"controller {controller_hex} is not in the genesis records")
+    return controller_doc
+
+
+def sign_operations(
+    tool: str, root_seed: str, global_id: int, controller_hex: str, plan: dict, run=subprocess.run
+) -> str:
+    """The kind-4 request body, signed here with the offline controller root seed."""
+    return run(
+        [
+            tool,
+            "fund-operations",
+            root_seed,
+            str(global_id),
+            controller_hex,
+            plan["epoch"],
+            plan["nonce"],
+            plan["valid_until"],
+            plan["payload"],
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
+def onboard(args: argparse.Namespace, chain: Chain, global_id: int, profile: dict) -> None:
+    name = args.name
+    previous = previous_wallets(args)
+    elections = profile["elections"]
+    controller_doc = genesis_controller(args)
+    controller_hex = controller_doc["controller_id"]
     controller = f"-1:{controller_hex}"
     host = Host(args.host, args.ssh_key)
     scripts = "/opt/tos-testnet/scripts"
@@ -422,22 +489,9 @@ def onboard(args: argparse.Namespace, chain: Chain, global_id: int, profile: dic
             global_id,
             controller_hex,
         )
-        signed = subprocess.run(
-            [
-                args.controller_tool,
-                "fund-operations",
-                args.root_seed,
-                str(global_id),
-                controller_hex,
-                plan["epoch"],
-                plan["nonce"],
-                plan["valid_until"],
-                plan["payload"],
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
+        signed = sign_operations(
+            args.controller_tool, args.root_seed, global_id, controller_hex, plan
+        )
         host.tosctl(
             f"wallet send --from op-{name} --to {controller} --amount-nanotos {plan['value_nanotos']} "
             f"--body-boc {shlex.quote(signed)} --bounce --yes",
@@ -454,6 +508,315 @@ def onboard(args: argparse.Namespace, chain: Chain, global_id: int, profile: dic
     step("election task")
     print(host.run(f"{scripts}/enable-elections.sh --name {shlex.quote(name)}"), end="")
     step("done")
+
+
+# ---------------------------------------------------------------- refund
+
+ELECTOR = "-1:" + "3" * 64
+ELECTIONS_SERVICE = "tos-testnet-elections"
+# tosctl's election task (tos tosctl/src/node-control/elections/src/runner.rs, send_stake)
+# sends POOL_RELAY_BUDGET (20 TOS) from the operator wallet with every stake and refuses
+# to stake unless the wallet also holds WALLET_COMPUTE_FEE (0.2 TOS) on top: 20.2 TOS.
+# A refund that left less once kept all four validators out of an election.
+STAKE_WALLET_MINIMUM_NANOTOS = 20 * NANO + NANO // 5
+# Used when the profile names no reserve: the 20.2 TOS above plus a margin.
+DEFAULT_OPERATOR_RESERVE_NANOTOS = 30 * NANO
+# What the operator wallet's own external message may cost beyond the value it sends.
+# Generous on purpose; each refund record keeps what the wallet actually spent.
+WALLET_SEND_FEE_ALLOWANCE_NANOTOS = NANO
+# No refund this close to a rotation or to the opening of an election.
+WINDOW_MARGIN_SECONDS = 600
+CONFIRM_ATTEMPTS = 9
+CONFIRM_INTERVAL = 10
+REFUND_LOG = "refunds.jsonl"
+SAFE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def parse_operations_status(text: str) -> dict:
+    """What a refund checks in `tosctl controller operations status`: the stakes the
+    funds still pay for, the root authority's epoch and nonce, and whether a
+    [BLOCKING] warning or a missing authorization stands. tosctl colours only
+    headings, markers and "none recorded", never the values read here."""
+    stakes = re.search(r"Stakes remaining:\s+(\d+)", text)
+    authority = re.search(r"Root authority:\s+epoch (\d+) nonce (\d+)", text)
+    if not stakes or not authority:
+        raise lib.TestnetError(
+            f"no 'Stakes remaining' or 'Root authority' line in the status:\n{text[-1200:]}"
+        )
+    return {
+        "stakes_remaining": int(stakes.group(1)),
+        "epoch": int(authority.group(1)),
+        "nonce": int(authority.group(2)),
+        "blocking": "BLOCKING" in text,
+        "unset": "kind 4 never accepted" in text or "none recorded" in text,
+    }
+
+
+def validator_set_term(boc: bytes) -> tuple[int, int]:
+    """utime_since and utime_until of a ConfigParam 34 cell, as getConfigParam returns it.
+
+    Reads only the root cell's first nine bytes: validators#11 or validators_ext#12,
+    then the two 32-bit times. The bag-of-cells header is walked to find the root.
+    """
+
+    def take(at: int, size: int) -> tuple[int, int]:
+        if at + size > len(boc):
+            raise lib.TestnetError("the validator set BOC is truncated")
+        return int.from_bytes(boc[at : at + size], "big"), at + size
+
+    if boc[:4] != bytes.fromhex("b5ee9c72") or len(boc) < 6:
+        raise lib.TestnetError("not a bag of cells")
+    flags, ref_size, off_size = boc[4], boc[4] & 7, boc[5]
+    if not 1 <= ref_size <= 4 or not 1 <= off_size <= 8:
+        raise lib.TestnetError("the validator set BOC has a malformed header")
+    at = 6
+    cells, at = take(at, ref_size)
+    roots, at = take(at, ref_size)
+    _absent, at = take(at, ref_size)
+    _total, at = take(at, off_size)
+    if roots != 1:
+        raise lib.TestnetError(f"the validator set BOC has {roots} roots")
+    root, at = take(at, ref_size)
+    if flags & 0x80:  # an index of cell offsets follows
+        at += cells * off_size
+    if root >= cells:
+        raise lib.TestnetError("the validator set BOC names a root it does not hold")
+    for index in range(cells):
+        d1, at = take(at, 1)
+        d2, at = take(at, 1)
+        if d1 & 16:  # stored hashes and depths, one pair per level present
+            at += (bin(d1 >> 5).count("1") + 1) * (32 + 2)
+        data_bytes = (d2 + 1) // 2
+        if index == root:
+            if d1 & 8 or data_bytes < 9 or at + 9 > len(boc):
+                raise lib.TestnetError("the validator set root is not an ordinary cell")
+            if boc[at] not in (0x11, 0x12):
+                raise lib.TestnetError(f"ConfigParam 34 has tag {boc[at]:#x}, not a validator set")
+            since, after = take(at + 1, 4)
+            until, _ = take(after, 4)
+            return since, until
+        at += data_bytes + (d1 & 7) * ref_size
+    raise lib.TestnetError("the validator set root was not found")
+
+
+def window_refusal(
+    since: int, until: int, active_election: int, schedule: dict, now: int
+) -> str | None:
+    """Why a refund must wait now, or None.
+
+    The election task relays stakes through the controller while an election is
+    open, and a refund both stops that task and moves the controller's nonce, which
+    invalidates a relay planned against the old one. So a refund runs only in the
+    quiet part of a term: at least WINDOW_MARGIN_SECONDS after the set took office
+    and before the next election opens, with no election open at the Elector. A
+    failed election leaves the Elector's election open and the set past its
+    utime_until, and both checks then refuse.
+    """
+    if active_election:
+        return f"election {active_election} is open at the Elector (or not yet installed)"
+    if now < since + WINDOW_MARGIN_SECONDS:
+        return (
+            f"the validator set took office {now - since} s ago; wait until "
+            f"{since + WINDOW_MARGIN_SECONDS}"
+        )
+    opens = until - int(schedule["elections_start_before"])
+    if now >= opens - WINDOW_MARGIN_SECONDS:
+        return (
+            f"the next election opens at {opens} ({opens - now} s from now) and the set "
+            f"rotates at {until}; wait until {until + WINDOW_MARGIN_SECONDS}"
+        )
+    return None
+
+
+def operator_reserve(authorization: dict) -> int:
+    """What the operator wallet must still hold after a refund, from the profile."""
+    reserve = authorization.get("operator_reserve_nanotos", DEFAULT_OPERATOR_RESERVE_NANOTOS)
+    if not isinstance(reserve, int) or isinstance(reserve, bool):
+        raise lib.TestnetError(f"operator_reserve_nanotos must be an integer: {reserve!r}")
+    if reserve < STAKE_WALLET_MINIMUM_NANOTOS:
+        raise lib.TestnetError(
+            f"operator_reserve_nanotos {reserve} is below the {STAKE_WALLET_MINIMUM_NANOTOS} "
+            "nanotos the election task needs in the operator wallet to stake"
+        )
+    return reserve
+
+
+def reserve_shortfall(
+    balance: int, value: int, reserve: int, fee: int = WALLET_SEND_FEE_ALLOWANCE_NANOTOS
+) -> int:
+    """Nanotos the operator wallet lacks to send `value`, pay `fee` and keep `reserve`."""
+    if min(balance, value, reserve, fee) < 0:
+        raise lib.TestnetError("a balance, value, reserve or fee cannot be negative")
+    return max(0, value + fee + reserve - balance)
+
+
+def recorded_operator(ceremony: Path, name: str) -> str:
+    """The operator wallet onboard recorded as op-NAME in the ceremony's wallets.json."""
+    path = ceremony / lib.WALLETS_FILE
+    wallets = (
+        lib.check_wallet_map(json.loads(path.read_text()), str(path)) if path.is_file() else {}
+    )
+    label = f"op-{name}"
+    if label not in wallets:
+        raise lib.TestnetError(f"{path} records no {label}; onboard {name} first")
+    return check_raw_address(wallets[label])
+
+
+def append_refund_log(ceremony: Path, record: dict) -> Path:
+    path = ceremony / REFUND_LOG
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+    with os.fdopen(fd, "a") as out:
+        out.write(json.dumps(record, sort_keys=True) + "\n")
+    return path
+
+
+def refund(
+    args: argparse.Namespace,
+    chain: Chain,
+    global_id: int,
+    profile: dict,
+    host: Host | None = None,
+    now=time.time,
+    sleep=time.sleep,
+    sign=sign_operations,
+) -> dict:
+    name = args.name
+    if not SAFE_NAME.match(name):
+        raise lib.TestnetError(f"not a node name: {name!r}")
+    authorization = profile["elections"]["authorization"]
+    reserve = operator_reserve(authorization)
+    target = (
+        int(authorization["funds_target_nanotos"])
+        if args.target_nanotos is None
+        else args.target_nanotos
+    )
+    if target <= 0:
+        raise lib.TestnetError(f"the funds target must be positive: {target}")
+    ceremony = Path(args.ceremony)
+    controller_hex = genesis_controller(args)["controller_id"]
+    controller = f"-1:{controller_hex}"
+    operator = recorded_operator(ceremony, name)
+
+    since, until = chain.validator_term()
+    reason = window_refusal(
+        since, until, chain.active_election(), lib.validator_schedule(profile), int(now())
+    )
+    if reason:
+        if not (args.dry_run or args.i_checked_the_window):
+            raise lib.TestnetError(f"not now: {reason}")
+        print(f"window: {reason} (continuing: {'dry run' if args.dry_run else 'overridden'})")
+
+    host = host or Host(args.host, args.ssh_key)
+    status_command = f"controller operations status --controller {controller}"
+    before = parse_operations_status(host.tosctl(status_command, 90))
+    if before["unset"]:
+        raise lib.TestnetError(f"{controller} has no operating authorization; onboard {name} first")
+    balance = chain.account(operator)[1]
+    plan = parse_operations_plan(
+        host.tosctl(
+            f"controller operations plan --controller {controller} --payer {operator} "
+            f"--floor-nanotos {int(authorization['floor_nanotos'])} --funds-target-nanotos {target} "
+            f"--expires-in-days {int(authorization['expires_in_days'])}",
+            90,
+        ),
+        global_id,
+        controller_hex,
+    )
+    value = plan["value_nanotos"]
+    if value <= 0:
+        raise lib.TestnetError(f"the plan sends {value} nanotos")
+    shortfall = reserve_shortfall(balance, value, reserve)
+    if shortfall:
+        top_up = -(-shortfall // NANO)
+        raise lib.TestnetError(
+            f"op-{name} ({operator}) holds {balance / NANO:.9f} TOS; sending {value / NANO:.9f} TOS "
+            f"plus up to {WALLET_SEND_FEE_ALLOWANCE_NANOTOS / NANO:.1f} TOS in fees would leave "
+            f"less than the {reserve / NANO:.9f} TOS reserve the next stake needs "
+            f"(short by {shortfall / NANO:.9f} TOS). Top up the operator wallet with at least "
+            f"{top_up} TOS first: testnet-elections.py fund --to {operator} --amount {top_up} "
+            f"--label op-{name}-top-up"
+        )
+    signed = sign(args.controller_tool, args.root_seed, global_id, controller_hex, plan)
+    record = {
+        "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now())),
+        "name": name,
+        "controller": controller,
+        "operator": operator,
+        "funds_target_nanotos": target,
+        "operator_reserve_nanotos": reserve,
+        "value_nanotos": value,
+        "plan_epoch": plan["epoch"],
+        "plan_nonce": plan["nonce"],
+        "valid_until": plan["valid_until"],
+        "operator_balance_before_nanotos": balance,
+        "stakes_remaining_before": before["stakes_remaining"],
+        "authority_before": [before["epoch"], before["nonce"]],
+        "window": reason,
+    }
+    if args.dry_run:
+        print(json.dumps(record, indent=2))
+        print(
+            f"dry run: would send {value / NANO:.9f} TOS from op-{name} to {controller}; "
+            f"nothing sent, {ELECTIONS_SERVICE} left running"
+        )
+        return record
+
+    # The running election task holds the tosctl vault lock: stop it only around the
+    # send, and start it again whatever the send did.
+    host.run(f"systemctl stop {ELECTIONS_SERVICE}")
+    try:
+        host.tosctl(
+            f"wallet send --from op-{name} --to {controller} --amount-nanotos {value} "
+            f"--body-boc {shlex.quote(signed)} --bounce --yes",
+            150,
+        )
+    except BaseException as exc:
+        try:
+            host.run(f"systemctl start {ELECTIONS_SERVICE}")
+        except lib.TestnetError as start:
+            raise lib.TestnetError(
+                f"the send failed ({exc}) and {ELECTIONS_SERVICE} did not start again: {start}; "
+                "start it by hand"
+            ) from exc
+        raise
+    try:
+        host.run(f"systemctl start {ELECTIONS_SERVICE}")
+    except lib.TestnetError as exc:
+        raise lib.TestnetError(
+            f"the refund was sent, but {ELECTIONS_SERVICE} did not start again: {exc}; "
+            "start it by hand"
+        ) from exc
+
+    after = before
+    for _ in range(CONFIRM_ATTEMPTS):
+        sleep(CONFIRM_INTERVAL)
+        after = parse_operations_status(host.tosctl(status_command, 90))
+        if (after["epoch"], after["nonce"]) > (before["epoch"], before["nonce"]):
+            break
+    balance_after = chain.account(operator)[1]
+    problems = []
+    if (after["epoch"], after["nonce"]) <= (before["epoch"], before["nonce"]):
+        problems.append("the root authority nonce did not advance")
+    if after["stakes_remaining"] <= before["stakes_remaining"]:
+        problems.append("stakes remaining did not increase")
+    if after["blocking"]:
+        problems.append("a [BLOCKING] warning remains")
+    if balance_after < STAKE_WALLET_MINIMUM_NANOTOS:
+        problems.append("the operator wallet holds less than the next stake needs")
+    record.update(
+        operator_balance_after_nanotos=balance_after,
+        operator_spent_nanotos=balance - balance_after,
+        stakes_remaining_after=after["stakes_remaining"],
+        authority_after=[after["epoch"], after["nonce"]],
+        verified=not problems,
+        problems=problems,
+    )
+    log = append_refund_log(ceremony, record)
+    print(json.dumps(record, indent=2))
+    print(f"recorded in {log}")
+    if problems:
+        raise lib.TestnetError(f"refund for {name} not confirmed: {'; '.join(problems)}")
+    return record
 
 
 # ---------------------------------------------------------------- load
@@ -1527,6 +1890,19 @@ def main(argv: list[str] | None = None) -> int:
     ):
         p_onboard.add_argument(flag, required=True)
     p_onboard.add_argument("--previous-ceremony", action="append", default=[])
+    p_refund = sub.add_parser("refund", parents=[common])
+    for flag in (
+        "--name",
+        "--host",
+        "--ssh-key",
+        "--controller",
+        "--root-seed",
+        "--controller-tool",
+    ):
+        p_refund.add_argument(flag, required=True)
+    p_refund.add_argument("--target-nanotos", type=int)
+    p_refund.add_argument("--dry-run", action="store_true")
+    p_refund.add_argument("--i-checked-the-window", action="store_true")
     p_load = sub.add_parser("load", parents=[common])
     p_load.add_argument("--previous-ceremony", action="append", default=[])
     p_load.add_argument("--key-tool", "--signer", dest="key_tool", required=True)
@@ -1561,6 +1937,8 @@ def main(argv: list[str] | None = None) -> int:
             check_load_args(args)
             os.umask(0o077)
             LoadDriver(args, chain, global_id).run()
+        elif args.command == "refund":
+            refund(args, chain, global_id, profile)
         else:
             onboard(args, chain, global_id, profile)
     except (lib.TestnetError, OSError, KeyError, ValueError, subprocess.SubprocessError) as exc:
