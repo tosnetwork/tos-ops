@@ -202,10 +202,15 @@ Telegram bot. Two roles, on two hosts, each watching the other's heartbeat:
   SSH and reads the age of `heartbeat-peer` there.
 - `peer` (on the DHT host, `systemd/tos-testnet-alert-peer.service`, root)
   touches `heartbeat-peer` every minute and alerts when the coordinator's beat
-  is older than 300 s, then reports its return.
+  is older than 150 s, then reports its return. While that beat is dead it
+  also reads the chat's replies (see below).
 
 Either side alerts once when the other's beat is stale or unreadable for
-`--dead-after` (300 s) and sends a recovery when it is fresh. The bot token
+`--dead-after` (150 s) and sends a recovery when it is fresh. 150 s is two
+missed one-minute beats plus slack: a stopped side is reported within
+dead-after + one check interval + the send (at most about 260 s), inside the
+5-minute alert budget. Telegram connections try IPv4 before IPv6, 3 s per
+address, so a host whose IPv6 route hangs still sends in about a second. The bot token
 and chat id are files given by `--token-file` and `--chat-file`, mode 0600
 (the relay refuses anything group- or world-readable): `/etc/tos-alert/` on
 the DHT host, `~/.config/tos-alert/` on the coordinator. They never enter this
@@ -213,7 +218,13 @@ repository.
 
 A reply in the chat is an acknowledgement: the coordinator reads replies
 every 30 s, records each in `acks.jsonl` with its time and the alert it
-follows, and confirms it.
+follows, and confirms it. While the coordinator's heartbeat is dead, the peer
+reads them instead (its own offset file, its own `acks.jsonl`, each reply
+recorded against the peer's last alert) and stops when the beat is fresh
+again, so only one host reads at a time. getUpdates confirms what it returns
+on Telegram's side, so a reply one host read is never seen by the other: the
+acknowledgement receipts are split between the two hosts' `acks.jsonl`, and
+reading both is the full record.
 
 Planned work: silence each host whose alerts it would trigger before you
 start, for example on the coordinator and, over SSH, on the DHT host:

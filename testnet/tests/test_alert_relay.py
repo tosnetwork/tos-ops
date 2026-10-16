@@ -3,6 +3,7 @@ import importlib.util
 import io
 import json
 import os
+import socket
 import subprocess
 import urllib.error
 import urllib.parse
@@ -472,3 +473,212 @@ def test_coordinator_polls_replies_every_thirty_seconds(tmp_path):
         coordinator.tick()
         clock.t += 15
     assert [m for m, _p in api.calls].count("getUpdates") == 2
+
+
+# ---------------------------------------------------------------- IPv4-first connect
+
+
+CONNECT_IPV4_FIRST = relay.connect_ipv4_first  # unpatched, for tests that stub the module's
+
+
+class FakeSocket:
+    """Records its family and timeouts; `connect` follows the address's scripted outcome."""
+
+    def __init__(self, net, family):
+        self.net, self.family = net, family
+        self.timeouts, self.closed = [], False
+
+    def settimeout(self, value):
+        self.timeouts.append(value)
+
+    def bind(self, _address):
+        pass
+
+    def setsockopt(self, *_args):
+        pass
+
+    def connect(self, sockaddr):
+        self.net.tried.append(sockaddr[0])
+        outcome = self.net.outcomes.get(sockaddr[0], "ok")
+        if outcome == "hang":  # an unrouted address: nothing until the timeout
+            self.net.clock.t += self.timeouts[-1]
+            raise TimeoutError("timed out")
+        if outcome == "refuse":
+            raise ConnectionRefusedError(111, "refused")
+
+    def close(self):
+        self.closed = True
+
+
+class FakeNet:
+    V6 = (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2001:db8::1", 443, 0, 0))
+    V4A = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", 443))
+    V4B = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.2", 443))
+
+    def __init__(self, infos, outcomes=None):
+        self.infos, self.outcomes = infos, outcomes or {}
+        self.tried, self.sockets, self.lookups = [], [], []
+        self.clock = Clock(0.0)
+
+    def getaddrinfo(self, host, port, *_rest):
+        self.lookups.append((host, port))
+        return list(self.infos)
+
+    def socket(self, family, _kind, _proto):
+        sock = FakeSocket(self, family)
+        self.sockets.append(sock)
+        return sock
+
+    def connect(self, timeout=15.0):
+        return CONNECT_IPV4_FIRST(
+            ("api.telegram.org", 443),
+            timeout,
+            getaddrinfo=self.getaddrinfo,
+            make_socket=self.socket,
+        )
+
+
+def test_ipv4_addresses_are_tried_before_ipv6():
+    net = FakeNet([FakeNet.V6, FakeNet.V4A])
+    sock = net.connect()
+    assert net.tried == ["192.0.2.1"]
+    assert sock.timeouts == [relay.CONNECT_TIMEOUT, 15.0]  # short connect, then the request's
+
+
+def test_a_hanging_address_costs_the_short_timeout_and_the_next_is_used():
+    net = FakeNet([FakeNet.V6, FakeNet.V4A, FakeNet.V4B], {"192.0.2.1": "hang"})
+    sock = net.connect()
+    assert net.tried == ["192.0.2.1", "192.0.2.2"]
+    assert net.clock.t == relay.CONNECT_TIMEOUT == 3.0
+    assert net.sockets[0].closed and sock is net.sockets[1]
+    # IPv6 is still a fallback when every IPv4 address hangs.
+    net = FakeNet([FakeNet.V6, FakeNet.V4A], {"192.0.2.1": "hang"})
+    net.connect()
+    assert net.tried == ["192.0.2.1", "2001:db8::1"] and net.clock.t == 3.0
+
+
+def test_when_every_address_fails_the_last_error_is_raised():
+    net = FakeNet(
+        [FakeNet.V6, FakeNet.V4A, FakeNet.V4B],
+        {"192.0.2.1": "hang", "192.0.2.2": "hang", "2001:db8::1": "refuse"},
+    )
+    with pytest.raises(ConnectionRefusedError):
+        net.connect()
+    assert net.tried == ["192.0.2.1", "192.0.2.2", "2001:db8::1"]
+    assert all(s.closed for s in net.sockets)
+    with pytest.raises(OSError, match="no address"):
+        FakeNet([]).connect()
+
+
+def test_a_request_timeout_shorter_than_the_connect_timeout_wins():
+    net = FakeNet([FakeNet.V4A])
+    assert net.connect(timeout=1.0).timeouts == [1.0, 1.0]
+
+
+def test_telegram_requests_connect_through_the_ipv4_first_path(monkeypatch):
+    seen = []
+
+    def refuse(address, timeout, source_address=None):
+        seen.append((address, timeout))
+        raise ConnectionRefusedError(111, "stub refused")
+
+    monkeypatch.setattr(relay, "connect_ipv4_first", refuse)
+    t = relay.Telegram(TOKEN, CHAT, sleep=lambda _s: None, attempts=1)
+    with pytest.raises(relay.SendError, match="stub refused"):
+        t.send("x")
+    assert seen == [(("api.telegram.org", 443), 15.0)]
+
+
+def test_the_https_connection_wraps_the_ipv4_first_socket_in_tls(monkeypatch):
+    net = FakeNet([FakeNet.V4A])
+    wrapped = []
+
+    class Context:
+        def wrap_socket(self, sock, server_hostname):
+            wrapped.append((sock, server_hostname))
+            return sock
+
+    monkeypatch.setattr(relay, "connect_ipv4_first", lambda a, t, s=None: net.connect(t))
+    conn = relay.IPv4FirstHTTPSConnection("api.telegram.org", timeout=15.0, context=Context())
+    conn.connect()
+    assert net.tried == ["192.0.2.1"]
+    assert wrapped == [(net.sockets[0], "api.telegram.org")]
+
+
+# ---------------------------------------------------------------- dead-man budget
+
+
+def test_dead_after_defaults_to_150_s_in_the_script_and_both_units():
+    parser = relay.build_parser()
+    for role in ("coordinator", "peer"):
+        argv = [role, "--token-file", "t", "--chat-file", "c"]
+        if role == "coordinator":
+            argv += ["--state-dir", "s", "--inventory", "i", "--peer", "p"]
+        assert parser.parse_args(argv).dead_after == 150.0
+    for unit in ("tos-testnet-alert-peer.service", "tos-testnet-alert-coordinator.service"):
+        text = (SCRIPTS.parent / "systemd" / unit).read_text()
+        assert "  --dead-after 150\n" in text and "--interval 60" in text
+
+
+def test_a_stopped_coordinator_is_reported_well_inside_five_minutes(tmp_path):
+    # Worst phase: the coordinator's last beat lands just after a peer check.
+    api, clock = FakeApi(), Clock()
+    theirs = tmp_path / "heartbeat-coordinator"
+    theirs.touch()
+    os.utime(theirs, (T0, T0))
+    args = peer_args(tmp_path)
+    args.dead_after = relay.DEAD_AFTER
+    clock.t = T0 - 59
+    peer = relay.Peer(args, telegram(api), clock.now)
+    while not api.sent():
+        peer.tick()
+        clock.t += args.interval
+    alerted = clock.t - args.interval
+    assert alerted - T0 <= relay.DEAD_AFTER + args.interval
+    t = relay.Telegram(TOKEN, CHAT, opener=api)
+    worst_send = t.attempts * t.timeout + sum(2.0**i for i in range(t.attempts - 1))
+    assert relay.DEAD_AFTER + args.interval + worst_send < 300 - 30
+
+
+# ---------------------------------------------------------------- peer reads replies
+
+
+def test_peer_reads_replies_only_while_the_coordinator_is_dead(tmp_path):
+    api, clock = FakeApi(), Clock()
+    theirs = tmp_path / "heartbeat-coordinator"
+    theirs.touch()
+    os.utime(theirs, (T0, T0))
+    peer = relay.Peer(peer_args(tmp_path), telegram(api), clock.now)
+    assert peer.period() == 60.0
+    for _ in range(6):  # T0 .. T0 + 300: fresh enough, the coordinator reads
+        peer.tick()
+        clock.t += 60
+    assert [m for m, _p in api.calls] == []
+    api.updates = [update(700, "seen, looking", reply_to=101)]
+    peer.tick()  # T0 + 360: dead, alert, then the first read
+    assert [m for m, _p in api.calls] == ["sendMessage", "getUpdates", "sendMessage"]
+    assert "coordinator heartbeat stale" in api.sent()[0]
+    assert api.sent()[1].startswith(
+        "TOS testnet acknowledged for heartbeat-dead coordinator:heartbeat"
+    )
+    [ack] = records(tmp_path, "acks.jsonl")
+    assert ack["text"] == "seen, looking" and ack["update_id"] == 700
+    assert ack["follows"]["kind"] == "heartbeat-dead" and ack["follows"]["message_id"] == 101
+    assert (tmp_path / "telegram-offset").read_text() == "701\n"
+    assert peer.period() == 30.0
+    clock.t += 15
+    peer.tick()  # not due yet
+    clock.t += 15
+    peer.tick()  # 30 s on: due, offset kept, nothing new, no confirmation
+    assert [m for m, _p in api.calls].count("getUpdates") == 2
+    assert api.calls[-1] == ("getUpdates", {"offset": "701", "timeout": "0"})
+    assert len(api.sent()) == 2
+    os.utime(theirs, (clock.t, clock.t))  # the coordinator is back
+    clock.t += 30
+    peer.tick()
+    assert "RECOVERED coordinator heartbeat" in api.sent()[-1]
+    for _ in range(4):
+        clock.t += 30
+        peer.tick()
+    assert [m for m, _p in api.calls].count("getUpdates") == 2
+    assert peer.period() == 60.0

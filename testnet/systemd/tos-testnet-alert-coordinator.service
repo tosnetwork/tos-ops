@@ -10,6 +10,8 @@ Description=TOS public testnet alert relay, coordinator role (watch-testnet.py t
 After=network-online.target
 
 [Service]
+# --dead-after 150: a stopped side is reported within dead-after + one
+# interval + the send (at most about 260 s), inside the 5-minute budget.
 UMask=0077
 ExecStartPre=/usr/bin/mkdir -p -m 0700 %h/.local/state/tos-alert
 ExecStart=/usr/bin/python3 %h/network-settings/testnet/scripts/alert-relay.py coordinator \
@@ -19,7 +21,7 @@ ExecStart=/usr/bin/python3 %h/network-settings/testnet/scripts/alert-relay.py co
   --inventory %h/.config/tos-alert/hosts.json \
   --peer node-dht \
   --interval 60 \
-  --dead-after 300
+  --dead-after 150
 Restart=always
 RestartSec=30
 NoNewPrivileges=true

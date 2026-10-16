@@ -9,6 +9,8 @@ Wants=network-online.target
 # state directory over SSH as root; this unit writes heartbeat-peer there and
 # alerts when the coordinator's beat goes stale. The bot token and chat id
 # are files under /etc/tos-alert, owned by root with mode 0600.
+# --dead-after 150: a stopped side is reported within dead-after + one
+# interval + the send (at most about 260 s), inside the 5-minute budget.
 User=root
 Group=root
 UMask=0077
@@ -20,7 +22,7 @@ ExecStart=/usr/bin/python3 /opt/tos-testnet/scripts/alert-relay.py peer \
   --chat-file /etc/tos-alert/chat \
   --state-dir /var/lib/tos-alert \
   --interval 60 \
-  --dead-after 300
+  --dead-after 150
 Restart=always
 RestartSec=30
 NoNewPrivileges=true

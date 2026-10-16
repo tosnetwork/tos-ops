@@ -3,10 +3,10 @@
 
   alert-relay.py coordinator --token-file F --chat-file F --state-dir DIR
                  --inventory hosts.json --peer node-dht
-                 [--interval 60] [--dead-after 300] [--watch-interval 60]
+                 [--interval 60] [--dead-after 150] [--watch-interval 60]
                  [--digest-hours 0] [--silence-file PATH] [--remote-dir /var/lib/tos-alert]
   alert-relay.py peer --token-file F --chat-file F [--state-dir /var/lib/tos-alert]
-                 [--interval 60] [--dead-after 300] [--silence-file PATH]
+                 [--interval 60] [--dead-after 150] [--silence-file PATH]
   alert-relay.py silence --until <ISO time | +MINUTES> --reason TEXT
                  [--state-dir DIR | --silence-file PATH]
   alert-relay.py unsilence [--state-dir DIR | --silence-file PATH]
@@ -33,6 +33,13 @@ that is older than --dead-after and reports the recovery. It has no chain
 access: the validators' JSON-RPC answers on loopback only, so the peer can say
 that the coordinator's watch stopped, not what the chain is doing.
 
+While the coordinator's heartbeat is dead the peer reads replies itself, every
+30 s, with its own offset file, records them in its own acks.jsonl against its
+own last alert and confirms them; once the beat is fresh it stops, so only one
+host polls at a time. getUpdates confirms what it returns on Telegram's side,
+so a reply read by one host is never seen by the other: the acknowledgement
+receipts are split across the two hosts' acks.jsonl files.
+
 Each heartbeat age is computed on the host that holds the file, with that
 host's clock, so clock skew between the hosts does not move it.
 
@@ -43,6 +50,10 @@ future, alerts are recorded with `"silenced": true` and not sent; when it
 expires (or `unsilence` removes it) one message lists what was suppressed. The
 silence file is one line: `<expiry unix time> <reason>`. Silence each host
 separately: the peer reads its own file.
+
+Telegram connections try every IPv4 address of the API host before any IPv6
+one, each with a short connect timeout, so a host whose IPv6 route hangs does
+not stall a send until the request timeout.
 
 The bot token and the chat id are read from --token-file and --chat-file,
 which must not be readable by group or others; they are never printed. A send
@@ -56,9 +67,12 @@ inventory, bad --until); the two loops run until stopped.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import queue
+import socket
+import ssl
 import stat
 import subprocess
 import sys
@@ -86,6 +100,14 @@ OFFSET = "telegram-offset"
 SILENCE = "silence"
 REMINDER_EVERY = 1800.0
 ACK_EVERY = 30.0
+# Two missed coordinator beats (one per --interval, 60 s) plus SSH slack. A
+# stopped side is reported at most dead-after + one interval (the check runs
+# once per interval) + the send (three attempts of at most 15 s each, plus 3 s
+# of backoff) after its last beat: 150 + 60 + 48 = 258 s worst case, about
+# 215 s with a prompt send, inside the 5-minute alert budget. 300 s would spend
+# the whole budget on waiting alone.
+DEAD_AFTER = 150.0
+CONNECT_TIMEOUT = 3.0
 WATCH_RESTART_DELAY = 30.0
 OUTBOX_LIMIT = 200
 TEXT_LIMIT = 3900
@@ -128,6 +150,73 @@ def read_secret(path: Path, what: str) -> str:
 # ---------------------------------------------------------------- Telegram
 
 
+def connect_ipv4_first(
+    address: tuple[str, int],
+    timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
+    source_address=None,
+    *,
+    connect_timeout: float = CONNECT_TIMEOUT,
+    getaddrinfo=socket.getaddrinfo,
+    make_socket=socket.socket,
+) -> socket.socket:
+    """A TCP connection trying every IPv4 address before any IPv6 one.
+
+    Each address gets at most `connect_timeout` to connect, so an address
+    family without a working route (IPv6 that hangs instead of refusing) costs
+    seconds, not the whole request timeout. The connected socket then uses
+    `timeout` for the request itself. Raises the last address's error when
+    none connects.
+    """
+    host, port = address
+    infos = getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+    ordered = [i for i in infos if i[0] == socket.AF_INET] + [
+        i for i in infos if i[0] != socket.AF_INET
+    ]
+    if timeout is socket._GLOBAL_DEFAULT_TIMEOUT:
+        timeout = socket.getdefaulttimeout()
+    per_address = connect_timeout if timeout is None else min(connect_timeout, timeout)
+    failure: OSError | None = None
+    for family, kind, proto, _name, sockaddr in ordered:
+        sock = None
+        try:
+            sock = make_socket(family, kind, proto)
+            sock.settimeout(per_address)
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(sockaddr)
+        except OSError as exc:
+            failure = exc
+            if sock is not None:
+                sock.close()
+            continue
+        sock.settimeout(timeout)
+        return sock
+    if failure is None:
+        failure = OSError(f"no address found for {host}")
+    raise failure
+
+
+class IPv4FirstHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPSConnection whose TCP connect goes through connect_ipv4_first."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = connect_ipv4_first
+
+
+class IPv4FirstHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self):
+        self.tls = ssl.create_default_context()
+        super().__init__(context=self.tls)
+
+    def https_open(self, req):
+        return self.do_open(IPv4FirstHTTPSConnection, req, context=self.tls)
+
+
+def ipv4_first_opener():
+    return urllib.request.build_opener(IPv4FirstHTTPSHandler()).open
+
+
 class SendError(Exception):
     """A Telegram call that failed after its retries; the message carries no secret."""
 
@@ -139,13 +228,14 @@ class Telegram:
         self,
         token: str,
         chat_id: str,
-        opener=urllib.request.urlopen,
+        opener=None,
         sleep=time.sleep,
         attempts: int = 3,
         timeout: float = 15.0,
     ):
         self.token, self.chat_id = token, chat_id
-        self.opener, self.sleep = opener, sleep
+        self.opener = opener if opener is not None else ipv4_first_opener()
+        self.sleep = sleep
         self.attempts, self.timeout = attempts, timeout
 
     def scrub(self, text: str) -> str:
@@ -637,10 +727,25 @@ class Coordinator:
 
 
 class Peer:
+    """Watches the coordinator's beat; reads replies only while that beat is dead.
+
+    The coordinator is the one reader of replies while it lives. When its beat
+    is dead the peer takes over, so replies to the peer's own alerts are
+    recorded and confirmed. It stops as soon as the beat is fresh, so the two
+    hosts never poll getUpdates at the same time and split each other's replies.
+    """
+
     def __init__(self, args, telegram: Telegram, now=time.time):
         self.args, self.now = args, now
+        started = now()
         self.notifier = Notifier(telegram, args.state_dir, args.silence_file, now)
-        self.beat = Heartbeat("coordinator", args.dead_after, now())
+        self.acks = Acks(self.notifier, args.state_dir)
+        self.beat = Heartbeat("coordinator", args.dead_after, started)
+        self.next_ack = started
+
+    def period(self) -> float:
+        """Seconds to the next tick: faster while this host reads the replies."""
+        return min(self.args.interval, ACK_EVERY) if self.beat.dead else self.args.interval
 
     def tick(self) -> None:
         now = self.now()
@@ -656,6 +761,9 @@ class Peer:
             age,
             "The coordinator stopped writing it: its chain watch and alerts may be down.",
         )
+        if self.beat.dead and now >= self.next_ack:
+            self.next_ack = now + ACK_EVERY
+            self.acks.poll(now)
         self.notifier.tick()
 
 
@@ -722,10 +830,10 @@ def run_peer(args, telegram: Telegram) -> int:
     while True:
         started = time.time()
         peer.tick()
-        time.sleep(max(1.0, args.interval - (time.time() - started)))
+        time.sleep(max(1.0, peer.period() - (time.time() - started)))
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -740,7 +848,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         p.add_argument("--silence-file", type=Path)
         p.add_argument("--interval", type=float, default=60.0)
-        p.add_argument("--dead-after", type=float, default=300.0)
+        p.add_argument("--dead-after", type=float, default=DEAD_AFTER)
         roles[name] = p
     roles["coordinator"].add_argument("--inventory", type=Path, required=True)
     roles["coordinator"].add_argument("--peer", required=True)
@@ -755,6 +863,11 @@ def main(argv: list[str] | None = None) -> int:
         if name == "silence":
             p.add_argument("--until", required=True)
             p.add_argument("--reason", required=True)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
     if getattr(args, "silence_file", None) is None:
         args.silence_file = Path(args.state_dir) / SILENCE
