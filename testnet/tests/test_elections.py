@@ -212,6 +212,16 @@ def test_block_interval_from_shard_heads():
         elections.block_interval({"s": 100}, {"s": 100}, 10.0)
 
 
+def test_block_interval_across_a_shard_merge_and_split():
+    # Two children merged back into the whole shard during the window (seen live under load).
+    merged = elections.block_interval({"4000": 532007, "c000": 532004}, {"8000": 532032}, 10.0)
+    assert merged == pytest.approx(10.0 / 25)
+    split = elections.block_interval({"8000": 529800}, {"4000": 529825, "c000": 529824}, 10.0)
+    assert split == pytest.approx(10.0 / 25)
+    with pytest.raises(lib.TestnetError):
+        elections.block_interval({"4000": 532007}, {"8000": 532007}, 10.0)
+
+
 def test_request_program_binds_network_wallet_and_ids():
     text = elections.request_program(
         2, WALLET, [RELAYER], 254, 50_000, 3600, [(7, 1000), (8, 1000)]

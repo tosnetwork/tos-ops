@@ -1111,8 +1111,14 @@ def basechain_heads(chain: Chain) -> dict[str, int]:
 
 
 def block_interval(before: dict[str, int], after: dict[str, int], seconds: float) -> float:
-    """Mean seconds per basechain block in each shard over a window."""
+    """Mean seconds per basechain block in each shard over a window.
+
+    Load splits and merges shards, which renames them; a child's seqno continues from its
+    parent's, so without a shard present on both sides the highest seqno still counts the
+    blocks of one shard chain."""
     steps = [after[s] - before[s] for s in after if s in before and after[s] > before[s]]
+    if not steps and before and after and max(after.values()) > max(before.values()):
+        steps = [max(after.values()) - max(before.values())]
     if not steps or seconds <= 0:
         raise lib.TestnetError("no basechain block was produced while measuring")
     return seconds * len(steps) / sum(steps)
