@@ -68,9 +68,13 @@ production. That includes:
 
 Rules that follow from the code:
 
-- A validator runs no public liteserver and no JSON-RPC. Its console and
-  exporter bind to loopback. Wallet and explorer traffic go to RPC nodes, so a
-  query load can never starve consensus.
+- A validator runs no public liteserver and no public JSON-RPC. Its console,
+  exporter and JSON-RPC bind to loopback. Wallet and explorer traffic go to RPC
+  nodes, so a query load can never starve consensus. The loopback JSON-RPC
+  serves only the operator's own `tosctl` (staking, refunds) and monitoring on
+  the same host: that view is the validator's own, and pointing `tosctl` at
+  another node would add a network dependency and an authenticating proxy for
+  the write methods (decided 2026-10-15, memo public-testnet STATUS 13.6).
 - A validator host holds the consensus key of exactly one validator. The node
   refuses to start a validator group unless it holds the exact key that
   Config34 records for its controller (`validator/manager.cpp`, group
@@ -473,7 +477,8 @@ ExecStart=/usr/local/bin/validator-engine \
   -t 16 \
   --state-ttl 86400 --archive-ttl 86400 \
   --celldb-cache-size 1073741824 --celldb-cache-min-size 1073741824 \
-  --exporter-address 127.0.0.1:9100
+  --exporter-address 127.0.0.1:9100 \
+  --json-rpc-address 127.0.0.1:8081
 Restart=on-failure
 RestartSec=10
 KillMode=control-group
@@ -519,6 +524,17 @@ Notes on each choice:
     requirement.
   - `--quic-flood-control` stays at its default of 1,000 connections per IP.
     The `-1` used locally disables the protection.
+- **Loopback JSON-RPC.** `--json-rpc-address 127.0.0.1:8081`, with no
+  `--json-rpc-readonly`, no proxy and never a public address, for the
+  operator's `tosctl` on this host (`tosctl config chain-rpc set
+  http://127.0.0.1:8081/jsonRPC`), as the public testnet runs it (section 2).
+  Its cost on a validator (the RPC service and its account index) is still to
+  be measured as part of the validator memory work.
+- **`tosctl` explorer indexer off.** On a validator host set
+  `"indexer_enabled": false` in `tosctl`'s config before starting
+  `tosctl service`. The indexer serves only `tosctl explorer`, which a
+  validator does not run, and on the public testnet it cost as much CPU as
+  the validator itself and never caught up.
 - **Exporter.** The health exporter flags (`--health-node-id`,
   `--health-core-metrics`, `--health-native-core-v3`) require a performance
   acceptance per their help text. Enable them only with the monitoring design
@@ -563,8 +579,10 @@ Notes on each choice:
 2. **Initial sync.** By default the node downloads the last `--sync-before`
    (3,600 s) of blocks and selects the best persistent state from peers.
    Persistent-state import is bounded by the `--persistent-state-*` budgets.
-   Their effective values are logged at start; size the spool volume (48 GiB
-   per import, 96 GiB total by default) accordingly.
+   Their effective values are logged at start; size the spool volume (96 GiB
+   per import, 192 GiB total by default: a 600 % reservation of the 16 GiB
+   file limit, since a measured spool can reach about 4x its state file)
+   accordingly.
 3. **Snapshots.** Only into a new database, through the digest-checked
    importer (section 8.2). A snapshot's zero-state check does not authenticate
    the global config.
@@ -925,6 +943,27 @@ Alert at least on:
 | Wallet balances of payer and validator wallets | Fees for stake orders and authorizations |
 | Engine exit status 2 in the unit's journal | A second engine, a held lock, or a refused option |
 
+Every alert must reach a person, and the monitoring must report its own
+death:
+
+- **Alert-to-human with acknowledgement.** A push channel that a person
+  answers, with the alert and acknowledgement times recorded. Target: a fault
+  acknowledged within 5 minutes.
+- **Dead-man switch in a second failure domain.** Two watchers on separate
+  hosts, each watching the chain and the other's heartbeat, either able to
+  alert alone and to record acknowledgements while the other is down.
+- **Planned work is silenced, not ignored.** Silence the affected watchers for
+  the window; alerts are still recorded and summarised when the silence ends.
+  A drill script silences before its first fault.
+- **Credentials.** The alert channel's token is written straight to the hosts
+  (mode 0600) and never passes through a repository, a chat or an agent
+  session.
+
+The public testnet runs this minimally as `testnet/scripts/alert-relay.py`
+(Telegram, coordinator plus DHT-host peer, 150 s dead-man). Its drill (memo
+public-testnet test OPS-01): node fault acknowledged in 39 s; monitor fault
+alerted in 2 min 55 s and acknowledged in 3 min 13 s through the peer.
+
 ## 12. Gaps before this procedure can be followed
 
 | ID | Gap | Status |
@@ -939,12 +978,12 @@ Alert at least on:
 | G8 | Hardware profile `OWNER_REVIEW_REQUIRED`; no 21-validator disk or memory measurement | **Open.** Section 6.3 sizing is a lower bound only. Proposed requirements and hosting-diversity rules: [Hardware-and-Hosting.md](Hardware-and-Hosting.md) |
 | G9 | Stale operator docs in tos | **Closed by #148** (operator guide, Validator.md, FullNode.md, single-nominator HOWTO, docker/README.md, tos-upgrade-process.md; the custody log line and `-1:<hex>` address wording were corrected in `47e317b57`) |
 | G10 | No tool created a configuration proposal | **Closed by #148** (`tosctl vote offer create`). `--wallet` needs RPC nodes built from #148 (`storage_stat`) |
-| G11 | Retired validator consensus databases never deleted by default | **Closed in code by #148** (section 6.4; on by default, fixed-period scan). Verified deleting on the local single-host network. Open: deletion evidence from a live multi-host network across several set rotations |
+| G11 | Retired validator consensus databases never deleted by default | **Closed in code by #148** (section 6.4; on by default, fixed-period scan). Verified deleting on the local single-host network, then live on the four-host public testnet (epoch 3, 2026-10-14 onward): `consensus/` is cleaned at every key block across many 4 h rotations (for example 3.4 GB → 752 MB and 2.0 GB → 753 MB), idle growth about 11 MB/min (memo public-testnet E23-17). **Closed** |
 | G12 | No production systemd unit in the tos repository | **Open.** Section 7 remains a proposal; the tos repository still ships only development and monitoring units |
 
 The order that unblocks a first external validator is now:
 
-1. G11: merge the cleanup change into #148 and gather live deletion evidence;
+1. G11: done (merged in #148; live deletion evidence from the public testnet);
 2. G7: publish the global config through an authenticated channel, with the
    init block refreshed on a schedule;
 3. G8: sizing on the production hardware profile;
