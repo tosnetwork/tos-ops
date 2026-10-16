@@ -5,21 +5,26 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-# On the DHT host. The coordinator writes heartbeat-coordinator into the
-# state directory over SSH as root; this unit writes heartbeat-peer there and
-# alerts when the coordinator's beat goes stale. The bot token and chat id
-# are files under /etc/tos-alert, owned by root with mode 0600.
+# On the DHT host, as the dedicated non-login user tos-alert. The coordinator
+# touches heartbeat-coordinator in the state directory over SSH as root and
+# hands it to the directory's owner; this unit writes heartbeat-peer there
+# and alerts when the coordinator's beat goes stale.
+# The bot token and chat id stay root-owned, mode 0600, under /etc/tos-alert:
+# systemd reads them as root and exposes copies only this service can read
+# under $CREDENTIALS_DIRECTORY.
 # --dead-after 150: a stopped side is reported within dead-after + one
 # interval + the send (at most about 260 s), inside the 5-minute budget.
-User=root
-Group=root
+User=tos-alert
+Group=tos-alert
 UMask=0077
 StateDirectory=tos-alert
 StateDirectoryMode=0700
 WorkingDirectory=/var/lib/tos-alert
+LoadCredential=token:/etc/tos-alert/token
+LoadCredential=chat:/etc/tos-alert/chat
 ExecStart=/usr/bin/python3 /opt/tos-testnet/scripts/alert-relay.py peer \
-  --token-file /etc/tos-alert/token \
-  --chat-file /etc/tos-alert/chat \
+  --token-file ${CREDENTIALS_DIRECTORY}/token \
+  --chat-file ${CREDENTIALS_DIRECTORY}/chat \
   --state-dir /var/lib/tos-alert \
   --interval 60 \
   --dead-after 150

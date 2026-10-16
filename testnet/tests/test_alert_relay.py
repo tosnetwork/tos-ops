@@ -682,3 +682,83 @@ def test_peer_reads_replies_only_while_the_coordinator_is_dead(tmp_path):
         peer.tick()
     assert [m for m, _p in api.calls].count("getUpdates") == 2
     assert peer.period() == 60.0
+
+
+# ---------------------------------------------------------------- non-root peer
+
+
+def test_peer_unit_runs_as_its_own_user_with_root_only_secrets_as_credentials():
+    text = (SCRIPTS.parent / "systemd" / "tos-testnet-alert-peer.service").read_text()
+    assert "User=tos-alert\n" in text and "Group=tos-alert\n" in text
+    assert "User=root" not in text
+    assert "LoadCredential=token:/etc/tos-alert/token\n" in text
+    assert "LoadCredential=chat:/etc/tos-alert/chat\n" in text
+    assert "--token-file ${CREDENTIALS_DIRECTORY}/token" in text
+    assert "--chat-file ${CREDENTIALS_DIRECTORY}/chat" in text
+    assert "StateDirectory=tos-alert\n" in text and "CapabilityBoundingSet=\n" in text
+
+
+def test_a_systemd_credential_with_acl_group_bits_is_read(tmp_path, monkeypatch):
+    creds = tmp_path / "credentials"
+    creds.mkdir()
+    token = creds / "token"
+    token.write_text(TOKEN + "\n")
+    token.chmod(0o440)  # what an ACL mask of r-- shows as
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(creds))
+    assert relay.read_secret(token, "token") == TOKEN
+    outside = tmp_path / "token"
+    outside.write_text(TOKEN + "\n")
+    outside.chmod(0o440)
+    with pytest.raises(lib.TestnetError, match="readable by group or others"):
+        relay.read_secret(outside, "token")
+    monkeypatch.delenv("CREDENTIALS_DIRECTORY")
+    with pytest.raises(lib.TestnetError, match="readable by group or others"):
+        relay.read_secret(token, "token")
+
+
+def test_silence_written_by_root_is_handed_to_the_directory_owner(tmp_path, monkeypatch):
+    chowned = []
+    monkeypatch.setattr(relay.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(relay.os, "chown", lambda p, u, g: chowned.append((str(p), u, g)))
+    owner = tmp_path.stat()
+    relay.write_silence(tmp_path / "silence", T0 + 60, "work")
+    assert chowned == [(str(tmp_path / "silence.tmp"), owner.st_uid, owner.st_gid)]
+    assert (tmp_path / "silence").stat().st_mode & 0o777 == 0o600
+    assert relay.read_silence(tmp_path / "silence") == (int(T0 + 60), "work")
+
+
+def test_silence_written_by_the_owner_is_not_chowned(tmp_path, monkeypatch):
+    if os.geteuid() == 0:
+        pytest.skip("runs as root")
+    chowned = []
+    monkeypatch.setattr(relay.os, "chown", lambda *a: chowned.append(a))
+    relay.write_silence(tmp_path / "silence", T0 + 60, "work")
+    assert chowned == []
+
+
+def test_root_never_gives_a_file_to_root_when_the_directory_is_roots(tmp_path, monkeypatch):
+    chowned = []
+    monkeypatch.setattr(relay.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(relay.os, "chown", lambda *a: chowned.append(a))
+    real_stat = relay.Path.stat
+
+    def stat(self, *args, **kwargs):
+        info = real_stat(self, *args, **kwargs)
+        if self == tmp_path:
+            return os.stat_result((info.st_mode, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+        return info
+
+    monkeypatch.setattr(relay.Path, "stat", stat)
+    (tmp_path / "f").touch()
+    relay.give_to_directory_owner(tmp_path / "f")
+    assert chowned == []
+
+
+def test_remote_beat_command_hands_the_coordinator_beat_to_the_directory_owner(tmp_path):
+    command = relay.remote_beat_command(str(tmp_path))
+    assert f"chown --reference={tmp_path} {tmp_path}/heartbeat-coordinator" in command
+    (tmp_path / "heartbeat-peer").touch()
+    out = subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=True)
+    assert relay.parse_remote_beat(out.stdout) is not None
+    beat = (tmp_path / "heartbeat-coordinator").stat()
+    assert beat.st_uid == tmp_path.stat().st_uid

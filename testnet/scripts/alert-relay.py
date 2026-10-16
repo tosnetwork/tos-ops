@@ -26,9 +26,10 @@ once and its return is reported. Every 30 s it reads replies from the chat
 (getUpdates, offset kept in the state directory), records each in acks.jsonl
 against the most recent alert, and confirms it.
 
-peer runs as root on the DHT host. Every --interval seconds it touches
-heartbeat-peer in its state directory and checks the age of
-heartbeat-coordinator (written there by the coordinator); it alerts once when
+peer runs on the DHT host as the non-root user that owns its state directory
+(tos-alert). Every --interval seconds it touches heartbeat-peer in its state
+directory and checks the age of heartbeat-coordinator (written there by the
+coordinator, over SSH as root, and handed to the directory's owner); it alerts once when
 that is older than --dead-after and reports the recovery. It has no chain
 access: the validators' JSON-RPC answers on loopback only, so the peer can say
 that the coordinator's watch stopped, not what the chain is doing.
@@ -49,14 +50,20 @@ a person was told and when. While the silence file holds an expiry time in the
 future, alerts are recorded with `"silenced": true` and not sent; when it
 expires (or `unsilence` removes it) one message lists what was suppressed. The
 silence file is one line: `<expiry unix time> <reason>`. Silence each host
-separately: the peer reads its own file.
+separately: the peer reads its own file. Run as root (as over SSH on the DHT
+host), `silence` hands the file to the owner of the directory it lands in, so
+the non-root peer can read it.
 
 Telegram connections try every IPv4 address of the API host before any IPv6
 one, each with a short connect timeout, so a host whose IPv6 route hangs does
 not stall a send until the request timeout.
 
 The bot token and the chat id are read from --token-file and --chat-file,
-which must not be readable by group or others; they are never printed. A send
+which must not be readable by group or others; they are never printed. The
+one exception is a systemd credential (LoadCredential=, a file directly under
+$CREDENTIALS_DIRECTORY): systemd grants the service user read access with an
+ACL, which shows in the group mode bits, and the directory is private to the
+service. A send
 that fails is retried with backoff, then kept and retried next cycle; it never
 stops the loop.
 
@@ -127,6 +134,36 @@ def append_jsonl(path: Path, record: dict) -> None:
         out.write(json.dumps(record, sort_keys=True) + "\n")
 
 
+def is_systemd_credential(path: Path) -> bool:
+    """True for a file directly under the $CREDENTIALS_DIRECTORY systemd gave this service.
+
+    systemd copies a LoadCredential= file there, mode 0400, and grants the
+    service user read access with an ACL whose mask shows in the group bits.
+    The directory is private to the service, so those bits expose nothing.
+    """
+    directory = os.environ.get("CREDENTIALS_DIRECTORY")
+    if not directory:
+        return False
+    try:
+        return Path(path).resolve().parent == Path(directory).resolve()
+    except OSError:
+        return False
+
+
+def give_to_directory_owner(path: Path) -> None:
+    """When root writes into a non-root service's directory, hand the file to that owner.
+
+    The peer runs as the user that owns its state directory; a file root
+    leaves there (a silence written over SSH) would otherwise be unreadable to it.
+    """
+    path = Path(path)
+    if os.geteuid() != 0:
+        return
+    owner = path.parent.stat()
+    if owner.st_uid != 0:
+        os.chown(path, owner.st_uid, owner.st_gid)
+
+
 def read_secret(path: Path, what: str) -> str:
     """A secret from a file only its owner can read; refuse anything looser."""
     path = Path(path)
@@ -136,7 +173,7 @@ def read_secret(path: Path, what: str) -> str:
         raise lib.TestnetError(f"{what} file {path} cannot be read: {exc.strerror}") from exc
     if not stat.S_ISREG(info.st_mode):
         raise lib.TestnetError(f"{what} file {path} is not a regular file")
-    if info.st_mode & 0o077:
+    if info.st_mode & 0o077 and not is_systemd_credential(path):
         raise lib.TestnetError(
             f"{what} file {path} is readable by group or others (mode "
             f"{stat.S_IMODE(info.st_mode):04o}); chmod 600 it"
@@ -321,6 +358,8 @@ def write_silence(path: Path, until: float, reason: str) -> None:
     path = Path(path)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(f"{int(until)} {' '.join(reason.split())}\n")
+    os.chmod(tmp, 0o600)
+    give_to_directory_owner(tmp)
     os.replace(tmp, path)
 
 
@@ -495,8 +534,17 @@ def parse_remote_beat(stdout: str) -> float | None:
 
 
 def remote_beat_command(remote_dir: str) -> str:
+    """Touch our beat on the peer host and read the age of theirs.
+
+    Over SSH as root the touch would leave a root-owned file in the peer's
+    directory; it is handed to the directory's owner, the peer's user. As any
+    other user the chown is skipped: only root can give a file away.
+    """
+    beat = f"{remote_dir}/{COORDINATOR_BEAT}"
     return (
-        f"touch {remote_dir}/{COORDINATOR_BEAT} && echo now=$(date +%s) && "
+        f"touch {beat} && "
+        f'{{ [ "$(id -u)" != 0 ] || chown --reference={remote_dir} {beat}; }} && '
+        "echo now=$(date +%s) && "
         f"echo peer=$(stat -c %Y {remote_dir}/{PEER_BEAT} 2>/dev/null || echo -)"
     )
 
