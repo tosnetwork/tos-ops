@@ -330,11 +330,12 @@ python3 /opt/tos-testnet/scripts/testnet-elections.py refund \
   --root-seed offline/root-node-1.seed --controller-tool "$TOS_ROOT/build/crypto/tos-pq-controller" \
   --tos-root "$TOS_ROOT" --fift "$TOS_ROOT/build/crypto/fift" \
   --rpc http://127.0.0.1:18081/jsonRPC \
-  [--target-nanotos 260000000000] [--dry-run]
+  [--target-nanotos N] [--dry-run]
 ```
 
 It plans the renewal on the host (funds target
-`elections.authorization.funds_target_nanotos`, or `--target-nanotos`), signs
+`elections.authorization.refund_target_nanotos`, 260 TOS or ten days of
+stakes, or `--target-nanotos`), signs
 it locally with the root seed, stops `tos-testnet-elections` (it holds the
 tosctl vault lock) only around the send from the operator wallet and always
 starts it again, then checks that the root authority nonce advanced, the

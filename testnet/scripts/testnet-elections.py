@@ -38,7 +38,7 @@ and drive load through a post-quantum high-volume wallet.
       election opening (utime_until - elections_start_before); a failed
       election keeps refusing. --i-checked-the-window overrides that after you
       have checked by hand. It plans on the host (funds target
-      elections.authorization.funds_target_nanotos, or --target-nanotos), and
+      elections.authorization.refund_target_nanotos, or --target-nanotos), and
       refuses before signing when the operator wallet would keep less than
       elections.authorization.operator_reserve_nanotos after the message value
       and a 1 TOS fee allowance: the election task needs 20.2 TOS there to
@@ -686,7 +686,7 @@ def refund(
     authorization = profile["elections"]["authorization"]
     reserve = operator_reserve(authorization)
     target = (
-        int(authorization["funds_target_nanotos"])
+        int(authorization["refund_target_nanotos"])
         if args.target_nanotos is None
         else args.target_nanotos
     )

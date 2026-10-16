@@ -5,7 +5,8 @@
 #
 # Sets tosctl's election policy from network/profile.json (a fixed stake of
 # elections.stake_tos, max factor elections.max_factor), enables elections for
-# node NAME, installs systemd/tos-testnet-elections.service and starts it.
+# node NAME, turns tosctl's explorer indexer off (indexer_enabled: false),
+# installs systemd/tos-testnet-elections.service and starts it.
 # Refuses unless the node is bound to a wallet and a pool (onboard-validator).
 # Then waits until the task has opened the wallet and the pool, or reports
 # what it logged instead.
@@ -39,6 +40,19 @@ python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); sys.exit(0 if c.get
 tosctl config elections stake-policy --fixed "$(profile elections stake_tos)" >/dev/null
 tosctl config elections max-factor "$(profile elections max_factor)" >/dev/null
 tosctl config elections enable "$NAME" >/dev/null
+# A validator host serves no explorer, and the always-on indexer costs about as
+# much CPU as the validator itself. The service reads the key when it starts.
+python3 -c '
+import json, os, sys
+path = sys.argv[1]
+with open(path) as f:
+    config = json.load(f)
+config["indexer_enabled"] = False
+with open(path + ".tmp", "w") as f:
+    json.dump(config, f, indent=2)
+os.chmod(path + ".tmp", os.stat(path).st_mode)
+os.replace(path + ".tmp", path)
+' "$CONFIG_PATH"
 
 install -m 0644 -o root -g root "$TESTNET/systemd/$UNIT" "/etc/systemd/system/$UNIT"
 systemctl daemon-reload

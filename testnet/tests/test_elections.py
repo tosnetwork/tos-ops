@@ -590,6 +590,16 @@ def test_refund_sends_with_the_service_stopped_and_records_it(tmp_path):
     assert json.loads(line)["value_nanotos"] == PLAN_VALUE
 
 
+def test_refund_defaults_to_the_ten_day_target_not_the_onboarding_one(tmp_path):
+    authorization = lib.load_profile()["elections"]["authorization"]
+    assert authorization["refund_target_nanotos"] == 260 * NANO
+    assert authorization["refund_target_nanotos"] > authorization["funds_target_nanotos"]
+    host = FakeHost([status_text(2, 0), status_text(12, 1)])
+    run_refund(refund_setup(tmp_path), host, FakeChain([100 * NANO, 76 * NANO]))
+    plan_call = host.calls[1][1]
+    assert "--funds-target-nanotos 260000000000" in plan_call
+
+
 def test_refund_starts_the_service_again_when_the_send_fails(tmp_path):
     host = FakeHost([status_text(2, 0)], send_error="vault locked")
     with pytest.raises(lib.TestnetError, match="vault locked"):

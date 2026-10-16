@@ -88,8 +88,12 @@ account runs some of the scripts.
 | --- | --- | --- | --- |
 | Genesis validator | 4, one per operator, one per host | `tos-testnet-validator` | ADNL 30001/udp, QUIC 31001/udp |
 | DHT bootstrap | at least 2, on separate hosts | `tos-testnet-dht` | 30300/udp |
-| Full node / RPC | at least 2, team-run | `tos-testnet-fullnode` | ADNL, QUIC, lite server 30003/tcp; JSON-RPC only through a proxy |
-| Observer | at least 2 independent (G0) | a full node another party runs | as full node |
+| Full node / RPC | at least 2, team-run (planned) | `tos-testnet-fullnode` | ADNL, QUIC, lite server 30003/tcp; JSON-RPC only through a proxy |
+| Observer | at least 2 independent (G0, planned) | a full node another party runs | as full node |
+
+Epoch 3 runs the four validators and two DHT bootstraps (the DHT host and
+node-1) only: the owner decided on 2026-10-15 to run no full node for now, so
+there is no public RPC endpoint and no independent observer yet.
 
 Validators serve no public clients. A validator's console (30002/tcp) and its
 JSON-RPC (8081) and exporter (9100) stay on loopback; reach them over SSH.
