@@ -80,8 +80,28 @@ def utc(now: float) -> str:
     return datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
 
-def probe(host: preflight.Host, cpu_sample: float, run=subprocess.run) -> dict | None:
-    """One check-host-disk.py report from the host, or None when it cannot be read."""
+def probe(
+    host: preflight.Host,
+    cpu_sample: float,
+    run=subprocess.run,
+    retry_after: float = 5.0,
+    sleep=time.sleep,
+) -> dict | None:
+    """One check-host-disk.py report from the host, or None when it cannot be read.
+
+    A failed read is tried once more after `retry_after` seconds: hosts on the
+    public internet see constant SSH login scans, and sshd drops some new
+    connections while many unauthenticated ones are pending (MaxStartups), which
+    would otherwise show a healthy node as unreachable.
+    """
+    report = probe_once(host, cpu_sample, run)
+    if report is None and retry_after > 0:
+        sleep(retry_after)
+        report = probe_once(host, cpu_sample, run)
+    return report
+
+
+def probe_once(host: preflight.Host, cpu_sample: float, run=subprocess.run) -> dict | None:
     argv = preflight.ssh_argv(host, accept_new=False) + [
         f"python3 - --min-free-gib 0 --cpu-sample {cpu_sample:g}"
     ]
@@ -141,13 +161,19 @@ class Judge:
         self.args = args
         self.previous: dict[str, dict] = {}
         self.stuck: dict[str, int] = {}
+        self.unreachable: dict[str, int] = {}
 
     def __call__(self, current: dict) -> list[str]:
         args, found = self.args, []
         name, before = current["host"], self.previous.get(current["host"])
         if not current["reachable"]:
-            found.append(f"{name}:unreachable")
+            # One unreadable sample is not evidence of a fault (see probe());
+            # the host must stay unreadable for --unreachable-samples rounds.
+            self.unreachable[name] = self.unreachable.get(name, 0) + 1
+            if self.unreachable[name] >= args.unreachable_samples:
+                found.append(f"{name}:unreachable")
         else:
+            self.unreachable[name] = 0
             if current["unit_active"] != "active":
                 found.append(f"{name}:unit={current['unit_active']}")
             if (
@@ -260,6 +286,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--summary-every", type=float, default=900.0)
     parser.add_argument("--max-head-age", type=int, default=120)
     parser.add_argument("--stuck-samples", type=int, default=3)
+    parser.add_argument("--unreachable-samples", type=int, default=2)
     parser.add_argument("--net-failure-burst", type=int, default=5)
     parser.add_argument("--min-free-gib", type=float, default=20.0)
     parser.add_argument("--until-current")
@@ -270,7 +297,12 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--cpu-sample must be between 0 and 60 seconds")
     if args.duration is not None and args.duration <= 0:
         parser.error("--duration must be positive")
-    if args.stuck_samples < 1 or args.net_failure_burst < 1 or args.max_head_age < 1:
+    if (
+        args.stuck_samples < 1
+        or args.unreachable_samples < 1
+        or args.net_failure_burst < 1
+        or args.max_head_age < 1
+    ):
         parser.error("thresholds must be positive")
     try:
         return watch(args, emit=lambda line: print(line, flush=True))

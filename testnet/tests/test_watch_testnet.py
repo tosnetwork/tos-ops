@@ -57,6 +57,7 @@ def make_args(tmp_path, **overrides):
         summary_every=900.0,
         max_head_age=120,
         stuck_samples=3,
+        unreachable_samples=2,
         net_failure_burst=5,
         min_free_gib=20.0,
         until_current=None,
@@ -112,11 +113,25 @@ def test_unreachable_host_is_an_anomaly_and_its_return_recovers(tmp_path):
     rounds = [
         {"node-1": report(100), "node-2": report(100)},
         {"node-1": report(101), "node-2": None},
-        {"node-1": report(102), "node-2": report(102)},
+        {"node-1": report(102), "node-2": None},
+        {"node-1": report(103), "node-2": report(103)},
     ]
     _status, events, rows = run(tmp_path, rounds)
     assert any(e.startswith("ANOMALY") and "node-2:unreachable" in e for e in events)
     assert any(e.startswith("RECOVERED") for e in events)
+    assert "\tnode-2\tFalse\t-" in "\n".join(rows)
+
+
+def test_one_unreadable_sample_is_not_an_anomaly(tmp_path):
+    # A single refused SSH handshake (sshd shedding connections under login
+    # scans) must not report a healthy node as unreachable.
+    rounds = [
+        {"node-1": report(100), "node-2": report(100)},
+        {"node-1": report(101), "node-2": None},
+        {"node-1": report(102), "node-2": report(102)},
+    ]
+    _status, events, rows = run(tmp_path, rounds)
+    assert not any("unreachable" in e for e in events)
     assert "\tnode-2\tFalse\t-" in "\n".join(rows)
 
 
@@ -228,6 +243,24 @@ def test_probe_refusal_or_garbage_is_unreachable():
 
         return run
 
-    assert watch_testnet.probe(host, 0, run=answering('{"ok": false, "refused": "x"}')) is None
-    assert watch_testnet.probe(host, 0, run=answering("")) is None
-    assert watch_testnet.probe(host, 0, run=answering("not json")) is None
+    for text in ('{"ok": false, "refused": "x"}', "", "not json"):
+        assert watch_testnet.probe(host, 0, run=answering(text), sleep=lambda _s: None) is None
+
+
+def test_probe_retries_once_after_a_failed_read():
+    host = watch_testnet.preflight.Host(
+        name="n", address="44.0.0.1", roles=["validator"], ssh_key="/k"
+    )
+    calls, slept = [], []
+
+    def flaky(argv, **kwargs):
+        calls.append(1)
+
+        class Done:
+            stdout = "" if len(calls) == 1 else json.dumps(report())
+
+        return Done()
+
+    got = watch_testnet.probe(host, 0, run=flaky, retry_after=5, sleep=slept.append)
+    assert got["head_seqno"] == 100
+    assert len(calls) == 2 and slept == [5]
