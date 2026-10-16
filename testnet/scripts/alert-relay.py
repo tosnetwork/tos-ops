@@ -114,6 +114,11 @@ ACK_EVERY = 30.0
 # 215 s with a prompt send, inside the 5-minute alert budget. 300 s would spend
 # the whole budget on waiting alone.
 DEAD_AFTER = 150.0
+# A coordinator outage shorter than DEAD_AFTER plus one peer interval can fall
+# between the peer's samples and go unreported, yet a reboot still ends every
+# job the coordinator was running. A relay that starts this soon after boot
+# says so, whatever the length of the outage.
+BOOT_NOTICE_WITHIN = 900.0
 CONNECT_TIMEOUT = 3.0
 WATCH_RESTART_DELAY = 30.0
 OUTBOX_LIMIT = 200
@@ -732,10 +737,28 @@ class Acks:
 # ---------------------------------------------------------------- roles
 
 
+def system_uptime(path: Path = Path("/proc/uptime")) -> float | None:
+    """Seconds since this host booted, or None when it cannot be read."""
+    try:
+        return float(path.read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def boot_notice_text(uptime: float | None, now: float) -> str | None:
+    """The notice a relay starting shortly after a reboot sends, else None."""
+    if uptime is None or uptime < 0 or uptime >= BOOT_NOTICE_WITHIN:
+        return None
+    return (
+        f"NOTICE coordinator rebooted: up since {utc(now - uptime)} ({int(uptime)} s ago). "
+        "Jobs it was running or waiting to run have ended; check scheduled changes."
+    )
+
+
 class Coordinator:
     """Everything the coordinator does per line and per tick, without processes or sleeps."""
 
-    def __init__(self, args, telegram: Telegram, ssh, now=time.time):
+    def __init__(self, args, telegram: Telegram, ssh, now=time.time, uptime=system_uptime):
         self.args, self.ssh, self.now = args, ssh, now
         started = now()
         self.notifier = Notifier(telegram, args.state_dir, args.silence_file, now)
@@ -744,6 +767,9 @@ class Coordinator:
         self.beat = Heartbeat("peer", args.dead_after, started)
         self.next_beat = started
         self.next_ack = started
+        text = boot_notice_text(uptime(), started)
+        if text:
+            self.notifier.alert("coordinator-booted", ["coordinator:boot"], text)
 
     def peer_age(self) -> float | None:
         try:

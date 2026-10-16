@@ -209,7 +209,9 @@ def test_coordinator_alerts_once_on_a_stale_peer_and_reports_recovery(tmp_path):
             [], remote["code"], stdout=f"now={int(clock.t)}\npeer={int(remote['mtime'])}\n"
         )
 
-    coordinator = relay.Coordinator(coordinator_args(tmp_path), telegram(api), ssh, clock.now)
+    coordinator = relay.Coordinator(
+        coordinator_args(tmp_path), telegram(api), ssh, clock.now, uptime=lambda: None
+    )
     for _ in range(5):  # peer stops beating at T0; 300 s later it is dead
         coordinator.tick()
         clock.t += 60
@@ -230,13 +232,57 @@ def test_coordinator_alerts_once_on_a_stale_peer_and_reports_recovery(tmp_path):
     assert kinds == ["heartbeat-dead", "heartbeat-alive"]
 
 
+def test_coordinator_started_soon_after_boot_sends_one_notice(tmp_path):
+    api, clock = FakeApi(), Clock()
+
+    def ssh(command):
+        return subprocess.CompletedProcess(
+            [], 0, stdout=f"now={int(clock.t)}\npeer={int(clock.t)}\n"
+        )
+
+    coordinator = relay.Coordinator(
+        coordinator_args(tmp_path), telegram(api), ssh, clock.now, uptime=lambda: 41.7
+    )
+    notices = [t for t in api.sent() if "coordinator rebooted" in t]
+    assert len(notices) == 1 and "41 s ago" in notices[0]
+    coordinator.tick()
+    clock.t += 60
+    coordinator.tick()
+    assert len([t for t in api.sent() if "coordinator rebooted" in t]) == 1
+    assert [r["kind"] for r in records(tmp_path)] == ["coordinator-booted"]
+
+
+def test_coordinator_restarted_long_after_boot_or_without_uptime_sends_nothing(tmp_path):
+    for uptime in (relay.BOOT_NOTICE_WITHIN, 86400.0, None, -1.0):
+        api, clock = FakeApi(), Clock()
+        relay.Coordinator(
+            coordinator_args(tmp_path),
+            telegram(api),
+            lambda c: None,
+            clock.now,
+            uptime=lambda: uptime,
+        )
+        assert api.sent() == []
+
+
+def test_system_uptime_reads_proc_format_and_survives_garbage(tmp_path):
+    good, bad = tmp_path / "uptime", tmp_path / "bad"
+    good.write_text("1234.56 98765.43\n")
+    bad.write_text("not a number\n")
+    assert relay.system_uptime(good) == 1234.56
+    assert relay.system_uptime(bad) is None
+    assert relay.system_uptime(tmp_path / "missing") is None
+
+
 def test_coordinator_unreadable_peer_counts_as_dead_after_the_window(tmp_path):
     api, clock = FakeApi(), Clock()
 
     def ssh(_command):
         return subprocess.CompletedProcess([], 255, stdout="", stderr="no route")
 
-    coordinator = relay.Coordinator(coordinator_args(tmp_path), telegram(api), ssh, clock.now)
+    coordinator = relay.Coordinator(
+        coordinator_args(tmp_path), telegram(api), ssh, clock.now, uptime=lambda: None
+    )
     for _ in range(6):
         coordinator.tick()
         clock.t += 60
@@ -468,7 +514,9 @@ def test_coordinator_polls_replies_every_thirty_seconds(tmp_path):
             [], 0, stdout=f"now={int(clock.t)}\npeer={int(clock.t)}\n"
         )
 
-    coordinator = relay.Coordinator(coordinator_args(tmp_path), telegram(api), ok, clock.now)
+    coordinator = relay.Coordinator(
+        coordinator_args(tmp_path), telegram(api), ok, clock.now, uptime=lambda: None
+    )
     for _ in range(4):
         coordinator.tick()
         clock.t += 15

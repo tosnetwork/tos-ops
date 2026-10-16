@@ -227,7 +227,11 @@ Telegram bot. Two roles, on two hosts, each watching the other's heartbeat:
   not sent (`--digest-hours N` sends one every N hours). Every minute it
   touches `/var/lib/tos-alert/heartbeat-coordinator` on the `--peer` host over
   SSH (as root, handing the file to the directory's owner) and reads the age
-  of `heartbeat-peer` there.
+  of `heartbeat-peer` there. When it starts within 15 minutes of the host's
+  boot it sends one `coordinator rebooted` notice: an outage shorter than the
+  dead-man window plus one peer interval (about 3.5 minutes) can fall between
+  the peer's samples, yet a reboot still ends every job the coordinator was
+  running or waiting to run.
 - `peer` (on the DHT host, `systemd/tos-testnet-alert-peer.service`, user `tos-alert`)
   touches `heartbeat-peer` every minute and alerts when the coordinator's beat
   is older than 150 s, then reports its return. While that beat is dead it
