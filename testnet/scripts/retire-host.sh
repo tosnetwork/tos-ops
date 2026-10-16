@@ -26,7 +26,11 @@
 #   /var/log/tos/{validator,fullnode,dht}   logs (now in the archive)
 #   /etc/tos/global-config.json             the retired epoch's config
 #   /var/lib/tos-ctl, /etc/tos/tosctl.env   the operator tool's vault and its master key
+#   the user tos-ctl                        it owned only /var/lib/tos-ctl
 # and keeps the installed binaries, /var/lib/tos-build and the time setup.
+# It keeps the user tos (the next epoch's nodes run as it) and, on the DHT
+# host, the alert peer and its user tos-alert: the watchdog is not part of an
+# epoch and must keep running across the reset.
 #
 # A consensus seed and a controller root key are never carried into a new
 # epoch (CEREMONY.md section 9), so no key is worth keeping; the coordinator
@@ -120,6 +124,11 @@ for role in validator fullnode dht; do
 done
 rm -rf --one-file-system /var/lib/tos-ctl
 rm -f "$CONFIG" /etc/tos/tosctl.env
+# tos-ctl owned nothing but the state just deleted; init-operator.sh creates it
+# again. Removing it means no later file can inherit a retired user's id.
+if id -u tos-ctl >/dev/null 2>&1; then
+  userdel tos-ctl || die "userdel tos-ctl failed (a process still runs as it?); the state is already deleted"
+fi
 
 echo "retired zero state $CONFIRM; df after:"
 df -h /var/lib | tail -1

@@ -5,21 +5,30 @@ After=network-online.target tos-testnet-validator.service
 Wants=network-online.target
 
 [Service]
-User=root
-Group=root
+# A dedicated non-login system user: tosctl needs no validator file and no
+# privilege. It reaches the validator console (loopback TCP, with a client key
+# held in its vault) and the loopback JSON-RPC, and binds loopback HTTP; the
+# only state it writes is /var/lib/tos-ctl, which tos-ctl owns.
+User=tos-ctl
+Group=tos-ctl
 UMask=0077
 WorkingDirectory=/var/lib/tos-ctl
+# Root-owned, mode 0600: systemd reads it before dropping privileges, so the
+# service gets the vault master key in its environment but cannot rewrite the
+# file that holds it.
 EnvironmentFile=/etc/tos/tosctl.env
 ExecStart=/usr/local/bin/tosctl service
 # Always, not on-failure: tosctl service exits 0 when it cannot read the chain
 # at start (the validator's JSON-RPC is not up yet after a reboot), and
-# on-failure then left the task dead through an election (memo
-# public-testnet/EPOCH-1-FINDINGS.md, E1-06).
+# on-failure then left the task dead through an election.
 Restart=always
 RestartSec=30
 NoNewPrivileges=true
 PrivateTmp=true
+ProtectSystem=strict
 ProtectHome=true
+ReadWritePaths=/var/lib/tos-ctl
+CapabilityBoundingSet=
 
 [Install]
 WantedBy=multi-user.target

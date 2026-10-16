@@ -62,13 +62,14 @@ testnet/
 │   │                             refund: top up a controller's operating funds (CEREMONY.md 8.1);
 │   │                             load: load test through a post-quantum high-volume wallet (coordinator)
 │   ├── retire-host.sh            archive a host's evidence, then retire it from an ended epoch (root)
+│   ├── migrate-nonroot-services.sh  once per host: move the election task / alert peer off root (root)
 │   └── rehearse-loopback.sh      the whole ceremony on one host, unprivileged
 ├── systemd/
-│   ├── tos-testnet-validator.service
-│   ├── tos-testnet-fullnode.service
-│   ├── tos-testnet-dht.service
-│   ├── tos-testnet-elections.service
-│   ├── tos-testnet-alert-peer.service        DHT host, root
+│   ├── tos-testnet-validator.service         user tos
+│   ├── tos-testnet-fullnode.service          user tos
+│   ├── tos-testnet-dht.service               user tos
+│   ├── tos-testnet-elections.service         validator hosts, user tos-ctl
+│   ├── tos-testnet-alert-peer.service        DHT host, user tos-alert
 │   └── tos-testnet-alert-coordinator.service user-unit example for the coordinator
 ├── firewall/tos-testnet.nft      inbound policy example
 └── tests/                        pytest for the scripts
@@ -81,6 +82,28 @@ private repository: hand them `testnet/` as a bundle (it holds no secrets) or
 publish it with the operator documentation. On a host, place it in a
 root-owned, world-readable directory such as `/opt/tos-testnet`; the service
 account runs some of the scripts.
+
+No testnet service runs as root. The nodes run as `tos`; the election task
+(`tosctl service`) as `tos-ctl`, a non-login system user that owns only
+`/var/lib/tos-ctl` (`init-operator.sh` creates it, and runs every `tosctl`
+call as it: tosctl refuses a vault, lock or key file its caller does not own);
+the alert peer as `tos-alert`, which owns only `/var/lib/tos-alert`. The
+secrets those two read stay root-owned, mode 0600: systemd reads
+`/etc/tos/tosctl.env` (the vault master key) before it drops privileges, and
+hands `/etc/tos-alert/{token,chat}` to the peer with `LoadCredential=`. To run
+`tosctl` by hand on a validator host:
+
+```bash
+sudo bash -c 'set -a; . /etc/tos/tosctl.env; set +a; cd /var/lib/tos-ctl; runuser -u tos-ctl -- tosctl wallet ls'
+```
+
+A host set up while these ran as root moves over once with
+`migrate-nonroot-services.sh --role validator` (or `--role dht`), after the
+updated `testnet/` is installed: it stops the unit only for the ownership
+change, a vault check and the restart, verifies the new unit runs as the new
+user, and on any failure puts back the old unit and every owner and mode and
+starts it again. It cannot see the chain: run the validator role outside an
+open election.
 
 ## Roles and hosts
 
@@ -203,8 +226,9 @@ Telegram bot. Two roles, on two hosts, each watching the other's heartbeat:
   persists; and a recovery message naming what cleared. `SUMMARY` lines are
   not sent (`--digest-hours N` sends one every N hours). Every minute it
   touches `/var/lib/tos-alert/heartbeat-coordinator` on the `--peer` host over
-  SSH and reads the age of `heartbeat-peer` there.
-- `peer` (on the DHT host, `systemd/tos-testnet-alert-peer.service`, root)
+  SSH (as root, handing the file to the directory's owner) and reads the age
+  of `heartbeat-peer` there.
+- `peer` (on the DHT host, `systemd/tos-testnet-alert-peer.service`, user `tos-alert`)
   touches `heartbeat-peer` every minute and alerts when the coordinator's beat
   is older than 150 s, then reports its return. While that beat is dead it
   also reads the chat's replies (see below).
@@ -217,8 +241,9 @@ dead-after + one check interval + the send (at most about 260 s), inside the
 address, so a host whose IPv6 route hangs still sends in about a second. The bot token
 and chat id are files given by `--token-file` and `--chat-file`, mode 0600
 (the relay refuses anything group- or world-readable): `/etc/tos-alert/` on
-the DHT host, `~/.config/tos-alert/` on the coordinator. They never enter this
-repository.
+the DHT host, root-owned and passed to the peer as systemd credentials (the
+relay accepts a credential's ACL group bits, nothing else), and
+`~/.config/tos-alert/` on the coordinator. They never enter this repository.
 
 A reply in the chat is an acknowledgement: the coordinator reads replies
 every 30 s, records each in `acks.jsonl` with its time and the alert it
@@ -239,6 +264,9 @@ testnet/scripts/alert-relay.py silence --state-dir ~/.local/state/tos-alert \
 ssh root@DHT-HOST python3 /opt/tos-testnet/scripts/alert-relay.py silence \
     --until 2027-01-15T10:00 --reason "coordinator reboot"
 ```
+
+Run as root, `silence` hands the file to the owner of the state directory, so
+the peer (user `tos-alert`) can read it.
 
 While silenced, alerts are recorded but not sent; when the silence expires or
 `unsilence` removes it, one message lists what was suppressed and what is

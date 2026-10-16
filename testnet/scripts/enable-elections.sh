@@ -6,7 +6,8 @@
 # Sets tosctl's election policy from network/profile.json (a fixed stake of
 # elections.stake_tos, max factor elections.max_factor), enables elections for
 # node NAME, turns tosctl's explorer indexer off (indexer_enabled: false),
-# installs systemd/tos-testnet-elections.service and starts it.
+# installs systemd/tos-testnet-elections.service and starts it. The task and
+# every tosctl call here run as the non-login user tos-ctl (created if missing).
 # Refuses unless the node is bound to a wallet and a pool (onboard-validator).
 # Then waits until the task has opened the wallet and the pool, or reports
 # what it logged instead.
@@ -16,9 +17,12 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 TESTNET="$(dirname "$HERE")"
 PROFILE="$TESTNET/network/profile.json"
 UNIT=tos-testnet-elections.service
+USER_NAME=tos-ctl
+DIR=/var/lib/tos-ctl
 NAME=""
 die() { echo "enable-elections: $*" >&2; exit 1; }
 profile() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); [d:=d[k] for k in sys.argv[2:]]; print(d)' "$PROFILE" "$@"; }
+as_ctl() { runuser -u "$USER_NAME" -- "$@"; }
 
 [ "$(id -u)" = 0 ] || die "run as root"
 while [ $# -gt 0 ]; do
@@ -29,20 +33,30 @@ while [ $# -gt 0 ]; do
 done
 [[ "$NAME" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]] || die "--name must be lower-case letters, digits and dashes"
 [ -f /etc/tos/tosctl.env ] || die "/etc/tos/tosctl.env is missing; run init-operator.sh first"
+[ -d "$DIR" ] || die "$DIR is missing; run init-operator.sh first"
+# The task runs as tos-ctl (see the unit); so does every tosctl call here, so
+# nothing it writes in /var/lib/tos-ctl becomes root-owned.
+if ! id -u "$USER_NAME" >/dev/null 2>&1; then
+  useradd --system --user-group --home-dir "$DIR" --no-create-home \
+    --shell /usr/sbin/nologin --comment "TOS operator tool" "$USER_NAME"
+fi
+stray=$(find "$DIR" ! -user "$USER_NAME" -print -quit)
+[ -z "$stray" ] || die "$stray is not owned by $USER_NAME; run migrate-nonroot-services.sh --role validator first"
 set -a
 # shellcheck disable=SC1091
 . /etc/tos/tosctl.env
 set +a
-cd /var/lib/tos-ctl
+cd "$DIR"
 python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); sys.exit(0 if c.get("pools", {}).get("pool-" + sys.argv[2]) else 1)' \
   "$CONFIG_PATH" "$NAME" || die "pool-$NAME is not configured; onboard the validator first"
 
-tosctl config elections stake-policy --fixed "$(profile elections stake_tos)" >/dev/null
-tosctl config elections max-factor "$(profile elections max_factor)" >/dev/null
-tosctl config elections enable "$NAME" >/dev/null
+as_ctl tosctl config elections stake-policy --fixed "$(profile elections stake_tos)" >/dev/null
+as_ctl tosctl config elections max-factor "$(profile elections max_factor)" >/dev/null
+as_ctl tosctl config elections enable "$NAME" >/dev/null
 # A validator host serves no explorer, and the always-on indexer costs about as
 # much CPU as the validator itself. The service reads the key when it starts.
-python3 -c '
+# Written as tos-ctl, so the replaced file keeps its owner; the mode is copied.
+as_ctl python3 -c '
 import json, os, sys
 path = sys.argv[1]
 with open(path) as f:

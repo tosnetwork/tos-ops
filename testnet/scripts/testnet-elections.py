@@ -337,11 +337,16 @@ def fund(args: argparse.Namespace, chain: Chain, global_id: int) -> None:
 # ---------------------------------------------------------------- onboard
 
 
+# The operator tool's state on a validator host, owned by its own non-login user.
+TOSCTL_USER = "tos-ctl"
+TOSCTL_DIR = "/var/lib/tos-ctl"
+TOSCTL_ENV = "/etc/tos/tosctl.env"
+
+
 class Host:
     def __init__(self, host: str, ssh_key: str, user: str = "root"):
         self.target = f"{user}@{host}"
         self.base = ["ssh", "-i", ssh_key, "-o", "BatchMode=yes", "-p", "22", self.target]
-        self.scp = ["scp", "-q", "-P", "22", "-i", ssh_key]
 
     def run(self, command: str, timeout: int = 300) -> str:
         result = subprocess.run(
@@ -354,14 +359,38 @@ class Host:
         return result.stdout
 
     def tosctl(self, arguments: str, timeout: int = 240) -> str:
+        """tosctl on the host as its own user; root only reads the root-owned env file.
+
+        runuser keeps the exported environment (the vault URL with its master
+        key), so the key never appears on a command line, and every file
+        tosctl writes under the state directory stays owned by that user.
+        """
         return self.run(
-            "set -a; . /etc/tos/tosctl.env; set +a; cd /var/lib/tos-ctl; "
-            f"timeout {timeout} tosctl {arguments} 2>&1",
+            f"set -a; . {TOSCTL_ENV}; set +a; cd {TOSCTL_DIR}; "
+            f"timeout {timeout} runuser -u {TOSCTL_USER} -- tosctl {arguments} 2>&1",
             timeout=timeout + 30,
         )
 
-    def put(self, local: Path, remote: str) -> None:
-        subprocess.run(self.scp + [str(local), f"{self.target}:{remote}"], check=True)
+    def put(self, local: Path, remote: str, owner: str) -> None:
+        """Write a local file on the host as `owner`, mode 0600.
+
+        A root scp into a service user's directory would leave a file that
+        service cannot rewrite; the bytes are streamed to a write that runs
+        as the owner, and renamed into place only once complete.
+        """
+        script = 'umask 077 && cat > "$1.tmp" && mv -f "$1.tmp" "$1"'
+        command = (
+            f"runuser -u {shlex.quote(owner)} -- sh -c {shlex.quote(script)} "
+            f"sh {shlex.quote(remote)}"
+        )
+        result = subprocess.run(
+            self.base + [command], input=Path(local).read_bytes(), capture_output=True, timeout=120
+        )
+        if result.returncode != 0:
+            raise lib.TestnetError(
+                f"{self.target}: writing {remote} as {owner} failed: "
+                f"{result.stderr.decode(errors='replace')[-400:]}"
+            )
 
 
 def genesis_controller(args: argparse.Namespace) -> dict:
@@ -450,9 +479,9 @@ def onboard(args: argparse.Namespace, chain: Chain, global_id: int, profile: dic
     birth = first_transaction_boc(chain.transactions(controller))
     with tempfile.NamedTemporaryFile(suffix=".boc") as tx:
         Path(tx.name).write_bytes(birth)
-        host.put(Path(tx.name), f"/var/lib/tos-ctl/controller-{name}-deploy-tx.boc")
+        host.put(Path(tx.name), f"{TOSCTL_DIR}/controller-{name}-deploy-tx.boc", TOSCTL_USER)
 
-    pools = json.loads(host.run("cat /var/lib/tos-ctl/tosctl-config.json")).get("pools", {})
+    pools = json.loads(host.run(f"cat {TOSCTL_DIR}/tosctl-config.json")).get("pools", {})
     if f"pool-{name}" not in pools:
         step(f"deploy the pool with {elections['pool_tos']} TOS")
         pool = parse_pool_deploy(
@@ -470,8 +499,8 @@ def onboard(args: argparse.Namespace, chain: Chain, global_id: int, profile: dic
         # The birth import needs the binding, so it comes after `bind add`.
         host.tosctl(
             f"config bind import-birth --node {name} "
-            f"--transaction-boc /var/lib/tos-ctl/controller-{name}-deploy-tx.boc "
-            f"--output /var/lib/tos-ctl/controller-birth-{name}.boc",
+            f"--transaction-boc {TOSCTL_DIR}/controller-{name}-deploy-tx.boc "
+            f"--output {TOSCTL_DIR}/controller-birth-{name}.boc",
             90,
         )
 

@@ -9,6 +9,7 @@ prints with serde_json::to_string_pretty after its progress lines.
 import base64
 import importlib.util
 import json
+import subprocess
 
 import pytest
 import testnet_lib as lib
@@ -778,3 +779,128 @@ def test_refund_needs_an_operating_authorization_to_renew(tmp_path):
     with pytest.raises(lib.TestnetError, match="no operating authorization"):
         run_refund(refund_setup(tmp_path), host, FakeChain([100 * NANO]))
     assert host.commands() == ["controller operations status"]
+
+
+# ---------------------------------------------------------------- non-root operator tool
+
+
+class Captured:
+    """Stands in for subprocess.run in Host: records the ssh argv and stdin."""
+
+    def __init__(self, returncode=0):
+        self.calls = []
+        self.returncode = returncode
+
+    def __call__(self, argv, **kwargs):
+        self.calls.append((argv, kwargs))
+        out = b"" if "input" in kwargs else ""
+        return subprocess.CompletedProcess(argv, self.returncode, stdout=out, stderr=out)
+
+
+def test_host_runs_tosctl_as_its_own_user_with_the_env_from_root(monkeypatch):
+    run = Captured()
+    monkeypatch.setattr(elections.subprocess, "run", run)
+    elections.Host("192.0.2.1", "key").tosctl("wallet ls", 60)
+    [(argv, _)] = run.calls
+    command = argv[-1]
+    assert argv[:2] == ["ssh", "-i"] and "root@192.0.2.1" in argv
+    assert command.startswith("set -a; . /etc/tos/tosctl.env; set +a; cd /var/lib/tos-ctl; ")
+    assert "timeout 60 runuser -u tos-ctl -- tosctl wallet ls 2>&1" in command
+    assert " tosctl" not in command.replace("runuser -u tos-ctl -- tosctl", "")
+
+
+def test_host_put_writes_the_file_as_the_owner_with_mode_0600(monkeypatch, tmp_path):
+    real_run = subprocess.run  # the module is shared, so keep the real one before patching
+    run = Captured()
+    monkeypatch.setattr(elections.subprocess, "run", run)
+    local = tmp_path / "local.boc"
+    local.write_bytes(b"\xb5\xee\x9c\x72 boc")
+    remote = tmp_path / "state" / "controller-x-deploy-tx.boc"
+    remote.parent.mkdir()
+    elections.Host("192.0.2.1", "key").put(local, str(remote), "tos-ctl")
+    [(argv, kwargs)] = run.calls
+    command = argv[-1]
+    prefix = "runuser -u tos-ctl -- "
+    assert command.startswith(prefix)
+    assert kwargs["input"] == local.read_bytes()
+    # What runuser would run as tos-ctl, run here as this user.
+    real = real_run(
+        ["bash", "-c", command[len(prefix) :]], input=kwargs["input"], capture_output=True
+    )
+    assert real.returncode == 0, real.stderr
+    assert remote.read_bytes() == local.read_bytes()
+    assert remote.stat().st_mode & 0o777 == 0o600
+    assert not (remote.parent / (remote.name + ".tmp")).exists()
+
+
+def test_host_put_failure_is_reported(monkeypatch, tmp_path):
+    monkeypatch.setattr(elections.subprocess, "run", Captured(returncode=1))
+    (tmp_path / "f").write_bytes(b"x")
+    with pytest.raises(lib.TestnetError, match="as tos-ctl failed"):
+        elections.Host("192.0.2.1", "key").put(tmp_path / "f", "/var/lib/tos-ctl/f", "tos-ctl")
+
+
+def test_elections_unit_runs_as_tos_ctl_with_matching_hardening():
+    text = (SCRIPTS.parent / "systemd" / "tos-testnet-elections.service").read_text()
+    for line in (
+        "User=tos-ctl",
+        "Group=tos-ctl",
+        "UMask=0077",
+        "EnvironmentFile=/etc/tos/tosctl.env",
+        "Restart=always",
+        "NoNewPrivileges=true",
+        "PrivateTmp=true",
+        "ProtectHome=true",
+        "ProtectSystem=strict",
+        "ReadWritePaths=/var/lib/tos-ctl",
+        "CapabilityBoundingSet=",
+    ):
+        assert f"\n{line}\n" in text, line
+    assert "User=root" not in text
+
+
+def test_no_testnet_or_production_unit_runs_as_root():
+    repo = SCRIPTS.parent.parent
+    units = sorted((repo / "testnet" / "systemd").glob("*.service"))
+    units += sorted((repo / "production" / "systemd").glob("*.service"))
+    assert len(units) >= 7
+    for unit in units:
+        text = unit.read_text()
+        if "WantedBy=default.target" in text:
+            continue  # a user unit: it runs as the coordinator's own login user
+        assert "\nUser=" in text and "\nUser=root" not in text, unit.name
+
+
+def test_host_scripts_never_run_tosctl_as_root():
+    import re
+
+    command = re.compile(r"(?<![\w-])tosctl (?:key|config|wallet|deploy|controller|service)\b")
+    for name in ("init-operator.sh", "enable-elections.sh"):
+        for number, line in enumerate((SCRIPTS / name).read_text().splitlines(), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            for found in command.finditer(line):
+                assert line[: found.start()].endswith("as_ctl "), f"{name}:{number}: {line}"
+        assert 'as_ctl() { runuser -u "$USER_NAME" -- "$@"; }' in (SCRIPTS / name).read_text()
+
+
+def test_shell_scripts_parse_and_the_privilege_scripts_pass_shellcheck():
+    import shutil
+
+    for script in sorted(SCRIPTS.glob("*.sh")):
+        result = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
+        assert result.returncode == 0, f"{script.name}: {result.stderr}"
+    if shutil.which("shellcheck") is None:
+        pytest.skip("shellcheck is not installed")
+    # The scripts that create users, change owners or run tosctl as its user.
+    checked = [
+        SCRIPTS / name
+        for name in (
+            "init-operator.sh",
+            "enable-elections.sh",
+            "retire-host.sh",
+            "migrate-nonroot-services.sh",
+        )
+    ]
+    result = subprocess.run(["shellcheck", *map(str, checked)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout[-2000:]

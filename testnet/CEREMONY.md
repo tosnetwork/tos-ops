@@ -315,6 +315,16 @@ sends it, and runs `enable-elections.sh`, which installs
 root seed and `ceremony/secret/main-wallet.pk` never leave the coordinator;
 every signed bootstrap transfer is kept in `ceremony/sent/`.
 
+The election task runs as the non-login system user `tos-ctl`, never root.
+Every `tosctl` call on the host, from these scripts and from
+`testnet-elections.py` over SSH, runs as `tos-ctl` too (`runuser -u tos-ctl`,
+with root only reading `/etc/tos/tosctl.env`, root-owned 0600), and the
+controller's birth transaction is written into `/var/lib/tos-ctl` as `tos-ctl`:
+tosctl refuses a vault, lock or key file its caller does not own, so one
+root-owned file there stops the task. A host onboarded while the task ran as
+root moves over once with `migrate-nonroot-services.sh --role validator`
+(testnet/README.md), outside an open election.
+
 `testnet-elections.py fund` sends from the bootstrap wallet on its own (with
 `--dry-run` it only signs).
 
@@ -337,8 +347,8 @@ It plans the renewal on the host (funds target
 `elections.authorization.refund_target_nanotos`, 260 TOS or ten days of
 stakes, or `--target-nanotos`), signs
 it locally with the root seed, stops `tos-testnet-elections` (it holds the
-tosctl vault lock) only around the send from the operator wallet and always
-starts it again, then checks that the root authority nonce advanced, the
+tosctl vault lock) only around the send from the operator wallet (as
+`tos-ctl`, like every tosctl call) and always starts it again, then checks that the root authority nonce advanced, the
 stakes remaining grew and no `[BLOCKING]` warning remains. Each sent refund is
 appended to `ceremony/refunds.jsonl`. `--dry-run` plans, checks and signs, and
 sends nothing.
@@ -402,8 +412,10 @@ writes an evidence archive to `/var/lib/tos-retired/<epoch>/`: logs, unit
 journals, kernel logs of this and the previous boot, and a live snapshot taken
 before the units stop. It holds no database and no key, and if the archive
 cannot be written, nothing is deleted. Then it stops and disables every
-testnet unit and deletes the node databases, logs, the global config and the
-operator tool's vault. It keeps the binaries, so a reset on the same tos
+testnet unit and deletes the node databases, logs, the global config, the
+operator tool's vault and its user `tos-ctl` (`init-operator.sh` creates it
+again). It keeps the user `tos`, and on the DHT host the alert peer and its
+user `tos-alert`, which watch across the reset. It keeps the binaries, so a reset on the same tos
 commit starts again at step 0.4 without a rebuild.
 
 The coordinator copies every host's archive, with its `.sha256`, into the
