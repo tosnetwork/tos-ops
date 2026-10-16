@@ -48,7 +48,7 @@ node software; this repository holds how we configure, deploy and operate it.
 │   ├── CEREMONY.md              step by step: operators, DHT hosts, coordinator
 │   ├── network/profile.json     global id, ports, retention, paths
 │   ├── scripts/                 operator, DHT, coordinator, installer, checker, loopback rehearsal
-│   ├── systemd/                 validator, full node and DHT units
+│   ├── systemd/                 validator, full node, DHT, elections and alert units (none as root)
 │   ├── firewall/                inbound nftables example
 │   └── tests/                   script tests (pytest)
 └── production/                  production network design and templates
@@ -56,7 +56,8 @@ node software; this repository holds how we configure, deploy and operate it.
     ├── Production-Node.md       design: roles, keys, binding, retention, cleanup, validator lifecycle, votes, gaps
     ├── Hardware-and-Hosting.md  physical requirements and hosting-provider diversity (lessons from Solana)
     └── systemd/
-        └── tos-validator.service
+        ├── tos-validator.service
+        └── tos-elections.service
 ```
 
 ## Conventions

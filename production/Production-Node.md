@@ -204,21 +204,49 @@ There are three custody domains. A key never moves to a less protected domain.
 
 ## 4. Host layout and service account
 
-One system user per node role, for example `tos`, with no login shell. The
-layout below replaces the development `/data/testnet/node<i>` tree.
+No node or operator service runs as root. Each has its own system user with
+no login shell (`/usr/sbin/nologin`), owning only its own state:
+
+| User | Service | Owns |
+| --- | --- | --- |
+| `tos` | the node (`tos-validator.service`, or the full-node, RPC, archive or DHT unit of the role) | `/var/lib/tos/<role>/`, `/var/log/tos/<role>/` |
+| `tos-ctl` | the operator tool on a validator host, `tosctl service` with the elections task (`tos-elections.service`, section 7) | `/var/lib/tos-ctl/` (vault, its lock, `tosctl` config, controller birth files) |
+
+`tos-ctl` reads no node file: it reaches the validator console over loopback
+TCP with a client key held in its own vault, and the JSON-RPC on loopback.
+Every `tosctl` command on the host runs as `tos-ctl`
+(`runuser -u tos-ctl -- tosctl ...`), never as root: `tosctl` refuses a
+vault, lock or key file its caller does not own, so a single root-owned file
+under `/var/lib/tos-ctl` stops the elections task. Its environment file
+`/etc/tos/tosctl.env` (the vault URL with the master key) stays root-owned,
+mode 0600: systemd reads it before dropping privileges, so the service gets
+the key but cannot rewrite the file that holds it, and a person running
+`tosctl` sources it as root and passes it on through the environment, never on
+a command line.
+
+The layout below replaces the development `/data/testnet/node<i>` tree.
 
 ```
 /usr/local/bin/                         release binaries, verified by digest (section 10)
 /etc/tos/global-config.json             network global config (section 8), root-owned 0644
+/etc/tos/tosctl.env                     validator only: tosctl vault URL and master key, root-owned 0600
 /var/lib/tos/<role>/                    -D database root, owned by tos, 0700
 /var/lib/tos/<role>/config.json         local config generated on first run (section 5)
 /var/lib/tos/<role>/config.json.lock    engine lock file; created by the engine, never delete it while anything runs
 /var/lib/tos/<role>/keyring/            transport and console keys, 0700
 /var/lib/tos/<role>/keys/pq-consensus.seed   validator only, 0600, in a 0700 directory
+/var/lib/tos-ctl/                       validator only: tosctl state, owned by tos-ctl, 0700
 /var/log/tos/<role>/                    -l log, --session-logs
 ```
 
 - Keep the database on dedicated NVMe and the logs on a separate volume.
+- Because nothing on the host runs as root but the system itself, a node that
+  fills a filesystem cannot take the space root needs to log, to accept an
+  SSH login and to repair the host, provided that filesystem keeps a root
+  reserve. If the database shares the root filesystem, keep ext4's reserved
+  blocks (never `tune2fs -m 0` there); XFS has no such reserve, so on XFS a
+  full database disk is a full root disk. The database on its own volume, as
+  above, avoids the question.
 - `-f` (Fift directory) is accepted but never read (`validator-engine.hpp`),
   so it is omitted.
 - Release archives for Linux x86_64 and arm64 ship `tos-pq-consensus-key`,
@@ -535,6 +563,16 @@ Notes on each choice:
   `tosctl service`. The indexer serves only `tosctl explorer`, which a
   validator does not run, and on the public testnet it cost as much CPU as
   the validator itself and never caught up.
+- **Elections task.** `tosctl service` runs from its own unit,
+  [`systemd/tos-elections.service`](systemd/tos-elections.service), as the
+  user `tos-ctl` (section 4), with the same sandbox as the node:
+  `ProtectSystem=strict` with `/var/lib/tos-ctl` the only writable path, an
+  empty capability set, `NoNewPrivileges`, `PrivateTmp`, `ProtectHome`, umask
+  0077. `Restart=always`, not `on-failure`: `tosctl service` exits 0 when it
+  cannot read the chain at start (after a reboot the validator's JSON-RPC is
+  not up yet), and `on-failure` then left the task dead through an election
+  on the public testnet. Stop it around any `tosctl` command that opens the
+  vault (a `wallet send`, for example); the running task holds the vault lock.
 - **Exporter.** The health exporter flags (`--health-node-id`,
   `--health-core-metrics`, `--health-native-core-v3`) require a performance
   acceptance per their help text. Enable them only with the monitoring design

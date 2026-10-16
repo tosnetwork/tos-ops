@@ -863,12 +863,26 @@ def test_no_testnet_or_production_unit_runs_as_root():
     repo = SCRIPTS.parent.parent
     units = sorted((repo / "testnet" / "systemd").glob("*.service"))
     units += sorted((repo / "production" / "systemd").glob("*.service"))
-    assert len(units) >= 7
+    assert len(units) >= 8
     for unit in units:
         text = unit.read_text()
         if "WantedBy=default.target" in text:
             continue  # a user unit: it runs as the coordinator's own login user
         assert "\nUser=" in text and "\nUser=root" not in text, unit.name
+
+
+def test_production_elections_unit_keeps_the_testnet_sandbox():
+    repo = SCRIPTS.parent.parent
+    service = {}
+    for path in (
+        repo / "testnet" / "systemd" / "tos-testnet-elections.service",
+        repo / "production" / "systemd" / "tos-elections.service",
+    ):
+        section = path.read_text().split("[Service]\n", 1)[1].split("\n[", 1)[0]
+        service[path.name] = sorted(
+            line for line in section.splitlines() if line and not line.startswith("#")
+        )
+    assert service["tos-testnet-elections.service"] == service["tos-elections.service"]
 
 
 def test_host_scripts_never_run_tosctl_as_root():
