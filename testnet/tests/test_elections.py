@@ -574,11 +574,12 @@ class Signer:
 def run_refund(args, host, chain, signer=None, now=SINCE + 3600):
     # The refund logic, kept for the follow-up that makes it an operation; disabled
     # for the launch (test_refund_is_disabled_for_the_launch).
+    enabled = elections.REFUND_ENABLED
     elections.REFUND_ENABLED = True
     try:
         return refund_call(args, host, chain, signer, now)
     finally:
-        elections.REFUND_ENABLED = False
+        elections.REFUND_ENABLED = enabled
 
 
 def refund_call(args, host, chain, signer=None, now=SINCE + 3600):
@@ -1821,6 +1822,7 @@ def test_refund_is_disabled_for_the_launch(tmp_path):
         def __getattr__(self, name):
             raise AssertionError(f"refund touched {name} before refusing")
 
+    assert elections.REFUND_ENABLED is False
     signer = Signer()
     with pytest.raises(lib.TestnetError, match="disabled for the epoch-4 launch"):
         refund_call(Untouched(), Untouched(), Untouched(), signer)

@@ -1222,8 +1222,8 @@ def test_resubmit_refuses_when_any_validator_is_past_the_expiry(world, monkeypat
     )
     with pytest.raises(ops.OperationRefused, match="expired"):
         skewed.resubmit("fund-a")
-    # And (c) needs every validator past the margin.
-    chain.now += 200
+    # And (c) needs every validator past the margin: one is, the other is not yet.
+    chain.now += 500
     behind = ops.Operations(
         ceremony,
         [chain.node("http://a"), chain.node("http://b", utime_offset=-400)],
@@ -1257,3 +1257,9 @@ def test_resubmit_refuses_an_activation_of_an_account_that_is_not_uninitialized(
     with pytest.raises(ops.OperationRefused, match="cannot run"):
         operations.resubmit("activate-x")
     assert chain.sent == []
+
+
+def test_watching_an_operation_another_run_settled_returns_its_record(world):
+    chain, operations, _ = world
+    settled = run(operations, chain=chain)
+    assert operations.watch("fund-a")["evidence"] == settled["evidence"]
