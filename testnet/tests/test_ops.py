@@ -393,6 +393,10 @@ def test_record_failed_needs_terminal_evidence(world, monkeypatch):
     evidence = operations.settle(operations.journal.record("fund-a"))[1]
     with pytest.raises(ops.OperationRefused, match="no terminal failure"):
         operations.record_failed("fund-a", "a", evidence["wallet_tx"])
+    # (c) reads expiry first, then absence: refused for each in turn.
+    with pytest.raises(ops.OperationRefused, match="can still execute"):
+        operations.record_failed("fund-a", "c")
+    chain.now += 500
     with pytest.raises(ops.OperationRefused, match="accepted"):
         operations.record_failed("fund-a", "c")
 
@@ -1388,7 +1392,7 @@ def test_form_d_skips_an_attempt_that_aborted_at_the_records_seqno(world, monkey
 def test_an_aborted_run_of_the_message_is_not_its_settlement_or_failure(world):
     chain, operations, _ = world
     chain.abort_next[BOOT] = 1
-    with pytest.raises(ops.OperationRefused, match="without effect"):
+    with pytest.raises(ops.OperationRefused, match="ran and aborted"):
         run(operations, chain=chain)
     record = operations.journal.record("fund-a")
     assert record["state"] == "broadcast"
@@ -1410,7 +1414,7 @@ def test_an_aborted_run_of_the_message_is_not_its_settlement_or_failure(world):
 def test_an_aborted_run_of_the_message_still_lets_it_expire(world):
     chain, operations, _ = world
     chain.abort_next[BOOT] = 1
-    with pytest.raises(ops.OperationRefused, match="without effect"):
+    with pytest.raises(ops.OperationRefused, match="ran and aborted"):
         run(operations, chain=chain)
     chain.now += 500
     failed = operations.record_failed("fund-a", "c")
@@ -1422,7 +1426,7 @@ def test_an_aborted_activation_is_not_a_failure_and_is_resubmitted(world):
     address, boc, p = activation(chain)
     chain.account(address)["balance"] = 10 * NANO
     chain.abort_next[address] = 1
-    with pytest.raises(ops.OperationRefused, match="without effect"):
+    with pytest.raises(ops.OperationRefused, match="ran and aborted"):
         operations.run("activate-x", p, lambda seqno: boc, lambda d: None)
     assert chain.account(address)["state"] == "uninit"
     assert operations.resubmit("activate-x")["state"] == "settled"
@@ -1440,3 +1444,69 @@ def test_a_destination_that_aborted_after_computing_is_failure_b(world):
     with pytest.raises(ops.OperationRefused, match="failed"):
         operations.run("principal-x", p, signer(chain, bounce=True), lambda d: None)
     assert operations.journal.record("principal-x")["evidence"]["form"] == "b"
+
+
+def broadcast_late(chain, operations, op_id="fund-a"):
+    """Send the journaled message of an open record and let it execute."""
+    chain.send(base64.b64decode(operations.journal.record(op_id)["boc"]))
+    chain.settle_all()
+
+
+def test_form_d_refuses_when_the_message_itself_lands_between_the_reads(world, monkeypatch):
+    # Absent at the first read; then the message lands and takes the seqno itself.
+    chain, operations, _ = world
+    crash_at(monkeypatch, "fund-a", "signed")
+    with pytest.raises(Crash):
+        run(operations, chain=chain)
+    monkeypatch.undo()
+    real_identity = operations.identity
+
+    def lands_now(wallet):
+        broadcast_late(chain, operations)
+        return real_identity(wallet)
+
+    monkeypatch.setattr(operations, "identity", lands_now)
+    with pytest.raises(ops.OperationRefused, match="itself took effect"):
+        operations.record_failed("fund-a", "d")
+    monkeypatch.undo()
+    assert operations.journal.record("fund-a")["state"] == "signed"
+    assert operations.settle(operations.journal.record("fund-a"))[0] == "settled"
+
+
+def test_form_c_reads_absence_only_after_expiry(world, monkeypatch):
+    # The message executes during the pause before the block times are read.
+    chain, operations, _ = world
+    crash_at(monkeypatch, "fund-a", "signed")
+    with pytest.raises(Crash):
+        run(operations, chain=chain)
+    monkeypatch.undo()
+    chain.now += 250
+    real_utimes = operations.utimes
+
+    def delivered_in_the_pause():
+        broadcast_late(chain, operations)
+        chain.now += 400
+        return real_utimes()
+
+    monkeypatch.setattr(operations, "utimes", delivered_in_the_pause)
+    with pytest.raises(ops.OperationRefused, match="accepted"):
+        operations.record_failed("fund-a", "c")
+    monkeypatch.undo()
+    assert operations.journal.record("fund-a")["state"] == "signed"
+    assert operations.settle(operations.journal.record("fund-a"))[0] == "settled"
+
+
+@pytest.mark.parametrize("form", ["c", "d"])
+def test_no_failure_record_for_a_message_that_took_effect(world, monkeypatch, form):
+    # Whatever (c) or (d) concluded, the last read before the record decides.
+    chain, operations, _ = world
+    crash_at(monkeypatch, "fund-a", "delivered")
+    with pytest.raises(Crash):
+        run(operations, chain=chain)
+    monkeypatch.undo()
+    claimed = {"form": form, "explains": []}
+    monkeypatch.setattr(operations, "prove_expired", lambda record: claimed)
+    monkeypatch.setattr(operations, "prove_consumed", lambda record: claimed)
+    with pytest.raises(ops.OperationRefused, match="took effect after all"):
+        operations.record_failed("fund-a", form)
+    assert operations.journal.record("fund-a")["state"] == "broadcast"

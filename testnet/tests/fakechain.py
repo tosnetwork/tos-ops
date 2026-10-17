@@ -181,7 +181,7 @@ class Chain:
         self.behaviour = {}  # address -> callable(chain, address, account, message, in_msg)
         self.extra_out = {}  # wallet -> (destination, value): one more message per transfer
         # wallet -> count: its next accepted externals compute successfully and then
-        # abort in the action phase, installing nothing (the seqno stays).
+        # abort in the action phase: the fee is charged, the seqno stays, nothing is sent.
         self.abort_next = {}
 
     # -- accounts

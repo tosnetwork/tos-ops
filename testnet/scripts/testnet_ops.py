@@ -511,10 +511,12 @@ def external_seqno(tx: dict) -> int | None:
 
 
 def took_effect(tx: dict) -> bool:
-    """Whether a transaction installed its computed state. Compute can succeed and
-    the action phase still abort (a mode 1 transfer above the balance, say): the
-    account's data, and so a wallet's seqno, then stay as they were, and the same
-    external message can run again while it is valid."""
+    """Whether a transaction installed its computed state and its actions. Compute
+    can succeed and the action phase still abort (a mode 1 transfer above the
+    balance, say). The transaction still charges its fees and updates the account's
+    balance and last-transaction metadata, but the computed data (so a wallet's
+    seqno) and the out messages are not applied, and the same external message can
+    run again while it is valid."""
     return bool(tx["compute_success"]) and tx["aborted"] is False
 
 
@@ -1099,7 +1101,8 @@ class Operations:
 
     def find_wallet_tx(self, record: dict) -> dict | None:
         """The transaction in which the record's message took effect. One that ran
-        and aborted changed nothing: the message is not consumed and may run again."""
+        and aborted paid its fees but took no seqno and sent nothing: the message is
+        not consumed and may run again."""
         for tx in self.wallet_attempts(record):
             if took_effect(tx):
                 return tx
@@ -1129,8 +1132,9 @@ class Operations:
             if aborted:
                 return "pending", {
                     "reason": (
-                        f"the message ran without effect in {', '.join(aborted)} and may run "
-                        "again; resubmit it, or prove (c) or (d)"
+                        f"the message ran and aborted in {', '.join(aborted)} (fees paid, no "
+                        "seqno taken, nothing sent) and may run again; resubmit it, or prove "
+                        "(c) or (d)"
                     ),
                     "aborted_attempts": aborted,
                 }
@@ -1267,22 +1271,30 @@ class Operations:
                 evidence = self.prove_consumed(record)
             else:
                 raise OperationRefused(f"unknown failure form {form}")
+            # (c) and (d) say the message never took effect; one last read of both
+            # validators, right before the immutable record, must still agree.
+            if form in ("c", "d") and self.find_wallet_tx(record) is not None:
+                raise OperationRefused(
+                    "the message took effect after all; settle it (record --settled)"
+                )
             self.journal.append(op_id, {"state": "failed", "evidence": evidence, "by": "record"})
             return self.journal.record(op_id)
 
     def prove_expired(self, record: dict) -> dict:
         if record["kind"] == "activate-owner" or record["valid_until"] == ACTIVATION_VALID_UNTIL:
             raise OperationRefused("an activation never expires; resubmit it, or prove (d)")
-        if self.find_wallet_tx(record) is not None:
-            raise OperationRefused("the message was accepted; this is not expiry")
-        if self.seqno(record["wallet"]) != record["seqno"]:
-            raise OperationRefused("the wallet's seqno moved; prove (d) instead")
+        # Expiry first, on both validators: once it is past, the message can no
+        # longer execute, so the absence read after it is final.
         times = self.utimes()
         if any(t < record["valid_until"] + EXPIRY_MARGIN for t in times):
             raise OperationRefused(
                 f"block times {times} are not all past valid_until {record['valid_until']} + "
                 f"{EXPIRY_MARGIN} s; the message can still execute"
             )
+        if self.find_wallet_tx(record) is not None:
+            raise OperationRefused("the message was accepted; this is not expiry")
+        if self.seqno(record["wallet"]) != record["seqno"]:
+            raise OperationRefused("the wallet's seqno moved; prove (d) instead")
         return {
             "form": "c",
             "valid_until": record["valid_until"],
@@ -1306,9 +1318,22 @@ class Operations:
             )
         if self.seqno(record["wallet"]) <= record["seqno"]:
             raise OperationRefused("the record's seqno is not consumed yet")
+        # Read after the seqno: the message itself may have taken effect since the
+        # first check, and is then the consumer. A run of it that aborted took no
+        # seqno, so whatever took effect at the seqno is another message.
+        history = self.history(record["wallet"], record.get("boundary"))
+        if any(
+            t["in_kind"] == "external"
+            and t["in_hash"] == record["external_hash"]
+            and took_effect(t)
+            for t in history
+        ):
+            raise OperationRefused(
+                "the message itself took effect; this is not (d): settle it (record --settled)"
+            )
         externals = [
             t
-            for t in reversed(self.history(record["wallet"], record.get("boundary")))
+            for t in reversed(history)
             if t["in_kind"] == "external"
             and took_effect(t)
             and external_seqno(t) == record["seqno"]

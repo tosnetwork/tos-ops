@@ -432,8 +432,10 @@ What each command does:
     same. The competing transaction then still needs accounting.
 
   A transaction counts as taking effect only when its compute succeeded and it
-  did not abort. A run that aborts in the action phase installs nothing: the seqno
-  stays where it was and the same message can run again. That run is neither
+  did not abort. A run that aborts in the action phase still pays its fees, so the
+  balance and the account's last transaction change, but its computed data and its
+  out messages are not applied: the seqno stays where it was, nothing is sent, and
+  the same message can run again. That run is neither
   settlement nor failure (a) of the operation, and it is never the consumer in (d).
   The operation stays open (`reconcile` lists the aborted runs) until it is
   resubmitted, expires (c), or another message takes the seqno (d).

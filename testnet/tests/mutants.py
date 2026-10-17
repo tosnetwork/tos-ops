@@ -426,8 +426,8 @@ M += [
     (
         "F6 (d) counts an aborted attempt as the consumer",
         OPS,
-        "            and took_effect(t)\n",
-        '            and t["compute_success"]\n',
+        '            and took_effect(t)\n            and external_seqno(t) == record["seqno"]\n',
+        '            and t["compute_success"]\n            and external_seqno(t) == record["seqno"]\n',
     ),
     (
         "F7 an aborted run of the message is its wallet transaction",
@@ -446,6 +446,39 @@ M += [
         OPS,
         "if not took_effect(delivery):",
         'if not delivery["compute_success"]:',
+    ),
+]
+
+_EXPIRY = (
+    "        times = self.utimes()\n"
+    '        if any(t < record["valid_until"] + EXPIRY_MARGIN for t in times):\n'
+    "            raise OperationRefused(\n"
+    "                f\"block times {times} are not all past valid_until {record['valid_until']} + \"\n"
+    '                f"{EXPIRY_MARGIN} s; the message can still execute"\n'
+    "            )\n"
+)
+_ABSENCE = (
+    "        if self.find_wallet_tx(record) is not None:\n"
+    '            raise OperationRefused("the message was accepted; this is not expiry")\n'
+    '        if self.seqno(record["wallet"]) != record["seqno"]:\n'
+    '            raise OperationRefused("the wallet\'s seqno moved; prove (d) instead")\n'
+)
+
+M += [
+    ("G1 (c) reads absence before expiry", OPS, _EXPIRY + _ABSENCE, _ABSENCE + _EXPIRY),
+    (
+        "G2 (d) accepts the message itself from the later scan",
+        OPS,
+        '            and t["in_hash"] == record["external_hash"]\n'
+        "            and took_effect(t)\n"
+        "            for t in history\n",
+        "            and False\n            for t in history\n",
+    ),
+    (
+        "G3 no last read before a failure record",
+        OPS,
+        'if form in ("c", "d") and self.find_wallet_tx(record) is not None:',
+        "if False:",
     ),
 ]
 
