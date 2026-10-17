@@ -9,7 +9,10 @@ prints with serde_json::to_string_pretty after its progress lines.
 import base64
 import importlib.util
 import json
+import os
+import stat
 import subprocess
+from pathlib import Path
 
 import pytest
 import testnet_lib as lib
@@ -127,8 +130,12 @@ def test_repository_profile_has_the_election_amounts():
     e = lib.load_profile()["elections"]
     assert e["stake_tos"] == 10002
     assert e["pool_tos"] >= 2 * e["stake_tos"]
-    assert 4 * e["operator_funding_tos"] <= 100000
-    assert e["operator_funding_tos"] >= e["pool_tos"] + e["controller_deploy_tos"] + 50
+    # The principal reaches the pool from its offline owner, never through the
+    # operator wallet on the host, which gets fee and operating money only.
+    assert e["operator_funding_tos"] < e["stake_tos"]
+    assert e["operator_funding_tos"] >= e["controller_deploy_tos"] + e["pool_deploy_tos"] + 50
+    per_validator = e["operator_funding_tos"] + e["pool_tos"] + e["pool_owner_reserve_tos"]
+    assert 4 * per_validator <= 100000
 
 
 # ---------------------------------------------------------------- load
@@ -918,3 +925,242 @@ def test_shell_scripts_parse_and_the_privilege_scripts_pass_shellcheck():
     ]
     result = subprocess.run(["shellcheck", *map(str, checked)], capture_output=True, text=True)
     assert result.returncode == 0, result.stdout[-2000:]
+
+
+# ---------------------------------------------------------------- the pool owner (offline)
+
+POOL = "-1:" + "50" * 32
+OWNER = "-1:" + "0e" * 32
+
+
+def owner_ceremony(tmp_path, owner=OWNER):
+    ceremony = tmp_path / "ceremony"
+    paths = elections.pool_owner_paths(ceremony, "node-1")
+    paths["key"].parent.mkdir(parents=True, mode=0o700)
+    paths["key"].write_bytes(b"\x01" * 32)
+    paths["addr"].parent.mkdir()
+    workchain, account = owner.split(":")
+    paths["addr"].write_bytes(
+        bytes.fromhex(account) + int(workchain).to_bytes(4, "big", signed=True)
+    )
+    elections.record_pool(ceremony, "node-1", POOL, owner, OPERATOR, "-1:" + CONTROLLER)
+    return ceremony
+
+
+class OwnerChain:
+    """The chain as the withdrawal sees it: the pool and owner balances, the owner's seqno."""
+
+    def __init__(self, pool_balance, owner_balance, active=0, pays=None):
+        self.balances = {POOL: pool_balance, OWNER: owner_balance}
+        self.active, self.pays, self.sent, self.seq = active, pays, [], 7
+
+    def active_election(self):
+        return self.active
+
+    def account(self, address):
+        return "active", self.balances[address]
+
+    def seqno(self, address):
+        assert address == OWNER
+        return self.seq
+
+    def send_boc(self, boc):
+        self.sent.append(boc)
+        self.seq += 1
+        if self.pays:
+            self.balances[POOL] -= self.pays
+            self.balances[OWNER] += self.pays
+
+
+def withdraw_args(ceremony, **extra):
+    args = dict(
+        name="node-1",
+        ceremony=str(ceremony),
+        tos_root="/tos",
+        fift="fift",
+        rpc="http://fake",
+        amount=None,
+        all=False,
+        during_election=False,
+        dry_run=False,
+    )
+    args.update(extra)
+    return elections.argparse.Namespace(**args)
+
+
+@pytest.fixture
+def signer(monkeypatch):
+    """Stand-ins for the two fift steps, recording what they were asked to sign."""
+    calls = {"sign": [], "body": []}
+
+    def sign(
+        args,
+        global_id,
+        key,
+        address_file,
+        to,
+        subwallet,
+        seqno,
+        amount,
+        bounce,
+        init=None,
+        body=None,
+        run=None,
+    ):
+        calls["sign"].append(
+            dict(
+                key=key,
+                to=to,
+                subwallet=subwallet,
+                seqno=seqno,
+                amount=amount,
+                bounce=bounce,
+                body=body and body.read_bytes(),
+            )
+        )
+        return b"signed-by-owner"
+
+    def body(args, amount_tos, work, run=None):
+        calls["body"].append(amount_tos)
+        path = work / "withdraw.boc"
+        path.write_bytes(b"withdraw " + amount_tos.encode())
+        return path
+
+    monkeypatch.setattr(elections, "sign_wallet_v3", sign)
+    monkeypatch.setattr(elections, "withdraw_body", body)
+    monkeypatch.setattr(elections.time, "sleep", lambda s: None)
+    return calls
+
+
+def test_withdraw_is_signed_by_the_offline_owner_and_recorded(tmp_path, signer):
+    ceremony = owner_ceremony(tmp_path)
+    chain = OwnerChain(20_000 * NANO, 5 * NANO, pays=10_000 * NANO)
+    result = elections.withdraw(withdraw_args(ceremony, amount="10000"), chain, 2)
+    [sign] = signer["sign"]
+    assert sign["key"] == ceremony / "secret" / "pool-owner-node-1.pk"
+    assert (sign["to"], sign["subwallet"], sign["seqno"]) == (POOL, 0x504F4F4C, 7)
+    assert sign["bounce"] is True and sign["amount"] == "1.000000000"
+    assert sign["body"] == b"withdraw 10000.000000000"
+    assert chain.sent == [b"signed-by-owner"]
+    assert result["owner_balance_after_nanotos"] == 10_005 * NANO
+    logged = json.loads((ceremony / "withdrawals.jsonl").read_text())
+    assert logged["requested_nanotos"] == 10_000 * NANO and logged["pool"] == POOL
+    assert len(list((ceremony / "sent").glob("*-owner-node-1-seq7-withdraw-*.boc"))) == 1
+
+
+def test_withdraw_all_asks_for_more_than_the_pool_holds(tmp_path, signer):
+    ceremony = owner_ceremony(tmp_path)
+    chain = OwnerChain(20_000 * NANO, 5 * NANO, pays=19_998 * NANO)
+    elections.withdraw(withdraw_args(ceremony, all=True), chain, 2)
+    assert signer["body"] == [elections.WITHDRAW_ALL_TOS]
+
+
+def test_withdraw_dry_run_signs_and_keeps_but_sends_nothing(tmp_path, signer):
+    ceremony = owner_ceremony(tmp_path)
+    chain = OwnerChain(20_000 * NANO, 5 * NANO)
+    result = elections.withdraw(withdraw_args(ceremony, amount="1", dry_run=True), chain, 2)
+    assert result["dry_run"] is True and chain.sent == []
+    assert len(list((ceremony / "sent").glob("*.boc"))) == 1
+    assert not (ceremony / "withdrawals.jsonl").exists()
+
+
+@pytest.mark.parametrize(
+    "chain_args,extra,message",
+    [
+        ((20_000 * NANO, 5 * NANO, 1792209863), {"amount": "1"}, "election 1792209863 is open"),
+        ((20_000 * NANO, 5 * NANO), {"amount": "19999.5"}, "withdrawable"),
+        ((NANO, 5 * NANO), {"all": True}, "holds only"),
+    ],
+)
+def test_withdraw_refusals(tmp_path, signer, chain_args, extra, message):
+    ceremony = owner_ceremony(tmp_path)
+    chain = OwnerChain(*chain_args)
+    with pytest.raises(lib.TestnetError, match=message):
+        elections.withdraw(withdraw_args(ceremony, **extra), chain, 2)
+    assert chain.sent == [] and signer["sign"] == []
+
+
+def test_withdraw_refuses_a_pool_recorded_with_another_owner(tmp_path, signer):
+    ceremony = owner_ceremony(tmp_path)
+    paths = elections.pool_owner_paths(ceremony, "node-1")
+    paths["addr"].write_bytes(bytes.fromhex("aa" * 32) + (-1).to_bytes(4, "big", signed=True))
+    with pytest.raises(lib.TestnetError, match="recorded owner"):
+        elections.withdraw(withdraw_args(ceremony, amount="1"), OwnerChain(20_000 * NANO, 0), 2)
+
+
+def test_withdraw_reports_a_withdrawal_that_never_arrives(tmp_path, signer):
+    ceremony = owner_ceremony(tmp_path)
+    with pytest.raises(lib.TestnetError, match="did not reach the owner"):
+        elections.withdraw(withdraw_args(ceremony, amount="1"), OwnerChain(20_000 * NANO, 0), 2)
+
+
+def test_pool_record_never_changes_its_roles(tmp_path):
+    ceremony = owner_ceremony(tmp_path)
+    assert elections.record_pool(ceremony, "node-1", principal_sent=True)["principal_sent"]
+    with pytest.raises(lib.TestnetError, match="owner"):
+        elections.record_pool(ceremony, "node-1", owner=OPERATOR)
+    assert elections.read_pools(ceremony)["node-1"]["owner"] == OWNER
+
+
+def test_owner_names_are_checked():
+    with pytest.raises(lib.TestnetError, match="not a node name"):
+        elections.pool_owner_paths(Path("/c"), "../x")
+
+
+def real_fift():
+    root = Path(os.environ.get("TOS_ROOT", Path.home() / "tos"))
+    fift = root / "build" / "crypto" / "fift"
+    if not os.access(fift, os.X_OK):
+        pytest.skip("no fift build under TOS_ROOT")
+    return root, fift
+
+
+def test_real_owner_wallet_key_stays_in_secret_and_the_address_is_stable(tmp_path):
+    root, fift = real_fift()
+    ceremony = tmp_path / "ceremony"
+    ceremony.mkdir()
+    args = elections.argparse.Namespace(ceremony=str(ceremony), tos_root=str(root), fift=str(fift))
+    first = elections.ensure_pool_owner(args, "node-1", 2, [])
+    paths = elections.pool_owner_paths(ceremony, "node-1")
+    assert first.startswith("-1:")
+    assert stat.S_IMODE(paths["key"].stat().st_mode) == 0o600
+    assert stat.S_IMODE(paths["key"].parent.stat().st_mode) == 0o700
+    assert paths["init"].read_bytes()[:4] == lib.BOC_MAGIC
+    assert json.loads((ceremony / "wallets.json").read_text()) == {"pool-owner-node-1": first}
+    # A rerun (the address file lost) derives the same wallet from the kept key.
+    paths["addr"].unlink()
+    assert elections.ensure_pool_owner(args, "node-1", 2, []) == first
+    with pytest.raises(lib.TestnetError, match="reuses"):
+        elections.ensure_pool_owner(args, "node-1", 2, [{"pool-owner-x": first}])
+
+
+def test_real_withdraw_body_is_the_pools_withdraw_op(tmp_path):
+    root, fift = real_fift()
+    args = elections.argparse.Namespace(tos_root=str(root), fift=str(fift))
+    body = lib.Slice(lib.parse_boc(elections.withdraw_body(args, "12.5", tmp_path).read_bytes()))
+    assert body.bits(32) == 0x1000
+    body.bits(64)
+    length = body.bits(4)
+    assert body.bits(8 * length) == 12_500_000_000
+
+
+def test_real_owner_transfer_is_signed_for_this_global_id(tmp_path):
+    root, fift = real_fift()
+    ceremony = tmp_path / "ceremony"
+    ceremony.mkdir()
+    args = elections.argparse.Namespace(ceremony=str(ceremony), tos_root=str(root), fift=str(fift))
+    elections.ensure_pool_owner(args, "node-1", 2, [])
+    paths = elections.pool_owner_paths(ceremony, "node-1")
+    boc = elections.sign_wallet_v3(
+        args, 2, paths["key"], paths["addr"].read_bytes(), POOL, 0x504F4F4C, 0, "1", True
+    )
+    # wallet-v3.fif: ext_in header (7 bits), the wallet's masterchain address (8 + 256),
+    # no import fee (4), no init and an inline body (2), the signature (512), then
+    # the signed part, which starts with the global id and the subwallet id.
+    message = lib.Slice(lib.parse_boc(boc))
+    assert message.bits(7) == 0b1000100
+    assert message.bits(8) == 0xFF
+    assert "-1:" + message.bytes(32).hex() == elections.address_from_file(paths["addr"])
+    message.bits(4 + 2 + 512)
+    assert message.bits(32) == 2
+    assert message.bits(32) == 0x504F4F4C

@@ -52,10 +52,12 @@
     "fullnode": {"state_ttl": 86400, "archive_ttl": 604800}
   },
   "elections": {
-    "note": "What onboard-validator.sh moves for each genesis validator, as run in epoch 1. The bootstrap wallet holds 100,000 TOS: four operators at 20,100 leave 19,600, burned after the second election. Each pool holds two fixed stakes of 10,002 (the Elector subtracts 1 TOS before it compares with the 10,000 minimum), for the first and the overlapping second election.",
-    "operator_funding_tos": 20100,
+    "note": "What testnet-elections.py onboard moves for each genesis validator. Since epoch 4 the stake principal never passes through the operator wallet on the host: the bootstrap wallet funds an offline pool owner (pool_tos + pool_owner_reserve_tos), the owner sends pool_tos to the pool, and the operator wallet gets only fee and operating money (controller deployment, pool deployment, operating authorizations, the 20 TOS relay budget per stake). The bootstrap wallet holds 100,000 TOS: four validators at 150 + 20,015 leave 19,340. Each pool holds two fixed stakes of 10,002 (the Elector subtracts 1 TOS before it compares with the 10,000 minimum), for the first and the overlapping second election.",
+    "operator_funding_tos": 150,
     "controller_deploy_tos": 15,
+    "pool_deploy_tos": 2,
     "pool_tos": 20010,
+    "pool_owner_reserve_tos": 5,
     "stake_tos": 10002,
     "max_factor": "1.0",
     "authorization": {"floor_nanotos": 5000000000, "funds_target_nanotos": 20000000000, "refund_target_nanotos": 260000000000, "refund_target_note": "Onboarding funds the first authorization to funds_target (20 TOS, about 4 stakes): the operator wallet keeps only about 75 TOS after onboarding. testnet-elections.py refund renews to refund_target instead: 260 TOS is 60 stakes at about 4.29 TOS, ten days of 4-hour elections, the target the owner approved for epoch 3. The operator wallet needs about 240 TOS more than its reserve first (testnet-elections.py fund).", "expires_in_days": 10, "operator_reserve_nanotos": 30000000000, "operator_reserve_note": "What testnet-elections.py refund leaves in the operator wallet at least. The election task sends 20 TOS (POOL_RELAY_BUDGET) with every stake and refuses to stake below 20.2 TOS (that plus WALLET_COMPUTE_FEE, 0.2 TOS), tos tosctl/src/node-control/elections/src/runner.rs send_stake; 30 TOS is that plus a margin. A refund that left 17.77 TOS kept all four validators out of an election."}
