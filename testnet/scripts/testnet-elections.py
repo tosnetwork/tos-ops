@@ -1261,6 +1261,7 @@ def onboard(
         int(elections["controller_deploy_tos"]) * NANO,
         state_init_b64=controller_init,
         expect=expect_code(state_init_code_hash(controller_init)),
+        extra={"code_hash": state_init_code_hash(controller_init)},
     )
     # The controller's first transaction, as both validators agree on it.
     history = operations.history(controller, None)
@@ -2939,11 +2940,7 @@ def expect_for(args: argparse.Namespace, record: dict):
     """The kind-specific settlement extra for a record, as onboard would pass it."""
     kind = record["kind"]
     if kind == "deploy-controller":
-        return expect_code(
-            state_init_code_hash(
-                json.loads(Path(args.controller).read_text())["state_init_boc_b64"]
-            )
-        )
+        return expect_code(record["code_hash"])
     if kind == "deploy-pool":
 
         def deployed(operations, rec, delivery, evidence):
