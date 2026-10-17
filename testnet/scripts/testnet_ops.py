@@ -765,13 +765,10 @@ class Operations:
         self.nodes, self.global_id = nodes, global_id
         self.journal = Journal(ceremony)
         self.clock, self.sleep = clock, sleep
-        self._network_checked = False
 
     # -- network
 
     def check_network(self) -> None:
-        if self._network_checked:
-            return
         genesis = json.loads((self.ceremony / "genesis.json").read_text())
         zero = genesis["zero_state"]
         for node in self.nodes:
@@ -790,12 +787,16 @@ class Operations:
             )
             if int(header.get("global_id", 0)) != self.global_id:
                 raise OperationRefused(f"{node.url} serves global id {header.get('global_id')}")
-        self._network_checked = True
 
     # -- reading both
 
+    def read_both(self, read) -> list:
+        """Revalidate each endpoint before using either validator's chain facts."""
+        self.check_network()
+        return [read(node) for node in self.nodes]
+
     def both(self, read) -> Any:
-        answers = [read(node) for node in self.nodes]
+        answers = self.read_both(read)
         if answers[0] != answers[1]:
             raise Unknown(f"the validators disagree or one lags: {answers[0]!r} / {answers[1]!r}")
         return answers[0]
@@ -803,7 +804,7 @@ class Operations:
     def history(self, wallet: str, boundary: dict | None) -> list[dict]:
         """Agreed history: the same transactions (each verified against its own BOC
         on each node, so the same hash means the same decoded facts)."""
-        histories = [node.history(wallet, boundary) for node in self.nodes]
+        histories = self.read_both(lambda node: node.history(wallet, boundary))
         if histories[0] != histories[1]:
             raise Unknown(f"the validators' histories of {wallet} disagree or one lags")
         return histories[0]
@@ -851,7 +852,7 @@ class Operations:
         return self.both(lambda n: n.account(address)["state"])
 
     def utimes(self) -> list[int]:
-        return [node.utime() for node in self.nodes]
+        return self.read_both(lambda node: node.utime())
 
     # -- the gate
 
@@ -1117,7 +1118,7 @@ class Operations:
                     return tx
             return None
 
-        found = [read(node) for node in self.nodes]
+        found = self.read_both(read)
         if found[0] != found[1]:
             raise Unknown(f"the validators disagree or one lags on the delivery of {message_hash}")
         return found[0]
@@ -1126,6 +1127,7 @@ class Operations:
         """("pending" | "settled" | "failed", evidence) from the chain alone."""
         if state_of(record) not in ("signed", "broadcast"):
             raise OperationRefused(f"operation {record['id']} is {state_of(record)}")
+        self.check_network()
         tx = self.find_wallet_tx(record)
         if tx is None:
             aborted = [t["hash"] for t in self.wallet_attempts(record)]

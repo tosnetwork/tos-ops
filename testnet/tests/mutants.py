@@ -31,6 +31,30 @@ CO = W / "scripts/testnet-coordinator.py"
 
 M = [
     (
+        "Q1 withdrawal trusts the first election view",
+        EL,
+        "election = operations.both(lambda node: Chain(node.url, node.rpc).active_election())",
+        "election = Chain(operations.nodes[0].url, operations.nodes[0].rpc).active_election()",
+    ),
+    (
+        "Q2 network identity cached across decisions",
+        OPS,
+        "    def check_network(self) -> None:\n        genesis =",
+        "    def check_network(self) -> None:\n        if getattr(self, '_network_checked', False):\n            return\n        self._network_checked = True\n        genesis =",
+    ),
+    (
+        "Q3 shared reads omit network revalidation",
+        OPS,
+        "        self.check_network()\n        return [read(node) for node in self.nodes]",
+        "        return [read(node) for node in self.nodes]",
+    ),
+    (
+        "Q4 pool updates omit the shared lock",
+        EL,
+        "    with lib.wallet_records_lock(ceremony):",
+        "    with __import__('contextlib').nullcontext():",
+    ),
+    (
         "O1 gate ignores unexplained activity",
         OPS,
         '            if leaves(tx, wallet) and tx["hash"] not in explained:\n                described',

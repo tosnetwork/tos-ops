@@ -1510,3 +1510,62 @@ def test_no_failure_record_for_a_message_that_took_effect(world, monkeypatch, fo
     with pytest.raises(ops.OperationRefused, match="took effect after all"):
         operations.record_failed("fund-a", form)
     assert operations.journal.record("fund-a")["state"] == "broadcast"
+
+
+@pytest.mark.parametrize("decision", ["gate", "settle"])
+@pytest.mark.parametrize("changed", ["zero_state", "global_id"])
+def test_each_decision_rechecks_the_network(world, monkeypatch, decision, changed):
+    chain, operations, _ = world
+    crash_at(monkeypatch, "fund-a", "signed")
+    with pytest.raises(Crash):
+        run(operations, chain=chain)
+    record = operations.journal.record("fund-a")
+    operations.check_network()
+    if changed == "zero_state":
+        chain.zero_state = {"root_hash": "wrong", "file_hash": "wrong"}
+        message = "another network"
+    else:
+        chain.global_id = 999
+        message = "global id"
+    sent = list(chain.sent)
+    with pytest.raises(ops.OperationRefused, match=message):
+        if decision == "gate":
+            operations.gate(BOOT, "fund-a")
+        else:
+            operations.settle(record)
+    assert chain.sent == sent
+    assert operations.journal.record("fund-a")["state"] == "signed"
+
+
+@pytest.mark.parametrize("reader", ["both", "history", "utimes", "find_delivery"])
+def test_shared_reads_revalidate_each_endpoint(world, reader):
+    chain, operations, _ = world
+    operations.check_network()
+    chain.global_id = 999
+    with pytest.raises(ops.OperationRefused, match="global id"):
+        if reader == "both":
+            operations.both(lambda node: node.seqno(BOOT))
+        elif reader == "history":
+            operations.history(BOOT, None)
+        elif reader == "utimes":
+            operations.utimes()
+        else:
+            operations.find_delivery(DEST, "00" * 32, 0)
+
+
+def test_chain_reads_use_the_two_validator_helper():
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(ops.Operations))
+    direct = []
+    for method in tree.body[0].body:
+        if not isinstance(method, ast.FunctionDef):
+            continue
+        if method.name in {"__init__", "check_network", "read_both", "run", "resubmit"}:
+            continue  # Identity checks, helper implementation and single broadcast only.
+        for node in ast.walk(method):
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+                if node.value.id == "self" and node.attr == "nodes":
+                    direct.append(method.name)
+    assert direct == [], f"chain reads bypass the two-validator helper: {direct}"

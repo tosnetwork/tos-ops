@@ -21,6 +21,7 @@ import subprocess
 import tempfile
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -616,6 +617,23 @@ def previous_wallets(ceremony: Path, derive_public: Any = None) -> dict[str, str
     return wallets
 
 
+@contextmanager
+def wallet_records_lock(ceremony: Path):
+    """Serialize wallet and pool identity updates across ceremony processes."""
+    ceremony = Path(ceremony)
+    lock_path = ceremony / f".{WALLETS_FILE}.lock"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    try:
+        lock = os.open(lock_path, flags, 0o644)
+    except OSError as exc:
+        raise TestnetError(f"cannot lock {lock_path}: {exc}") from exc
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(lock)
+
+
 def record_wallets(ceremony: Path, wallets: dict[str, str]) -> dict[str, str]:
     """Add wallets to the ceremony's public wallets.json; never change an entry.
 
@@ -627,14 +645,7 @@ def record_wallets(ceremony: Path, wallets: dict[str, str]) -> dict[str, str]:
     ceremony = Path(ceremony)
     fresh = check_wallet_map(wallets, "the wallet record")
     path = ceremony / WALLETS_FILE
-    lock_path = ceremony / f".{WALLETS_FILE}.lock"
-    flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
-    try:
-        lock = os.open(lock_path, flags, 0o644)
-    except OSError as exc:
-        raise TestnetError(f"cannot lock {lock_path}: {exc}") from exc
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with wallet_records_lock(ceremony):
         if path.is_symlink():
             raise TestnetError(f"{path} is a symlink")
         existing = (
@@ -655,8 +666,6 @@ def record_wallets(ceremony: Path, wallets: dict[str, str]) -> dict[str, str]:
             write_new_json(tmp, merged)
             os.replace(tmp, path)
         return merged
-    finally:
-        os.close(lock)
 
 
 def manifest_input(records: list[dict[str, Any]]) -> list[dict[str, str]]:

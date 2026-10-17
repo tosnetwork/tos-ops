@@ -2123,3 +2123,77 @@ def test_operations_plan_requires_both_validators_authority(boarding, monkeypatc
     with pytest.raises(lib.TestnetError, match="validators disagree"):
         onboard(b)
     assert b["ops"].journal.record("authorize-operations-node-1") is None
+
+
+@pytest.mark.parametrize("during_election", [False, True])
+def test_withdraw_refuses_disagreeing_election_views(boarding, withdraw_body_stub, during_election):
+    boarded(boarding)
+    chain = boarding["chain"]
+    elector_idle(chain)
+    second = boarding["ops"].nodes[1]
+    original = second.rpc
+
+    def rpc(url, method, /, **params):
+        if method == "runGetMethod" and params.get("method") == "active_election_id":
+            return {"exit_code": 0, "stack": [["num", "0x7"]]}
+        return original(url, method, **params)
+
+    second.rpc = rpc
+    sent = list(chain.sent)
+    with pytest.raises(elections.ops.Unknown, match="disagree"):
+        elections.withdraw(
+            withdraw_args(boarding, during_election=during_election), boarding["ops"], 2
+        )
+    assert chain.sent == sent
+
+
+def test_pool_updates_hold_the_wallet_records_lock(tmp_path, monkeypatch):
+    import fcntl
+
+    ceremony = tmp_path / "ceremony"
+    ceremony.mkdir()
+    original = elections.read_pools
+    replace = os.replace
+    calls = []
+
+    def assert_locked():
+        descriptor = os.open(ceremony / ".wallets.json.lock", os.O_WRONLY | os.O_CREAT, 0o644)
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(descriptor)
+
+    def read_under_lock(path):
+        assert_locked()
+        calls.append(path)
+        return original(path)
+
+    def replace_under_lock(source, destination):
+        assert_locked()
+        return replace(source, destination)
+
+    monkeypatch.setattr(elections.os, "replace", replace_under_lock)
+    monkeypatch.setattr(elections, "read_pools", read_under_lock)
+    elections.record_pool(ceremony, "node-1", owner=OPERATOR)
+    elections.record_pool(ceremony, "node-2", owner=HOST_WALLET)
+    elections.record_pool(ceremony, "node-1", principal_sent=True)
+    assert len(calls) == 3
+    pools = original(ceremony)
+    assert pools["node-1"] == {"owner": OPERATOR, "principal_sent": True}
+    assert pools["node-2"] == {"owner": HOST_WALLET}
+
+
+@pytest.mark.parametrize("entry", [elections.onboard, elections.withdraw])
+def test_ceremony_decisions_do_not_select_one_validator(entry):
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(entry))
+    assert not any(
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "operations"
+        and node.attr == "nodes"
+        for node in ast.walk(tree)
+    ), "ceremony decisions must use the two-validator helper"

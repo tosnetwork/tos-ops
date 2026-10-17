@@ -758,30 +758,33 @@ def record_pool(
 
     The pool, owner, operator and controller of a recorded pool never change.
     """
-    pools = read_pools(ceremony)
-    entry = dict(pools.get(name, {}))
-    for key, value in (
-        ("pool", pool),
-        ("owner", owner),
-        ("operator", operator),
-        ("controller", controller),
-    ):
-        if value is None:
-            continue
-        value = check_raw_address(value)
-        if key in entry and entry[key] != value:
-            raise lib.TestnetError(f"{POOLS_FILE} records {name} {key} {entry[key]}, not {value}")
-        entry[key] = value
-    if principal_sent is not None:
-        entry["principal_sent"] = bool(principal_sent)
-    pools[name] = entry
-    path = Path(ceremony) / POOLS_FILE
-    tmp = Path(ceremony) / f".{POOLS_FILE}.{os.getpid()}.tmp"
-    if tmp.exists() or tmp.is_symlink():
-        tmp.unlink()
-    lib.write_new_json(tmp, pools)
-    os.replace(tmp, path)
-    return entry
+    with lib.wallet_records_lock(ceremony):
+        pools = read_pools(ceremony)
+        entry = dict(pools.get(name, {}))
+        for key, value in (
+            ("pool", pool),
+            ("owner", owner),
+            ("operator", operator),
+            ("controller", controller),
+        ):
+            if value is None:
+                continue
+            value = check_raw_address(value)
+            if key in entry and entry[key] != value:
+                raise lib.TestnetError(
+                    f"{POOLS_FILE} records {name} {key} {entry[key]}, not {value}"
+                )
+            entry[key] = value
+        if principal_sent is not None:
+            entry["principal_sent"] = bool(principal_sent)
+        pools[name] = entry
+        path = Path(ceremony) / POOLS_FILE
+        tmp = Path(ceremony) / f".{POOLS_FILE}.{os.getpid()}.tmp"
+        if tmp.exists() or tmp.is_symlink():
+            tmp.unlink()
+        lib.write_new_json(tmp, pools)
+        os.replace(tmp, path)
+        return entry
 
 
 def withdraw_body(
@@ -967,7 +970,7 @@ def withdraw(args: argparse.Namespace, operations: ops.Operations, global_id: in
 
     def prerequisites() -> None:
         owner_role_check(operations, args.tos_root, pool, owner)
-        election = Chain(operations.nodes[0].url, operations.nodes[0].rpc).active_election()
+        election = operations.both(lambda node: Chain(node.url, node.rpc).active_election())
         if election and not args.during_election:
             raise lib.TestnetError(
                 f"election {election} is open: the election task stakes from this balance; "
@@ -1373,7 +1376,6 @@ def onboard(
     controller_hex = controller_doc["controller_id"]
     controller = f"-1:{controller_hex}"
     host = Host(args.host, args.ssh_key)
-    chain = Chain(operations.nodes[0].url, operations.nodes[0].rpc)
     scripts = "/opt/tos-testnet/scripts"
 
     def step(text: str) -> None:
@@ -1420,11 +1422,11 @@ def onboard(
     fund_from_bootstrap(
         f"fund-op-{name}", operator, int(elections["operator_funding_tos"]) * NANO, f"op-{name}"
     )
-    if chain.account(operator)[0] != "active":
+    if operations.state(operator) != "active":
         # No value moves: the wallet deploys itself from its own credit.
         step("activate the operator wallet")
         host.tosctl(f"wallet activate --name op-{name}", 150)
-        chain.wait_active(operator)
+        operations.both(lambda node: Chain(node.url, node.rpc).wait_active(operator))
 
     controller_init = controller_doc["state_init_boc_b64"]
     if not settled(f"deploy-controller-{name}"):
