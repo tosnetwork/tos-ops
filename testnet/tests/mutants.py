@@ -2,10 +2,12 @@
 """Mutation guards for the operations journal and the election task.
 
 Each mutant replaces one exact snippet of a script, runs the whole suite and
-restores the file. Every mutant must make the suite fail. The run itself fails
-when a pattern does not occur exactly once (a guard that silently stopped
-running), when two mutants are identical, when the unmutated suite is not green,
-or when any mutant survives.
+restores the file. Every mutant must make a test fail: only pytest's exit 1
+with a failed test counts as killed. The run itself fails when a pattern does
+not occur exactly once (a guard that silently stopped running), when two mutants
+are identical, when a mutated file does not compile, when the unmutated suite is
+not green, when any mutant survives, or when a mutant's run is invalid (pytest
+exits 2-5, a collection error, or a timeout).
 
     TOS_ROOT=<tos checkout> python testnet/tests/mutants.py [LABEL ...]
 
@@ -13,12 +15,16 @@ LABEL is the first word of a mutant's label (O4, N14b, ...); none runs them all.
 Not collected by pytest.
 """
 
+import ast
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 W = Path(__file__).resolve().parents[1]
+FAILED = re.compile(r"\b[1-9]\d* failed\b")
+ERRORS = re.compile(r"\b[1-9]\d* errors?\b")
 OPS = W / "scripts/testnet_ops.py"
 EL = W / "scripts/testnet-elections.py"
 
@@ -238,8 +244,8 @@ M = [
     (
         "E12 retained birth overwritten",
         EL,
-        "        output = f\"{TOSCTL_DIR}/controller-birth-{name}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.boc\"\n",
-        "",
+        "    if retained or bound:\n",
+        "    if bound:\n",
     ),
     (
         "E13 host pool configuration not compared",
@@ -530,27 +536,53 @@ def main(only: list[str]) -> int:
         print("FAIL: patterns that do not match exactly once:")
         print("\n".join(f"  {b}" for b in broken))
         return 1
+    # A mutant that does not compile only breaks collection: it proves nothing.
+    uncompiled = []
+    for label, path, old, new in chosen:
+        try:
+            ast.parse(path.read_text().replace(old, new), filename=str(path))
+        except SyntaxError as exc:
+            uncompiled.append(f"{label}: {exc.msg} at line {exc.lineno}")
+    if uncompiled:
+        print("FAIL: mutants that do not compile:")
+        print("\n".join(f"  {u}" for u in uncompiled))
+        return 1
     baseline = suite(env)
     if baseline.returncode != 0:
         print(f"FAIL: the unmutated suite is not green -- {last_line(baseline)}")
         return 1
-    survivors = []
+    survivors, invalid = [], []
     for label, path, old, new in chosen:
         original = path.read_text()
         try:
             path.write_text(original.replace(old, new))
             try:
                 result = suite(env)
-                red, tail = result.returncode != 0, last_line(result)
+                verdict, tail = classify(result), last_line(result)
             except subprocess.TimeoutExpired:
-                red, tail = True, "timeout"
+                verdict, tail = "INVALID", "timeout"
         finally:
             path.write_text(original)
-        if not red:
+        if verdict == "SURVIVED":
             survivors.append(label)
-        print(f"{label}: {'RED' if red else 'SURVIVED'} -- {tail}", flush=True)
-    print(f"{len(chosen) - len(survivors)} of {len(chosen)} red; survivors: {survivors}")
-    return 1 if survivors else 0
+        elif verdict == "INVALID":
+            invalid.append(label)
+        print(f"{label}: {verdict} -- {tail}", flush=True)
+    red = len(chosen) - len(survivors) - len(invalid)
+    print(f"{red} of {len(chosen)} red; survivors: {survivors}; invalid: {invalid}")
+    return 1 if survivors or invalid else 0
+
+
+def classify(result: subprocess.CompletedProcess) -> str:
+    """RED only for pytest's "tests failed" exit with a failed test reported.
+    Exits 2-5 (interrupted, internal error, usage error, nothing collected) and
+    collection errors say nothing about the mutant's sensitivity."""
+    if result.returncode == 0:
+        return "SURVIVED"
+    summary = last_line(result)
+    if result.returncode == 1 and FAILED.search(summary) and not ERRORS.search(summary):
+        return "RED"
+    return "INVALID"
 
 
 if __name__ == "__main__":
