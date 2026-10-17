@@ -572,6 +572,16 @@ class Signer:
 
 
 def run_refund(args, host, chain, signer=None, now=SINCE + 3600):
+    # The refund logic, kept for the follow-up that makes it an operation; disabled
+    # for the launch (test_refund_is_disabled_for_the_launch).
+    elections.REFUND_ENABLED = True
+    try:
+        return refund_call(args, host, chain, signer, now)
+    finally:
+        elections.REFUND_ENABLED = False
+
+
+def refund_call(args, host, chain, signer=None, now=SINCE + 3600):
     return elections.refund(
         args,
         chain,
@@ -1804,3 +1814,74 @@ def test_the_pool_is_checked_again_right_before_the_principal(boarding, monkeypa
     with pytest.raises(lib.TestnetError, match="reports roles"):
         onboard(b)
     assert b["chain"].sent == sent
+
+
+def test_refund_is_disabled_for_the_launch(tmp_path):
+    class Untouched:
+        def __getattr__(self, name):
+            raise AssertionError(f"refund touched {name} before refusing")
+
+    signer = Signer()
+    with pytest.raises(lib.TestnetError, match="disabled for the epoch-4 launch"):
+        refund_call(Untouched(), Untouched(), Untouched(), signer)
+    assert signer.calls == []
+
+
+# ---------------------------------------------------------------- fix plan 3
+
+
+def test_a_settled_withdrawal_id_with_other_parameters_is_refused(boarding, withdraw_body_stub):
+    boarded(boarding)
+    elector_idle(boarding["chain"])
+    elections.withdraw(withdraw_args(boarding), boarding["ops"], 2)
+    sent = list(boarding["chain"].sent)
+    with pytest.raises(lib.TestnetError, match="other parameters"):
+        elections.withdraw(withdraw_args(boarding, new=False, amount="500"), boarding["ops"], 2)
+    assert boarding["chain"].sent == sent
+
+
+def test_a_birth_bound_to_a_missing_file_is_imported_again(boarding):
+    b = boarding
+    b["host"].config["bindings"]["node-1"] = {
+        "wallet": "op-node-1",
+        "pool": "pool-node-1",
+        "controller_birth_state_init_boc": f"{elections.TOSCTL_DIR}/gone.boc",
+    }
+    onboard(b)
+    path = b["host"].config["bindings"]["node-1"]["controller_birth_state_init_boc"]
+    assert path != f"{elections.TOSCTL_DIR}/gone.boc" and path in b["host"].files
+
+
+def test_a_birth_bound_to_a_foreign_artifact_is_refused(boarding):
+    b = boarding
+    bound = f"{elections.TOSCTL_DIR}/foreign.boc"
+    b["host"].files[bound] = lib.serialize_boc(lib.cell_from_bits("1"))
+    b["host"].config["bindings"]["node-1"] = {
+        "wallet": "op-node-1",
+        "pool": "pool-node-1",
+        "controller_birth_state_init_boc": bound,
+    }
+    with pytest.raises(lib.TestnetError, match="not this controller's birth"):
+        onboard(b)
+
+
+def test_a_failed_authorization_is_retried_as_a_new_attempt_by_a_person(boarding):
+    b = boarding
+    controller_behaviour(b["chain"], epoch=1)
+    with pytest.raises(lib.TestnetError, match="failed"):
+        onboard(b)
+    with pytest.raises(lib.TestnetError, match="retry --step authorize-operations-node-1"):
+        onboard(b)
+    controller_behaviour(b["chain"])
+    args = elections.argparse.Namespace(
+        **dict(vars(b["args"]), command="retry", step="authorize-operations-node-1", reason="epoch")
+    )
+    elections.manual(args, b["ops"], lib.load_profile())
+    onboard(b)
+    successor = b["ops"].journal.record("authorize-operations-node-1.attempt-2")
+    assert (
+        successor["state"] == "settled"
+        and successor["predecessor"] == "authorize-operations-node-1"
+    )
+    assert b["ops"].journal.record("authorize-operations-node-1")["state"] == "failed"
+    assert "enable-elections.sh" in b["host"].commands[-1]

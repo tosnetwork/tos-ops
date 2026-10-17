@@ -53,6 +53,7 @@ def params(value=5 * NANO, destination=DEST, wallet=BOOT, kind="fund", **extra):
         "bounce": False,
         "body_hash": EMPTY,
         "state_init_hash": None,
+        "subwallet": 0x504F4F4C if wallet == OWNER else 0,
     }
     out.update(extra)
     return out
@@ -70,8 +71,10 @@ def signer(
     mode=3,
     seqno_offset=0,
     salt=b"",
+    subwallet=None,
 ):
     calls = []
+    subwallet = (0x504F4F4C if wallet == OWNER else 0) if subwallet is None else subwallet
 
     def sign(seqno):
         calls.append(seqno)
@@ -83,6 +86,7 @@ def signer(
             chain.now + ttl,
             internal,
             mode=mode,
+            subwallet=subwallet,
             salt=salt + bytes([len(calls)]),
         )
 
@@ -410,6 +414,7 @@ def activation(chain, public_key="5a" * 32):
         "state_init_hash": init.hash().hex(),
         "code_hash": fakechain.WALLET_CODE.hash().hex(),
         "public_key": public_key,
+        "subwallet": 0x504F4F4C,
     }
     return address, boc, p
 
@@ -543,12 +548,17 @@ def test_a_withdrawal_settles_when_the_owner_retained_the_payment(world):
     assert record["evidence"]["owner_tx"]
 
 
-def test_a_payment_that_bounces_at_the_owner_is_not_settled(world):
+def test_a_payment_that_bounces_at_the_owner_is_a_terminal_failure_it_accounts_for(world):
     chain, operations = withdraw_world(world, owner_bounces=True)
-    with pytest.raises(ops.OperationRefused, match="not settled"):
+    with pytest.raises(ops.OperationRefused, match="did not retain"):
         withdraw(operations, chain)
-    outcome, evidence = operations.settle(operations.journal.record("withdraw-1"))
-    assert outcome == "pending" and evidence["reason"] == "payment emitted, not retained"
+    record = operations.journal.record("withdraw-1")
+    evidence = record["evidence"]
+    assert record["state"] == "failed" and evidence["form"] == "b"
+    assert evidence["owner_tx"] in evidence["explains"] and evidence["receipt_out"]
+    # The owner wallet is not blocked: the bounce is accounted for.
+    del chain.behaviour[OWNER]
+    assert withdraw(operations, chain, "withdraw-2", salt=b"2")["state"] == "settled"
 
 
 def test_a_pool_that_refuses_is_failure_b_and_its_messages_are_explained(world):
@@ -614,7 +624,7 @@ def test_a_torn_record_is_refused(world):
 def test_a_second_run_on_the_same_wallet_waits_for_the_lock(world):
     chain, operations, _ = world
     with operations.journal.lock(BOOT):
-        with pytest.raises(ops.OperationRefused, match="holds the lock"):
+        with pytest.raises(ops.OperationRefused, match="holds the operations journal lock"):
             run(operations, chain=chain)
 
 
@@ -675,8 +685,9 @@ def test_history_without_progress_or_past_its_cap_is_unknown(world, monkeypatch)
 
 
 def test_malformed_answers_are_unknown_not_tracebacks():
-    with pytest.raises(ops.Unknown):
-        ops.normalize({"in_msg": {"hash": 5}}, "aa", 1)
+    for data in (None, "", "!!", base64.b64encode(b"not a bag of cells").decode()):
+        with pytest.raises(ops.Unknown):
+            ops.verify_transaction(data, "aa" * 32, BOOT, 1)
     with pytest.raises(ops.Unknown):
         ops.b64hash(None)
 
@@ -708,16 +719,42 @@ def test_real_messages_decode_to_their_journaled_identity(op_id):
         assert internal["init_hash"] == record["state_init_hash"]
 
 
-def test_real_history_pages_normalize_and_credits_decode():
+def test_real_transactions_decode_to_what_the_node_summarised():
+    # The node's summaries are never read; on real transactions they agree with the
+    # facts decoded from each BOC, which is checked against its id and account.
     credits = 0
     for wallet, answer in ANSWERS.items():
         for tx in answer["page"]["transactions"]:
             tid = tx["transaction_id"]
-            n = ops.normalize(tx, ops.b64hash(tid["hash"]).hex(), int(tid["lt"]))
+            n = ops.verify_transaction(
+                tx["data"], ops.b64hash(tid["hash"]).hex(), wallet, int(tid["lt"])
+            )
+            incoming = tx["in_msg"]
+            assert n["in_kind"] == incoming["kind"]
+            assert n["in_hash"] == ops.b64hash(incoming["hash"]).hex()
+            assert n["aborted"] == tx["aborted"]
+            assert n["compute_success"] == bool(tx["compute"] and tx["compute"].get("success"))
+            assert [m["hash"] for m in n["out"]] == [
+                ops.b64hash(m["hash"]).hex() for m in tx["out_msgs"]
+            ]
             if n["in_kind"] == "internal":
-                assert ops.credit_of(base64.b64decode(n["data"])) == n["in_value"]
+                assert n["credit"] == n["in_value"] == int(incoming["value"])
+                assert n["in_source"] == ops.party(incoming["source"])
                 credits += 1
     assert credits >= 5
+
+
+def test_a_real_transaction_is_bound_to_its_account_and_lt():
+    wallet, answer = next(iter(ANSWERS.items()))
+    tx = answer["page"]["transactions"][0]
+    tid = tx["transaction_id"]
+    tx_hash = ops.b64hash(tid["hash"]).hex()
+    with pytest.raises(ops.Unknown, match="belongs to"):
+        ops.verify_transaction(tx["data"], tx_hash, OTHER, int(tid["lt"]))
+    with pytest.raises(ops.Unknown, match="belongs to"):
+        ops.verify_transaction(tx["data"], tx_hash, wallet, int(tid["lt"]) + 1)
+    with pytest.raises(ops.Unknown, match="hashes to"):
+        ops.verify_transaction(tx["data"], "00" * 32, wallet, int(tid["lt"]))
 
 
 def test_a_bounced_credit_is_failure_b(world):
@@ -737,10 +774,16 @@ def test_a_bounced_credit_is_failure_b(world):
     assert operations.journal.record("fund-a")["evidence"]["form"] == "b"
 
 
-def test_a_receipt_crediting_another_amount_is_not_retained(world, monkeypatch):
+def test_a_receipt_crediting_another_amount_is_not_retained(world):
     chain, operations = withdraw_world(world)
-    monkeypatch.setattr(ops, "credit_of", lambda data: 1)
-    with pytest.raises(ops.OperationRefused, match="not settled"):
+
+    def short(chain_, address, account, message, in_msg):
+        value = int(message["value"])
+        account["balance"] += value - 1
+        chain_.record_tx(address, in_msg, [], credit=value - 1)
+
+    chain.behaviour[OWNER] = short
+    with pytest.raises(ops.OperationRefused, match="did not retain"):
         withdraw(operations, chain)
 
 
@@ -851,5 +894,366 @@ def test_a_receipt_that_sends_on_is_not_retained(world):
         chain_.record_tx(address, in_msg, out, credit=value)
 
     chain.behaviour[OWNER] = forwards
-    with pytest.raises(ops.OperationRefused, match="not settled"):
+    with pytest.raises(ops.OperationRefused, match="did not retain"):
         withdraw(operations, chain)
+
+
+# ---------------------------------------------------------------- fix plan 3
+
+
+def test_two_runs_racing_on_one_operation_sign_and_send_once(world, monkeypatch):
+    # The reviewer's interleaving: B pauses before it takes the lock (where it used
+    # to read the record), A runs the operation to settlement, B resumes. B finds
+    # the operation settled under the lock and signs nothing.
+    import threading
+
+    chain, operations, ceremony = world
+    b_ops = ops.Operations(
+        ceremony,
+        [chain.node("http://a"), chain.node("http://b")],
+        2,
+        clock=lambda: chain.now,
+        sleep=lambda s: chain.tick(),
+    )
+    paused, resume = threading.Event(), threading.Event()
+    real_lock = ops.Journal.lock
+
+    def lock(self, wallet=None):
+        if threading.current_thread().name == "B" and not resume.is_set():
+            paused.set()
+            resume.wait(10)
+        return real_lock(self, wallet)
+
+    monkeypatch.setattr(ops.Journal, "lock", lock)
+    sign = signer(chain)
+    results = {}
+
+    def b_run():
+        results["b"] = b_ops.run("fund-a", params(), sign, lambda d: None)
+
+    thread = threading.Thread(target=b_run, name="B")
+    thread.start()
+    assert paused.wait(10)
+    results["a"] = run(operations, sign=sign, chain=chain)
+    resume.set()
+    thread.join(10)
+    assert results["a"]["state"] == results["b"]["state"] == "settled"
+    assert sign.calls == [1] and len(chain.sent) == 1
+    transfers = [t for t in chain.account(BOOT)["txs"] if t["out_msgs"]]
+    assert len(transfers) == 1
+
+
+def test_a_run_refused_by_the_held_lock_returns_the_settled_result_later(world):
+    chain, operations, ceremony = world
+    sign = signer(chain)
+    with operations.journal.lock():
+        with pytest.raises(ops.OperationRefused, match="journal lock"):
+            run(operations, sign=sign, chain=chain)
+    first = run(operations, sign=sign, chain=chain)
+    again = run(operations, sign=sign, chain=chain)
+    assert first["state"] == again["state"] == "settled" and sign.calls == [1]
+
+
+def test_one_id_is_bound_to_one_wallet(world):
+    chain, operations, _ = world
+    run(operations, "w-1", chain=chain)
+    chain.wallet(OWNER, 100 * NANO, subwallet=0x504F4F4C)
+    with pytest.raises(ops.OperationRefused, match="other parameters"):
+        operations.run("w-1", params(wallet=OWNER), signer(chain, OWNER), lambda d: None)
+
+
+def test_settlement_never_reads_the_json_summary(world):
+    chain, operations, ceremony = world
+
+    def lie(answer):
+        for tx in answer["transactions"]:
+            tx["aborted"] = True
+            tx["compute"] = {"success": False}
+            for m in tx["out_msgs"]:
+                m["value"] = "1"
+                m["destination"] = OTHER
+        return answer
+
+    liars = ops.Operations(
+        ceremony,
+        [chain.node("http://a", tamper=lie), chain.node("http://b", tamper=lie)],
+        2,
+        clock=lambda: chain.now,
+        sleep=lambda s: chain.tick(),
+    )
+    assert run(liars, chain=chain)["state"] == "settled"
+
+
+def test_a_changed_boc_under_the_original_id_is_unknown(world):
+    chain, operations, ceremony = world
+    run(operations, chain=chain)
+
+    def swap(answer):
+        for tx in answer["transactions"]:
+            other = lib.serialize_boc(lib.cell_from_bits("0111"))
+            tx["data"] = base64.b64encode(other).decode()
+        return answer
+
+    node = chain.node("http://c", tamper=swap)
+    with pytest.raises(ops.Unknown, match="hashes to"):
+        node.history(BOOT, None)
+
+
+def test_validators_reporting_different_transactions_disagree(world):
+    chain, operations, ceremony = world
+    run(operations, chain=chain)
+    real = chain.account(BOOT)["txs"]
+
+    def other_tx(answer):
+        if answer["transactions"]:
+            cell = fakechain.transaction_cell(
+                BOOT, int(real[-1]["transaction_id"]["lt"]), None, [], True, False, None
+            )
+            answer["transactions"][0]["data"] = base64.b64encode(lib.serialize_boc(cell)).decode()
+            answer["transactions"][0]["transaction_id"] = {
+                "lt": real[-1]["transaction_id"]["lt"],
+                "hash": base64.b64encode(cell.hash()).decode(),
+            }
+        return answer
+
+    split = ops.Operations(
+        ceremony,
+        [chain.node("http://a"), chain.node("http://b", tamper=other_tx)],
+        2,
+        clock=lambda: chain.now,
+        sleep=lambda s: chain.tick(),
+    )
+    with pytest.raises(ops.Unknown, match="disagree"):
+        split.history(BOOT, None)
+
+
+@pytest.mark.parametrize("value", [5 * NANO, 50_000_000])
+def test_a_credit_one_nanotos_short_is_failure_b(world, value):
+    chain, operations, _ = world
+
+    def short(chain_, address, account, message, in_msg):
+        credited = int(message["value"]) - 1
+        account["balance"] += credited
+        chain_.record_tx(
+            address, in_msg, [], success=False, aborted=True, credit=credited, skipped=True
+        )
+
+    chain.behaviour[DEST] = short
+    p = params(value)
+    with pytest.raises(ops.OperationRefused, match="credited"):
+        operations.run("fund-a", p, signer(chain, value=value), lambda d: None)
+    assert operations.journal.record("fund-a")["evidence"]["form"] == "b"
+
+
+@pytest.mark.parametrize("subwallet", [1, 0x504F4F4C])
+def test_a_message_for_another_subwallet_is_refused(world, subwallet):
+    chain, operations, _ = world
+    with pytest.raises(ops.OperationRefused, match="subwallet"):
+        run(operations, sign=signer(chain, subwallet=subwallet), chain=chain)
+    assert chain.sent == []
+
+
+def test_a_whole_line_is_written_through_short_writes(world, monkeypatch):
+    chain, operations, ceremony = world
+    real = os.write
+    monkeypatch.setattr(ops.os, "write", lambda fd, data: real(fd, data[:7]))
+    assert run(operations, chain=chain)["state"] == "settled"
+    lines = (ceremony / "operations/fund-a.jsonl").read_text().splitlines()
+    assert [json.loads(line)["state"] for line in lines] == [
+        "planned",
+        "signed",
+        "broadcast",
+        "settled",
+    ]
+
+
+@pytest.mark.parametrize("failure", ["zero", "raise"])
+def test_a_failed_journal_write_refuses_before_any_broadcast(world, monkeypatch, failure):
+    chain, operations, ceremony = world
+    real = os.write
+    calls = {"n": 0}
+
+    def write(fd, data):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return real(fd, data)  # the planned line
+        if failure == "zero":
+            return 0
+        real(fd, data[:5])
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ops.os, "write", write)
+    with pytest.raises((ops.OperationRefused, OSError)):
+        run(operations, chain=chain)
+    assert chain.sent == []
+
+
+# -- attempts after a terminal failure
+
+
+def failed_fund(world):
+    chain, operations, _ = world
+    chain.account(BOOT)["balance"] = NANO  # accepted, emits nothing: failure a
+    with pytest.raises(ops.OperationRefused, match="failed"):
+        run(operations, chain=chain)
+    chain.account(BOOT)["balance"] = 100 * NANO
+    return chain, operations
+
+
+def test_a_retry_creates_one_successor_that_settles_once(world):
+    chain, operations = failed_fund(world)
+    successor = operations.retry("fund-a", "the wallet was short")
+    assert successor["id"] == "fund-a.attempt-2" and successor["predecessor"] == "fund-a"
+    with pytest.raises(ops.OperationRefused, match="planned"):
+        operations.retry("fund-a", "again")
+    sign = signer(chain)
+    record = run(operations, "fund-a", sign=sign, chain=chain)
+    assert record["id"] == "fund-a.attempt-2" and record["state"] == "settled"
+    assert operations.journal.record("fund-a")["state"] == "failed"
+    assert run(operations, "fund-a", sign=sign, chain=chain)["id"] == "fund-a.attempt-2"
+    assert len(sign.calls) == 1
+    with pytest.raises(ops.OperationRefused, match="settled"):
+        operations.retry("fund-a", "after success")
+
+
+def test_a_retry_keeps_the_steps_parameters(world):
+    chain, operations = failed_fund(world)
+    operations.retry("fund-a", "reason")
+    with pytest.raises(ops.OperationRefused, match="other parameters"):
+        run(operations, "fund-a", p=params(6 * NANO), chain=chain)
+
+
+def test_retry_needs_a_failed_newest_attempt(world, monkeypatch):
+    chain, operations, _ = world
+    with pytest.raises(ops.OperationRefused, match="no attempt"):
+        operations.retry("fund-a", "nothing yet")
+    crash_at(monkeypatch, "fund-a", "broadcast")
+    with pytest.raises(Crash):
+        run(operations, chain=chain)
+    monkeypatch.undo()
+    with pytest.raises(ops.OperationRefused, match="broadcast"):
+        operations.retry("fund-a", "open")
+
+
+def test_concurrent_retries_create_at_most_one_successor(world):
+    import threading
+
+    chain, operations = failed_fund(world)
+    outcomes = []
+
+    def attempt():
+        try:
+            outcomes.append(operations.retry("fund-a", "parallel")["id"])
+        except ops.OperationRefused as exc:
+            outcomes.append(str(exc))
+
+    threads = [threading.Thread(target=attempt) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert outcomes.count("fund-a.attempt-2") == 1
+    assert [n for n, _ in operations.journal.attempts("fund-a")] == [1, 2]
+
+
+def test_a_crash_while_creating_a_successor_leaves_none_or_one(world, monkeypatch):
+    chain, operations = failed_fund(world)
+    real = os.write
+    monkeypatch.setattr(
+        ops.os,
+        "write",
+        lambda fd, data: real(fd, data[:9]) and (_ for _ in ()).throw(OSError("crash")),
+    )
+    with pytest.raises(OSError):
+        operations.retry("fund-a", "torn")
+    monkeypatch.undo()
+    # The torn successor is refused, never taken for a fresh attempt.
+    with pytest.raises(ops.OperationRefused, match="torn"):
+        run(operations, "fund-a", chain=chain)
+    assert chain.sent[1:] == []
+
+
+def test_a_successor_interrupted_before_signing_signs_once(world, monkeypatch):
+    chain, operations = failed_fund(world)
+    operations.retry("fund-a", "reason")
+    sign = signer(chain)
+    monkeypatch.setattr(
+        operations, "gate", lambda wallet, op_id: (_ for _ in ()).throw(Crash("gate"))
+    )
+    with pytest.raises(Crash):
+        run(operations, "fund-a", sign=sign, chain=chain)
+    monkeypatch.undo()
+    assert run(operations, "fund-a", sign=sign, chain=chain)["state"] == "settled"
+    assert len(sign.calls) == 1
+
+
+# -- resubmit preconditions
+
+
+def signed_not_sent(world, monkeypatch):
+    chain, operations, _ = world
+    crash_at(monkeypatch, "fund-a", "signed")
+    with pytest.raises(Crash):
+        run(operations, chain=chain)
+    monkeypatch.undo()
+    return chain, operations
+
+
+def test_resubmit_refuses_a_changed_wallet_identity(world, monkeypatch):
+    chain, operations = signed_not_sent(world, monkeypatch)
+    chain.account(BOOT)["data"] = fakechain.wallet_data(1, 0, "cd" * 32)
+    with pytest.raises(ops.OperationRefused, match="identity"):
+        operations.resubmit("fund-a")
+    assert chain.sent == []
+
+
+def test_resubmit_refuses_when_any_validator_is_past_the_expiry(world, monkeypatch):
+    chain, operations, ceremony = world
+    crash_at(monkeypatch, "fund-a", "signed")
+    with pytest.raises(Crash):
+        run(operations, chain=chain)
+    monkeypatch.undo()
+    skewed = ops.Operations(
+        ceremony,
+        [chain.node("http://a"), chain.node("http://b", utime_offset=400)],
+        2,
+        clock=lambda: chain.now,
+        sleep=lambda s: chain.tick(),
+    )
+    with pytest.raises(ops.OperationRefused, match="expired"):
+        skewed.resubmit("fund-a")
+    # And (c) needs every validator past the margin.
+    chain.now += 200
+    behind = ops.Operations(
+        ceremony,
+        [chain.node("http://a"), chain.node("http://b", utime_offset=-400)],
+        2,
+        clock=lambda: chain.now,
+        sleep=lambda s: chain.tick(),
+    )
+    with pytest.raises(ops.OperationRefused, match="can still execute"):
+        behind.record_failed("fund-a", "c")
+    assert chain.sent == []
+
+
+def test_resubmit_refuses_a_wallet_that_cannot_pay(world, monkeypatch):
+    chain, operations = signed_not_sent(world, monkeypatch)
+    chain.account(BOOT)["balance"] = 5 * NANO
+    with pytest.raises(ops.OperationRefused, match="cannot pay"):
+        operations.resubmit("fund-a")
+    assert chain.sent == []
+
+
+def test_resubmit_refuses_an_activation_of_an_account_that_is_not_uninitialized(world, monkeypatch):
+    chain, operations, _ = world
+    address, boc, p = activation(chain)
+    crash_at(monkeypatch, "activate-x", "signed")
+    with pytest.raises(Crash):
+        operations.run("activate-x", p, lambda seqno: boc, lambda d: None)
+    monkeypatch.undo()
+    chain.account(address)["state"] = "active"
+    chain.account(address)["code"] = fakechain.WALLET_CODE
+    chain.account(address)["data"] = fakechain.wallet_data(1, 0x504F4F4C, "77" * 32)
+    with pytest.raises(ops.OperationRefused, match="cannot run"):
+        operations.resubmit("activate-x")
+    assert chain.sent == []

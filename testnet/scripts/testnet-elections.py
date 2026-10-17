@@ -466,6 +466,8 @@ def fund(args: argparse.Namespace, operations: ops.Operations, global_id: int) -
         "body_hash": EMPTY_BODY_HASH,
         "state_init_hash": init_hash,
         "label": args.label,
+        # The bootstrap wallet is wallet v3 with subwallet 0 (gen-zerostate.fif).
+        "subwallet": 0,
     }
     record = operations.run(op_id, params, sign, lambda decoded: None, prerequisites)
     print(f"{op_id}: {args.amount} TOS to {to} settled ({record['evidence']['destination_tx']})")
@@ -820,6 +822,7 @@ def owner_op_params(ceremony: Path, name: str, owner: str) -> dict:
         "state_init_hash": init["init_hash"],
         "code_hash": init["code_hash"],
         "public_key": init["public_key"],
+        "subwallet": init["subwallet"],
     }
 
 
@@ -850,11 +853,13 @@ def decode_init_message(boc: bytes) -> dict:
         raise lib.TestnetError("not a wallet StateInit (code and data, nothing else)")
     code, data = i.take_ref(), i.take_ref()
     d = lib.Slice(data)
-    d.bits(64)
+    d.bits(32)
+    subwallet = d.bits(32)
     return {
         "init_hash": init.hash().hex(),
         "code_hash": code.hash().hex(),
         "public_key": d.bytes(32).hex(),
+        "subwallet": subwallet,
     }
 
 
@@ -906,6 +911,7 @@ def owner_transfer(
         "body_hash": body_hash,
         "state_init_hash": None,
         "name": name,
+        "subwallet": POOL_OWNER_SUBWALLET,
     }
     params.update(extra or {})
     return operations.run(op_id, params, sign, lambda decoded: None, prerequisites)
@@ -955,11 +961,8 @@ def withdraw(args: argparse.Namespace, operations: ops.Operations, global_id: in
         raise lib.TestnetError(f"not an operation id: {args.id!r}")
     existing = withdraw_id_record(operations, args)
     amount_tos = WITHDRAW_ALL_TOS if args.all else nanotos_text(parse_tos(args.amount, "--amount"))
-    if existing is not None and ops.state_of(existing) == "settled":
-        print(json.dumps(existing.get("evidence"), indent=2))
-        return existing
-    principal = operations.journal.record(f"principal-{name}")
-    if ops.state_of(principal) != "settled":
+    principal = operations.journal.record(operations.journal.newest(f"principal-{name}"))
+    if existing is None and ops.state_of(principal) != "settled":
         raise lib.TestnetError(f"the principal of {name} is not settled; nothing to withdraw yet")
 
     def prerequisites() -> None:
@@ -1046,6 +1049,13 @@ def host_build(
         raise lib.TestnetError(f"no prepared message from the host: {output[-400:]}") from exc
 
 
+def operator_subwallet(operations: ops.Operations, operator: str) -> int:
+    data = operations.wallet_data(operator)
+    if data is None:
+        raise lib.TestnetError(f"{operator} is not an active wallet; its subwallet is unknown")
+    return data[2]
+
+
 def host_operation(
     operations,
     host,
@@ -1077,6 +1087,8 @@ def host_operation(
         "body_hash": body_hash,
         "state_init_hash": state_init_hash,
         "name": name,
+        # The operator wallet's subwallet, as both validators agree it is stored.
+        "subwallet": operator_subwallet(operations, operator),
     }
     params.update(extra or {})
 
@@ -1371,11 +1383,12 @@ def onboard(
     record_pool(ceremony, name, principal_sent=True)
 
     op_id = f"authorize-operations-{name}"
-    record = operations.journal.record(op_id)
+    record = operations.journal.record(operations.journal.newest(op_id))
     if ops.state_of(record) != "settled":
         step("operating authorization")
-        if record is not None:
-            # A request planned before an interruption is reused, never re-planned.
+        if record is not None and record.get("plan"):
+            # A request planned before an interruption is reused, never re-planned;
+            # an attempt after a failure (no plan yet) is planned anew, once.
             plan, signed = record["plan"], record["body_b64"]
         else:
             auth = elections["authorization"]
@@ -1444,17 +1457,37 @@ def configure_pool(host, name, pool, owner, operator, controller, controller_ini
         binding = config().get("bindings", {}).get(name) or {}
     if (binding.get("wallet"), binding.get("pool")) != (f"op-{name}", f"pool-{name}"):
         raise lib.TestnetError(f"node {name} is bound on the host as {binding}")
-    if binding.get("controller_birth_state_init_boc"):
-        return
+    expected = lib.parse_boc(base64.b64decode(controller_init)).hash()
+
+    def birth_on_host(path: str) -> bool | None:
+        """True: this controller's birth; None: no such file; False: something else."""
+        if not re.fullmatch(r"/[A-Za-z0-9_./-]+", path):
+            return False
+        content = host.run(f"test -f {path} && base64 -w0 {path} || true").strip()
+        if not content:
+            return None
+        try:
+            return lib.parse_boc(base64.b64decode(content)).hash() == expected
+        except (lib.TestnetError, ValueError):
+            return False
+
+    bound = binding.get("controller_birth_state_init_boc")
+    if bound:
+        found = birth_on_host(bound)
+        if found:
+            return
+        if found is False:
+            raise lib.TestnetError(
+                f"the bound birth artifact {bound} is not this controller's birth"
+            )
     # The birth import writes its artifact (never overwriting it) and then saves the
     # binding; a crash between leaves the file without the binding. A retained file
     # is imported again under a fresh path only if it is this controller's birth.
     output = f"{TOSCTL_DIR}/controller-birth-{name}.boc"
-    retained = host.run(f"test -f {output} && base64 -w0 {output} || true").strip()
-    if retained:
-        expected = lib.parse_boc(base64.b64decode(controller_init)).hash()
-        if lib.parse_boc(base64.b64decode(retained)).hash() != expected:
-            raise lib.TestnetError(f"{output} on the host is not this controller's birth")
+    retained = birth_on_host(output)
+    if retained is False:
+        raise lib.TestnetError(f"{output} on the host is not this controller's birth")
+    if retained or bound:
         output = f"{TOSCTL_DIR}/controller-birth-{name}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.boc"
     step(f"config bind import-birth {name}")
     host.tosctl(
@@ -1624,6 +1657,15 @@ def append_refund_log(ceremony: Path, record: dict) -> Path:
     return path
 
 
+# The follow-up turns refund into an operation and this on.
+REFUND_ENABLED = False
+REFUND_DISABLED = (
+    "refund is disabled for the epoch-4 launch: it sends from the operator wallet over tosctl "
+    "on the host, outside the operations journal. It becomes an operation in a follow-up due "
+    "before T+19 h (the fifth election); until then see epoch-4-prep.md for the manual path"
+)
+
+
 def refund(
     args: argparse.Namespace,
     chain: Chain,
@@ -1634,6 +1676,9 @@ def refund(
     sleep=time.sleep,
     sign=sign_operations,
 ) -> dict:
+    # Refused before anything is read, signed, sent or stopped.
+    if not REFUND_ENABLED:
+        raise lib.TestnetError(REFUND_DISABLED)
     name = args.name
     if not SAFE_NAME.match(name):
         raise lib.TestnetError(f"not a node name: {name!r}")
@@ -2890,6 +2935,9 @@ def main(argv: list[str] | None = None) -> int:
     p_record.add_argument("--hint", help="the wallet or destination transaction hash (hex)")
     p_resubmit = sub.add_parser("resubmit", parents=[common])
     p_resubmit.add_argument("--id", required=True)
+    p_retry = sub.add_parser("retry", parents=[common])
+    p_retry.add_argument("--step", required=True, help="the step id (attempt 1's operation id)")
+    p_retry.add_argument("--reason", required=True)
     p_baseline = sub.add_parser("baseline", parents=[common])
     p_baseline.add_argument("--wallet", required=True)
     p_baseline.add_argument("--reason", required=True)
@@ -2937,7 +2985,7 @@ def main(argv: list[str] | None = None) -> int:
                 LoadDriver(args, chain, global_id, operations).run()
             elif args.command == "withdraw":
                 withdraw(args, operations, global_id)
-            elif args.command in ("reconcile", "record", "resubmit", "baseline"):
+            elif args.command in ("reconcile", "record", "resubmit", "baseline", "retry"):
                 manual(args, operations, profile)
             else:
                 onboard(args, operations, global_id, profile)
@@ -2985,6 +3033,10 @@ def manual(args: argparse.Namespace, operations: ops.Operations, profile: dict) 
         return
     if args.command == "baseline":
         print(json.dumps(operations.set_baseline(check_raw_address(args.wallet), args.reason)))
+        return
+    if args.command == "retry":
+        successor = operations.retry(args.step, args.reason)
+        print(json.dumps({k: successor.get(k) for k in ("id", "state", "predecessor", "reason")}))
         return
     record = journal.record(args.id)
     if record is None:

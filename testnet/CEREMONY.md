@@ -507,9 +507,23 @@ root moves over once with `migrate-nonroot-services.sh --role validator`
 
 `testnet-elections.py fund --id ID --label LABEL` sends from the bootstrap wallet
 on its own as operation ID (with `--dry-run` it only signs). `load` makes each
-bootstrap transfer its own operation. `refund` is not yet an operation: it sends
-from the operator wallet over tosctl on the host as before, so a later operation
-of that wallet needs `baseline` first.
+bootstrap transfer its own operation.
+
+A step whose operation failed terminally is never retried under its id and never
+reset. A person starts another attempt, `ID.attempt-N`, which names the failed
+one and keeps the step's parameters (an operating authorization is planned
+anew); all checks run again:
+
+```bash
+python3 $S retry $C --step ID --reason TEXT
+```
+
+**`refund` is disabled for the epoch-4 launch**: it sends from the operator wallet
+over tosctl on the host, outside the journal, and refuses before it reads, signs
+or stops anything. It becomes an operation in a follow-up due before the fifth
+election (T + 19 h), when the 20 TOS of the first authorization (about four
+stakes) run out. A settled authorization cannot be renewed with `retry` (that is
+for failed attempts only); until the follow-up there is no supported renewal.
 
 The operating authorization funds relays for a limited time (the first epoch's
 gave about three days of runway). `tosctl controller operations status

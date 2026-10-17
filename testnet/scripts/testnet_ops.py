@@ -8,8 +8,13 @@ The rules (memo: epoch-4-fixplan-2.md, revision 4, agreed with the reviewer):
 
 * Every message that moves value is an *operation* with a stable id and
   immutable parameters, recorded in ceremony/operations/<id>.jsonl: append-only
-  lines, each fsynced with its directory, the signed message durable before it
-  is broadcast. A per-wallet lock is held from the gate to the broadcast line.
+  lines, each written whole and fsynced with its directory, the signed message
+  durable before it is broadcast. One lock over the whole journal is held for
+  every decision and transition, each taken on a record re-read under it; a step
+  is resolved to its newest attempt, and a new attempt after a terminal failure
+  exists only by a person's `retry`.
+* Every fact settlement uses is decoded from the transaction's own BOC, checked
+  against the reported transaction hash, account and lt, on both validators.
 * Nothing is ever resumed automatically. Before signing, the *gate* reads the
   signing wallet's complete history on two validators of the intended network
   and refuses when any transaction emitting a message is not explained by a
@@ -272,7 +277,10 @@ class Node:
         stack = result.get("stack") if isinstance(result, dict) else None
         if result.get("exit_code") != 0 or not stack or not isinstance(stack[0], list):
             raise Unknown(f"{self.url}: seqno of {address}: {result}")
-        return int(stack[0][1], 0)
+        try:
+            return int(stack[0][1], 0)
+        except (TypeError, ValueError) as exc:
+            raise Unknown(f"{self.url}: seqno of {address}: {stack[0]!r}") from exc
 
     def utime(self) -> int:
         last = self.call("getMasterchainInfo")["last"]
@@ -285,7 +293,8 @@ class Node:
         return int(header["gen_utime"])
 
     def history(self, address: str, boundary: dict | None) -> list[dict]:
-        """Transactions newer than `boundary` (None: the whole account), newest first.
+        """Transactions newer than `boundary` (None: the whole account), newest first,
+        each decoded from its own BOC (verify_transaction).
 
         getTransactionsStd pages backward through previous_transaction_id. The
         boundary must be reached exactly; anything else is Unknown."""
@@ -306,9 +315,14 @@ class Node:
                 raise Unknown(f"{self.url}: empty history page for {address} at {lt}")
             progress = False
             for tx in txs:
-                tid = tx.get("transaction_id") or {}
+                tid = tx.get("transaction_id") if isinstance(tx, dict) else None
+                if not isinstance(tid, dict):
+                    raise Unknown(f"{self.url}: a transaction without an id for {address}")
                 tx_hash = b64hash(tid.get("hash")).hex()
-                tx_lt = int(tid.get("lt", -1))
+                try:
+                    tx_lt = int(tid.get("lt", -1))
+                except (TypeError, ValueError) as exc:
+                    raise Unknown(f"{self.url}: transaction lt {tid.get('lt')!r}") from exc
                 if boundary and tx_hash == boundary["hash"]:
                     return out
                 if boundary and tx_lt <= int(boundary["lt"]):
@@ -317,7 +331,7 @@ class Node:
                     continue
                 seen.add(tx_hash)
                 progress = True
-                out.append(normalize(tx, tx_hash, tx_lt))
+                out.append(verify_transaction(tx.get("data"), tx_hash, address, tx_lt))
             prev = page.get("previous_transaction_id") or {}
             if str(prev.get("lt", "")) == "0":
                 if boundary:
@@ -329,35 +343,131 @@ class Node:
         raise Unknown(f"{self.url}: {address} history longer than {HISTORY_PAGES} pages")
 
 
-def normalize(tx: dict, tx_hash: str, tx_lt: int) -> dict:
-    """The fields the rules read, checked; a malformed answer is Unknown."""
-    try:
-        incoming = tx.get("in_msg") or {}
-        out = {
-            "hash": tx_hash,
-            "lt": tx_lt,
-            "data": tx.get("data", ""),
-            "in_kind": incoming.get("kind"),
-            "in_hash": b64hash(incoming["hash"]).hex() if incoming.get("hash") else None,
-            "in_source": party(incoming.get("source")),
-            "in_value": int(incoming["value"]) if incoming.get("value") is not None else None,
-            "in_bounced": bool(incoming.get("bounced")),
-            "aborted": tx.get("aborted"),
-            "compute_success": bool((tx.get("compute") or {}).get("success")),
-            "out": [
-                {
-                    "hash": b64hash(m["hash"]).hex(),
-                    "kind": m.get("kind"),
-                    "destination": party(m.get("destination")),
-                    "value": int(m["value"]) if m.get("value") is not None else None,
-                    "bounced": bool(m.get("bounced")),
-                }
-                for m in tx.get("out_msgs") or []
-            ],
+# ---------------------------------------------------------------- transactions from their BOC
+
+
+def read_any_address(s: lib.Slice) -> str | None:
+    """MsgAddress including addr_extern (external messages' source or destination)."""
+    if s.bits(2) == 0b01:
+        s.bits(s.bits(9))
+        return None
+    s.pos -= 2
+    return read_address(s)
+
+
+def decode_message(cell: lib.Cell) -> dict:
+    """The summary the rules read, from a Message cell."""
+    s = lib.Slice(cell)
+    if s.bits(1) == 0:
+        s.bits(1)  # ihr_disabled
+        s.bits(1)  # bounce
+        bounced = bool(s.bits(1))
+        source = read_address(s)
+        destination = read_address(s)
+        value = read_coins(s)
+        if s.bits(1):
+            s.take_ref()  # extra currencies
+        return {
+            "kind": "internal",
+            "hash": cell.hash().hex(),
+            "source": source,
+            "destination": destination,
+            "value": value,
+            "bounced": bounced,
         }
-    except (KeyError, TypeError, ValueError, AttributeError) as exc:
-        raise Unknown(f"malformed transaction {tx_hash}: {exc}") from exc
-    return out
+    if s.bits(1) == 0:
+        read_any_address(s)
+        destination = read_address(s)
+        return {
+            "kind": "external",
+            "hash": cell.hash().hex(),
+            "source": None,
+            "destination": destination,
+            "value": None,
+            "bounced": False,
+        }
+    source = read_address(s)
+    return {
+        "kind": "external-out",
+        "hash": cell.hash().hex(),
+        "source": source,
+        "destination": None,
+        "value": None,
+        "bounced": False,
+    }
+
+
+def verify_transaction(data: Any, tx_hash: str, address: str, tx_lt: int) -> dict:
+    """A transaction decoded from its BOC, bound to its reported id and account.
+
+    The root's hash must be the reported transaction hash, the decoded account the
+    queried one and the decoded lt the reported lt. Every fact the rules use (in and
+    out messages and their hashes, compute success, aborted, the credit) comes from
+    the decoded cells, never from the node's JSON summary. Anything else is Unknown."""
+    if not isinstance(data, str) or not data:
+        raise Unknown(f"transaction {tx_hash} has no data")
+    try:
+        root = lib.parse_boc(base64.b64decode(data, validate=True))
+        if root.hash().hex() != tx_hash:
+            raise Unknown(f"transaction {tx_hash}: its BOC hashes to {root.hash().hex()}")
+        s = lib.Slice(root)
+        if s.bits(4) != 0b0111:
+            raise Unknown(f"transaction {tx_hash} is not a transaction")
+        account = s.bytes(32).hex()
+        lt = s.bits(64)
+        s.bits(256 + 64 + 32 + 15 + 2 + 2)
+        if f"{address.split(':')[0]}:{account}" != address or lt != tx_lt:
+            raise Unknown(f"transaction {tx_hash} belongs to {account} at lt {lt}")
+        m = lib.Slice(s.take_ref())
+        incoming = decode_message(m.take_ref()) if m.bits(1) else None
+        outgoing = []
+        if m.bits(1):
+            entries = lib.hashmap_items(m.take_ref(), 15)
+            outgoing = [decode_message(entries[k].take_ref()) for k in sorted(entries)]
+        read_currency_dict(s)
+        s.take_ref()
+        d = lib.Slice(s.take_ref())
+        compute_success, aborted, credit = False, None, None
+        if d.bits(4) == 0:  # trans_ord
+            d.bits(1)
+            if d.bits(1):
+                read_coins(d)
+                if d.bits(1):
+                    read_coins(d)
+                if d.bits(1):
+                    d.bits(1)
+            if d.bits(1):
+                if d.bits(1):
+                    read_coins(d)
+                credit = read_currency_dict(d)
+            if d.bits(1):  # tr_phase_compute_vm
+                compute_success = bool(d.bits(1))
+                d.bits(2)
+                read_coins(d)
+                d.take_ref()
+            elif d.bits(2) == 0b11:  # skipped; cskip_suspended has a third bit
+                d.bits(1)
+            if d.bits(1):
+                d.take_ref()
+            aborted = bool(d.bits(1))
+    except Unknown:
+        raise
+    except (lib.TestnetError, ValueError, IndexError) as exc:
+        raise Unknown(f"transaction {tx_hash} cannot be decoded: {exc}") from exc
+    return {
+        "hash": tx_hash,
+        "lt": tx_lt,
+        "data": data,
+        "in_kind": incoming["kind"] if incoming else None,
+        "in_hash": incoming["hash"] if incoming else None,
+        "in_source": incoming["source"] if incoming else None,
+        "in_value": incoming["value"] if incoming else None,
+        "in_bounced": incoming["bounced"] if incoming else False,
+        "aborted": aborted,
+        "compute_success": compute_success,
+        "credit": credit,
+        "out": outgoing,
+    }
 
 
 def leaves(tx: dict, wallet: str) -> bool:
@@ -393,7 +503,42 @@ def fsync_dir(path: Path) -> None:
         os.close(fd)
 
 
+def append_line(path: Path, entry: dict) -> None:
+    """One JSON line appended in full and fsynced with its directory, or a refusal."""
+    data = (json.dumps(entry, sort_keys=True) + "\n").encode()
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        written = 0
+        while written < len(data):
+            count = os.write(fd, data[written:])
+            if count <= 0:
+                raise OperationRefused(f"{path}: the journal write made no progress")
+            written += count
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    fsync_dir(path.parent)
+
+
+# Parameters an attempt after a failure fixes anew (the failed one's are stale):
+# an operating authorization is a new root-signed request with its own value.
+ATTEMPT_PARAMS = {"authorize-operations": ("value", "body_hash", "plan", "body_b64")}
+ATTEMPT = re.compile(
+    r"^(?P<step>[a-z0-9][a-z0-9_-]*(?:\.[a-z0-9_-]+)*?)(?:\.attempt-(?P<n>[2-9]|[1-9][0-9]+))?$"
+)
+
+
+def attempt_id(step: str, n: int) -> str:
+    return step if n == 1 else f"{step}.attempt-{n}"
+
+
 class Journal:
+    """ceremony/operations/: one append-only record per operation, one lock for all.
+
+    A single lock over the whole journal gives every transition the same order
+    (no per-wallet locks to take in two orders), binds an id to its wallet and
+    parameters atomically, and serializes attempts after failures."""
+
     def __init__(self, ceremony: Path):
         self.dir = Path(ceremony) / OPERATIONS_DIR
 
@@ -402,7 +547,7 @@ class Journal:
         return self.dir
 
     def path(self, op_id: str) -> Path:
-        if not SAFE_ID.match(op_id):
+        if not SAFE_ID.match(op_id) or ".." in op_id:
             raise OperationRefused(f"not an operation id: {op_id!r}")
         return self.dir / f"{op_id}.jsonl"
 
@@ -436,15 +581,8 @@ class Journal:
 
     def append(self, op_id: str, entry: dict) -> None:
         self.ensure()
-        path = self.path(op_id)
         entry = dict(entry, utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
-        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-        try:
-            os.write(fd, (json.dumps(entry, sort_keys=True) + "\n").encode())
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        fsync_dir(self.dir)
+        append_line(self.path(op_id), entry)
 
     def all(self) -> list[dict]:
         if not self.dir.is_dir():
@@ -458,16 +596,41 @@ class Journal:
     def for_wallet(self, wallet: str) -> list[dict]:
         return [r for r in self.all() if r and r.get("wallet") == wallet]
 
+    def attempts(self, step: str) -> list[tuple[int, str]]:
+        """(n, id) of every recorded attempt of a step, oldest first."""
+        if not SAFE_ID.match(step) or ".attempt-" in step:
+            raise OperationRefused(f"not a step id: {step!r}")
+        found = []
+        if self.path(step).exists():
+            found.append((1, step))
+        if self.dir.is_dir():
+            for p in self.dir.glob(f"{step}.attempt-*.jsonl"):
+                match = ATTEMPT.match(p.stem)
+                if match and match.group("step") == step and match.group("n"):
+                    found.append((int(match.group("n")), p.stem))
+        found.sort()
+        numbers = [n for n, _ in found]
+        if numbers != list(range(1, len(numbers) + 1)):
+            raise OperationRefused(f"step {step} has attempts {numbers}; reconcile it by hand")
+        return found
+
+    def newest(self, step: str) -> str:
+        attempts = self.attempts(step)
+        return attempts[-1][1] if attempts else step
+
     @contextlib.contextmanager
-    def lock(self, wallet: str):
+    def lock(self, wallet: str | None = None):
+        """The journal lock; `wallet` is only named in the refusal."""
         self.ensure()
-        path = self.dir / f".lock-{wallet.replace(':', '_')}"
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        fd = os.open(self.dir / ".lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
             os.close(fd)
-            raise OperationRefused(f"another run holds the lock of {wallet}") from exc
+            raise OperationRefused(
+                f"another run holds the operations journal lock ({wallet or 'journal'}); "
+                "wait for it, then run again"
+            ) from exc
         try:
             yield
         finally:
@@ -490,13 +653,7 @@ class Journal:
             "reason": reason,
             "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
-        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-        try:
-            os.write(fd, (json.dumps(entry, sort_keys=True) + "\n").encode())
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        fsync_dir(self.dir)
+        append_line(path, entry)
 
     def explained(self) -> set[str]:
         out: set[str] = set()
@@ -561,8 +718,10 @@ class Operations:
         return answers[0]
 
     def history(self, wallet: str, boundary: dict | None) -> list[dict]:
+        """Agreed history: the same transactions (each verified against its own BOC
+        on each node, so the same hash means the same decoded facts)."""
         histories = [node.history(wallet, boundary) for node in self.nodes]
-        if [t["hash"] for t in histories[0]] != [t["hash"] for t in histories[1]]:
+        if histories[0] != histories[1]:
             raise Unknown(f"the validators' histories of {wallet} disagree or one lags")
         return histories[0]
 
@@ -578,8 +737,8 @@ class Operations:
 
         return self.both(read)
 
-    def identity(self, wallet: str) -> tuple[str, str] | None:
-        """(code hash, public key) of an active wallet v3, agreed by both validators."""
+    def wallet_data(self, wallet: str) -> tuple[str, str, int] | None:
+        """(code hash, public key, subwallet) of an active wallet v3, agreed by both."""
 
         def read(node):
             info = node.account(wallet)
@@ -588,26 +747,34 @@ class Operations:
                 return None
             try:
                 data_slice = lib.Slice(lib.parse_boc(base64.b64decode(data)))
-                data_slice.bits(64)
+                data_slice.bits(32)
+                subwallet = data_slice.bits(32)
                 public_key = data_slice.bytes(32).hex()
                 code_hash = lib.parse_boc(base64.b64decode(code)).hash().hex()
             except (lib.TestnetError, ValueError) as exc:
                 raise Unknown(f"{node.url}: {wallet} is not a wallet v3: {exc}") from exc
-            return code_hash, public_key
+            return code_hash, public_key, subwallet
 
         return self.both(read)
 
-    def balance(self, address: str) -> int:
-        return int(self.nodes[0].account(address)["balance"])
+    def identity(self, wallet: str) -> tuple[str, str] | None:
+        data = self.wallet_data(wallet)
+        return (data[0], data[1]) if data else None
 
-    def utime(self) -> int:
-        return min(node.utime() for node in self.nodes)
+    def balance(self, address: str) -> int:
+        return self.both(lambda n: int(n.account(address)["balance"]))
+
+    def state(self, address: str) -> str:
+        return self.both(lambda n: n.account(address)["state"])
+
+    def utimes(self) -> list[int]:
+        return [node.utime() for node in self.nodes]
 
     # -- the gate
 
     def gate(self, wallet: str, op_id: str) -> None:
         """Refuse unless the wallet's history is complete, agreed and explained, and
-        no other operation of the wallet is open."""
+        no other operation of the wallet is open. Called with the journal lock held."""
         self.check_network()
         for record in self.journal.for_wallet(wallet):
             if record["id"] != op_id and state_of(record) in ("signed", "broadcast"):
@@ -626,50 +793,58 @@ class Operations:
                     + ("" if boundary else " (or record a baseline if it predates the journal)")
                 )
 
-    # -- running one operation
+    # -- running one step
 
-    def begin(self, op_id: str, params: dict) -> dict | None:
-        """The operation's record, created as planned if new. Parameters never change."""
+    def begin(self, op_id: str, params: dict) -> dict:
+        """The operation's record, created as planned if new, with the journal lock held.
+        Recorded parameters never change; a new attempt fixes its open ones once."""
         record = self.journal.record(op_id)
         if record is None:
             self.journal.append(op_id, dict(params, state="planned"))
             crash_point(op_id, "planned")
             return self.journal.record(op_id)
-        mismatch = {k: (record.get(k), v) for k, v in params.items() if record.get(k) != v}
+        open_keys = set(record.get("open_params") or []) if state_of(record) == "planned" else set()
+        mismatch = {
+            k: (record.get(k), v)
+            for k, v in params.items()
+            if k in record and record.get(k) != v and k not in open_keys
+        }
+        mismatch.update(
+            {k: (None, v) for k, v in params.items() if k not in record and k not in open_keys}
+        )
         if mismatch:
             raise OperationRefused(f"operation {op_id} exists with other parameters: {mismatch}")
+        fill = {k: params[k] for k in open_keys if k in params}
+        if fill:
+            self.journal.append(op_id, dict(fill, state="planned", open_params=[]))
+            record = self.journal.record(op_id)
         return record
 
-    def run(
-        self,
-        op_id: str,
-        params: dict,
-        sign,
-        validate,
-        prerequisites=None,
-        expect=None,
-    ) -> dict:
-        """Gate, sign once, journal, broadcast once, watch for settlement.
+    def run(self, step: str, params: dict, sign, validate, prerequisites=None, expect=None) -> dict:
+        """Gate, sign once, journal, broadcast once, watch for settlement, all decided
+        with the journal lock held and the record re-read under it.
 
-        `sign()` returns the external message BOC; `validate(decoded)` refuses a
-        message that is not exactly the intended one; `prerequisites()` checks
-        spending conditions right before signing. Returns the settled record."""
+        `step` resolves to its newest attempt. `sign(seqno)` returns the external
+        message BOC; `validate(decoded)` refuses a message that is not exactly the
+        intended one; `prerequisites()` checks spending conditions right before
+        signing. Returns the settled record."""
         if params["kind"] not in KINDS:
             raise OperationRefused(f"unknown operation kind {params['kind']}")
-        record = self.begin(op_id, params)
-        if state_of(record) == "settled":
-            return record
-        if state_of(record) == "failed":
-            raise OperationRefused(
-                f"operation {op_id} failed ({record.get('evidence')}); a new attempt needs a new "
-                "operation id, decided by a person"
-            )
-        if state_of(record) in ("signed", "broadcast"):
-            raise OperationRefused(
-                f"operation {op_id} is open ({record['state']}); run reconcile, then record or resubmit"
-            )
         wallet = params["wallet"]
         with self.journal.lock(wallet):
+            op_id = self.journal.newest(step)
+            record = self.begin(op_id, params)
+            if state_of(record) == "settled":
+                return record
+            if state_of(record) == "failed":
+                raise OperationRefused(
+                    f"operation {op_id} failed ({record.get('evidence')}); a person may start "
+                    f"another attempt with `retry --step {step}`"
+                )
+            if state_of(record) in ("signed", "broadcast"):
+                raise OperationRefused(
+                    f"operation {op_id} is open ({record['state']}); run reconcile, then record or resubmit"
+                )
             self.gate(wallet, op_id)
             if prerequisites:
                 prerequisites()
@@ -678,7 +853,7 @@ class Operations:
             identity = self.identity(wallet)
             boc = sign(seqno)
             decoded = decode_external(boc)
-            self.check_message(decoded, params, seqno)
+            self.check_message(decoded, record, seqno)
             validate(decoded)
             self.journal.append(
                 op_id,
@@ -706,6 +881,11 @@ class Operations:
             )
         if decoded["global_id"] != self.global_id:
             raise OperationRefused(f"the message is signed for global id {decoded['global_id']}")
+        if decoded["subwallet"] != params.get("subwallet"):
+            raise OperationRefused(
+                f"the message names subwallet {decoded['subwallet']}, the wallet's is "
+                f"{params.get('subwallet')}"
+            )
         if decoded["seqno"] != seqno:
             raise OperationRefused(
                 f"the message carries seqno {decoded['seqno']}, the wallet is at {seqno}"
@@ -739,26 +919,92 @@ class Operations:
             )
 
     def watch(self, op_id: str, expect=None) -> dict:
+        """Poll for settlement; each decision is taken with the lock held and the
+        record re-read, so a settlement recorded by another run is not repeated."""
         deadline = self.clock() + SETTLE_SECONDS
         while True:
-            record = self.journal.record(op_id)
-            try:
-                outcome, evidence = self.settle(record, expect)
-            except Unknown as exc:
-                outcome, evidence = "pending", {"reason": str(exc)}
-            if outcome == "settled":
-                crash_point(op_id, "delivered")
-                self.journal.append(op_id, {"state": "settled", "evidence": evidence})
-                return self.journal.record(op_id)
-            if outcome == "failed":
-                self.journal.append(op_id, {"state": "failed", "evidence": evidence})
-                raise OperationRefused(f"operation {op_id} failed: {evidence}")
+            with self.journal.lock():
+                record = self.journal.record(op_id)
+                if state_of(record) == "settled":
+                    return record
+                if state_of(record) == "failed":
+                    raise OperationRefused(f"operation {op_id} failed: {record.get('evidence')}")
+                try:
+                    outcome, evidence = self.settle(record, expect)
+                except Unknown as exc:
+                    outcome, evidence = "pending", {"reason": str(exc)}
+                if outcome == "settled":
+                    crash_point(op_id, "delivered")
+                    self.journal.append(op_id, {"state": "settled", "evidence": evidence})
+                    return self.journal.record(op_id)
+                if outcome == "failed":
+                    self.journal.append(op_id, {"state": "failed", "evidence": evidence})
+                    raise OperationRefused(f"operation {op_id} failed: {evidence}")
             if self.clock() > deadline:
                 raise OperationRefused(
                     f"operation {op_id} is broadcast but not settled after {SETTLE_SECONDS} s "
                     f"({evidence.get('reason', evidence)}); run reconcile"
                 )
             self.sleep(POLL_SECONDS)
+
+    # -- attempts
+
+    def retry(self, step: str, reason: str) -> dict:
+        """A new attempt of a step whose newest attempt failed, chosen by a person.
+
+        Under the journal lock: refused unless the newest attempt is failed (an open,
+        planned or settled one is never succeeded). The successor keeps the step's
+        parameters (only the kind's ATTEMPT_PARAMS are fixed anew, once), names its
+        predecessor, and is created by one complete append, so a crash leaves either
+        no successor or one planned successor, never two."""
+        if not reason.strip():
+            raise OperationRefused("a retry needs a reason")
+        with self.journal.lock():
+            attempts = self.journal.attempts(step)
+            if not attempts:
+                raise OperationRefused(f"step {step} has no attempt")
+            n, newest = attempts[-1]
+            record = self.journal.record(newest)
+            if state_of(record) != "failed":
+                raise OperationRefused(
+                    f"the newest attempt {newest} is {state_of(record)}; only a failed one is retried"
+                )
+            open_keys = ATTEMPT_PARAMS.get(record["kind"], ())
+            keep = {
+                k: v
+                for k, v in record.items()
+                if k
+                not in {
+                    "id",
+                    "state",
+                    "utc",
+                    "boc",
+                    "external_hash",
+                    "seqno",
+                    "valid_until",
+                    "boundary",
+                    "identity",
+                    "evidence",
+                    "by",
+                    "resubmitted",
+                    "open_params",
+                    "predecessor",
+                    "reason",
+                }
+                and k not in open_keys
+            }
+            successor = attempt_id(step, n + 1)
+            self.journal.append(
+                successor,
+                dict(
+                    keep,
+                    state="planned",
+                    predecessor=newest,
+                    reason=reason,
+                    open_params=list(open_keys),
+                ),
+            )
+            return self.journal.record(successor)
 
     # -- settlement
 
@@ -778,7 +1024,7 @@ class Operations:
             return None
 
         found = [read(node) for node in self.nodes]
-        if (found[0] or {}).get("hash") != (found[1] or {}).get("hash"):
+        if found[0] != found[1]:
             raise Unknown(f"the validators disagree or one lags on the delivery of {message_hash}")
         return found[0]
 
@@ -816,10 +1062,17 @@ class Operations:
         evidence["destination_tx"] = delivery["hash"]
         kind = record["kind"]
         if kind == "fund":
-            # A credit to an undeployed wallet has a skipped compute and may be
-            # aborted; it keeps the credit unless it bounced.
+            # Mode 3 charges forwarding separately: the destination is credited the
+            # full message value. A credit to an undeployed wallet has a skipped
+            # compute and may be aborted; it keeps the credit unless it bounced.
             if any(m["bounced"] for m in delivery["out"]):
                 return "failed", dict(evidence, form="b", reason="the credit bounced")
+            if delivery["credit"] != message["value"] or message["value"] != record["value"]:
+                return "failed", dict(
+                    evidence,
+                    form="b",
+                    reason=f"credited {delivery['credit']}, sent {record['value']}",
+                )
             return "settled", evidence
         if not delivery["compute_success"] or delivery["aborted"]:
             return "failed", dict(evidence, form="b", reason="the destination refused it")
@@ -840,7 +1093,8 @@ class Operations:
         return "settled", evidence
 
     def check_receipt(self, record: dict, pool_tx: dict, evidence: dict) -> tuple[str, dict]:
-        """A withdrawal settles only when the owner retained the payment."""
+        """A withdrawal settles only when the owner retained the payment; an owner
+        transaction that did not keep it is a terminal failure that accounts for it."""
         payments = [
             m
             for m in pool_tx["out"]
@@ -853,20 +1107,23 @@ class Operations:
         receipt = self.find_delivery(record["wallet"], payment["hash"], pool_tx["lt"])
         if receipt is None:
             return "pending", dict(evidence, reason="payment emitted, not yet received")
+        evidence["owner_tx"] = receipt["hash"]
         retained = (
             not receipt["in_bounced"]
             and receipt["aborted"] is False
             and receipt["compute_success"]
             and not receipt["out"]
-            and credit_of(base64.b64decode(receipt["data"])) == payment["value"]
+            and receipt["credit"] == payment["value"]
         )
-        evidence["owner_tx"] = receipt["hash"]
         if not retained:
-            return "pending", dict(evidence, reason="payment emitted, not retained")
+            failed = dict(evidence, form="b", reason="the owner did not retain the payment")
+            failed["explains"] = evidence["explains"] + [receipt["hash"]]
+            failed["receipt_out"] = [m["hash"] for m in receipt["out"]]
+            return "failed", failed
         evidence["paid_nanotos"] = payment["value"]
         return "settled", evidence
 
-    # -- manual paths (every one under the wallet's lock)
+    # -- manual paths (each under the journal lock, the record re-read under it)
 
     def open_record(self, op_id: str) -> dict:
         record = self.journal.record(op_id)
@@ -877,8 +1134,8 @@ class Operations:
         return record
 
     def record_settled(self, op_id: str, hint: str, expect=None) -> dict:
-        record = self.open_record(op_id)
-        with self.journal.lock(record["wallet"]):
+        with self.journal.lock():
+            record = self.open_record(op_id)
             self.check_network()
             outcome, evidence = self.settle(record, expect)
             if outcome != "settled":
@@ -888,11 +1145,11 @@ class Operations:
                     f"{hint} is not this operation's transaction ({evidence.get('wallet_tx')})"
                 )
             self.journal.append(op_id, {"state": "settled", "evidence": evidence, "by": "record"})
-        return self.journal.record(op_id)
+            return self.journal.record(op_id)
 
     def record_failed(self, op_id: str, form: str, hint: str | None = None, expect=None) -> dict:
-        record = self.open_record(op_id)
-        with self.journal.lock(record["wallet"]):
+        with self.journal.lock():
+            record = self.open_record(op_id)
             self.check_network()
             if form in ("a", "b"):
                 outcome, evidence = self.settle(record, expect)
@@ -900,7 +1157,11 @@ class Operations:
                     raise OperationRefused(
                         f"no terminal failure of form {form}: {outcome} {evidence}"
                     )
-                if hint not in (evidence.get("wallet_tx"), evidence.get("destination_tx")):
+                if hint not in (
+                    evidence.get("wallet_tx"),
+                    evidence.get("destination_tx"),
+                    evidence.get("owner_tx"),
+                ):
                     raise OperationRefused(f"{hint} is not this operation's transaction")
             elif form == "c":
                 evidence = self.prove_expired(record)
@@ -909,7 +1170,7 @@ class Operations:
             else:
                 raise OperationRefused(f"unknown failure form {form}")
             self.journal.append(op_id, {"state": "failed", "evidence": evidence, "by": "record"})
-        return self.journal.record(op_id)
+            return self.journal.record(op_id)
 
     def prove_expired(self, record: dict) -> dict:
         if record["kind"] == "activate-owner" or record["valid_until"] == ACTIVATION_VALID_UNTIL:
@@ -918,16 +1179,16 @@ class Operations:
             raise OperationRefused("the message was accepted; this is not expiry")
         if self.seqno(record["wallet"]) != record["seqno"]:
             raise OperationRefused("the wallet's seqno moved; prove (d) instead")
-        block_time = self.utime()
-        if block_time < record["valid_until"] + EXPIRY_MARGIN:
+        times = self.utimes()
+        if any(t < record["valid_until"] + EXPIRY_MARGIN for t in times):
             raise OperationRefused(
-                f"block time {block_time} is not yet past valid_until {record['valid_until']} + "
+                f"block times {times} are not all past valid_until {record['valid_until']} + "
                 f"{EXPIRY_MARGIN} s; the message can still execute"
             )
         return {
             "form": "c",
             "valid_until": record["valid_until"],
-            "block_time": block_time,
+            "block_times": times,
             "explains": [],
         }
 
@@ -958,20 +1219,42 @@ class Operations:
         return {"form": "d", "consumed_by": competitor["hash"], "explains": []}
 
     def resubmit(self, op_id: str, prerequisites=None, expect=None) -> dict:
-        record = self.open_record(op_id)
-        if record["kind"] not in KINDS:
-            raise OperationRefused(f"operation {op_id} cannot be resubmitted")
-        with self.journal.lock(record["wallet"]):
+        """The record's original message once more, while it can still execute."""
+        with self.journal.lock():
+            record = self.open_record(op_id)
+            if record["kind"] not in KINDS:
+                raise OperationRefused(f"operation {op_id} cannot be resubmitted")
             self.check_network()
+            wallet = record["wallet"]
             if self.find_wallet_tx(record) is not None:
                 raise OperationRefused("the message was accepted; record it instead")
-            if self.seqno(record["wallet"]) != record["seqno"]:
-                raise OperationRefused("the wallet's seqno moved; the message cannot execute")
-            if (
-                record["valid_until"] != ACTIVATION_VALID_UNTIL
-                and self.utime() >= record["valid_until"]
-            ):
-                raise OperationRefused("the message has expired; prove (c) instead")
+            if record["kind"] == "activate-owner":
+                # Not yet deployed: the address must be the StateInit's, and the
+                # account only funded, never active or frozen.
+                if wallet != f"-1:{record['state_init_hash']}":
+                    raise OperationRefused("the activation's address is not its StateInit's")
+                state = self.state(wallet)
+                if state != "uninitialized":
+                    raise OperationRefused(
+                        f"the owner wallet is {state}; the activation cannot run"
+                    )
+            else:
+                if self.seqno(wallet) != record["seqno"]:
+                    raise OperationRefused("the wallet's seqno moved; the message cannot execute")
+                current = self.identity(wallet)
+                if (
+                    not record.get("identity")
+                    or current is None
+                    or list(current) != record["identity"]
+                ):
+                    raise OperationRefused(
+                        "the wallet's identity changed; the message is not resubmitted"
+                    )
+                times = self.utimes()
+                if any(t >= record["valid_until"] for t in times):
+                    raise OperationRefused(f"the message has expired at {times}; prove (c) instead")
+                if self.balance(wallet) < record["value"] + FEE_ALLOWANCE_NANOTOS:
+                    raise OperationRefused(f"{wallet} cannot pay the message and its fee any more")
             if prerequisites:
                 prerequisites()
             self.nodes[0].call("sendBoc", boc=record["boc"])
@@ -984,7 +1267,10 @@ class Operations:
         for record in self.journal.all():
             if not record:
                 continue
-            row = {k: record.get(k) for k in ("id", "kind", "wallet", "state", "external_hash")}
+            row = {
+                k: record.get(k)
+                for k in ("id", "kind", "wallet", "state", "external_hash", "predecessor")
+            }
             if state_of(record) in ("signed", "broadcast"):
                 try:
                     row["chain"] = self.settle(record)

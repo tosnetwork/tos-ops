@@ -2,13 +2,15 @@
 
 Messages are queued when sent and executed only when the test lets time pass
 (`tick`), externals first, internal messages one hop per tick, so a message can
-be accepted and still in flight. Answers have the node's JSON shapes
-(getAddressInformation, runGetMethod, getTransactionsStd with message summaries,
-compute phase and previous_transaction_id); transaction data is a real
-transaction cell whose credit phase testnet_ops decodes. The external messages
-it executes are real-shaped wallet v3 messages (build_external), decoded with
-testnet_ops.decode_external, so the same bytes go through the coordinator's
-checks and the chain.
+be accepted and still in flight. Every message and transaction is a real cell
+(the TL-B layouts of crypto/block/block.tlb that testnet_ops decodes): a
+transaction's id is its root cell's hash, its in and out messages are message
+cells whose hashes the summaries carry, its description has the credit, compute
+and aborted fields. Answers have the node's JSON shapes (getAddressInformation,
+runGetMethod, getTransactionsStd with summaries and previous_transaction_id).
+The external messages it executes are real-shaped wallet v3 messages
+(build_external), decoded with testnet_ops.decode_external, so the same bytes go
+through the coordinator's checks and the chain.
 """
 
 from __future__ import annotations
@@ -16,17 +18,13 @@ from __future__ import annotations
 import base64
 import hashlib
 import itertools
+import os
 
 import testnet_lib as lib
 import testnet_ops as ops
 
 NANO = 10**9
 WALLET_CODE = lib.cell_from_bits("1" * 40)  # stands for wallet v3 code
-POOL_CODE_PLACEHOLDER = None
-
-
-def bits_of_address(address):
-    return lib.cell_from_bits("") if address is None else None
 
 
 def addr_bits(address):
@@ -57,10 +55,23 @@ def wallet_address(public_key, subwallet=0x504F4F4C):
     return f"-1:{wallet_state_init(public_key, subwallet).hash().hex()}"
 
 
-def internal_message(destination, value, bounce, init=None, body=None):
+def message_cell(
+    source,
+    destination,
+    value,
+    bounce,
+    bounced=False,
+    init=None,
+    body=None,
+    created_lt=0,
+    created_at=0,
+):
+    """An internal message (the template a wallet signs has source addr_none)."""
     body = body if body is not None else lib.cell_from_bits("")
-    bits = "0" + "1" + ("1" if bounce else "0") + "0" + "00" + addr_bits(destination)
-    bits += coins_bits(value) + "0" + "0000" + "0000" + "0" * 96
+    bits = "0" + "1" + ("1" if bounce else "0") + ("1" if bounced else "0")
+    bits += addr_bits(source) + addr_bits(destination)
+    bits += coins_bits(value) + "0" + "0000" + "0000"
+    bits += format(created_lt, "064b") + format(created_at, "032b")
     refs = []
     if init is not None:
         bits += "11"
@@ -70,6 +81,10 @@ def internal_message(destination, value, bounce, init=None, body=None):
     bits += "1"
     refs.append(body)
     return lib.cell_from_bits(bits, refs)
+
+
+def internal_message(destination, value, bounce, init=None, body=None):
+    return message_cell(None, destination, value, bounce, init=init, body=body)
 
 
 def build_external(
@@ -97,20 +112,60 @@ def build_external(
     return lib.serialize_boc(lib.cell_from_bits(bits, root_refs))
 
 
-def transaction_cell(account, lt, credit):
-    """A transaction cell whose description has a credit phase of `credit`."""
+def hashmap(entries, n):
+    """A non-empty Hashmap n ^Cell (hml_long labels), as an out_msgs dictionary."""
+    keys = {format(k, f"0{n}b"): v for k, v in entries.items()}
+
+    def node(keys, m):
+        label = os.path.commonprefix(list(keys))
+        bits = "10" + format(len(label), f"0{m.bit_length()}b") + label
+        rest = m - len(label)
+        if rest == 0:
+            return lib.cell_from_bits(bits, [next(iter(keys.values()))])
+        left = {k[len(label) + 1 :]: v for k, v in keys.items() if k[len(label)] == "0"}
+        right = {k[len(label) + 1 :]: v for k, v in keys.items() if k[len(label)] == "1"}
+        return lib.cell_from_bits(bits, [node(left, rest - 1), node(right, rest - 1)])
+
+    return node(keys, n)
+
+
+def transaction_cell(account, lt, in_cell, out_cells, success, aborted, credit, skipped=False):
+    """A transaction of the block.tlb layout with the fields testnet_ops decodes."""
     bits = "0111" + format(int(account.split(":")[1], 16), "0256b") + format(lt, "064b")
-    bits += "0" * 256 + "0" * 64 + "0" * 32 + "0" * 15 + "00" + "00"
-    bits += "0000" + "0"  # total fees: 0, no extra currencies
-    description = "0000" + "0" + "0"  # trans_ord, credit_first, no storage phase
-    if credit is None:
-        description += "0"
+    bits += "0" * 256 + "0" * 64 + "0" * 32 + format(len(out_cells), "015b") + "00" + "00"
+    msgs_bits, msgs_refs = "", []
+    if in_cell is not None:
+        msgs_bits += "1"
+        msgs_refs.append(in_cell)
     else:
-        description += "1" + "0" + coins_bits(credit) + "0"
+        msgs_bits += "0"
+    if out_cells:
+        msgs_bits += "1"
+        msgs_refs.append(hashmap(dict(enumerate(out_cells)), 15))
+    else:
+        msgs_bits += "0"
+    bits += "0000" + "0"  # total fees 0, no extra currencies
+    description = "0000" + "0" + "0"  # trans_ord, credit_first, no storage phase
+    description += "0" if credit is None else "1" + "0" + coins_bits(credit) + "0"
+    refs = []
+    if skipped:
+        description += "0" + "00"
+    else:
+        description += "1" + ("1" if success else "0") + "00" + "0000"
+        refs.append(lib.cell_from_bits("1"))
+    description += "0" + ("1" if aborted else "0") + "0" + "0"
     return lib.cell_from_bits(
         bits,
-        [lib.cell_from_bits(""), lib.cell_from_bits(""), lib.cell_from_bits(description)],
+        [
+            lib.cell_from_bits(msgs_bits, msgs_refs),
+            lib.cell_from_bits(""),
+            lib.cell_from_bits(description, refs),
+        ],
     )
+
+
+def summary(message):
+    return {k: v for k, v in message.items() if not k.startswith("_")}
 
 
 class Chain:
@@ -122,8 +177,8 @@ class Chain:
         self.internals = []
         self.lt = itertools.count(1000)
         self.now = 1_800_000_000
-        self.sent = []  # every sendBoc, in order
-        self.behaviour = {}  # address -> callable(chain, account, message) -> (success, out)
+        self.sent = []  # every sendBoc's external hash, in order
+        self.behaviour = {}  # address -> callable(chain, address, account, message, in_msg)
         self.extra_out = {}  # wallet -> (destination, value): one more message per transfer
 
     # -- accounts
@@ -176,21 +231,31 @@ class Chain:
 
     # -- execution
 
-    def record_tx(self, address, in_msg, out, success=True, aborted=False, credit=None):
+    def record_tx(
+        self, address, in_msg, out, success=True, aborted=False, credit=None, skipped=False
+    ):
         lt = next(self.lt)
         account = self.account(address)
-        tx_hash = hashlib.sha256(f"{address}{lt}".encode()).digest()
-        cell = transaction_cell(address, lt, credit)
+        cell = transaction_cell(
+            address,
+            lt,
+            in_msg.get("_cell"),
+            [m["_cell"] for m in out],
+            success,
+            aborted,
+            credit,
+            skipped,
+        )
         account["txs"].append(
             {
-                "transaction_id": {"lt": str(lt), "hash": base64.b64encode(tx_hash).decode()},
+                "transaction_id": {"lt": str(lt), "hash": base64.b64encode(cell.hash()).decode()},
                 "utime": self.now,
                 "data": base64.b64encode(lib.serialize_boc(cell)).decode(),
                 "in_msg": in_msg,
                 "out_msgs": out,
                 "aborted": aborted,
                 "compute": {
-                    "skipped": False,
+                    "skipped": skipped,
                     "success": success,
                     "exit_code": 0 if success else 33,
                 },
@@ -201,30 +266,30 @@ class Chain:
     def execute_external(self, decoded):
         address = decoded["destination"]
         account = self.account(address)
-        in_msg = {
-            "kind": "external",
-            "hash": base64.b64encode(bytes.fromhex(decoded["external_hash"])).decode(),
-        }
+        root = decoded["_root"]
+        in_msg = {"kind": "external", "hash": base64.b64encode(root.hash()).decode(), "_cell": root}
         if decoded["global_id"] != self.global_id:
             return  # never accepted
         if decoded["valid_until"] <= self.now:
             return
         if account["state"] != "active":
-            if decoded.get("_init") is None or decoded["seqno"] != 0:
+            init = decoded.get("_init")
+            if init is None or decoded["seqno"] != 0:
                 return
-            init = decoded["_init"]
             data = lib.Slice(init.refs[1])
-            data.bits(64)
+            data.bits(32)
+            subwallet = data.bits(32)
             account.update(
                 state="active",
                 code=init.refs[0],
                 seqno=1,
+                subwallet=subwallet,
                 public_key=data.bytes(32).hex(),
-                data=init.refs[1],
             )
+            account["data"] = wallet_data(1, subwallet, account["public_key"])
             self.record_tx(address, in_msg, [])
             return
-        if decoded["seqno"] != account["seqno"]:
+        if decoded["seqno"] != account["seqno"] or decoded["subwallet"] != account["subwallet"]:
             return
         account["seqno"] += 1
         account["data"] = wallet_data(account["seqno"], account["subwallet"], account["public_key"])
@@ -232,27 +297,36 @@ class Chain:
         out = []
         if internal and account["balance"] >= internal["value"]:
             account["balance"] -= internal["value"] + NANO // 100
-            message = self.emit(
-                address,
-                internal["destination"],
-                internal["value"],
-                internal["bounce"],
-                decoded.get("_body"),
-                init=decoded.get("_internal_init"),
+            out.append(
+                self.emit(
+                    address,
+                    internal["destination"],
+                    internal["value"],
+                    internal["bounce"],
+                    decoded.get("_body"),
+                    init=decoded.get("_internal_init"),
+                )
             )
-            out.append(message)
             if address in self.extra_out:
                 destination, value = self.extra_out[address]
                 out.append(self.emit(address, destination, value, False, None))
         self.record_tx(address, in_msg, out)
 
     def emit(self, source, destination, value, bounce, body, bounced=False, init=None):
-        message_hash = hashlib.sha256(
-            f"{source}{destination}{value}{next(self.lt)}".encode()
-        ).digest()
+        cell = message_cell(
+            source,
+            destination,
+            value,
+            bounce,
+            bounced,
+            init,
+            body,
+            created_lt=next(self.lt),
+            created_at=self.now,
+        )
         message = {
             "kind": "internal",
-            "hash": base64.b64encode(message_hash).decode(),
+            "hash": base64.b64encode(cell.hash()).decode(),
             "source": source,
             "destination": destination,
             "value": str(value),
@@ -260,6 +334,7 @@ class Chain:
             "_bounce": bounce,
             "_body": body,
             "_init": init,
+            "_cell": cell,
         }
         self.internals.append(message)
         return message
@@ -268,31 +343,33 @@ class Chain:
         destination = message["destination"]
         account = self.account(destination)
         value = int(message["value"])
-        in_msg = {k: v for k, v in message.items() if not k.startswith("_")}
         behaviour = self.behaviour.get(destination)
         if behaviour is not None:
-            behaviour(self, destination, account, message, in_msg)
+            behaviour(self, destination, account, message, message)
             return
         account["balance"] += value
         init = message.get("_init")
         if account["state"] != "active" and init is not None:
             # A deployment: the StateInit becomes the account's code and data.
             account.update(state="active", code=init.refs[0], data=init.refs[1])
-            self.record_tx(destination, in_msg, [], credit=value)
+            self.record_tx(destination, message, [], credit=value)
             return
         if account["state"] != "active":
-            self.record_tx(destination, in_msg, [], success=False, aborted=True, credit=value)
+            self.record_tx(
+                destination, message, [], success=False, aborted=True, credit=value, skipped=True
+            )
             return
-        self.record_tx(destination, in_msg, [], credit=value)
+        self.record_tx(destination, message, [], credit=value)
 
     # -- the node
 
-    def node(self, url, lag=False, broken=False, inclusive=False):
-        return ops.Node(url, NodeRpc(self, lag, broken, inclusive))
+    def node(self, url, lag=False, broken=False, inclusive=False, utime_offset=0, tamper=None):
+        return ops.Node(url, NodeRpc(self, lag, broken, inclusive, utime_offset, tamper))
 
     def send(self, boc):
         decoded = ops.decode_external(boc)
         root = lib.parse_boc(boc)
+        decoded["_root"] = root
         s = lib.Slice(root)
         s.bits(2)
         ops.read_address(s)
@@ -315,8 +392,9 @@ class Chain:
 
 
 class NodeRpc:
-    def __init__(self, chain, lag, broken, inclusive=False):
+    def __init__(self, chain, lag, broken, inclusive=False, utime_offset=0, tamper=None):
         self.chain, self.lag, self.broken, self.inclusive = chain, lag, broken, inclusive
+        self.utime_offset, self.tamper = utime_offset, tamper
 
     def visible(self, account):
         txs = account["txs"]
@@ -329,7 +407,7 @@ class NodeRpc:
         if method == "getMasterchainInfo":
             return {"init": dict(chain.zero_state), "last": {"seqno": 10}}
         if method == "getBlockHeader":
-            return {"global_id": chain.global_id, "gen_utime": chain.now}
+            return {"global_id": chain.global_id, "gen_utime": chain.now + self.utime_offset}
         if method == "sendBoc":
             chain.send(base64.b64decode(params["boc"]))
             return {}
@@ -337,15 +415,12 @@ class NodeRpc:
         txs = self.visible(account)
         if method == "getAddressInformation":
             last = txs[-1]["transaction_id"] if txs else {"lt": "0", "hash": ""}
+            code, data = account["code"], account["data"]
             return {
                 "state": "active" if account["state"] == "active" else "uninitialized",
                 "balance": str(account["balance"]),
-                "code": base64.b64encode(lib.serialize_boc(account["code"])).decode()
-                if account["code"]
-                else "",
-                "data": base64.b64encode(lib.serialize_boc(account["data"])).decode()
-                if account["data"]
-                else "",
+                "code": base64.b64encode(lib.serialize_boc(code)).decode() if code else "",
+                "data": base64.b64encode(lib.serialize_boc(data)).decode() if data else "",
                 "last_transaction_id": dict(last),
             }
         if method == "getTransactionsStd":
@@ -358,20 +433,16 @@ class NodeRpc:
                 # A cursor at the page's last transaction: the next page repeats it.
                 older = txs[: start + 2 - len(page)]
             prev = older[-1]["transaction_id"] if older else {"lt": "0", "hash": ""}
-            return {
+            answer = {
                 "transactions": [
-                    {k: v for k, v in t.items()}
-                    | {
-                        "in_msg": {k: v for k, v in t["in_msg"].items() if not k.startswith("_")},
-                        "out_msgs": [
-                            {k: v for k, v in m.items() if not k.startswith("_")}
-                            for m in t["out_msgs"]
-                        ],
-                    }
+                    dict(
+                        t, in_msg=summary(t["in_msg"]), out_msgs=[summary(m) for m in t["out_msgs"]]
+                    )
                     for t in page
                 ],
                 "previous_transaction_id": dict(prev),
             }
+            return self.tamper(answer) if self.tamper else answer
         if method == "runGetMethod":
             getter = params["method"]
             if getter == "seqno":
