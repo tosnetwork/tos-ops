@@ -461,6 +461,7 @@ def test_an_activation_is_resubmitted_identically(world, monkeypatch):
         operations.run("activate-x", p, lambda seqno: boc, lambda d: None)
     monkeypatch.undo()
     chain.now += 10**6
+    chain.account(address)["balance"] = 10 * NANO
     assert operations.resubmit("activate-x")["state"] == "settled"
 
 
@@ -1167,10 +1168,14 @@ def test_a_crash_while_creating_a_successor_leaves_none_or_one(world, monkeypatc
     with pytest.raises(OSError):
         operations.retry("fund-a", "torn")
     monkeypatch.undo()
-    # The torn successor is refused, never taken for a fresh attempt.
-    with pytest.raises(ops.OperationRefused, match="torn"):
-        run(operations, "fund-a", chain=chain)
-    assert chain.sent[1:] == []
+    # Published whole or not at all: no successor exists, the journal reads, and the
+    # retry can be asked for again without touching any record.
+    assert [n for n, _ in operations.journal.attempts("fund-a")] == [1]
+    assert operations.journal.all()
+    successor = operations.retry("fund-a", "again")
+    assert successor["id"] == "fund-a.attempt-2"
+    assert run(operations, "fund-a", chain=chain)["state"] == "settled"
+    assert len(chain.sent) == 2
 
 
 def test_a_successor_interrupted_before_signing_signs_once(world, monkeypatch):
@@ -1251,6 +1256,7 @@ def test_resubmit_refuses_an_activation_of_an_account_that_is_not_uninitialized(
     with pytest.raises(Crash):
         operations.run("activate-x", p, lambda seqno: boc, lambda d: None)
     monkeypatch.undo()
+    chain.account(address)["balance"] = 10 * NANO
     chain.account(address)["state"] = "active"
     chain.account(address)["code"] = fakechain.WALLET_CODE
     chain.account(address)["data"] = fakechain.wallet_data(1, 0x504F4F4C, "77" * 32)
@@ -1263,3 +1269,55 @@ def test_watching_an_operation_another_run_settled_returns_its_record(world):
     chain, operations, _ = world
     settled = run(operations, chain=chain)
     assert operations.watch("fund-a")["evidence"] == settled["evidence"]
+
+
+def test_an_activation_is_resubmitted_only_with_its_fee_budget(world, monkeypatch):
+    chain, operations, _ = world
+    address, boc, p = activation(chain)
+    crash_at(monkeypatch, "activate-x", "signed")
+    with pytest.raises(Crash):
+        operations.run("activate-x", p, lambda seqno: boc, lambda d: None)
+    monkeypatch.undo()
+    chain.account(address)["balance"] = ops.ACTIVATION_FEE_NANOTOS - 1
+    with pytest.raises(ops.OperationRefused, match="fee budget"):
+        operations.resubmit("activate-x")
+    assert chain.sent == []
+    chain.account(address)["balance"] = 10 * NANO
+    assert operations.resubmit("activate-x")["state"] == "settled"
+    assert len(chain.sent) == 1
+
+
+def test_form_d_names_the_transaction_that_took_the_records_own_seqno(world, monkeypatch):
+    # X lands between the boundary and the signature (taking seqno 1, so the
+    # message signs seqno 2); Y then takes seqno 2. (d) names Y, never X.
+    chain, operations, _ = world
+    real_seqno = operations.seqno
+
+    def x_lands_first(wallet):
+        if not chain.account(BOOT)["txs"]:
+            chain.send(
+                build_external(
+                    BOOT, 2, 1, chain.now + 300, internal_message(OTHER, NANO, False), salt=b"x"
+                )
+            )
+            chain.settle_all()
+        return real_seqno(wallet)
+
+    monkeypatch.setattr(operations, "seqno", x_lands_first)
+    crash_at(monkeypatch, "fund-a", "signed")
+    with pytest.raises(Crash):
+        run(operations, chain=chain)
+    monkeypatch.undo()
+    record = operations.journal.record("fund-a")
+    assert record["seqno"] == 2
+    chain.send(
+        build_external(
+            BOOT, 2, 2, chain.now + 300, internal_message(OTHER, 2 * NANO, False), salt=b"y"
+        )
+    )
+    chain.settle_all()
+    x, y = [t for t in chain.account(BOOT)["txs"] if t["in_msg"]["kind"] == "external"]
+    failed = operations.record_failed("fund-a", "d")
+    consumed = failed["evidence"]["consumed_by"]
+    assert consumed == ops.b64hash(y["transaction_id"]["hash"]).hex()
+    assert consumed != ops.b64hash(x["transaction_id"]["hash"]).hex()

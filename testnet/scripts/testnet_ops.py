@@ -59,6 +59,8 @@ EXPIRY_MARGIN = 120
 MAX_TTL = {"host": 120, "coordinator": 300}
 TTL_SKEW = 30
 ACTIVATION_VALID_UNTIL = 0xFFFFFFFF
+# What a wallet v3 self-deployment needs on its account before it is sent.
+ACTIVATION_FEE_NANOTOS = NANO // 10
 WALLET_V3_MODE = 3
 
 COORDINATOR_KINDS = ("fund", "activate-owner", "principal", "withdraw")
@@ -470,6 +472,18 @@ def verify_transaction(data: Any, tx_hash: str, address: str, tx_lt: int) -> dic
     }
 
 
+def external_seqno(tx: dict) -> int | None:
+    """The seqno an external message signed, decoded from the transaction's BOC."""
+    try:
+        root = lib.parse_boc(base64.b64decode(tx["data"]))
+        messages = lib.Slice(root.refs[0])
+        if not messages.bits(1):
+            return None
+        return decode_external(lib.serialize_boc(messages.take_ref()))["seqno"]
+    except (lib.TestnetError, ValueError, IndexError, KeyError):
+        return None
+
+
 def leaves(tx: dict, wallet: str) -> bool:
     """Whether a transaction sent value away from the wallet. A message to the
     wallet itself (tosctl's `wallet activate` deploys a wallet with one) moves
@@ -517,6 +531,35 @@ def append_line(path: Path, entry: dict) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
+    fsync_dir(path.parent)
+
+
+def publish_new(path: Path, entry: dict) -> None:
+    """A new record file holding one complete line, or none at all.
+
+    Written to a temporary file in the same directory, fsynced, then linked to its
+    name (which refuses an existing one) and the directory fsynced: a crash leaves
+    only a hidden temporary file, which nothing reads and the next attempt replaces.
+    """
+    data = (json.dumps(entry, sort_keys=True) + "\n").encode()
+    tmp = path.with_name(f".{path.name}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    try:
+        written = 0
+        while written < len(data):
+            count = os.write(fd, data[written:])
+            if count <= 0:
+                raise OperationRefused(f"{tmp}: the journal write made no progress")
+            written += count
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    try:
+        os.link(tmp, path)
+    except FileExistsError as exc:
+        raise OperationRefused(f"{path} exists already") from exc
+    finally:
+        os.unlink(tmp)
     fsync_dir(path.parent)
 
 
@@ -582,7 +625,11 @@ class Journal:
     def append(self, op_id: str, entry: dict) -> None:
         self.ensure()
         entry = dict(entry, utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
-        append_line(self.path(op_id), entry)
+        path = self.path(op_id)
+        if path.exists():
+            append_line(path, entry)
+        else:
+            publish_new(path, entry)
 
     def all(self) -> list[dict]:
         if not self.dir.is_dir():
@@ -1211,10 +1258,14 @@ class Operations:
         externals = [
             t
             for t in reversed(self.history(record["wallet"], record.get("boundary")))
-            if t["in_kind"] == "external" and t["compute_success"]
+            if t["in_kind"] == "external"
+            and t["compute_success"]
+            and external_seqno(t) == record["seqno"]
         ]
-        if not externals:
-            raise Unknown("no transaction in the history took the record's seqno")
+        if len(externals) != 1:
+            raise Unknown(
+                f"{len(externals)} transactions in the history took seqno {record['seqno']}"
+            )
         competitor = externals[0]
         return {"form": "d", "consumed_by": competitor["hash"], "explains": []}
 
@@ -1233,6 +1284,11 @@ class Operations:
                 # account only funded, never active or frozen.
                 if wallet != f"-1:{record['state_init_hash']}":
                     raise OperationRefused("the activation's address is not its StateInit's")
+                if self.balance(wallet) < ACTIVATION_FEE_NANOTOS:
+                    raise OperationRefused(
+                        f"{wallet} holds less than the activation's fee budget "
+                        f"({ACTIVATION_FEE_NANOTOS} nanotos); fund it first"
+                    )
                 state = self.state(wallet)
                 if state != "uninitialized":
                     raise OperationRefused(

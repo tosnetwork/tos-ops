@@ -1231,8 +1231,10 @@ def onboard(
     def step(text: str) -> None:
         print(f"== {name}: {text}", flush=True)
 
-    def settled(op_id: str) -> bool:
-        return ops.state_of(operations.journal.record(op_id)) == "settled"
+    def settled(step: str) -> bool:
+        """Whether a step's newest attempt is settled (a retried step is its successor)."""
+        journal = operations.journal
+        return ops.state_of(journal.record(journal.newest(step))) == "settled"
 
     def require(op_id: str) -> None:
         if not settled(op_id):

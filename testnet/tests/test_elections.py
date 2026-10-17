@@ -1889,3 +1889,21 @@ def test_a_failed_authorization_is_retried_as_a_new_attempt_by_a_person(boarding
     )
     assert b["ops"].journal.record("authorize-operations-node-1")["state"] == "failed"
     assert "enable-elections.sh" in b["host"].commands[-1]
+
+
+def test_a_retried_funding_is_what_the_next_steps_require(boarding, monkeypatch):
+    # The owner funding expires unsent and is recorded failed; its retry settles;
+    # activation and principal then require the newest attempt, not the failed one.
+    b = boarding
+    crash(monkeypatch, "fund-owner-node-1", "signed")
+    with pytest.raises(KeyboardInterrupt):
+        onboard(b)
+    monkeypatch.setattr(elections.ops, "crash_point", lambda i, p: None)
+    b["chain"].now += 500
+    b["ops"].record_failed("fund-owner-node-1", "c")
+    b["ops"].retry("fund-owner-node-1", "expired before broadcast")
+    onboard(b)
+    ids = settled_ids(b)
+    assert "fund-owner-node-1.attempt-2" in ids
+    assert {"activate-owner-node-1", "principal-node-1", "authorize-operations-node-1"} <= set(ids)
+    assert b["ops"].journal.record("fund-owner-node-1")["state"] == "failed"
