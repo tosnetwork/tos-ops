@@ -295,6 +295,13 @@ class Chain:
         account["data"] = wallet_data(account["seqno"], account["subwallet"], account["public_key"])
         internal = decoded["internal"]
         out = []
+        for transfer, body in decoded.get("_batch", []):
+            account["balance"] -= transfer["value"]
+            out.append(
+                self.emit(
+                    address, transfer["destination"], transfer["value"], transfer["bounce"], body
+                )
+            )
         if internal and account["balance"] >= internal["value"]:
             account["balance"] -= internal["value"] + NANO // 100
             out.append(
@@ -367,8 +374,25 @@ class Chain:
         return ops.Node(url, NodeRpc(self, lag, broken, inclusive, utime_offset, tamper))
 
     def send(self, boc):
-        decoded = ops.decode_external(boc)
         root = lib.parse_boc(boc)
+        try:
+            decoded = ops.decode_external(boc)
+        except lib.TestnetError:
+            # A batch: several transfers in one wallet v3 message (wallet3-code.fc).
+            decoded = dict(ops.decode_signed_header(root), internal=None, _batch=[])
+            decoded["external_hash"] = root.hash().hex()
+            body = lib.Slice(root.refs[-1])
+            body.bits(512 + 128)
+            while body.remaining() >= 8 and body.ref < len(body.cell.refs):
+                body.bits(8)
+                cell = body.take_ref()
+                internal = ops.decode_internal(cell)
+                decoded["_batch"].append((internal, cell.refs[-1]))
+            decoded["_root"] = root
+            decoded["_init"] = None
+            self.sent.append(decoded["external_hash"])
+            self.externals.append(decoded)
+            return
         decoded["_root"] = root
         s = lib.Slice(root)
         s.bits(2)

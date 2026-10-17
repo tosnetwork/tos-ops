@@ -1321,3 +1321,35 @@ def test_form_d_names_the_transaction_that_took_the_records_own_seqno(world, mon
     consumed = failed["evidence"]["consumed_by"]
     assert consumed == ops.b64hash(y["transaction_id"]["hash"]).hex()
     assert consumed != ops.b64hash(x["transaction_id"]["hash"]).hex()
+
+
+def batch_external(wallet, seqno, valid_until, transfers):
+    """A correctly shaped wallet v3 message with several transfers (mode + ref each)."""
+    import hashlib
+
+    signature = hashlib.sha512(b"batch" + bytes([seqno])).digest()
+    signed = "".join(format(b, "08b") for b in signature)
+    signed += (
+        format(2, "032b") + format(0, "032b") + format(valid_until, "032b") + format(seqno, "032b")
+    )
+    signed += "00000011" * len(transfers)
+    body = lib.cell_from_bits(signed, [internal_message(d, v, False) for d, v in transfers])
+    bits = "10" + "00" + fakechain.addr_bits(wallet) + "0000" + "0" + "1"
+    return lib.serialize_boc(lib.cell_from_bits(bits, [body]))
+
+
+def test_form_d_names_a_competing_batch_and_leaves_its_transfers_unexplained(world, monkeypatch):
+    chain, operations, _ = world
+    crash_at(monkeypatch, "fund-a", "signed")
+    with pytest.raises(Crash):
+        run(operations, chain=chain)
+    monkeypatch.undo()
+    chain.send(batch_external(BOOT, 1, chain.now + 300, [(OTHER, NANO), (DEST, 2 * NANO)]))
+    chain.settle_all()
+    batch = [t for t in chain.account(BOOT)["txs"] if t["in_msg"]["kind"] == "external"][0]
+    assert len(batch["out_msgs"]) == 2
+    failed = operations.record_failed("fund-a", "d")
+    assert failed["evidence"]["consumed_by"] == ops.b64hash(batch["transaction_id"]["hash"]).hex()
+    assert failed["evidence"]["explains"] == []
+    with pytest.raises(ops.OperationRefused, match="explains"):
+        run(operations, "fund-b", chain=chain)

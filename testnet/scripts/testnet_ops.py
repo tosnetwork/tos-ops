@@ -182,6 +182,32 @@ def decode_internal(cell: lib.Cell) -> dict:
     }
 
 
+def decode_signed_header(root: lib.Cell) -> dict:
+    """The wallet v3 signed header of an external message (global id, subwallet,
+    valid_until, seqno), whatever follows it. A wallet v3 accepts up to four
+    transfers per message (wallet3-code.fc), so a competitor that consumed a seqno
+    is identified by this header alone, not by decode_external's single-transfer
+    shape."""
+    s = lib.Slice(root)
+    if s.bits(2) != 0b10:
+        raise lib.TestnetError("not an external inbound message")
+    read_any_address(s)
+    destination = read_address(s)
+    read_coins(s)
+    _init_hash, _, body = read_init_and_body(s)
+    b = lib.Slice(body)
+    b.bits(512)
+    global_id = b.bits(32)
+    global_id -= (global_id >> 31) << 32
+    return {
+        "destination": destination,
+        "global_id": global_id,
+        "subwallet": b.bits(32),
+        "valid_until": b.bits(32),
+        "seqno": b.bits(32),
+    }
+
+
 def decode_external(boc: bytes) -> dict:
     """An external message to a wallet v3, as wallet-v3.fif, new-wallet-v3.fif and
     tosctl build it: the signature, then the signed part (global id, subwallet,
@@ -479,7 +505,7 @@ def external_seqno(tx: dict) -> int | None:
         messages = lib.Slice(root.refs[0])
         if not messages.bits(1):
             return None
-        return decode_external(lib.serialize_boc(messages.take_ref()))["seqno"]
+        return decode_signed_header(messages.take_ref())["seqno"]
     except (lib.TestnetError, ValueError, IndexError, KeyError):
         return None
 
