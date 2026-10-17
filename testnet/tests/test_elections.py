@@ -14,9 +14,10 @@ import stat
 import subprocess
 from pathlib import Path
 
+import fakechain
 import pytest
 import testnet_lib as lib
-from conftest import DATA, SCRIPTS, serialize_boc
+from conftest import DATA, SCRIPTS
 
 spec = importlib.util.spec_from_file_location("testnet_elections", SCRIPTS / "testnet-elections.py")
 elections = importlib.util.module_from_spec(spec)
@@ -929,15 +930,14 @@ def test_shell_scripts_parse_and_the_privilege_scripts_pass_shellcheck():
 
 # ---------------------------------------------------------------- the pool owner (offline)
 
-# A chain of accounts that answers the JSON-RPC calls the owner path makes, in the
-# node's shapes: getAddressInformation with the code BOC, runGetMethod seqno and
-# get_roles (stack top first: controller, validator, owner), getTransactions with
-# in_msg/out_msgs summaries and the compute phase, sendBoc. Signing is replaced by
-# a stand-in whose "signed message" says what it would do; the ledger applies it.
+# Onboarding and withdrawal on the asynchronous fake chain (fakechain.py): every
+# value-moving step is an operation; the host builds the operator's messages
+# (`wallet send --build-only`) and the coordinator checks, journals and sends them.
 
-COLD_OWNER = "-1:" + "0e" * 32
+COLD_OWNER = None  # set per test from the owner key the fake creates
 GENESIS_CONTROLLER = "-1:" + CONTROLLER
-HOST_WALLET = "-1:" + "6b" * 32  # an address a compromised host might print
+HOST_WALLET = "-1:" + "6b" * 32
+OP_KEY = "0b" * 32
 
 
 @pytest.fixture
@@ -948,117 +948,220 @@ def pinned_tos():
     return root
 
 
-def address_cell(address):
-    return lib.cell_from_bits(elections.address_bits(address))
+def plan_terms():
+    plan = elections.parse_operations_plan(PLAN, 2, CONTROLLER)
+    payload = lib.Slice(lib.parse_boc(base64.b64decode(plan["payload"])))
+    payer = elections.ops.read_address(payload)
+    terms = [elections.ops.read_coins(payload) for _ in range(4)] + [payload.bits(32)]
+    return plan, payer, terms
 
 
-class Ledger:
-    def __init__(self, tos_root):
-        self.code = elections.single_nominator_code(tos_root)
-        self.accounts = {}
-        self.sent = []
-        self.lt = 1000
-        self.pool_refuses = False
+def num(value):
+    return ["num", hex(value)]
 
-    def acct(self, address):
-        return self.accounts.setdefault(
-            address,
+
+def controller_behaviour(chain, epoch=0, nonce_step=1, terms_override=None, sponsor=None):
+    """The controller: deployed by its StateInit; a kind-4 request moves its nonce and
+    installs the terms; getters answer as the node lists them (top first)."""
+    plan, payer, terms = plan_terms()
+    state = {"nonce": 0, "terms": None}
+
+    def behave(chain_, address, account, message, in_msg):
+        value = int(message["value"])
+        account["balance"] += value
+        init = message.get("_init")
+        if init is not None and account["state"] != "active":
+            account.update(state="active", code=init.refs[0], data=init.refs[1])
+            chain_.record_tx(address, in_msg, [], credit=value)
+            return
+        state["nonce"] += nonce_step
+        state["terms"] = terms_override or terms
+        chain_.record_tx(address, in_msg, [], credit=value)
+
+    def controller_state():
+        return {
+            "exit_code": 0,
+            "stack": list(
+                reversed([num(epoch), num(state["nonce"]), num(1), num(0), ["cell", {"bytes": ""}]])
+            ),
+        }
+
+    def operating_state():
+        funds, permission, limit, floor, expires = state["terms"] or [0] * 5
+        who = sponsor or payer
+        slice_ = [
+            "slice",
             {
-                "state": "uninitialized",
-                "balance": 0,
-                "code": None,
-                "seqno": 0,
-                "roles": None,
-                "txs": [],
+                "bytes": base64.b64encode(
+                    lib.serialize_boc(lib.cell_from_bits(elections.address_bits(who)))
+                ).decode()
             },
-        )
+        ]
+        return {
+            "exit_code": 0,
+            "stack": list(
+                reversed(
+                    [num(funds), num(permission), num(limit), num(floor), num(expires), slice_]
+                )
+            ),
+        }
 
-    def credit(self, address, nanotos):
-        self.acct(address)["balance"] += nanotos
+    account = chain.account(GENESIS_CONTROLLER)
+    account["getters"] = {"controller_state": controller_state, "operating_state": operating_state}
+    chain.behaviour[GENESIS_CONTROLLER] = behave
+    return state
 
-    def tx(self, address, source, out=(), success=True):
-        self.lt += 1
-        self.acct(address)["txs"].append(
-            {
-                "transaction_id": {"lt": str(self.lt)},
-                "data": base64.b64encode(b"tx %d" % self.lt).decode(),
-                "in_msg": {"kind": "internal", "source": source, "destination": address},
-                "out_msgs": [
-                    {"kind": "internal", "destination": d, "value": str(v), "bounced": b}
-                    for d, v, b in out
-                ],
-                "compute": {"skipped": False, "success": success, "exit_code": 0 if success else 9},
+
+class BoardingHost:
+    """The validator host: init-operator.sh, tosctl (configuration, the operator wallet's
+    messages built and never sent, plan and status) and enable-elections.sh."""
+
+    def __init__(self, chain, tweak=None):
+        self.chain, self.tweak = chain, tweak or {}
+        self.config = {"pools": {}, "bindings": {}}
+        self.files = {}
+        self.commands = []
+        self.ready = True
+        self.operator = fakechain.wallet_address(OP_KEY, 698983191)
+
+    def run(self, command, timeout=300):
+        self.commands.append(command)
+        if "init-operator.sh" in command:
+            body = bytes([0x11, 0xFF]) + bytes.fromhex(self.operator.split(":")[1]) + b"\x00\x00"
+            return f"op-node-1 {base64.urlsafe_b64encode(body).decode()}\n"
+        if command.startswith("cat "):
+            return json.dumps(self.config)
+        if command.startswith("test -f "):
+            path = command.split()[2]
+            return base64.b64encode(self.files[path]).decode() if path in self.files else ""
+        if "enable-elections.sh" in command:
+            return "active\n"
+        raise AssertionError(command)
+
+    def put(self, local, remote, owner):
+        self.files[remote] = Path(local).read_bytes()
+
+    def tosctl(self, arguments, timeout=240):
+        self.commands.append("tosctl " + arguments)
+        words = arguments.split()
+
+        def flag(name, default=None):
+            return words[words.index(name) + 1] if name in words else default
+
+        if arguments.startswith("wallet activate"):
+            account = self.chain.account(self.operator)
+            init = fakechain.wallet_state_init(OP_KEY, 698983191)
+            self.chain.send(
+                fakechain.build_external(
+                    self.operator,
+                    2,
+                    0,
+                    elections.ops.ACTIVATION_VALID_UNTIL,
+                    init=init,
+                    subwallet=698983191,
+                )
+            )
+            self.chain.settle_all()
+            assert account["state"] == "active"
+            account["subwallet"] = 698983191
+            return ""
+        if arguments.startswith("wallet send") and "--build-only" in arguments:
+            destination = self.tweak.get("destination", flag("--to"))
+            value = int(flag("--amount-nanotos")) + self.tweak.get("value_delta", 0)
+            init_b64, body_b64 = flag("--state-init-boc"), flag("--body-boc")
+            init = lib.parse_boc(base64.b64decode(init_b64)) if init_b64 else None
+            body = lib.parse_boc(base64.b64decode(body_b64)) if body_b64 else None
+            seqno = self.chain.account(self.operator)["seqno"] + self.tweak.get("seqno_delta", 0)
+            boc = fakechain.build_external(
+                self.operator,
+                self.tweak.get("global_id", 2),
+                seqno,
+                self.chain.now + self.tweak.get("ttl", 120),
+                fakechain.internal_message(destination, value, "--bounce" in words, init, body),
+                subwallet=698983191,
+            )
+            return (
+                json.dumps(
+                    {
+                        "version": "tosctl.wallet-prepared-send.v1",
+                        "message_boc_base64": base64.b64encode(boc).decode(),
+                    }
+                )
+                + "\n"
+            )
+        if arguments.startswith("config pool add"):
+            self.config["pools"][flag("--name")] = {
+                "address": flag("--address"),
+                "owner": flag("--owner"),
+                "controller": flag("--controller"),
             }
-        )
-
-    def deploy_pool(self, owner, validator, controller, nanotos, address=None, code=None):
-        address = address or elections.pool_address(self.code, owner, validator, controller)
-        account = self.acct(address)
-        account.update(state="active", code=code or self.code, roles=(owner, validator, controller))
-        account["balance"] += nanotos
-        return address
-
-    def rpc(self, url, method, /, **params):
-        if method == "sendBoc":
-            return self.apply(json.loads(base64.b64decode(params["boc"])))
-        account = self.acct(params["address"])
-        if method == "getAddressInformation":
-            code = account["code"]
-            return {
-                "state": account["state"],
-                "balance": str(account["balance"]),
-                "code": base64.b64encode(serialize_boc(code)).decode() if code else "",
+            return ""
+        if arguments.startswith("config bind add"):
+            self.config["bindings"][flag("--node")] = {
+                "wallet": flag("--wallet"),
+                "pool": flag("--pool"),
             }
-        if method == "getTransactions":
-            return list(reversed(account["txs"]))[: params["limit"]]
-        if method == "runGetMethod" and params["method"] == "seqno":
-            if account["state"] != "active":
-                return {"exit_code": -13, "stack": []}
-            return {"exit_code": 0, "stack": [["num", hex(account["seqno"])]]}
-        if method == "runGetMethod" and params["method"] == "get_roles":
-            owner, validator, controller = account["roles"]
-            return {
-                "exit_code": 0,
-                "stack": [
-                    ["slice", {"bytes": base64.b64encode(serialize_boc(address_cell(a))).decode()}]
-                    for a in (controller, validator, owner)
-                ],
-            }
-        if method == "runGetMethod" and params["method"] == "active_election_id":
-            return {"exit_code": 0, "stack": [["num", "0x0"]]}
-        raise AssertionError(f"unexpected {method} {params}")
+            return ""
+        if arguments.startswith("config bind import-birth"):
+            output = flag("--output")
+            assert output not in self.files, "import-birth never overwrites"
+            self.files[output] = base64.b64decode(CONTROLLER_INIT)
+            self.config["bindings"][flag("--node")]["controller_birth_state_init_boc"] = output
+            return ""
+        if arguments.startswith("controller operations plan"):
+            return PLAN
+        if arguments.startswith("controller operations status"):
+            if not self.ready:
+                return "[BLOCKING] capital reserve 25 TOS, balance 22 TOS\n"
+            return "Funds: 20 TOS\nRoot authority: epoch 0 nonce 1\nStakes remaining: 4\n"
+        raise AssertionError(arguments)
 
-    def apply(self, message):
-        self.sent.append(message)
-        if message["kind"] == "deploy":
-            self.acct(message["wallet"]).update(state="active", seqno=1)
-            return {}
-        source, to, value = message["from"], message["to"], message["nanotos"]
-        sender = self.acct(source)
-        assert sender["seqno"] == message["seqno"], "a message signed for another seqno"
-        sender["seqno"] += 1
-        sender["balance"] -= value + NANO // 100  # the value and a fee
-        target = self.acct(to)
-        target["balance"] += value
-        if message.get("body", "").startswith("withdraw ") and target["roles"]:
-            if self.pool_refuses or target["roles"][0] != source:
-                self.tx(to, source, [(source, value - NANO // 100, True)], success=False)
-                target["balance"] -= value - NANO // 100
-                sender["balance"] += value - NANO // 100
-                return {}
-            asked = int(float(message["body"].split()[1]) * NANO)
-            pay = min(asked, target["balance"] - value - elections.POOL_STORAGE_NANOTOS)
-            out = pay + value - NANO // 200
-            target["balance"] -= out
-            sender["balance"] += out
-            self.tx(to, source, [(source, out, False)])
-        return {}
+
+CONTROLLER_INIT = base64.b64encode(
+    lib.serialize_boc(
+        lib.cell_from_bits("00110", [lib.cell_from_bits("101"), lib.cell_from_bits("11")])
+    )
+).decode()
 
 
 @pytest.fixture
-def signer(monkeypatch):
-    """wallet-v3 signing and the withdraw body replaced; the 'signed message' is its content."""
-    calls = {"sign": [], "body": []}
+def boarding(tmp_path, pinned_tos, monkeypatch):
+    chain = fakechain.Chain()
+    ceremony = tmp_path / "ceremony"
+    (ceremony / "secret").mkdir(parents=True, mode=0o700)
+    (ceremony / "genesis.json").write_text(json.dumps({"zero_state": chain.zero_state}))
+    (ceremony / "genesis-records.json").write_text(json.dumps([{"controller_id": CONTROLLER}]))
+    (ceremony / "secret" / "main-wallet.pk").write_bytes(b"\x01" * 32)
+    (ceremony / "main-wallet.addr").write_bytes(
+        bytes.fromhex("11" * 32) + (-1).to_bytes(4, "big", signed=True)
+    )
+    chain.wallet(elections.BOOTSTRAP_WALLET, 100_000 * NANO, public_key="b0" * 32)
+    controller = tmp_path / "controller.json"
+    controller.write_text(
+        json.dumps({"controller_id": CONTROLLER, "state_init_boc_b64": CONTROLLER_INIT})
+    )
+    host = BoardingHost(chain)
+    owner_key = "0e" * 32
+    owner = fakechain.wallet_address(owner_key)
+
+    def ensure_owner(args, name, global_id, previous, run=None):
+        paths = elections.pool_owner_paths(Path(args.ceremony), name)
+        paths["key"].write_bytes(b"\x02" * 32)
+        paths["addr"].parent.mkdir(exist_ok=True)
+        paths["addr"].write_bytes(
+            bytes.fromhex(owner.split(":")[1]) + (-1).to_bytes(4, "big", signed=True)
+        )
+        paths["init"].write_bytes(
+            fakechain.build_external(
+                owner,
+                2,
+                0,
+                elections.ops.ACTIVATION_VALID_UNTIL,
+                init=fakechain.wallet_state_init(owner_key),
+                subwallet=0x504F4F4C,
+            )
+        )
+        return owner
 
     def sign(
         args,
@@ -1074,76 +1177,338 @@ def signer(monkeypatch):
         body=None,
         run=None,
     ):
-        source = (
+        wallet = (
             f"{int.from_bytes(address_file[32:], 'big', signed=True)}:{address_file[:32].hex()}"
         )
-        calls["sign"].append(
-            dict(
-                key=Path(key),
-                source=source,
-                to=to,
-                subwallet=subwallet,
-                seqno=seqno,
-                amount=amount,
-                bounce=bounce,
-            )
+        body_cell = lib.parse_boc(Path(body).read_bytes()) if body else None
+        init_cell = lib.parse_boc(Path(init).read_bytes()) if init else None
+        return fakechain.build_external(
+            wallet,
+            global_id,
+            seqno,
+            chain.now + 300,
+            fakechain.internal_message(
+                to, elections.parse_tos(amount, "a"), bounce, init_cell, body_cell
+            ),
+            subwallet=subwallet,
         )
-        message = {
-            "kind": "transfer",
-            "from": source,
-            "to": to,
-            "seqno": seqno,
-            "nanotos": elections.parse_tos(amount, "amount"),
-            "body": body.read_text() if body else "",
-        }
-        return json.dumps(message).encode()
 
-    def make_body(args, amount_tos, work, run=None):
-        calls["body"].append(amount_tos)
-        path = work / "withdraw.boc"
-        path.write_text("withdraw " + amount_tos)
-        return path
-
+    monkeypatch.setattr(elections, "Host", lambda h, k: host)
+    monkeypatch.setattr(elections, "ensure_pool_owner", ensure_owner)
     monkeypatch.setattr(elections, "sign_wallet_v3", sign)
-    monkeypatch.setattr(elections, "withdraw_body", make_body)
-    monkeypatch.setattr(elections.time, "sleep", lambda s: None)
-    return calls
-
-
-def write_owner_files(ceremony, address=COLD_OWNER):
-    paths = elections.pool_owner_paths(ceremony, "node-1")
-    paths["key"].parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-    paths["key"].write_bytes(b"\x01" * 32)
-    paths["addr"].parent.mkdir(exist_ok=True)
-    workchain, account = address.split(":")
-    paths["addr"].write_bytes(
-        bytes.fromhex(account) + int(workchain).to_bytes(4, "big", signed=True)
+    monkeypatch.setattr(
+        elections,
+        "sign_operations",
+        lambda *a, **k: base64.b64encode(lib.serialize_boc(lib.cell_from_bits("1" * 9))).decode(),
     )
-    paths["init"].write_text(json.dumps({"kind": "deploy", "wallet": address}))
-    return paths
-
-
-# -- withdraw
-
-
-def withdraw_setup(tmp_path, pinned_tos, pool_nanotos=10_010 * NANO, owner_nanotos=5 * NANO):
-    ceremony = tmp_path / "ceremony"
-    write_owner_files(ceremony)
-    ledger = Ledger(pinned_tos)
-    pool = ledger.deploy_pool(COLD_OWNER, OPERATOR, GENESIS_CONTROLLER, pool_nanotos)
-    ledger.acct(COLD_OWNER).update(state="active", seqno=2, balance=owner_nanotos)
-    elections.record_pool(ceremony, "node-1", pool, COLD_OWNER, OPERATOR, GENESIS_CONTROLLER)
-    return ceremony, ledger, pool
-
-
-def withdraw_args(ceremony, tos_root, **extra):
-    args = dict(
+    monkeypatch.setattr(elections.time, "sleep", lambda s: chain.tick())
+    monkeypatch.setattr(elections.ops, "SETTLE_SECONDS", 60)
+    monkeypatch.setattr(elections.ops.time, "time", lambda: chain.now)
+    controller_behaviour(chain)
+    operations = elections.ops.Operations(
+        ceremony,
+        [chain.node("http://a"), chain.node("http://b")],
+        2,
+        clock=lambda: chain.now,
+        sleep=lambda s: chain.tick(),
+    )
+    args = elections.argparse.Namespace(
         name="node-1",
+        host="h",
+        ssh_key="k",
         ceremony=str(ceremony),
-        tos_root=str(tos_root),
+        controller=str(controller),
+        root_seed="seed",
+        controller_tool="tool",
+        tos_root=str(pinned_tos),
         fift="fift",
-        rpc="http://fake",
-        amount=None,
+        rpc="http://a",
+        previous_ceremony=[],
+    )
+    return {
+        "chain": chain,
+        "ops": operations,
+        "host": host,
+        "args": args,
+        "owner": owner,
+        "ceremony": ceremony,
+        "tos": pinned_tos,
+    }
+
+
+def onboard(b):
+    elections.onboard(b["args"], b["ops"], 2, lib.load_profile())
+
+
+def settled_ids(b):
+    return sorted(r["id"] for r in b["ops"].journal.all() if r and r["state"] == "settled")
+
+
+ALL_STEPS = [
+    "fund-op-node-1",
+    "deploy-controller-node-1",
+    "fund-owner-node-1",
+    "activate-owner-node-1",
+    "deploy-pool-node-1",
+    "principal-node-1",
+    "authorize-operations-node-1",
+]
+
+
+def test_onboard_moves_every_value_once_through_operations(boarding):
+    b = boarding
+    onboard(b)
+    e = lib.load_profile()["elections"]
+    assert settled_ids(b) == sorted(ALL_STEPS)
+    chain, owner = b["chain"], b["owner"]
+    pool = elections.pool_address(
+        elections.single_nominator_code(b["tos"]), owner, b["host"].operator, GENESIS_CONTROLLER
+    )
+    assert chain.account(pool)["balance"] == (e["pool_deploy_tos"] + e["pool_tos"]) * NANO
+    assert elections.read_pools(b["ceremony"])["node-1"]["principal_sent"] is True
+    # Exactly seven value messages and the operator's own deployment were ever sent.
+    assert len(chain.sent) == len(ALL_STEPS) + 1
+    assert "enable-elections.sh" in b["host"].commands[-1]
+
+
+def test_onboard_rerun_sends_nothing(boarding):
+    b = boarding
+    onboard(b)
+    sent = list(b["chain"].sent)
+    onboard(b)
+    assert b["chain"].sent == sent
+
+
+def crash(monkeypatch, op_id, point):
+    def hook(i, p):
+        if (i, p) == (op_id, point):
+            raise KeyboardInterrupt(f"{i}:{p}")
+
+    monkeypatch.setattr(elections.ops, "crash_point", hook)
+
+
+@pytest.mark.parametrize("op_id", ALL_STEPS)
+@pytest.mark.parametrize("point", ["signed", "broadcast", "delivered"])
+def test_an_interrupted_onboarding_never_sends_value_twice(boarding, monkeypatch, op_id, point):
+    b = boarding
+    crash(monkeypatch, op_id, point)
+    with pytest.raises(KeyboardInterrupt):
+        onboard(b)
+    monkeypatch.setattr(elections.ops, "crash_point", lambda i, p: None)
+    b["chain"].settle_all()
+    sent = list(b["chain"].sent)
+    with pytest.raises(lib.TestnetError, match="open"):
+        onboard(b)
+    assert b["chain"].sent == sent
+    # A person resolves it, and the rerun completes without a second message.
+    record = b["ops"].journal.record(op_id)
+    if point == "signed":
+        b["ops"].resubmit(
+            op_id,
+            expect=elections.expect_for(b["args"], record)
+            if record["kind"] in elections.ops.HOST_KINDS
+            else None,
+        )
+    else:
+        evidence = b["ops"].settle(
+            record,
+            elections.expect_for(b["args"], record)
+            if record["kind"] in elections.ops.HOST_KINDS
+            else None,
+        )[1]
+        b["ops"].record_settled(
+            op_id,
+            evidence["wallet_tx"],
+            elections.expect_for(b["args"], record)
+            if record["kind"] in elections.ops.HOST_KINDS
+            else None,
+        )
+    onboard(b)
+    assert settled_ids(b) == sorted(ALL_STEPS)
+    externals = b["chain"].sent
+    assert len(externals) == len(set(externals)) == len(ALL_STEPS) + 1
+
+
+@pytest.mark.parametrize(
+    "tweak,message",
+    [
+        ({"destination": HOST_WALLET}, "not the intended transfer"),
+        ({"value_delta": NANO}, "not the intended transfer"),
+        ({"global_id": 1}, "global id 1"),
+        ({"seqno_delta": 1}, "seqno"),
+        ({"ttl": 600}, "expires"),
+        ({"ttl": -1}, "expires"),
+    ],
+)
+def test_a_host_built_message_other_than_intended_is_never_sent(boarding, tweak, message):
+    b = boarding
+    b["host"].tweak = tweak
+    with pytest.raises(lib.TestnetError, match=message):
+        onboard(b)
+    # Only the bootstrap funding (built here) and the operator's self-deployment went out.
+    assert len(b["chain"].sent) == 2
+
+
+def test_the_principal_waits_for_the_owner_credit(boarding, monkeypatch):
+    # The owner funding is in flight when the run stops: the principal is not signed.
+    b = boarding
+    crash(monkeypatch, "fund-owner-node-1", "broadcast")
+    with pytest.raises(KeyboardInterrupt):
+        onboard(b)
+    monkeypatch.setattr(elections.ops, "crash_point", lambda i, p: None)
+    with pytest.raises(lib.TestnetError, match="open"):
+        onboard(b)
+    assert b["ops"].journal.record("principal-node-1") is None
+
+
+def test_a_principal_that_never_left_the_owner_is_failed_not_sent(boarding, monkeypatch):
+    b = boarding
+    real = elections.owner_transfer
+
+    def drain(*args, **kwargs):
+        b["chain"].account(b["owner"])["balance"] = NANO  # spent between the check and the send
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(elections, "owner_transfer", drain)
+    with pytest.raises(lib.TestnetError):
+        onboard(b)
+    # Refused before signing: the owner's balance is checked right before the signature.
+    record = b["ops"].journal.record("principal-node-1")
+    assert record["state"] == "planned"
+    assert not elections.read_pools(b["ceremony"]).get("node-1", {}).get("principal_sent")
+    assert not any("enable-elections" in c for c in b["host"].commands)
+
+
+def test_readiness_is_tosctls_full_assessment(boarding):
+    b = boarding
+    b["host"].ready = False
+    with pytest.raises(lib.TestnetError, match="not ready"):
+        onboard(b)
+    assert "authorize-operations-node-1" in settled_ids(b)
+    assert not any("enable-elections" in c for c in b["host"].commands)
+
+
+@pytest.mark.parametrize(
+    "override", [{"epoch": 1}, {"terms": [1, 2, 3, 4, 5]}, {"sponsor": HOST_WALLET}]
+)
+def test_authorization_completion_is_the_exact_request(boarding, override):
+    b = boarding
+    controller_behaviour(
+        b["chain"],
+        epoch=override.get("epoch", 0),
+        terms_override=override.get("terms"),
+        sponsor=override.get("sponsor"),
+    )
+    with pytest.raises(lib.TestnetError, match="failed"):
+        onboard(b)
+    assert b["ops"].journal.record("authorize-operations-node-1")["state"] == "failed"
+
+
+def test_a_later_root_action_does_not_undo_completion(boarding):
+    b = boarding
+    controller_behaviour(b["chain"], nonce_step=2, terms_override=[9, 9, 9, 9, 9])
+    onboard(b)
+    assert "authorize-operations-node-1" in settled_ids(b)
+
+
+def test_birth_import_recovers_a_retained_artifact_without_overwriting(boarding):
+    b = boarding
+    host = b["host"]
+    output = f"{elections.TOSCTL_DIR}/controller-birth-node-1.boc"
+    host.files[output] = base64.b64decode(CONTROLLER_INIT)  # the crash left the file only
+    onboard(b)
+    path = host.config["bindings"]["node-1"]["controller_birth_state_init_boc"]
+    assert path != output and path.startswith(output[:-4])
+
+
+def test_birth_import_refuses_a_foreign_retained_artifact(boarding):
+    b = boarding
+    b["host"].files[f"{elections.TOSCTL_DIR}/controller-birth-node-1.boc"] = lib.serialize_boc(
+        lib.cell_from_bits("1")
+    )
+    with pytest.raises(lib.TestnetError, match="not this controller's birth"):
+        onboard(b)
+
+
+def test_configuration_steps_resume_one_by_one(boarding, monkeypatch):
+    b = boarding
+    real = b["host"].tosctl
+
+    def stop_after_pool_add(arguments, timeout=240):
+        out = real(arguments, timeout)
+        if arguments.startswith("config pool add"):
+            raise KeyboardInterrupt("after pool add")
+        return out
+
+    monkeypatch.setattr(b["host"], "tosctl", stop_after_pool_add)
+    with pytest.raises(KeyboardInterrupt):
+        onboard(b)
+    monkeypatch.setattr(b["host"], "tosctl", real)
+    onboard(b)
+    assert b["host"].config["bindings"]["node-1"]["controller_birth_state_init_boc"]
+    assert sum(c.startswith("tosctl config pool add") for c in b["host"].commands) == 1
+
+
+def test_a_pool_configured_otherwise_on_the_host_is_refused(boarding):
+    b = boarding
+    b["host"].config["pools"]["pool-node-1"] = {
+        "address": HOST_WALLET,
+        "owner": HOST_WALLET,
+        "controller": GENESIS_CONTROLLER,
+    }
+    with pytest.raises(lib.TestnetError, match="configured on the host"):
+        onboard(b)
+
+
+# -- withdraw (P2-B and explicit ids)
+
+
+def boarded(boarding):
+    onboard(boarding)
+    chain, owner = boarding["chain"], boarding["owner"]
+    pool = elections.read_pools(boarding["ceremony"])["node-1"]["pool"]
+    chain.behaviour[pool] = pool_behaviour(owner)
+    return pool
+
+
+def pool_behaviour(owner, refuse=False):
+    def behave(chain, address, account, message, in_msg):
+        value = int(message["value"])
+        account["balance"] += value
+        body = message.get("_body")
+        if body is None or body.bits < 32 or lib.Slice(body).bits(32) != 0x1000:
+            chain.record_tx(address, in_msg, [], credit=value)
+            return
+        roles = account.get("roles_override")
+        stored_owner = roles[0] if roles else owner
+        if refuse or message["source"] != stored_owner:
+            account["balance"] -= value
+            chain.record_tx(
+                address,
+                in_msg,
+                [chain.emit(address, message["source"], value, False, None, bounced=True)],
+                success=False,
+                credit=value,
+            )
+            return
+        s = lib.Slice(body)
+        s.bits(96)
+        asked = elections.ops.read_coins(s)
+        pay = min(asked, account["balance"] - value - NANO) + value - NANO // 200
+        account["balance"] -= pay
+        chain.record_tx(
+            address, in_msg, [chain.emit(address, owner, pay, True, None)], credit=value
+        )
+
+    return behave
+
+
+def withdraw_args(b, **extra):
+    args = dict(
+        vars(b["args"]),
+        id="withdraw-1",
+        new=True,
+        amount="5",
         all=False,
         during_election=False,
         dry_run=False,
@@ -1152,133 +1517,146 @@ def withdraw_args(ceremony, tos_root, **extra):
     return elections.argparse.Namespace(**args)
 
 
-def run_withdraw(ceremony, ledger, tos_root, **extra):
-    chain = elections.Chain("http://fake", ledger.rpc)
-    return elections.withdraw(withdraw_args(ceremony, tos_root, **extra), chain, 2)
+@pytest.fixture
+def withdraw_body_stub(monkeypatch):
+    def body(args, amount_tos, work, run=None):
+        nanotos = elections.parse_tos(amount_tos, "a")
+        path = work / "withdraw.boc"
+        path.write_bytes(
+            lib.serialize_boc(
+                lib.cell_from_bits(
+                    format(0x1000, "032b") + format(1, "064b") + fakechain.coins_bits(nanotos)
+                )
+            )
+        )
+        return path
+
+    monkeypatch.setattr(elections, "withdraw_body", body)
 
 
-def test_withdraw_is_signed_by_the_offline_owner_and_recorded(tmp_path, pinned_tos, signer):
-    ceremony, ledger, pool = withdraw_setup(tmp_path, pinned_tos)
-    result = run_withdraw(ceremony, ledger, pinned_tos, amount="5")
-    [sign] = signer["sign"]
-    assert sign["key"] == ceremony / "secret" / "pool-owner-node-1.pk"
-    assert (sign["source"], sign["to"], sign["subwallet"], sign["seqno"]) == (
-        COLD_OWNER,
-        pool,
-        0x504F4F4C,
-        2,
-    )
-    assert sign["bounce"] is True and sign["amount"] == "1.000000000"
-    assert signer["body"] == ["5.000000000"]
-    assert result["paid_nanotos"] >= 5 * NANO
-    logged = json.loads((ceremony / "withdrawals.jsonl").read_text())
-    assert logged["requested_nanotos"] == 5 * NANO and logged["pool"] == pool
-    assert len(list((ceremony / "sent").glob("*-owner-node-1-seq2-withdraw-*.boc"))) == 1
+def elector_idle(chain):
+    elector = chain.account(elections.ELECTOR)
+    elector["getters"] = {"active_election_id": lambda: {"exit_code": 0, "stack": [num(0)]}}
 
 
-def test_a_small_withdrawal_is_judged_by_the_pools_answer(tmp_path, pinned_tos, signer):
-    # 0.001 TOS comes back smaller than the 1 TOS the message cost the owner: the
-    # owner's balance falls, yet the withdrawal succeeded and is recorded.
-    ceremony, ledger, _ = withdraw_setup(tmp_path, pinned_tos)
-    result = run_withdraw(ceremony, ledger, pinned_tos, amount="0.001")
-    assert result["owner_balance_after_nanotos"] < result["owner_balance_before_nanotos"]
-    assert (ceremony / "withdrawals.jsonl").is_file()
-
-
-def test_withdraw_all_of_a_nearly_empty_pool_is_recorded(tmp_path, pinned_tos, signer):
-    ceremony, ledger, _ = withdraw_setup(tmp_path, pinned_tos, pool_nanotos=NANO + NANO // 10)
-    result = run_withdraw(ceremony, ledger, pinned_tos, all=True)
-    assert signer["body"] == [elections.WITHDRAW_ALL_TOS]
-    assert result["paid_nanotos"] > 0
-    assert (ceremony / "withdrawals.jsonl").is_file()
-
-
-def test_a_refused_withdrawal_is_reported_and_not_recorded(tmp_path, pinned_tos, signer):
-    ceremony, ledger, _ = withdraw_setup(tmp_path, pinned_tos)
-    ledger.pool_refuses = True
-    with pytest.raises(lib.TestnetError, match="refused the withdrawal"):
-        run_withdraw(ceremony, ledger, pinned_tos, amount="5")
-    assert not (ceremony / "withdrawals.jsonl").exists()
-
-
-def test_withdraw_dry_run_signs_and_keeps_but_sends_nothing(tmp_path, pinned_tos, signer):
-    ceremony, ledger, _ = withdraw_setup(tmp_path, pinned_tos)
-    result = run_withdraw(ceremony, ledger, pinned_tos, amount="1", dry_run=True)
-    assert result["dry_run"] is True and ledger.sent == []
-    assert len(list((ceremony / "sent").glob("*.boc"))) == 1
-    assert not (ceremony / "withdrawals.jsonl").exists()
+def test_withdraw_by_explicit_id(boarding, withdraw_body_stub):
+    pool = boarded(boarding)
+    elector_idle(boarding["chain"])
+    result = elections.withdraw(withdraw_args(boarding), boarding["ops"], 2)
+    assert result["paid_nanotos"] >= 5 * NANO and result["pool"] == pool
+    # The same id again reports its settled outcome and sends nothing.
+    sent = list(boarding["chain"].sent)
+    elections.withdraw(withdraw_args(boarding, new=False), boarding["ops"], 2)
+    assert boarding["chain"].sent == sent
 
 
 @pytest.mark.parametrize(
-    "change,extra,message",
+    "extra,message",
     [
-        ("election", {"amount": "1"}, "election 1792209863 is open"),
-        (None, {"amount": "10009.5"}, "withdrawable"),
-        ("empty", {"all": True}, "holds only"),
-        ("roles", {"amount": "1"}, "reports roles"),
-        ("code", {"amount": "1"}, "pinned single-nominator code"),
+        ({"new": False, "id": "withdraw-9"}, "create a withdrawal with --new"),
+        ({"id": "Bad Id"}, "not an operation id"),
     ],
 )
-def test_withdraw_refusals(tmp_path, pinned_tos, signer, monkeypatch, change, extra, message):
-    ceremony, ledger, pool = withdraw_setup(tmp_path, pinned_tos)
-    if change == "election":
-        real = ledger.rpc
-
-        def rpc(url, method, /, **params):
-            if params.get("method") == "active_election_id":
-                return {"exit_code": 0, "stack": [["num", hex(1792209863)]]}
-            return real(url, method, **params)
-
-        monkeypatch.setattr(ledger, "rpc", rpc)
-    elif change == "empty":
-        ledger.acct(pool)["balance"] = NANO
-    elif change == "roles":
-        ledger.acct(pool)["roles"] = (OPERATOR, OPERATOR, GENESIS_CONTROLLER)
-    elif change == "code":
-        ledger.acct(pool)["code"] = lib.cell_from_bits("1010")
+def test_withdraw_ids_carry_intent(boarding, withdraw_body_stub, extra, message):
+    boarded(boarding)
+    elector_idle(boarding["chain"])
     with pytest.raises(lib.TestnetError, match=message):
-        run_withdraw(ceremony, ledger, pinned_tos, **extra)
-    assert ledger.sent == [] and signer["sign"] == []
+        elections.withdraw(withdraw_args(boarding, **extra), boarding["ops"], 2)
 
 
-def test_withdraw_refuses_a_pool_recorded_with_another_owner(tmp_path, pinned_tos, signer):
-    ceremony, ledger, _ = withdraw_setup(tmp_path, pinned_tos)
-    write_owner_files(ceremony, "-1:" + "aa" * 32)
-    with pytest.raises(lib.TestnetError, match="recorded owner"):
-        run_withdraw(ceremony, ledger, pinned_tos, amount="1")
+def test_withdraw_new_on_an_existing_id_and_changed_parameters_are_refused(
+    boarding, withdraw_body_stub
+):
+    boarded(boarding)
+    elector_idle(boarding["chain"])
+    elections.withdraw(withdraw_args(boarding), boarding["ops"], 2)
+    with pytest.raises(lib.TestnetError, match="exists"):
+        elections.withdraw(withdraw_args(boarding), boarding["ops"], 2)
 
 
-def test_withdraw_reports_a_pool_that_never_answers(tmp_path, pinned_tos, signer, monkeypatch):
-    ceremony, ledger, _ = withdraw_setup(tmp_path, pinned_tos)
-    monkeypatch.setattr(
-        ledger,
-        "apply",
-        lambda message: (
-            ledger.sent.append(message) or ledger.acct(COLD_OWNER).update(seqno=3) or {}
-        ),
+def test_withdraw_after_the_validator_was_replaced_still_pays_the_owner(
+    boarding, withdraw_body_stub
+):
+    pool = boarded(boarding)
+    chain = boarding["chain"]
+    elector_idle(chain)
+    data = chain.account(pool)["data"]
+    s = lib.Slice(data)
+    owner_bits = "".join(str(s.bits(1)) for _ in range(267))
+    s.bits(267)
+    controller_bits = "".join(str(s.bits(1)) for _ in range(267))
+    chain.account(pool)["data"] = lib.cell_from_bits(
+        owner_bits + elections.address_bits(HOST_WALLET) + controller_bits
     )
-    with pytest.raises(lib.TestnetError, match="has not processed the withdrawal"):
-        run_withdraw(ceremony, ledger, pinned_tos, amount="1")
+    assert elections.withdraw(withdraw_args(boarding), boarding["ops"], 2)["paid_nanotos"] > 0
+
+
+@pytest.mark.parametrize("change", ["owner", "code"])
+def test_withdraw_refuses_a_pool_with_another_owner_or_code(boarding, withdraw_body_stub, change):
+    pool = boarded(boarding)
+    chain = boarding["chain"]
+    elector_idle(chain)
+    if change == "owner":
+        data = lib.Slice(chain.account(pool)["data"])
+        data.bits(267)
+        rest = "".join(str(data.bits(1)) for _ in range(534))
+        chain.account(pool)["data"] = lib.cell_from_bits(elections.address_bits(HOST_WALLET) + rest)
+    else:
+        chain.account(pool)["code"] = lib.cell_from_bits("1")
+    sent = list(chain.sent)
+    with pytest.raises(lib.TestnetError):
+        elections.withdraw(withdraw_args(boarding), boarding["ops"], 2)
+    assert chain.sent == sent
+
+
+def test_withdraw_refuses_while_an_election_is_open(boarding, withdraw_body_stub):
+    boarded(boarding)
+    elector = boarding["chain"].account(elections.ELECTOR)
+    elector["getters"] = {"active_election_id": lambda: {"exit_code": 0, "stack": [num(7)]}}
+    with pytest.raises(lib.TestnetError, match="election 7 is open"):
+        elections.withdraw(withdraw_args(boarding), boarding["ops"], 2)
+
+
+def test_a_principal_resubmit_after_the_pool_roles_changed_is_refused(boarding, monkeypatch):
+    b = boarding
+    crash(monkeypatch, "principal-node-1", "signed")
+    with pytest.raises(KeyboardInterrupt):
+        onboard(b)
+    monkeypatch.setattr(elections.ops, "crash_point", lambda i, p: None)
+    pool = elections.read_pools(b["ceremony"])["node-1"]["pool"]
+    data = lib.Slice(b["chain"].account(pool)["data"])
+    owner_bits = "".join(str(data.bits(1)) for _ in range(267))
+    data.bits(267)
+    rest = "".join(str(data.bits(1)) for _ in range(267))
+    b["chain"].account(pool)["data"] = lib.cell_from_bits(
+        owner_bits + elections.address_bits(HOST_WALLET) + rest
+    )
+    args = elections.argparse.Namespace(
+        **dict(vars(b["args"]), command="resubmit", id="principal-node-1")
+    )
+    with pytest.raises(lib.TestnetError, match="reports roles"):
+        elections.manual(args, b["ops"], lib.load_profile())
+    assert b["ops"].journal.record("principal-node-1")["state"] == "signed"
+
+
+# -- records, names and the pool address
 
 
 def test_pool_record_never_changes_its_roles(tmp_path):
     ceremony = tmp_path / "ceremony"
     ceremony.mkdir()
+    owner = "-1:" + "0e" * 32
     elections.record_pool(
-        ceremony, "node-1", "-1:" + "50" * 32, COLD_OWNER, OPERATOR, GENESIS_CONTROLLER
+        ceremony, "node-1", "-1:" + "50" * 32, owner, OPERATOR, GENESIS_CONTROLLER
     )
     assert elections.record_pool(ceremony, "node-1", principal_sent=True)["principal_sent"]
     with pytest.raises(lib.TestnetError, match="owner"):
         elections.record_pool(ceremony, "node-1", owner=OPERATOR)
-    assert elections.read_pools(ceremony)["node-1"]["owner"] == COLD_OWNER
 
 
 def test_owner_names_are_checked():
     with pytest.raises(lib.TestnetError, match="not a node name"):
         elections.pool_owner_paths(Path("/c"), "../x")
-
-
-# -- the pool address
 
 
 def test_pool_address_is_the_one_tosctl_deployed(pinned_tos):
@@ -1295,221 +1673,16 @@ def test_pool_address_is_the_one_tosctl_deployed(pinned_tos):
     )
 
 
-def test_roles_are_read_in_the_nodes_stack_order(pinned_tos):
-    ledger = Ledger(pinned_tos)
-    pool = ledger.deploy_pool(COLD_OWNER, OPERATOR, GENESIS_CONTROLLER, NANO)
-    chain = elections.Chain("http://fake", ledger.rpc)
-    assert chain.pool_roles(pool) == (COLD_OWNER, OPERATOR, GENESIS_CONTROLLER)
-
-
-# -- onboard
-
-
-class OnboardHost:
-    """A validator host: what init-operator.sh, tosctl and enable-elections.sh answer."""
-
-    def __init__(self, ledger, prints=None):
-        self.ledger, self.prints = ledger, prints
-        self.tosctl_calls, self.pools, self.authorized = [], {}, False
-
-    def run(self, command, timeout=300):
-        if "init-operator.sh" in command:
-            body = bytes([0x11, 0xFF]) + bytes.fromhex(OPERATOR.split(":")[1]) + b"\x00\x00"
-            return f"op-node-1 {base64.urlsafe_b64encode(body).decode()}\n"
-        if command.startswith("cat "):
-            return json.dumps({"pools": self.pools})
-        if "enable-elections.sh" in command:
-            return "active\n"
-        raise AssertionError(command)
-
-    def put(self, local, remote, owner):
-        pass
-
-    def tosctl(self, arguments, timeout=240):
-        self.tosctl_calls.append(arguments)
-        words = arguments.split()
-        flag = lambda name: words[words.index(name) + 1]  # noqa: E731
-        if arguments.startswith("wallet activate"):
-            self.ledger.acct(OPERATOR).update(state="active", seqno=1)
-        elif arguments.startswith("wallet send") and "--body-boc" in arguments:
-            self.authorized = True
-        elif arguments.startswith("wallet send") and "--state-init-boc" in arguments:
-            self.ledger.acct(GENESIS_CONTROLLER)["state"] = "active"
-            self.ledger.tx(GENESIS_CONTROLLER, OPERATOR)
-        elif arguments.startswith("deploy pool"):
-            owner = flag("--owner")
-            pool = self.ledger.deploy_pool(
-                owner, OPERATOR, flag("--controller"), elections.parse_tos(flag("--amount"), "a")
-            )
-            return deploy_output(address=self.prints or pool)
-        elif arguments.startswith("config pool add"):
-            self.pools[flag("--name")] = {"address": flag("--address"), "owner": flag("--owner")}
-        elif arguments.startswith("controller operations status"):
-            if not self.authorized:
-                return "kind 4 never accepted"
-            return "Funds: 20 TOS\nRoot authority: epoch 0 nonce 1\nStakes remaining: 4\n"
-        elif arguments.startswith("controller operations plan"):
-            return PLAN
-        return ""
-
-
-def onboard_setup(tmp_path, pinned_tos, monkeypatch, signer, prints=None):
-    ceremony = tmp_path / "ceremony"
-    ceremony.mkdir()
-    (ceremony / "genesis-records.json").write_text(json.dumps([{"controller_id": CONTROLLER}]))
-    controller = tmp_path / "controller.json"
-    controller.write_text(json.dumps({"controller_id": CONTROLLER, "state_init_boc_b64": "te6"}))
-    ledger = Ledger(pinned_tos)
-    ledger.acct(elections.BOOTSTRAP_WALLET).update(state="active", balance=100_000 * NANO)
-    host = OnboardHost(ledger, prints)
-    funded = []
-
-    def fund(fund_args, chain, global_id):
-        nanotos = elections.parse_tos(fund_args.amount, "amount")
-        funded.append((fund_args.to, nanotos))
-        ledger.credit(fund_args.to, nanotos)
-
-    def ensure_owner(args, name, global_id, previous, run=None):
-        write_owner_files(Path(args.ceremony))
-        return COLD_OWNER
-
-    monkeypatch.setattr(elections, "Host", lambda h, k: host)
-    monkeypatch.setattr(elections, "fund", fund)
-    monkeypatch.setattr(elections, "ensure_pool_owner", ensure_owner)
-    monkeypatch.setattr(elections, "sign_operations", lambda *a, **k: "te6signed")
-    args = elections.argparse.Namespace(
-        name="node-1",
-        host="h",
-        ssh_key="k",
-        ceremony=str(ceremony),
-        controller=str(controller),
-        root_seed="seed",
-        controller_tool="tool",
-        tos_root=str(pinned_tos),
-        fift="fift",
-        rpc="http://fake",
-        previous_ceremony=[],
+def test_malformed_getter_stacks_are_testnet_errors():
+    with pytest.raises(lib.TestnetError):
+        elections.read_stack({"exit_code": 0, "stack": [["num"]]}, 1, "x")
+    with pytest.raises(lib.TestnetError):
+        elections.stack_int(["slice", 5])
+    chain = elections.Chain(
+        "u", lambda url, m, **p: {"exit_code": 0, "stack": [["slice", "x"]] * 3}
     )
-    chain = elections.Chain("http://fake", ledger.rpc)
-    return args, chain, ledger, host, funded, ceremony
-
-
-def principal_sends(ledger):
-    return [m for m in ledger.sent if m["kind"] == "transfer" and m["from"] == COLD_OWNER]
-
-
-def test_onboard_gives_the_pool_to_the_offline_owner(tmp_path, pinned_tos, monkeypatch, signer):
-    args, chain, ledger, host, funded, ceremony = onboard_setup(
-        tmp_path, pinned_tos, monkeypatch, signer
-    )
-    profile = lib.load_profile()
-    e = profile["elections"]
-    elections.onboard(args, chain, 2, profile)
-    pool = elections.pool_address(ledger.code, COLD_OWNER, OPERATOR, GENESIS_CONTROLLER)
-    # The operator wallet gets fee money only; the owner the principal and its reserve.
-    assert funded == [
-        (OPERATOR, e["operator_funding_tos"] * NANO),
-        (COLD_OWNER, (e["pool_tos"] + e["pool_owner_reserve_tos"]) * NANO),
-    ]
-    [deploy] = [c for c in host.tosctl_calls if c.startswith("deploy pool")]
-    assert f"--owner {COLD_OWNER} " in deploy and f"--amount {e['pool_deploy_tos']}" in deploy
-    [add] = [c for c in host.tosctl_calls if c.startswith("config pool add")]
-    assert f"--address {pool} --owner {COLD_OWNER} " in add
-    # The owner activated itself, then sent exactly the principal to the verified pool.
-    assert ledger.sent[0] == {"kind": "deploy", "wallet": COLD_OWNER}
-    [principal] = principal_sends(ledger)
-    assert (principal["to"], principal["nanotos"]) == (pool, e["pool_tos"] * NANO)
-    assert ledger.acct(pool)["roles"] == (COLD_OWNER, OPERATOR, GENESIS_CONTROLLER)
-    assert ledger.acct(pool)["balance"] == (e["pool_deploy_tos"] + e["pool_tos"]) * NANO
-    record = elections.read_pools(ceremony)["node-1"]
-    assert record == {
-        "pool": pool,
-        "owner": COLD_OWNER,
-        "operator": OPERATOR,
-        "controller": GENESIS_CONTROLLER,
-        "principal_sent": True,
-    }
-
-
-def test_onboard_rerun_never_sends_the_principal_twice(tmp_path, pinned_tos, monkeypatch, signer):
-    args, chain, ledger, host, funded, ceremony = onboard_setup(
-        tmp_path, pinned_tos, monkeypatch, signer
-    )
-    profile = lib.load_profile()
-    elections.onboard(args, chain, 2, profile)
-    # The local flag lost: the chain (the owner's seqno) still says it was sent.
-    pools = json.loads((ceremony / "pools.json").read_text())
-    del pools["node-1"]["principal_sent"]
-    (ceremony / "pools.json").write_text(json.dumps(pools))
-    elections.onboard(args, chain, 2, profile)
-    assert len(principal_sends(ledger)) == 1
-    assert [to for to, _ in funded].count(COLD_OWNER) == 1
-
-
-def test_onboard_refuses_a_pool_address_the_host_made_up(tmp_path, pinned_tos, monkeypatch, signer):
-    args, chain, ledger, host, funded, ceremony = onboard_setup(
-        tmp_path, pinned_tos, monkeypatch, signer, prints=HOST_WALLET
-    )
-    ledger.acct(HOST_WALLET).update(state="active")
-    with pytest.raises(lib.TestnetError, match="is not the pool of owner"):
-        elections.onboard(args, chain, 2, lib.load_profile())
-    assert principal_sends(ledger) == []
-    assert "node-1" not in elections.read_pools(ceremony)
-
-
-def test_onboard_refuses_a_pool_the_host_owns(tmp_path, pinned_tos, monkeypatch, signer):
-    # A host that deploys its own pool (itself as owner) and prints its address.
-    args, chain, ledger, host, funded, ceremony = onboard_setup(
-        tmp_path, pinned_tos, monkeypatch, signer
-    )
-    own = ledger.deploy_pool(OPERATOR, OPERATOR, GENESIS_CONTROLLER, 2 * NANO)
-    host.prints = own
-    with pytest.raises(lib.TestnetError, match="is not the pool of owner"):
-        elections.onboard(args, chain, 2, lib.load_profile())
-    assert principal_sends(ledger) == []
-
-
-def test_onboard_refuses_a_pool_with_other_code(tmp_path, pinned_tos, monkeypatch, signer):
-    args, chain, ledger, host, funded, ceremony = onboard_setup(
-        tmp_path, pinned_tos, monkeypatch, signer
-    )
-    real = ledger.deploy_pool
-
-    def other_code(owner, validator, controller, nanotos, address=None, code=None):
-        address = real(owner, validator, controller, nanotos)
-        ledger.acct(address)["code"] = lib.cell_from_bits("1")
-        return address
-
-    monkeypatch.setattr(ledger, "deploy_pool", other_code)
-    with pytest.raises(lib.TestnetError, match="pinned single-nominator code"):
-        elections.onboard(args, chain, 2, lib.load_profile())
-    assert principal_sends(ledger) == []
-
-
-def test_onboard_checks_the_pool_again_before_the_principal(
-    tmp_path, pinned_tos, monkeypatch, signer
-):
-    # A run that stopped after the pool was recorded: the rerun must not trust the
-    # record, because the pool on chain may have changed since (here its roles).
-    args, chain, ledger, host, funded, ceremony = onboard_setup(
-        tmp_path, pinned_tos, monkeypatch, signer
-    )
-    real_apply = ledger.apply
-
-    def lost(message):
-        if message["kind"] == "transfer" and message["from"] == COLD_OWNER:
-            raise lib.TestnetError("connection reset")
-        return real_apply(message)
-
-    monkeypatch.setattr(ledger, "apply", lost)
-    with pytest.raises(lib.TestnetError, match="connection reset"):
-        elections.onboard(args, chain, 2, lib.load_profile())
-    monkeypatch.setattr(ledger, "apply", real_apply)
-    pool = elections.read_pools(ceremony)["node-1"]["pool"]
-    ledger.acct(pool)["roles"] = (COLD_OWNER, HOST_WALLET, GENESIS_CONTROLLER)
-    with pytest.raises(lib.TestnetError, match="reports roles"):
-        elections.onboard(args, chain, 2, lib.load_profile())
-    assert principal_sends(ledger) == []
+    with pytest.raises(lib.TestnetError):
+        chain.pool_roles("-1:" + "50" * 32)
 
 
 # -- the owner key (real fift)
@@ -1611,3 +1784,23 @@ def test_real_owner_transfer_is_signed_as_asked(tmp_path):
     destination_wc = internal.bits(8)
     assert f"{destination_wc - 256}:{internal.bytes(32).hex()}" == pool
     assert read_coins(internal) == 20_010_500_000_000
+
+
+def test_the_pool_is_checked_again_right_before_the_principal(boarding, monkeypatch):
+    b = boarding
+    crash(monkeypatch, "principal-node-1", "planned")
+    with pytest.raises(KeyboardInterrupt):
+        onboard(b)
+    monkeypatch.setattr(elections.ops, "crash_point", lambda i, p: None)
+    pool = elections.read_pools(b["ceremony"])["node-1"]["pool"]
+    data = lib.Slice(b["chain"].account(pool)["data"])
+    owner_bits = "".join(str(data.bits(1)) for _ in range(267))
+    data.bits(267)
+    rest = "".join(str(data.bits(1)) for _ in range(267))
+    b["chain"].account(pool)["data"] = lib.cell_from_bits(
+        owner_bits + elections.address_bits(HOST_WALLET) + rest
+    )
+    sent = list(b["chain"].sent)
+    with pytest.raises(lib.TestnetError, match="reports roles"):
+        onboard(b)
+    assert b["chain"].sent == sent

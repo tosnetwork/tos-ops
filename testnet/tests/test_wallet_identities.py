@@ -320,6 +320,9 @@ def onboard_setup(tmp_path, monkeypatch, account: bytes):
     ceremony.mkdir()
     controller = "77" * 32
     (ceremony / "genesis-records.json").write_text(json.dumps([{"controller_id": controller}]))
+    (ceremony / "genesis.json").write_text(
+        json.dumps({"zero_state": {"root_hash": "r", "file_hash": "f"}})
+    )
     (tmp_path / "controller.json").write_text(json.dumps({"controller_id": controller}))
     body = bytes([0x11, 0xFF]) + account
     friendly = base64.urlsafe_b64encode(body + b"\x00\x00").decode()
@@ -346,7 +349,8 @@ def onboard_setup(tmp_path, monkeypatch, account: bytes):
         fift="fift",
         previous_ceremony=[],
     )
-    return ceremony, args, elections.Chain("http://fake", rpc)
+    nodes = [elections.ops.Node("http://fake-a", rpc), elections.ops.Node("http://fake-b", rpc)]
+    return ceremony, args, elections.ops.Operations(ceremony, nodes, 2)
 
 
 def test_onboard_records_the_operator_wallet(tmp_path, monkeypatch):
@@ -356,7 +360,8 @@ def test_onboard_records_the_operator_wallet(tmp_path, monkeypatch):
     (previous / "wallets.json").write_text(json.dumps(earlier_epoch()))
     args.previous_ceremony = [str(previous)]
     profile = lib.load_profile()
-    with pytest.raises(Stop, match="getAddressInformation"):
+    # Recorded before the chain is asked anything; the network check comes next.
+    with pytest.raises(Stop, match="getMasterchainInfo"):
         elections.onboard(args, chain, 2, profile)
     assert json.loads((ceremony / "wallets.json").read_text()) == {"op-a": OP_B}
 
