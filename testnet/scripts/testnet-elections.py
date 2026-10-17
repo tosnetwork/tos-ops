@@ -2,42 +2,47 @@
 """Bring the four genesis validators into ordinary elections (coordinator side),
 and drive load through a post-quantum high-volume wallet.
 
-  fund    --ceremony DIR --tos-root DIR --fift PATH --rpc URL
-          --to ADDRESS --amount TOS --label LABEL [--dry-run]
+  fund    --ceremony DIR --tos-root DIR --fift PATH --rpc URL --confirm-rpc URL
+          --to ADDRESS --amount TOS --label LABEL [--id ID] [--dry-run]
       Send TOS from the genesis bootstrap wallet (wallet v3 at -1:111...1).
       The transfer is signed with tos crypto/smartcont/wallet-v3.fif and a
       preloaded `<global id> constant tos-global-id`, so the signature commits
       to the testnet global id. Non-bounce, the sender pays fees, 300 s
-      expiry. Waits until the wallet's seqno moves on. Every signed transfer
-      is kept in DIR/sent/.
+      expiry. It is operation ID (default: the label; see onboard) and returns
+      when both validators show it delivered.
 
   onboard --name NAME --host HOST --ssh-key FILE --ceremony DIR
           --controller FILE --root-seed FILE --controller-tool PATH
-          --tos-root DIR --fift PATH --rpc URL [--previous-ceremony DIR]...
+          --tos-root DIR --fift PATH --rpc URL --confirm-rpc URL
+          [--previous-ceremony DIR]...
       For one genesis validator, in order, stopping at the first failure:
       init-operator.sh on the host; record the operator wallet address as
       op-NAME in DIR/wallets.json, refusing an address an earlier epoch's
-      ceremony recorded (see "Resets" below); fund the operator wallet from the
-      bootstrap wallet; activate it; deploy the controller (its state init
-      from testnet-operator.py controller); make the pool owner, a wallet v3
-      in the masterchain (subwallet 0x504F4F4C) whose key is created here in
-      DIR/secret/pool-owner-NAME.pk and never leaves this machine (address and
-      self-deploy message in DIR/pool-owners/, label pool-owner-NAME in
-      wallets.json), fund it from the bootstrap wallet with the stake money
-      and activate it; deploy the pool from the operator wallet with only
-      pool_deploy_tos, with that owner, the operator wallet as its validator
-      and the controller; record it in DIR/pools.json; bind node, wallet and
-      pool; import the controller's birth; have the owner send the principal
-      (pool_tos) to the pool, signed here. The address the host prints is
-      checked first, from here: it must be the address the pinned
-      single-nominator code and the three roles derive to, and on chain an
-      active account with that code whose get_roles are exactly these roles
-      (again before the principal, also on a rerun). Whether the principal has
-      gone is read from the owner wallet's seqno, never from a local flag;
-      plan the operating authorization on the host, sign it here with the
-      offline root seed, and send it from the operator wallet; then
-      enable-elections.sh. Each step checks its result first, so a rerun
-      continues where the last one stopped.
+      ceremony recorded (see "Resets" below); fund it from the bootstrap
+      wallet (operator_funding_tos) and activate it; deploy the controller;
+      make the pool owner, a wallet v3 in the masterchain (subwallet
+      0x504F4F4C) whose key is created here in DIR/secret/pool-owner-NAME.pk
+      and never leaves this machine (address and self-deploy message in
+      DIR/pool-owners/, label pool-owner-NAME in wallets.json), fund it with
+      the stake money and activate it; deploy the pool (the StateInit derived
+      here from the pinned code and owner, operator wallet, controller) with
+      pool_deploy_tos from the operator wallet; configure pool, binding and
+      the controller's birth in tosctl on the host; have the owner send the
+      principal (pool_tos); plan the operating authorization on the host, sign
+      it here with the offline root seed and send it; check readiness
+      (tosctl's full assessment); enable-elections.sh.
+
+      Every step that moves value is an operation (testnet_ops.py; ids
+      fund-op-, deploy-controller-, fund-owner-, activate-owner-, deploy-pool-,
+      principal-, authorize-operations-NAME) journaled in DIR/operations/.
+      The operator wallet's messages are built on the host by `tosctl wallet
+      send --build-only` and checked, journaled and broadcast from here.
+      Before each signature the signing wallet's whole history is read on
+      both --rpc and --confirm-rpc; unexplained transfers, another open
+      operation of the wallet or history the two do not agree on refuse.
+      Settlement is by hashes, on both. A rerun skips settled operations,
+      resumes the configuration from the host's tosctl config, and refuses an
+      open operation: a person resolves it with reconcile, record or resubmit.
 
   refund  --name NAME --host HOST --ssh-key FILE --ceremony DIR
           --controller FILE --root-seed FILE --controller-tool PATH
@@ -63,23 +68,29 @@ and drive load through a post-quantum high-volume wallet.
       refund is appended to DIR/refunds.jsonl. --dry-run plans, checks the
       reserve and signs, reports the window, and sends nothing.
 
-  withdraw --name NAME --ceremony DIR --tos-root DIR --fift PATH --rpc URL
-          (--amount TOS | --all) [--during-election] [--dry-run]
-      Take stake principal out of NAME's pool (DIR/pools.json) to its owner.
-      The pool's WITHDRAW message (op 0x1000, tos
-      crypto/smartcont/single-nominator-pool/withdraw.fif) is signed here with
-      the owner's offline key as a bounceable 1 TOS transfer from the owner
-      wallet; the pool pays the amount (capped at its balance less the message
-      value and 1 TOS storage) and the unspent value back to the owner. Only
-      liquid balance can leave: a stake at the Elector returns to the pool when
-      the election task recovers it after stake_held_for. Refused while an
-      election is open (the task stakes from this balance) unless
-      --during-election, and unless the recorded pool passes the same checks as
-      at onboarding. Success is the pool's transaction for the owner's message:
-      compute succeeded and a non-bounced payment went to the owner. Each
-      withdrawal is appended to DIR/withdrawals.jsonl with that payment; a
-      refusal is reported and not recorded; --dry-run signs and keeps the
-      message in DIR/sent/.
+  withdraw --name NAME --id ID [--new] --ceremony DIR --tos-root DIR --fift PATH
+          --rpc URL --confirm-rpc URL (--amount TOS | --all) [--during-election]
+          [--dry-run]
+      Take stake principal out of NAME's pool (DIR/pools.json) to its owner, as
+      operation ID (--new creates it; an existing id never changes its
+      parameters, and a settled one only reports its outcome). The pool's
+      WITHDRAW (op 0x1000, the pool's own withdraw.fif) is signed here with the
+      owner's offline key as a bounceable 1 TOS transfer from the owner wallet.
+      Refused while an election is open unless --during-election, and unless
+      the pool is the recorded address with the pinned code and the owner role
+      (the validator role may have been replaced). It settles when both
+      validators show the pool's payment and the owner's transaction that kept
+      it; appended to DIR/withdrawals.jsonl. Only liquid balance can leave: a
+      stake returns to the pool after stake_held_for.
+
+  reconcile | record --id ID (--settled | --failed a|b|c|d) [--hint TX]
+          | resubmit --id ID | baseline --wallet ADDR --reason TEXT
+          (with --ceremony DIR --tos-root DIR --fift PATH --rpc URL --confirm-rpc URL)
+      The person's side of an open operation (testnet_ops.py): reconcile
+      prints every record against the chain and every unexplained transfer;
+      record verifies the evidence on both validators before it writes;
+      resubmit sends the original message while it can still execute;
+      baseline accepts a wallet's history from before the journal.
 
   load   --ceremony DIR --tos-root DIR --fift PATH --rpc URL --key-tool PATH
           --state DIR [--target-gas-per-block N | --batches-per-second R]

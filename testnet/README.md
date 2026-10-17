@@ -59,8 +59,11 @@ testnet/
 │   ├── init-operator.sh          tosctl vault, console key and operator wallet on a validator host (root)
 │   ├── enable-elections.sh       election policy and the election task on a validator host (root)
 │   ├── testnet-elections.py      fund | onboard: bring a genesis validator into elections;
+│   │                             withdraw: principal back to the offline pool owner;
+│   │                             reconcile | record | resubmit | baseline: a person resolves an open operation;
 │   │                             refund: top up a controller's operating funds (CEREMONY.md 8.1);
 │   │                             load: load test through a post-quantum high-volume wallet (coordinator)
+│   ├── testnet_ops.py            value-moving operations: journal, two-validator gate, settlement by hashes
 │   ├── retire-host.sh            archive a host's evidence, then retire it from an ended epoch (root)
 │   ├── migrate-nonroot-services.sh  once per host: move the election task / alert peer off root (root)
 │   └── rehearse-loopback.sh      the whole ceremony on one host, unprivileged
@@ -329,12 +332,14 @@ genesis`, `testnet-elections.py onboard` and `load`), beside `manifest
 
 - The plan's two independent G0 rehearsal receipts. Epoch 1 was a real
   multi-host run, but by one coordinator acting for all four operators.
-- Elections: `testnet-elections.py onboard` (CEREMONY.md section 8.1) codifies
-  what epoch 1 ran by hand. Its parsers are pinned to real `tosctl` output, but
-  the whole command has not yet run end to end; its first run is the next
-  epoch, and it must finish before the first election opens at T + 4 h
-  (`genesis.json` `first_election`). `refund` replaces the hand-run renewal of
-  the operating authorization the same way and has not run end to end either.
+- Elections: `testnet-elections.py onboard` (CEREMONY.md section 8.1) ran end
+  to end on loopback rehearsals at tos d7ef85b4c, including runs killed at every
+  value-moving boundary and resolved with reconcile/record/resubmit; its first
+  run on the hosts is epoch 4, and it must finish before the first election
+  opens at T + 4 h (`genesis.json` `first_election`). The host-side scripts as
+  root (systemd units, the `tos-ctl` user) were not part of those rehearsals.
+  `refund` is not yet an operation (it sends over tosctl on the host as before)
+  and has not run end to end.
 - Authenticated global-config distribution (production gap G7) and a refresh
   schedule for `init_block` (`scripts/refresh-global-config-init-block.py` in
   tos, run with `--global-id 2`).
