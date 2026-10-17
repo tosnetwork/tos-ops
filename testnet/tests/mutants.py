@@ -1,0 +1,524 @@
+#!/usr/bin/env python3
+"""Mutation guards for the operations journal and the election task.
+
+Each mutant replaces one exact snippet of a script, runs the whole suite and
+restores the file. Every mutant must make the suite fail. The run itself fails
+when a pattern does not occur exactly once (a guard that silently stopped
+running), when two mutants are identical, when the unmutated suite is not green,
+or when any mutant survives.
+
+    TOS_ROOT=<tos checkout> python testnet/tests/mutants.py [LABEL ...]
+
+LABEL is the first word of a mutant's label (O4, N14b, ...); none runs them all.
+Not collected by pytest.
+"""
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+W = Path(__file__).resolve().parents[1]
+OPS = W / "scripts/testnet_ops.py"
+EL = W / "scripts/testnet-elections.py"
+
+M = [
+    (
+        "O1 gate ignores unexplained activity",
+        OPS,
+        '            if leaves(tx, wallet) and tx["hash"] not in explained:\n                described',
+        "            if False:\n                described",
+    ),
+    (
+        "O2 gate ignores other open operations",
+        OPS,
+        'if record["id"] != op_id and state_of(record) in ("signed", "broadcast"):',
+        "if False:",
+    ),
+    (
+        "O3 a self-message counts as value leaving",
+        OPS,
+        'return any(m["destination"] != wallet for m in tx["out"])',
+        'return bool(tx["out"])',
+    ),
+    (
+        "O4 validators' histories not compared",
+        OPS,
+        "        if histories[0] != histories[1]:\n",
+        "        if False:\n",
+    ),
+    ("O5 global id not checked", OPS, 'if decoded["global_id"] != self.global_id:', "if False:"),
+    ("O6 seqno not checked", OPS, 'if decoded["seqno"] != seqno:', "if False:"),
+    (
+        "O7 expiry not checked",
+        OPS,
+        'if not now < decoded["valid_until"] <= now + ttl + TTL_SKEW:',
+        "if False:",
+    ),
+    (
+        "O8 internal message not compared",
+        OPS,
+        "        if actual != expected:",
+        "        if False:",
+    ),
+    (
+        "O9 signing wallet not checked",
+        OPS,
+        'if decoded["destination"] != params["wallet"]:',
+        "if False:",
+    ),
+    (
+        "O10 broadcast before the signed line",
+        OPS,
+        '            crash_point(op_id, "signed")\n            self.nodes[0].call("sendBoc", boc=base64.b64encode(boc).decode())',
+        '            self.nodes[0].call("sendBoc", boc=base64.b64encode(boc).decode())\n            crash_point(op_id, "signed")',
+    ),
+    (
+        "O11 an open operation is sent again",
+        OPS,
+        '            if state_of(record) in ("signed", "broadcast"):\n                raise OperationRefused(\n                    f"operation {op_id} is open',
+        '            if False:\n                raise OperationRefused(\n                    f"operation {op_id} is open',
+    ),
+    (
+        "O12 wallet transaction found without the hash",
+        OPS,
+        'if tx["in_kind"] == "external" and tx["in_hash"] == record["external_hash"]\n',
+        'if tx["in_kind"] == "external"\n',
+    ),
+    (
+        "O13 not exactly the required message accepted",
+        OPS,
+        'if len(tx["out"]) != 1 or len(wanted) != 1:',
+        "if not wanted:",
+    ),
+    (
+        "O14 a bounced credit settles",
+        OPS,
+        '            if any(m["bounced"] for m in delivery["out"]):\n                return "failed", dict(evidence, form="b", reason="the credit bounced")',
+        '            if False:\n                return "failed", dict(evidence, form="b", reason="the credit bounced")',
+    ),
+    ("O15 destination failure ignored", OPS, "if not took_effect(delivery):", "if False:"),
+    ("O16 receipt may bounce", OPS, '            and not receipt["out"]\n', ""),
+    (
+        "O17 receipt credit not compared",
+        OPS,
+        '            and receipt["credit"] == payment["value"]\n',
+        "",
+    ),
+    (
+        "O18 expiry without margin",
+        OPS,
+        'if any(t < record["valid_until"] + EXPIRY_MARGIN for t in times):',
+        'if any(t < record["valid_until"] for t in times):',
+    ),
+    (
+        "O19 activation may expire",
+        OPS,
+        'if record["kind"] == "activate-owner" or record["valid_until"] == ACTIVATION_VALID_UNTIL:',
+        "if False:",
+    ),
+    (
+        "O20 (d) without identity",
+        OPS,
+        "if not identity or current is None or list(current) != list(identity):",
+        "if False:",
+    ),
+    (
+        "O21 resubmit after the seqno moved",
+        OPS,
+        '                if self.seqno(wallet) != record["seqno"]:\n                    raise OperationRefused("the wallet\'s seqno moved; the message cannot execute")',
+        '                if False:\n                    raise OperationRefused("the wallet\'s seqno moved; the message cannot execute")',
+    ),
+    (
+        "O22 record --settled ignores the hint",
+        OPS,
+        '            if hint not in (evidence.get("wallet_tx"), evidence.get("destination_tx")):\n                raise OperationRefused(\n',
+        "            if False:\n                raise OperationRefused(\n",
+    ),
+    (
+        "O23 record --failed without terminal evidence",
+        OPS,
+        'if outcome != "failed" or evidence.get("form") != form:',
+        "if False:",
+    ),
+    ("O24 parameters may change", OPS, "        if mismatch:", "        if False:"),
+    (
+        "O25 a failed id retried",
+        OPS,
+        '            if state_of(record) == "failed":\n                raise OperationRefused(\n                    f"operation {op_id} failed (',
+        '            if False:\n                raise OperationRefused(\n                    f"operation {op_id} failed (',
+    ),
+    ("O26 torn line accepted", OPS, 'if text and not text.endswith("\\n"):', "if False:"),
+    ("O27 no lock", OPS, "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)", "pass"),
+    (
+        "O28 a directory fsync syncs nothing",
+        OPS,
+        "    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)\n    try:\n        os.fsync(fd)\n",
+        "    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)\n    try:\n        pass\n",
+    ),
+    (
+        "O29 no dedup",
+        OPS,
+        "                if tx_hash in seen:\n                    continue\n",
+        "",
+    ),
+    (
+        "O30 boundary not required",
+        OPS,
+        '                if boundary:\n                    raise Unknown(f"{self.url}: {address} boundary {boundary} not in its history")\n',
+        "",
+    ),
+    (
+        "O31 network not checked",
+        OPS,
+        '                raise OperationRefused(f"{node.url} serves another network (zero state)")',
+        "                pass",
+    ),
+    (
+        "E1 pool owned by the operator",
+        EL,
+        "    pool = pool_address(code, owner, operator, controller)",
+        "    pool = pool_address(code, operator, operator, controller)",
+    ),
+    (
+        "E2 principal one TOS short",
+        EL,
+        "        principal,\n        None,\n",
+        "        principal - NANO,\n        None,\n",
+    ),
+    (
+        "E3 principal without the pool check",
+        EL,
+        '        require(f"activate-owner-{name}")\n        verify_pool_both(operations, args.tos_root, pool, owner, operator, controller)\n',
+        '        require(f"activate-owner-{name}")\n',
+    ),
+    (
+        "E4 principal without the balance check",
+        EL,
+        "if balance < principal + ops.FEE_ALLOWANCE_NANOTOS // 10:",
+        "if False:",
+    ),
+    (
+        "E5 withdraw without the owner-role check",
+        EL,
+        "        owner_role_check(operations, args.tos_root, pool, owner)\n",
+        "",
+    ),
+    (
+        "E6 withdraw during an election",
+        EL,
+        "if election and not args.during_election:",
+        "if False:",
+    ),
+    ("E7 --new on an existing id", EL, "if args.new and record is not None:", "if False:"),
+    (
+        "E8 authorization epoch ignored",
+        EL,
+        "if epoch != planned_epoch or nonce <= planned_nonce:",
+        "if nonce <= planned_nonce:",
+    ),
+    (
+        "E9 authorization terms ignored",
+        EL,
+        "values[1:] != [permission, limit, floor, expires] or sponsor != payer",
+        "False",
+    ),
+    (
+        "E10 readiness not checked",
+        EL,
+        'if "BLOCKING" in status or "kind 4 never accepted" in status:',
+        "if False:",
+    ),
+    (
+        "E11 a foreign retained birth accepted",
+        EL,
+        "            return lib.parse_boc(base64.b64decode(content)).hash() == expected\n",
+        "            return True\n",
+    ),
+    (
+        "E12 retained birth overwritten",
+        EL,
+        "        output = f\"{TOSCTL_DIR}/controller-birth-{name}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.boc\"\n",
+        "",
+    ),
+    (
+        "E13 host pool configuration not compared",
+        EL,
+        '    elif (entry.get("address"), entry.get("owner"), entry.get("controller")) != (',
+        '    elif False and (entry.get("address"), entry.get("owner"), entry.get("controller")) != (',
+    ),
+]
+
+
+M += [
+    (
+        "N1 the record read before the lock (the original race)",
+        OPS,
+        "        with self.journal.lock(wallet):\n            op_id = self.journal.newest(step)\n            record = self.begin(op_id, params)\n",
+        "        op_id = self.journal.newest(step)\n        record = self.journal.record(op_id) or self.begin(op_id, params)\n        with self.journal.lock(wallet):\n",
+    ),
+    (
+        "N2 watch does not re-read a settled record",
+        OPS,
+        '                record = self.journal.record(op_id)\n                if state_of(record) == "settled":\n                    return record\n',
+        "                record = self.journal.record(op_id)\n",
+    ),
+    (
+        "N3 BOC not checked against the transaction id",
+        OPS,
+        "        if root.hash().hex() != tx_hash:",
+        "        if False:",
+    ),
+    (
+        "N4 transaction not bound to account and lt",
+        OPS,
+        "        if f\"{address.split(':')[0]}:{account}\" != address or lt != tx_lt:",
+        "        if False:",
+    ),
+    (
+        "N5 histories compared by length only",
+        OPS,
+        "        if histories[0] != histories[1]:",
+        "        if len(histories[0]) != len(histories[1]):",
+    ),
+    (
+        "N6 an unretained receipt left pending",
+        OPS,
+        '            failed = dict(evidence, form="b", reason="the owner did not retain the payment")\n            failed["explains"] = evidence["explains"] + [receipt["hash"]]\n            failed["receipt_out"] = [m["hash"] for m in receipt["out"]]\n            return "failed", failed',
+        '            return "pending", dict(evidence, reason="payment emitted, not retained")',
+    ),
+    (
+        "N7 resubmit ignores the wallet identity",
+        OPS,
+        '                    not record.get("identity")\n                    or current is None\n                    or list(current) != record["identity"]\n',
+        "                    False\n",
+    ),
+    (
+        "N8 resubmit judges expiry by the earliest validator",
+        OPS,
+        '                if any(t >= record["valid_until"] for t in times):',
+        '                if min(times) >= record["valid_until"]:',
+    ),
+    (
+        "N9 (c) judged by the latest validator",
+        OPS,
+        'if any(t < record["valid_until"] + EXPIRY_MARGIN for t in times):',
+        'if max(times) < record["valid_until"] + EXPIRY_MARGIN:',
+    ),
+    (
+        "N10 resubmit without the balance check",
+        OPS,
+        'if self.balance(wallet) < record["value"] + FEE_ALLOWANCE_NANOTOS:',
+        "if False:",
+    ),
+    (
+        "N11 activation resubmitted over an initialized account",
+        OPS,
+        '                if state != "uninitialized":',
+        "                if False:",
+    ),
+    (
+        "N12 subwallet not checked",
+        OPS,
+        'if decoded["subwallet"] != params.get("subwallet"):',
+        "if False:",
+    ),
+    (
+        "N13 funding credit not compared",
+        OPS,
+        'if delivery["credit"] != message["value"] or message["value"] != record["value"]:',
+        "if False:",
+    ),
+    (
+        "N14 one write call only (new record)",
+        OPS,
+        '            count = os.write(fd, data[written:])\n            if count <= 0:\n                raise OperationRefused(f"{tmp}: the journal write',
+        '            count = os.write(fd, data[written:]) or len(data)\n            written = len(data) - count\n            if count <= 0:\n                raise OperationRefused(f"{tmp}: the journal write',
+    ),
+    (
+        "N15 a write that made no progress ignored",
+        OPS,
+        '                raise OperationRefused(f"{path}: the journal write made no progress")',
+        "                break",
+    ),
+    (
+        "N16 retry of a non-failed attempt",
+        OPS,
+        '            if state_of(record) != "failed":',
+        "            if False:",
+    ),
+    (
+        "E14 a bound birth trusted by its name",
+        EL,
+        "        if found:\n            return\n",
+        "        if bound:\n            return\n",
+    ),
+    ("E15 refund enabled", EL, "REFUND_ENABLED = False", "REFUND_ENABLED = True"),
+    ("E16 operator subwallet guessed", EL, "    return data[2]", "    return 0"),
+]
+
+
+M += [
+    (
+        "R28 directory not fsynced (append)",
+        OPS,
+        "    fsync_dir(path.parent)\n\n\ndef publish_new",
+        "\n\ndef publish_new",
+    ),
+    ("R11b a foreign retained birth accepted", EL, "    if retained is False:", "    if False:"),
+]
+
+
+M += [
+    (
+        "F1 prerequisites read the original attempt",
+        EL,
+        '        return ops.state_of(journal.record(journal.newest(step))) == "settled"',
+        '        return ops.state_of(journal.record(step)) == "settled"',
+    ),
+    (
+        "F2 a new record written in place",
+        OPS,
+        "        if path.exists():\n            append_line(path, entry)\n        else:\n            publish_new(path, entry)",
+        "        append_line(path, entry)",
+    ),
+    (
+        "F3 (d) without the seqno match",
+        OPS,
+        '            and external_seqno(t) == record["seqno"]\n',
+        "",
+    ),
+    (
+        "F4 activation resubmitted without its fee budget",
+        OPS,
+        "                if self.balance(wallet) < ACTIVATION_FEE_NANOTOS:",
+        "                if False:",
+    ),
+]
+
+
+M += [
+    (
+        "N14b one write call only (append)",
+        OPS,
+        '            count = os.write(fd, data[written:])\n            if count <= 0:\n                raise OperationRefused(f"{path}: the journal write',
+        '            count = os.write(fd, data[written:]) or len(data)\n            written = len(data) - count\n            if count <= 0:\n                raise OperationRefused(f"{path}: the journal write',
+    ),
+    (
+        "F2b new record's directory not fsynced",
+        OPS,
+        "        os.unlink(tmp)\n    fsync_dir(path.parent)\n",
+        "        os.unlink(tmp)\n",
+    ),
+]
+
+
+M += [
+    (
+        "F5 (d) matches only single-transfer competitors",
+        OPS,
+        '        return decode_signed_header(messages.take_ref())["seqno"]',
+        '        return decode_external(lib.serialize_boc(messages.take_ref()))["seqno"]',
+    ),
+]
+
+M += [
+    (
+        "F6 (d) counts an aborted attempt as the consumer",
+        OPS,
+        "            and took_effect(t)\n",
+        '            and t["compute_success"]\n',
+    ),
+    (
+        "F7 an aborted run of the message is its wallet transaction",
+        OPS,
+        "            if took_effect(tx):\n                return tx",
+        "            return tx",
+    ),
+    (
+        "F8 compute success alone means the state changed",
+        OPS,
+        'return bool(tx["compute_success"]) and tx["aborted"] is False',
+        'return bool(tx["compute_success"])',
+    ),
+    (
+        "F9 a destination that computed and aborted is accepted",
+        OPS,
+        "if not took_effect(delivery):",
+        'if not delivery["compute_success"]:',
+    ),
+]
+
+
+def suite(env: dict) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider", str(W / "tests")],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=W.parent,
+        timeout=300,
+    )
+
+
+def last_line(result: subprocess.CompletedProcess) -> str:
+    out = result.stdout.strip()
+    return out.splitlines()[-1] if out else result.stderr[-200:]
+
+
+def main(only: list[str]) -> int:
+    if not os.environ.get("TOS_ROOT"):
+        print("TOS_ROOT is not set", file=sys.stderr)
+        return 2
+    env = dict(os.environ)
+    labels = [label.split()[0] for label, *_ in M]
+    duplicated = sorted({x for x in labels if labels.count(x) > 1})
+    if duplicated:
+        print(f"FAIL: duplicate labels {duplicated}")
+        return 1
+    seen: dict = {}
+    for label, path, old, new in M:
+        key = (path, old, new)
+        if key in seen:
+            print(f"FAIL: {label} is identical to {seen[key]}")
+            return 1
+        seen[key] = label
+    unknown = [x for x in only if x not in labels]
+    if unknown:
+        print(f"FAIL: no mutants {unknown}")
+        return 1
+    chosen = [m for m in M if not only or m[0].split()[0] in only]
+    broken = []
+    for label, path, old, _ in chosen:
+        count = path.read_text().count(old)
+        if count != 1:
+            broken.append(f"{label}: pattern occurs {count} times in {path.name}")
+    if broken:
+        print("FAIL: patterns that do not match exactly once:")
+        print("\n".join(f"  {b}" for b in broken))
+        return 1
+    baseline = suite(env)
+    if baseline.returncode != 0:
+        print(f"FAIL: the unmutated suite is not green -- {last_line(baseline)}")
+        return 1
+    survivors = []
+    for label, path, old, new in chosen:
+        original = path.read_text()
+        try:
+            path.write_text(original.replace(old, new))
+            try:
+                result = suite(env)
+                red, tail = result.returncode != 0, last_line(result)
+            except subprocess.TimeoutExpired:
+                red, tail = True, "timeout"
+        finally:
+            path.write_text(original)
+        if not red:
+            survivors.append(label)
+        print(f"{label}: {'RED' if red else 'SURVIVED'} -- {tail}", flush=True)
+    print(f"{len(chosen) - len(survivors)} of {len(chosen)} red; survivors: {survivors}")
+    return 1 if survivors else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
