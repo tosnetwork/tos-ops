@@ -180,6 +180,9 @@ class Chain:
         self.sent = []  # every sendBoc's external hash, in order
         self.behaviour = {}  # address -> callable(chain, address, account, message, in_msg)
         self.extra_out = {}  # wallet -> (destination, value): one more message per transfer
+        # wallet -> count: its next accepted externals compute successfully and then
+        # abort in the action phase, installing nothing (the seqno stays).
+        self.abort_next = {}
 
     # -- accounts
 
@@ -271,6 +274,18 @@ class Chain:
         if decoded["global_id"] != self.global_id:
             return  # never accepted
         if decoded["valid_until"] <= self.now:
+            return
+        if account["state"] != "active":
+            accepts = decoded.get("_init") is not None and decoded["seqno"] == 0
+        else:
+            accepts = (
+                decoded["seqno"] == account["seqno"]
+                and decoded["subwallet"] == account["subwallet"]
+            )
+        if accepts and self.abort_next.get(address, 0) > 0:
+            self.abort_next[address] -= 1
+            account["balance"] -= NANO // 100
+            self.record_tx(address, in_msg, [], success=True, aborted=True)
             return
         if account["state"] != "active":
             init = decoded.get("_init")

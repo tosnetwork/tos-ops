@@ -510,6 +510,14 @@ def external_seqno(tx: dict) -> int | None:
         return None
 
 
+def took_effect(tx: dict) -> bool:
+    """Whether a transaction installed its computed state. Compute can succeed and
+    the action phase still abort (a mode 1 transfer above the balance, say): the
+    account's data, and so a wallet's seqno, then stay as they were, and the same
+    external message can run again while it is valid."""
+    return bool(tx["compute_success"]) and tx["aborted"] is False
+
+
 def leaves(tx: dict, wallet: str) -> bool:
     """Whether a transaction sent value away from the wallet. A message to the
     wallet itself (tosctl's `wallet activate` deploys a wallet with one) moves
@@ -1081,9 +1089,19 @@ class Operations:
 
     # -- settlement
 
+    def wallet_attempts(self, record: dict) -> list[dict]:
+        """Every wallet transaction of the record's external message, newest first."""
+        return [
+            tx
+            for tx in self.history(record["wallet"], record.get("boundary"))
+            if tx["in_kind"] == "external" and tx["in_hash"] == record["external_hash"]
+        ]
+
     def find_wallet_tx(self, record: dict) -> dict | None:
-        for tx in self.history(record["wallet"], record.get("boundary")):
-            if tx["in_kind"] == "external" and tx["in_hash"] == record["external_hash"]:
+        """The transaction in which the record's message took effect. One that ran
+        and aborted changed nothing: the message is not consumed and may run again."""
+        for tx in self.wallet_attempts(record):
+            if took_effect(tx):
                 return tx
         return None
 
@@ -1107,11 +1125,18 @@ class Operations:
             raise OperationRefused(f"operation {record['id']} is {state_of(record)}")
         tx = self.find_wallet_tx(record)
         if tx is None:
+            aborted = [t["hash"] for t in self.wallet_attempts(record)]
+            if aborted:
+                return "pending", {
+                    "reason": (
+                        f"the message ran without effect in {', '.join(aborted)} and may run "
+                        "again; resubmit it, or prove (c) or (d)"
+                    ),
+                    "aborted_attempts": aborted,
+                }
             return "pending", {"reason": "no transaction for the external message yet"}
         evidence = {"wallet_tx": tx["hash"], "explains": [tx["hash"]]}
         if record["kind"] == "activate-owner":
-            if not tx["compute_success"] or tx["aborted"]:
-                return "failed", dict(evidence, form="a", reason="the self-deployment failed")
             if tx["out"]:
                 return "failed", dict(evidence, form="a", reason="a self-deployment that sent")
             return self.check_activated(record, evidence)
@@ -1147,7 +1172,7 @@ class Operations:
                     reason=f"credited {delivery['credit']}, sent {record['value']}",
                 )
             return "settled", evidence
-        if not delivery["compute_success"] or delivery["aborted"]:
+        if not took_effect(delivery):
             return "failed", dict(evidence, form="b", reason="the destination refused it")
         if any(m["bounced"] for m in delivery["out"]):
             return "failed", dict(evidence, form="b", reason="the destination bounced it")
@@ -1285,7 +1310,7 @@ class Operations:
             t
             for t in reversed(self.history(record["wallet"], record.get("boundary")))
             if t["in_kind"] == "external"
-            and t["compute_success"]
+            and took_effect(t)
             and external_seqno(t) == record["seqno"]
         ]
         if len(externals) != 1:

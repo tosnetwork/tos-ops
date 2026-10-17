@@ -1353,3 +1353,90 @@ def test_form_d_names_a_competing_batch_and_leaves_its_transfers_unexplained(wor
     assert failed["evidence"]["explains"] == []
     with pytest.raises(ops.OperationRefused, match="explains"):
         run(operations, "fund-b", chain=chain)
+
+
+def external_txs(chain, wallet):
+    return [t for t in chain.account(wallet)["txs"] if t["in_msg"]["kind"] == "external"]
+
+
+def test_form_d_skips_an_attempt_that_aborted_at_the_records_seqno(world, monkeypatch):
+    # X computes and then aborts in the action phase: the seqno stays, and Y, the
+    # actual consumer, takes it. (d) names Y alone.
+    chain, operations, _ = world
+    crash_at(monkeypatch, "fund-a", "signed")
+    with pytest.raises(Crash):
+        run(operations, chain=chain)
+    monkeypatch.undo()
+    chain.abort_next[BOOT] = 1
+    chain.send(
+        build_external(BOOT, 2, 1, chain.now + 300, internal_message(OTHER, NANO, False), salt=b"x")
+    )
+    chain.settle_all()
+    assert chain.account(BOOT)["seqno"] == 1
+    with pytest.raises(ops.OperationRefused, match="not consumed"):
+        operations.record_failed("fund-a", "d")
+    chain.send(
+        build_external(BOOT, 2, 1, chain.now + 300, internal_message(OTHER, NANO, False), salt=b"y")
+    )
+    chain.settle_all()
+    x, y = external_txs(chain, BOOT)
+    assert x["aborted"] is True and x["compute"]["success"] is True
+    failed = operations.record_failed("fund-a", "d")
+    assert failed["evidence"]["consumed_by"] == ops.b64hash(y["transaction_id"]["hash"]).hex()
+
+
+def test_an_aborted_run_of_the_message_is_not_its_settlement_or_failure(world):
+    chain, operations, _ = world
+    chain.abort_next[BOOT] = 1
+    with pytest.raises(ops.OperationRefused, match="without effect"):
+        run(operations, chain=chain)
+    record = operations.journal.record("fund-a")
+    assert record["state"] == "broadcast"
+    (attempt,) = external_txs(chain, BOOT)
+    attempt_hash = ops.b64hash(attempt["transaction_id"]["hash"]).hex()
+    outcome, evidence = operations.settle(record)
+    assert outcome == "pending" and evidence["aborted_attempts"] == [attempt_hash]
+    with pytest.raises(ops.OperationRefused, match="no terminal failure"):
+        operations.record_failed("fund-a", "a", attempt_hash)
+    with pytest.raises(ops.OperationRefused, match="not consumed"):
+        operations.record_failed("fund-a", "d")
+    # The same message runs again and takes effect.
+    settled = operations.resubmit("fund-a")
+    assert settled["state"] == "settled"
+    assert settled["evidence"]["wallet_tx"] != attempt_hash
+    assert chain.account(DEST)["balance"] == 5 * NANO
+
+
+def test_an_aborted_run_of_the_message_still_lets_it_expire(world):
+    chain, operations, _ = world
+    chain.abort_next[BOOT] = 1
+    with pytest.raises(ops.OperationRefused, match="without effect"):
+        run(operations, chain=chain)
+    chain.now += 500
+    failed = operations.record_failed("fund-a", "c")
+    assert failed["evidence"]["form"] == "c"
+
+
+def test_an_aborted_activation_is_not_a_failure_and_is_resubmitted(world):
+    chain, operations, _ = world
+    address, boc, p = activation(chain)
+    chain.account(address)["balance"] = 10 * NANO
+    chain.abort_next[address] = 1
+    with pytest.raises(ops.OperationRefused, match="without effect"):
+        operations.run("activate-x", p, lambda seqno: boc, lambda d: None)
+    assert chain.account(address)["state"] == "uninit"
+    assert operations.resubmit("activate-x")["state"] == "settled"
+
+
+def test_a_destination_that_aborted_after_computing_is_failure_b(world):
+    chain, operations, _ = world
+
+    def abort(chain_, address, account, message, in_msg):
+        chain_.record_tx(address, in_msg, [], success=True, aborted=True, credit=0)
+
+    chain.account(DEST).update(state="active")
+    chain.behaviour[DEST] = abort
+    p = params(kind="principal", bounce=True)
+    with pytest.raises(ops.OperationRefused, match="failed"):
+        operations.run("principal-x", p, signer(chain, bounce=True), lambda d: None)
+    assert operations.journal.record("principal-x")["evidence"]["form"] == "b"

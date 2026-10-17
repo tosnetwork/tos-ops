@@ -430,6 +430,13 @@ What each command does:
     to an activation;
   - (d) another transaction took its seqno while the wallet's identity stayed the
     same. The competing transaction then still needs accounting.
+
+  A transaction counts as taking effect only when its compute succeeded and it
+  did not abort. A run that aborts in the action phase installs nothing: the seqno
+  stays where it was and the same message can run again. That run is neither
+  settlement nor failure (a) of the operation, and it is never the consumer in (d).
+  The operation stays open (`reconcile` lists the aborted runs) until it is
+  resubmitted, expires (c), or another message takes the seqno (d).
 - **`resubmit`** sends the journaled message once more. It is allowed only while
   that message can still execute (not accepted, same seqno, not expired) and the
   pool checks still hold.
