@@ -654,16 +654,45 @@ def test_rpc_raises_the_typed_error_object():
     assert "CONFIG_PARAM_ABSENT -32004: config param 48 not found" in str(error)
 
 
-def test_rpc_reads_retryable_and_a_pre_dispatch_refusal():
-    url, _ = serve_answer(error_answer(-32005, "RATE_LIMITED", "too many requests", True), 429)
+# The node's rate-limit refusal, byte for byte as tos d7ef85b4c writes it
+# (validator-engine/json-rpc-http-policy.h, rate_limited_response): HTTP 429, sent
+# before the request is read, so its id is null.
+NODE_RATE_LIMITED = (
+    b'{"jsonrpc":"2.0","id":null,"error":{"code":-32005,'
+    b'"message":"Rate limit exceeded (per-IP)",'
+    b'"data":{"schema_version":1,"reason":"RATE_LIMITED","retryable":true}}}'
+)
+
+
+def test_rpc_reads_the_nodes_rate_limit_refusal():
+    url, _ = serve_answer(NODE_RATE_LIMITED, 429)
     with pytest.raises(lib.RpcError) as caught:
         lib.rpc(url, "getMasterchainInfo")
     assert caught.value.retryable is True and caught.value.reason == "RATE_LIMITED"
+    assert caught.value.code == -32005
 
 
-def test_rpc_refuses_a_status_without_a_json_rpc_body():
-    url, _ = serve_answer(b"<html>bad gateway</html>", 502)
-    with pytest.raises(lib.TestnetError, match="HTTP 502 without a JSON-RPC body") as caught:
+@pytest.mark.parametrize("status", lib.RPC_PRE_DISPATCH_STATUSES)
+def test_rpc_reads_every_pre_dispatch_refusal(status):
+    body = dict(error_answer(-32000, "UNAUTHORIZED", "refused"), id=None)
+    url, _ = serve_answer(body, status)
+    with pytest.raises(lib.RpcError, match="UNAUTHORIZED -32000: refused"):
+        lib.rpc(url, "getMasterchainInfo")
+
+
+@pytest.mark.parametrize(
+    "status,body", [(502, b"<html>bad gateway</html>"), (500, NODE_RATE_LIMITED)]
+)
+def test_rpc_refuses_a_status_the_node_does_not_answer_with(status, body):
+    url, _ = serve_answer(body, status)
+    with pytest.raises(lib.TestnetError, match=f"HTTP {status}") as caught:
+        lib.rpc(url, "getMasterchainInfo")
+    assert not isinstance(caught.value, lib.RpcError)
+
+
+def test_rpc_refuses_a_pre_dispatch_status_without_a_json_rpc_body():
+    url, _ = serve_answer(b"<html>too many</html>", 429)
+    with pytest.raises(lib.TestnetError, match="HTTP 429 without a JSON-RPC body") as caught:
         lib.rpc(url, "getMasterchainInfo")
     assert not isinstance(caught.value, lib.RpcError)
 
@@ -673,6 +702,8 @@ def test_rpc_refuses_a_status_without_a_json_rpc_body():
     [
         ({"id": 1, "result": {}}, "not a JSON-RPC 2.0 answer"),
         ({"jsonrpc": "2.0", "id": 2, "result": {}}, "request id 2"),
+        # id null only on an error object: a result always echoes the request's id
+        ({"jsonrpc": "2.0", "id": None, "result": {}}, "request id None"),
         ({"jsonrpc": "2.0", "id": 1}, "neither"),
         (dict(error_answer(-32603, "INTERNAL_ERROR", "x"), result={}), "both"),
         # the shape before tos #227: a string error and an ok flag

@@ -284,3 +284,26 @@ def test_live_version_below_the_genesis_is_refused(tmp_path):
     data[4] ^= 0x10  # version 16 -> 0
     with pytest.raises(lib.TestnetError, match="version 0"):
         run_auth(tmp_path, {**ZERO_STATE_PARAMS, 8: lib.Cell(bytes(data), cell.bits, [])})
+
+
+def test_a_version_16_genesis_without_auth_policy_is_refused(tmp_path):
+    # Not skipped: every version-16 genesis the ceremony writes records it.
+    a = args(tmp_path, ["a", "b"])
+    genesis = json.loads(a.genesis.read_text())
+    genesis["global_version"] = 16
+    a.genesis.write_text(json.dumps(genesis))
+    nodes = FakeNodesWithParams({"a": {"head": 50}, "b": {"head": 50}}, ZERO_STATE_PARAMS)
+    with pytest.raises(lib.TestnetError, match="records no auth_policy"):
+        check_testnet.check(a, rpc=nodes, now=lambda: NOW)
+    assert nodes.asked == []
+
+
+def test_an_older_genesis_is_checked_without_config48(tmp_path):
+    a = args(tmp_path, ["a", "b"])
+    genesis = json.loads(a.genesis.read_text())
+    genesis["global_version"] = 15
+    a.genesis.write_text(json.dumps(genesis))
+    summary = check_testnet.check(
+        a, rpc=FakeNodes({"a": {"head": 50}, "b": {"head": 50}}), now=lambda: NOW
+    )
+    assert "config48" not in summary

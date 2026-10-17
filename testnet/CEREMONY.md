@@ -356,9 +356,17 @@ creates `pool-owner-<name>`, a wallet v3 in the masterchain (subwallet
 `ceremony/secret/pool-owner-<name>.pk` (0600), its address and self-deploy
 message are in `ceremony/pool-owners/`, its address in `wallets.json`, and the
 pool, owner, operator and controller in `ceremony/pools.json`. The bootstrap
-wallet funds it with `pool_tos` + 5 TOS. A compromised validator host can
-therefore stake and recover, but not take the principal; the owner can also
-replace the validator address (`CHANGE_VALIDATOR_ADDRESS`).
+wallet funds it with `pool_tos` + 5 TOS. The pool address the host prints after
+`deploy pool` is not trusted: before it is recorded, and again before the
+principal is sent, `onboard` checks from the coordinator that it is the address
+the pinned `single-nominator-code.hex` and the three roles derive to, that the
+account is active and runs that code, and that its `get_roles` answers the
+offline owner, the operator wallet and the controller. Whether the principal has
+already gone is read from the chain (the owner wallet's seqno: 1 after its own
+deployment, 2 after the principal), so a rerun never sends it twice. A
+compromised validator host can therefore stake and recover, but neither take the
+principal nor have it sent elsewhere; the owner can also replace the validator
+address (`CHANGE_VALIDATOR_ADDRESS`).
 
 To take principal out, between elections (a stake at the Elector comes back
 to the pool only when the election task recovers it, `stake_held_for` after
@@ -376,8 +384,17 @@ It builds the pool's WITHDRAW body (op `0x1000`) with the pool's own
 1 TOS transfer carrying it from the owner wallet here with the offline key
 (the pool sends the amount and the unspent value back to the owner), keeps the
 signed message in `ceremony/sent/` before sending it, refuses while an
-election is open (`--during-election` overrides), checks that the owner's
-balance grew and appends the result to `ceremony/withdrawals.jsonl`.
+election is open (`--during-election` overrides), and checks the recorded pool
+as above before signing. It judges the result by the pool's own transaction
+for the owner's message (compute phase succeeded and a non-bounced payment to
+the owner, whose amount it records), not by the owner's balance, which a small
+withdrawal can lower, and appends the result to `ceremony/withdrawals.jsonl`; a
+pool that refuses is reported and nothing is recorded.
+
+`check-testnet.py` refuses a `genesis.json` of version 16 or later that records no
+`auth_policy`, so this branch's checker does not accept epoch 3's genesis (version
+16, written before ConfigParam 48 existed); check epoch 3 with the main branch's
+until it is retired.
 
 The election task runs as the non-login system user `tos-ctl`, never root.
 Every `tosctl` call on the host, from these scripts and from

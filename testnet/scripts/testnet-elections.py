@@ -28,7 +28,12 @@ and drive load through a post-quantum high-volume wallet.
       pool_deploy_tos, with that owner, the operator wallet as its validator
       and the controller; record it in DIR/pools.json; bind node, wallet and
       pool; import the controller's birth; have the owner send the principal
-      (pool_tos) to the pool, signed here;
+      (pool_tos) to the pool, signed here. The address the host prints is
+      checked first, from here: it must be the address the pinned
+      single-nominator code and the three roles derive to, and on chain an
+      active account with that code whose get_roles are exactly these roles
+      (again before the principal, also on a rerun). Whether the principal has
+      gone is read from the owner wallet's seqno, never from a local flag;
       plan the operating authorization on the host, sign it here with the
       offline root seed, and send it from the operator wallet; then
       enable-elections.sh. Each step checks its result first, so a rerun
@@ -69,8 +74,12 @@ and drive load through a post-quantum high-volume wallet.
       liquid balance can leave: a stake at the Elector returns to the pool when
       the election task recovers it after stake_held_for. Refused while an
       election is open (the task stakes from this balance) unless
-      --during-election. Each sent withdrawal is appended to
-      DIR/withdrawals.jsonl; --dry-run signs and keeps the message in DIR/sent/.
+      --during-election, and unless the recorded pool passes the same checks as
+      at onboarding. Success is the pool's transaction for the owner's message:
+      compute succeeded and a non-bounced payment went to the owner. Each
+      withdrawal is appended to DIR/withdrawals.jsonl with that payment; a
+      refusal is reported and not recorded; --dry-run signs and keeps the
+      message in DIR/sent/.
 
   load   --ceremony DIR --tos-root DIR --fift PATH --rpc URL --key-tool PATH
           --state DIR [--target-gas-per-block N | --batches-per-second R]
@@ -264,6 +273,29 @@ class Chain:
         if result.get("exit_code") != 0:
             raise lib.TestnetError(f"seqno of {address} failed: {result}")
         return int(result["stack"][0][1], 0)
+
+    def code_hash(self, address: str) -> tuple[str, bytes | None]:
+        """The account's state and the representation hash of its code (None without code)."""
+        info = self.rpc(self.url, "getAddressInformation", address=address)
+        code = info.get("code") or ""
+        return info["state"], lib.parse_boc(base64.b64decode(code)).hash() if code else None
+
+    def pool_roles(self, address: str) -> tuple[str, str, str]:
+        """A single-nominator pool's get_roles: (owner, validator, controller).
+
+        The node lists a getter's results top of stack first, so the stack reads
+        controller, validator, owner."""
+        result = self.rpc(self.url, "runGetMethod", address=address, method="get_roles", stack=[])
+        stack = result.get("stack") or []
+        if result.get("exit_code") != 0 or len(stack) != 3:
+            raise lib.TestnetError(f"get_roles of {address} failed: {result}")
+        roles = []
+        for entry in stack:
+            if not isinstance(entry, list) or len(entry) != 2 or entry[0] != "slice":
+                raise lib.TestnetError(f"get_roles of {address}: not an address slice: {entry}")
+            roles.append(std_address(lib.parse_boc(base64.b64decode(entry[1]["bytes"]))))
+        controller, validator, owner = roles
+        return owner, validator, controller
 
     def send_boc(self, boc: bytes) -> None:
         self.rpc(self.url, "sendBoc", boc=base64.b64encode(boc).decode())
@@ -493,6 +525,9 @@ def sign_operations(
 POOL_OWNER_SUBWALLET = 0x504F4F4C
 POOLS_FILE = "pools.json"
 WITHDRAWALS_FILE = "withdrawals.jsonl"
+# The owner wallet's seqno once it has sent the principal: its own deployment
+# moves it 0 -> 1, the principal 1 -> 2.
+OWNER_SEQNO_AFTER_PRINCIPAL = 2
 # The value an owner message carries; the pool sends what it does not spend back
 # with the withdrawal (mode 64), so this is only an upper bound on the fee.
 OWNER_MESSAGE_NANOTOS = NANO
@@ -507,6 +542,82 @@ def nanotos_text(nanotos: int) -> str:
     if nanotos <= 0:
         raise lib.TestnetError(f"an amount must be positive: {nanotos} nanotos")
     return f"{nanotos // NANO}.{nanotos % NANO:09d}"
+
+
+# The single-nominator code tosctl deploys (its CODE_V1_1 is this file's hex), from
+# the pinned tos tree the coordinator runs the ceremony from.
+SINGLE_NOMINATOR_CODE = Path("crypto/smartcont/single-nominator-pool/single-nominator-code.hex")
+
+
+def std_address(cell: lib.Cell) -> str:
+    """A MsgAddressInt cell holding addr_std without anycast, as workchain:hex."""
+    s = lib.Slice(cell)
+    if s.bits(3) != 0b100:
+        raise lib.TestnetError("not an addr_std without anycast")
+    workchain = s.bits(8)
+    workchain -= 256 if workchain > 127 else 0
+    address = f"{workchain}:{s.bytes(32).hex()}"
+    if not s.end():
+        raise lib.TestnetError("trailing data after an address")
+    return address
+
+
+def address_bits(address: str) -> str:
+    workchain, account = check_raw_address(address).split(":")
+    return "100" + format(int(workchain) & 0xFF, "08b") + format(int(account, 16), "0256b")
+
+
+def single_nominator_code(tos_root: Path | str) -> lib.Cell:
+    text = (Path(tos_root) / SINGLE_NOMINATOR_CODE).read_text().strip()
+    return lib.parse_boc(bytes.fromhex(text))
+
+
+def pool_address(code: lib.Cell, owner: str, validator: str, controller: str) -> str:
+    """The masterchain address of a single-nominator pool with these roles.
+
+    The same StateInit tosctl builds (NominatorWrapperImpl::build_state_init): the
+    pinned code and a data cell of the three addresses, owner first."""
+    data = lib.cell_from_bits(
+        address_bits(owner) + address_bits(validator) + address_bits(controller)
+    )
+    # StateInit: no split depth, not special, code and data present, no library.
+    state_init = lib.cell_from_bits("00110", [code, data])
+    return f"-1:{state_init.hash().hex()}"
+
+
+def verify_pool(
+    chain: Chain, tos_root: Path | str, pool: str, owner: str, operator: str, controller: str
+) -> None:
+    """Refuse unless `pool` is the single-nominator pool of exactly these roles.
+
+    Three checks, all made from this machine: the address is the one the pinned
+    code and the roles derive to; on chain the account is active and runs the
+    pinned code; and its get_roles answers this owner, this operator wallet as
+    validator and this controller. A host that prints another address, or a pool
+    it owns itself, is refused before any principal is sent to it.
+    """
+    code = single_nominator_code(tos_root)
+    pool = check_raw_address(pool)
+    expected = pool_address(code, owner, operator, controller)
+    if pool != expected:
+        raise lib.TestnetError(
+            f"{pool} is not the pool of owner {owner}, validator {operator} and controller "
+            f"{controller}; that pool is {expected}"
+        )
+    state, code_hash = chain.code_hash(pool)
+    if state != "active" or code_hash != code.hash():
+        raise lib.TestnetError(
+            f"{pool} is {state} and runs code {code_hash.hex() if code_hash else None}, not "
+            f"the pinned single-nominator code {code.hash().hex()}"
+        )
+    roles = chain.pool_roles(pool)
+    if roles != (owner, operator, controller):
+        raise lib.TestnetError(f"{pool} reports roles {roles}, not {(owner, operator, controller)}")
+
+
+def wallet_seqno(chain: Chain, address: str) -> int:
+    """A wallet's seqno, 0 while it is not deployed."""
+    return chain.seqno(address) if chain.account(address)[0] == "active" else 0
 
 
 def pool_owner_paths(ceremony: Path, name: str) -> dict[str, Path]:
@@ -526,41 +637,52 @@ def ensure_pool_owner(
     """The pool owner's address, its key and init message made once with new-wallet-v3.fif.
 
     The key goes to the ceremony's private secret/ directory (0600); the address
-    and the self-deploy message are public. A rerun reuses them. Refused when an
-    earlier epoch recorded the address.
+    and the self-deploy message are public. A rerun reuses them, and every run
+    derives the address from the key again and refuses unless it is the recorded
+    one, so nothing is ever funded that this key cannot sign for (an address left
+    without its key is refused). Refused when an earlier epoch recorded the address.
     """
     ceremony = Path(args.ceremony)
     paths = pool_owner_paths(ceremony, name)
-    if not paths["addr"].is_file():
-        smartcont = Path(args.tos_root) / "crypto" / "smartcont"
-        with tempfile.TemporaryDirectory(prefix="pool-owner-") as work:
-            work_dir = Path(work)
-            (work_dir / "gid.fif").write_text(f"{global_id} constant tos-global-id\n")
-            if paths["key"].is_file():
-                lib.write_new(work_dir / "owner.pk", paths["key"].read_bytes(), 0o600)
-            result = run(
-                [
-                    args.fift,
-                    "-I",
-                    f"{Path(args.tos_root) / 'crypto' / 'fift' / 'lib'}:{smartcont}",
-                    "-L",
-                    "gid.fif",
-                    "-s",
-                    str(smartcont / "new-wallet-v3.fif"),
-                    "-1",
-                    str(POOL_OWNER_SUBWALLET),
-                    "owner",
-                ],
-                cwd=work_dir,
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            made = [work_dir / f for f in ("owner.pk", "owner.addr", "owner-query.boc")]
-            if result.returncode != 0 or not all(p.is_file() for p in made):
+    if paths["addr"].is_file() and not paths["key"].is_file():
+        raise lib.TestnetError(
+            f"{paths['addr']} exists but its key {paths['key']} does not; nothing that key "
+            "cannot sign for is funded"
+        )
+    smartcont = Path(args.tos_root) / "crypto" / "smartcont"
+    with tempfile.TemporaryDirectory(prefix="pool-owner-") as work:
+        work_dir = Path(work)
+        (work_dir / "gid.fif").write_text(f"{global_id} constant tos-global-id\n")
+        if paths["key"].is_file():
+            lib.write_new(work_dir / "owner.pk", paths["key"].read_bytes(), 0o600)
+        result = run(
+            [
+                args.fift,
+                "-I",
+                f"{Path(args.tos_root) / 'crypto' / 'fift' / 'lib'}:{smartcont}",
+                "-L",
+                "gid.fif",
+                "-s",
+                str(smartcont / "new-wallet-v3.fif"),
+                "-1",
+                str(POOL_OWNER_SUBWALLET),
+                "owner",
+            ],
+            cwd=work_dir,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        made = [work_dir / f for f in ("owner.pk", "owner.addr", "owner-query.boc")]
+        if result.returncode != 0 or not all(p.is_file() for p in made):
+            raise lib.TestnetError(f"pool owner wallet: {(result.stdout + result.stderr)[-600:]}")
+        if paths["addr"].is_file():
+            if paths["addr"].read_bytes() != made[1].read_bytes():
                 raise lib.TestnetError(
-                    f"pool owner wallet: {(result.stdout + result.stderr)[-600:]}"
+                    f"{paths['key']} does not belong to the recorded pool owner "
+                    f"{address_from_file(paths['addr'])}"
                 )
+        else:
             lib.private_dir(ceremony / "secret")
             if not paths["key"].is_file():
                 lib.write_new(paths["key"], made[0].read_bytes(), 0o600)
@@ -693,6 +815,42 @@ def withdraw_body(
     return body
 
 
+def message_party(address: str) -> str:
+    """A message summary's address (user-friendly, as the node writes it) as workchain:hex."""
+    return check_raw_address(address) if ":" in address else raw_from_friendly(address)
+
+
+def withdrawal_payment(transactions: list, lt_before: int, owner: str) -> tuple[int, int] | None:
+    """The pool's answer to the owner's withdrawal: (transaction lt, nanotos paid to the owner).
+
+    The first pool transaction after lt_before that the owner's message started is
+    the answer. It is a success only when its compute phase succeeded and it sent a
+    message, not a bounce, back to the owner; anything else from the owner is a
+    refusal. None while no such transaction exists yet."""
+    for tx in sorted(transactions, key=lambda t: int(t["transaction_id"]["lt"])):
+        lt = int(tx["transaction_id"]["lt"])
+        incoming = tx.get("in_msg") or {}
+        if lt <= lt_before or incoming.get("kind") != "internal":
+            continue
+        if message_party(incoming["source"]) != owner:
+            continue
+        compute = tx.get("compute") or {}
+        paid = [
+            int(m["value"])
+            for m in tx.get("out_msgs") or []
+            if m.get("kind") == "internal"
+            and not m.get("bounced")
+            and message_party(m["destination"]) == owner
+        ]
+        if not compute.get("success") or not paid:
+            raise lib.TestnetError(
+                f"the pool refused the withdrawal at lt {lt}: compute {compute}, "
+                f"{len(tx.get('out_msgs') or [])} outgoing messages"
+            )
+        return lt, sum(paid)
+    return None
+
+
 def withdraw(args: argparse.Namespace, chain: Chain, global_id: int, sleep=None) -> dict:
     """Take stake principal out of a pool to its offline owner (see the module doc)."""
     sleep = sleep or time.sleep
@@ -705,6 +863,9 @@ def withdraw(args: argparse.Namespace, chain: Chain, global_id: int, sleep=None)
     if record["owner"] != owner:
         raise lib.TestnetError(f"the pool's recorded owner {record['owner']} is not {owner}")
     pool = record["pool"]
+    # The same checks as before the principal went in: the recorded pool is the
+    # pinned code with this owner, so a withdrawal cannot be pointed elsewhere.
+    verify_pool(chain, args.tos_root, pool, owner, record["operator"], record["controller"])
     election = chain.active_election()
     if election and not args.during_election:
         raise lib.TestnetError(
@@ -729,6 +890,8 @@ def withdraw(args: argparse.Namespace, chain: Chain, global_id: int, sleep=None)
     if available <= 0:
         raise lib.TestnetError(f"the pool holds only {pool_balance / NANO:.9f} TOS")
     owner_before = chain.account(owner)[1]
+    latest = chain.transactions(pool, 1)
+    lt_before = int(latest[0]["transaction_id"]["lt"]) if latest else 0
     with tempfile.TemporaryDirectory(prefix="withdraw-") as work:
         body = withdraw_body(args, amount_tos, Path(work))
         owner_send(
@@ -756,12 +919,13 @@ def withdraw(args: argparse.Namespace, chain: Chain, global_id: int, sleep=None)
         return result
     for _ in range(30):
         sleep(3)
-        owner_after = chain.account(owner)[1]
-        if owner_after > owner_before:
+        paid = withdrawal_payment(chain.transactions(pool, 16), lt_before, owner)
+        if paid is not None:
             break
     else:
-        raise lib.TestnetError(f"the withdrawal did not reach the owner {owner} in 90 s")
-    result["owner_balance_after_nanotos"] = owner_after
+        raise lib.TestnetError(f"the pool {pool} has not processed the withdrawal in 90 s")
+    result["pool_transaction_lt"], result["paid_nanotos"] = paid
+    result["owner_balance_after_nanotos"] = chain.account(owner)[1]
     result["pool_balance_after_nanotos"] = chain.account(pool)[1]
     path = ceremony / WITHDRAWALS_FILE
     fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o644)
@@ -834,9 +998,12 @@ def onboard(args: argparse.Namespace, chain: Chain, global_id: int, profile: dic
     step(f"pool owner {owner} (key offline in the ceremony's secret/)")
     principal = int(elections["pool_tos"]) * NANO
     owner_needs = principal + int(elections["pool_owner_reserve_tos"]) * NANO
-    owner_state, owner_balance = chain.account(owner)
-    recorded = read_pools(Path(args.ceremony)).get(name, {})
-    if not recorded.get("principal_sent") and owner_balance < owner_needs:
+    # Whether the principal has gone is read from the chain, not from a local
+    # flag: the owner's first transfer after its own deployment is the principal
+    # (seqno 1 -> 2), and nothing else it signs comes before.
+    sent = wallet_seqno(chain, owner) >= OWNER_SEQNO_AFTER_PRINCIPAL
+    owner_balance = chain.account(owner)[1]
+    if not sent and owner_balance < owner_needs:
         step(f"fund the pool owner with {(owner_needs - owner_balance) / NANO:.9f} TOS")
         fund(
             argparse.Namespace(
@@ -867,6 +1034,8 @@ def onboard(args: argparse.Namespace, chain: Chain, global_id: int, profile: dic
             )
         )
         step(f"pool {pool}")
+        # Before anything records or trusts the address the host printed.
+        verify_pool(chain, args.tos_root, pool, owner, operator, controller)
         record_pool(Path(args.ceremony), name, pool, owner, operator, controller)
         host.tosctl(
             f"config pool add --name pool-{name} --address {pool} --owner {owner} --controller {controller}"
@@ -885,12 +1054,11 @@ def onboard(args: argparse.Namespace, chain: Chain, global_id: int, profile: dic
         raise lib.TestnetError(
             f"pool-{name} is configured on the host but not in the ceremony's {POOLS_FILE}"
         )
-    if record["owner"] != owner:
-        raise lib.TestnetError(
-            f"pool-{name} was recorded with owner {record['owner']}, not {owner}"
-        )
-    if not record.get("principal_sent"):
+    if (record["owner"], record["operator"], record["controller"]) != (owner, operator, controller):
+        raise lib.TestnetError(f"pool-{name} was recorded with other roles: {record}")
+    if wallet_seqno(chain, owner) < OWNER_SEQNO_AFTER_PRINCIPAL:
         step(f"the pool owner sends the principal, {elections['pool_tos']} TOS, to the pool")
+        verify_pool(chain, args.tos_root, record["pool"], owner, operator, controller)
         pool_before = chain.account(record["pool"])[1]
         owner_send(
             args, chain, global_id, name, record["pool"], principal, None, f"principal-{name}"
@@ -900,7 +1068,7 @@ def onboard(args: argparse.Namespace, chain: Chain, global_id: int, profile: dic
             if time.time() > deadline:
                 raise lib.TestnetError(f"the principal did not reach {record['pool']} in 90 s")
             time.sleep(3)
-        record_pool(Path(args.ceremony), name, principal_sent=True)
+    record_pool(Path(args.ceremony), name, principal_sent=True)
 
     status = host.tosctl(f"controller operations status --controller {controller}", 90)
     if "kind 4 never accepted" in status:

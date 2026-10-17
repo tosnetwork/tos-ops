@@ -30,7 +30,9 @@ itself proves nothing. The check refuses unless:
     ConfigParam 48 at that block carries the genesis AUTH network tag and is
     in ConfigParam 9 and 10, and ConfigParam 8 is at least the genesis
     version. The summary says whether ConfigParam 48 is still the genesis
-    cell (a governance replacement may legitimately move its sequence on).
+    cell (a governance replacement may legitimately move its sequence on). A
+    genesis.json of version 16 or later without auth_policy is refused, not
+    skipped.
 
 Agreement among observers is detection, not a consensus proof: the nodes are
 trusted to report what they hold. Prints a JSON summary; exits 1 on refusal.
@@ -180,6 +182,12 @@ def check(args: argparse.Namespace, rpc=lib.rpc, now=time.time, decode=decode_co
     }
     if "auth_policy" in genesis:
         summary["config48"] = check_auth_policy(rpc, args.rpc[0], height, genesis)
+    elif int(genesis.get("global_version", 0)) >= 16:
+        # Every version-16 genesis carries ConfigParam 48; a genesis.json that does
+        # not record it is not one the ceremony wrote, so the check is not skipped.
+        raise lib.TestnetError(
+            f"genesis.json is version {genesis['global_version']} but records no auth_policy"
+        )
     if args.genesis_set:
         records = lib.check_operator_set(json.loads(Path(args.genesis_set).read_text()))
         param = rpc(args.rpc[0], "getConfigParam", param=34, seqno=height)

@@ -861,6 +861,15 @@ class Cell:
         return self._hash
 
 
+def cell_from_bits(bits: str, refs: Any = ()) -> Cell:
+    """An ordinary cell from a string of 0/1 and its references."""
+    if len(bits) > 1023 or set(bits) - {"0", "1"} or len(refs) > 4:
+        raise TestnetError("not a cell: at most 1023 bits and 4 references")
+    padded = bits + "0" * (-len(bits) % 8)
+    data = int(padded, 2).to_bytes(len(padded) // 8, "big") if bits else b""
+    return Cell(data, len(bits), list(refs))
+
+
 class Slice:
     """Reads a cell's bits and references in order."""
 
@@ -1192,6 +1201,10 @@ def is_pregenesis(config: dict[str, Any]) -> bool:
 
 
 RPC_REQUEST_ID = 1
+# The statuses the node answers with before a method runs (json-rpc-http-policy.h:
+# authentication, unknown GET path, method, content type, rate limit), each with
+# the same JSON-RPC error body. Every method error is HTTP 200.
+RPC_PRE_DISPATCH_STATUSES = (401, 404, 405, 415, 429)
 
 
 class RpcError(TestnetError):
@@ -1220,7 +1233,9 @@ def rpc_result(answer: Any, url: str, method: str) -> Any:
     """
     if not isinstance(answer, dict) or answer.get("jsonrpc") != "2.0":
         raise TestnetError(f"{url} {method}: not a JSON-RPC 2.0 answer: {str(answer)[:200]}")
-    if answer.get("id") != RPC_REQUEST_ID:
+    # A refusal made before the request was read (rate limit, authentication) cannot
+    # know the id and answers with id null; a result always echoes the id.
+    if answer.get("id") != RPC_REQUEST_ID and not ("error" in answer and answer.get("id") is None):
         raise TestnetError(f"{url} {method}: the answer is for request id {answer.get('id')!r}")
     if ("error" in answer) == ("result" in answer):
         raise TestnetError(f"{url} {method}: the answer has both or neither of result and error")
@@ -1261,6 +1276,8 @@ def rpc(url: str, method: str, /, timeout: float = 10, **params: Any) -> Any:
         with opener.open(request, timeout=timeout) as response:
             answer = json.load(response)
     except urllib.error.HTTPError as exc:
+        if exc.code not in RPC_PRE_DISPATCH_STATUSES:
+            raise TestnetError(f"{url} {method}: HTTP {exc.code}") from exc
         try:
             answer = json.load(exc)
         except ValueError:
