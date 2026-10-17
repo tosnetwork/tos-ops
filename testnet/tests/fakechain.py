@@ -19,6 +19,7 @@ import base64
 import hashlib
 import itertools
 import os
+from pathlib import Path
 
 import testnet_lib as lib
 import testnet_ops as ops
@@ -450,6 +451,14 @@ class NodeRpc:
         if method == "sendBoc":
             chain.send(base64.b64decode(params["boc"]))
             return {}
+        if method == "getConfigParam":
+            fixture = Path(__file__).parent / "data/zerostate-v16-auth.boc"
+            _, _, config = lib.zero_state_config(fixture.read_bytes())
+            return {
+                "config": {
+                    "bytes": base64.b64encode(lib.serialize_boc(config[params["param"]])).decode()
+                }
+            }
         account = chain.account(params["address"])
         txs = self.visible(account)
         if method == "getAddressInformation":

@@ -212,6 +212,13 @@ moves `main-wallet.pk`, the only secret output, to `ceremony/secret/`. Take that
 offline: it funds the four controllers for the first elections (genesis
 bootstrap document, "First ordinary elections") and nothing else.
 
+AUTH validation and the complete summary are checked in `run-a` before any
+key or output is published. Existing outputs are never overwritten. If genesis
+fails, do not publish its partial outputs: a rerun refuses the retained scratch
+runs or publication artifacts. Preserve any keys already created and start a
+new ceremony directory; repeat the manifest step there. `genesis.json` is the
+last published artifact and marks completion.
+
 Publish, together and signed or attested by the release process:
 
 - `global-config.json` and `global-config.json.sha256`
@@ -345,7 +352,16 @@ Then it runs these steps, in order:
    the host;
 6. the owner sends the stake principal (`pool_tos`) to the pool;
 7. it plans the operating authorization on the host, signs it here with the root
-   seed and sends it;
+   seed and sends it. Before signing, it compares the decoded payer with the
+   operator, the global id and controller with the ceremony, and the root epoch
+   and nonce with both validators. It independently derives the deposit from
+   recorded funds, allowance and floor from the profile, the per-request limit
+   from the current limit and live automatic grant, and the exact message value
+   from the deposit, live processing fee and a 1 TOS margin. It chooses the
+   absolute expiry from the profile and permits only the requested 1,800-second
+   signing lifetime plus 30 seconds of clock skew. Both validators must agree
+   on the controller state and fees from ConfigParams 20 and 24. Trailing payload
+   data or any mismatch refuses before the root key signs;
 8. it checks readiness, which is tosctl's full assessment: no `[BLOCKING]` (capital
    reserve, a usable grant);
 9. it runs `enable-elections.sh`, which installs

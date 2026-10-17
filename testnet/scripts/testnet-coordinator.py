@@ -80,6 +80,13 @@ OUTPUTS = (
     "elector.addr",
     "config-master.addr",
 )
+# What a genesis publishes into the ceremony directory (genesis.json last).
+GENESIS_PUBLISHED = OUTPUTS + (
+    "gen-zerostate-testnet.fif",
+    "main-wallet.pub",
+    "create-state.out",
+    "secret/main-wallet.pk",
+)
 MAX_EPOCH_AHEAD = 14 * 86400
 MAX_EPOCH_BEHIND = 3600
 
@@ -178,6 +185,14 @@ def cmd_genesis(args: argparse.Namespace) -> None:
         raise lib.TestnetError(
             "this ceremony already has a genesis; start a new ceremony directory"
         )
+    # A genesis that stopped while publishing leaves some of these and no
+    # genesis.json; a rerun would overwrite the saved key. Refuse it outright.
+    leftover = [name for name in GENESIS_PUBLISHED if (ceremony / name).exists()]
+    if leftover:
+        raise lib.TestnetError(
+            f"an earlier genesis attempt published {', '.join(leftover)}; nothing is "
+            "overwritten: start a new ceremony directory"
+        )
     now = int(time.time())
     if args.epoch < now - MAX_EPOCH_BEHIND or args.epoch > now + MAX_EPOCH_AHEAD:
         raise lib.TestnetError(
@@ -219,18 +234,13 @@ def cmd_genesis(args: argparse.Namespace) -> None:
         if not a.is_file() or a.read_bytes() != b.read_bytes():
             raise lib.TestnetError(f"{name} differs between two runs with the same inputs")
 
-    secret = lib.private_dir(ceremony / "secret")
-    os.replace(wallet_key, secret / "main-wallet.pk")
-    os.remove(runs[1] / "main-wallet.pk")
-    for name in OUTPUTS:
-        shutil.copyfile(runs[0] / name, ceremony / name)
-    lib.write_new(ceremony / "gen-zerostate-testnet.fif", patched.encode())
-    lib.write_new(ceremony / "main-wallet.pub", main_public)
-
-    rhash = (ceremony / "zerostate.rhash").read_bytes()
-    fhash = (ceremony / "zerostate.fhash").read_bytes()
+    # Everything is validated and the summary built from run-a, before anything
+    # is moved or published.
+    built = runs[0]
+    rhash = (built / "zerostate.rhash").read_bytes()
+    fhash = (built / "zerostate.fhash").read_bytes()
     auth = lib.zero_state_auth_policy(
-        (ceremony / "zerostate.boc").read_bytes(),
+        (built / "zerostate.boc").read_bytes(),
         rhash,
         global_id,
         profile["genesis"]["global_version"],
@@ -262,11 +272,12 @@ def cmd_genesis(args: argparse.Namespace) -> None:
         "zero_state": lib.zero_state_entry(rhash, fhash),
         "zero_state_hex": {"root_hash": rhash.hex(), "file_hash": fhash.hex()},
         "basestate0_hex": {
-            "root_hash": (ceremony / "basestate0.rhash").read_bytes().hex(),
-            "file_hash": (ceremony / "basestate0.fhash").read_bytes().hex(),
+            "root_hash": (built / "basestate0.rhash").read_bytes().hex(),
+            "file_hash": (built / "basestate0.fhash").read_bytes().hex(),
         },
         "sha256": {
-            name: lib.sha256_file(ceremony / name)
+            # run-a holds byte-identical copies of the manifest and the script.
+            name: lib.sha256_file(built / name)
             for name in (
                 "validator-pq.pub",
                 "zerostate.boc",
@@ -290,9 +301,25 @@ def cmd_genesis(args: argparse.Namespace) -> None:
         "create_state_sha256": lib.sha256_file(args.tos_build / "crypto/create-state"),
         "reproduced": "two independent create-state runs produced identical outputs",
     }
-    lib.write_new_json(ceremony / "genesis.json", summary)
+
+    # Publication: never overwrites (each target was checked absent above and is
+    # written with write_new); genesis.json, written last, marks it complete.
+    secret = lib.private_dir(ceremony / "secret")
+    try:
+        os.link(wallet_key, secret / "main-wallet.pk")
+    except FileExistsError as exc:
+        raise lib.TestnetError(
+            f"{secret / 'main-wallet.pk'} exists; nothing is overwritten"
+        ) from exc
+    os.remove(wallet_key)
+    os.remove(runs[1] / "main-wallet.pk")
+    for name in OUTPUTS:
+        lib.write_new(ceremony / name, (built / name).read_bytes())
+    lib.write_new(ceremony / "gen-zerostate-testnet.fif", patched.encode())
+    lib.write_new(ceremony / "main-wallet.pub", main_public)
+    lib.write_new(ceremony / "create-state.out", stdout.encode())
     lib.record_wallets(ceremony, bootstrap)
-    (ceremony / "create-state.out").write_text(stdout)
+    lib.write_new_json(ceremony / "genesis.json", summary)
     print(json.dumps(summary, indent=2))
     print(
         f"main-wallet.pk is the only secret output: {secret / 'main-wallet.pk'} (0600). Move it offline."

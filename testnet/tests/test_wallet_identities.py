@@ -11,6 +11,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 import time
 from pathlib import Path
 
@@ -519,3 +520,89 @@ def test_genesis_refuses_the_tag_of_an_earlier_epoch(tmp_path, monkeypatch, caps
     assert coordinator.main(args + ["--previous-ceremony", str(previous)]) == 1
     assert "every epoch needs its own" in capsys.readouterr().err
     assert runs == []
+
+
+def published(ceremony):
+    return sorted(
+        name
+        for name in coordinator.OUTPUTS
+        + (
+            "gen-zerostate-testnet.fif",
+            "main-wallet.pub",
+            "create-state.out",
+            "secret/main-wallet.pk",
+            "genesis.json",
+            "wallets.json",
+        )
+        if (ceremony / name).exists()
+    )
+
+
+def test_a_refused_auth_policy_publishes_nothing_and_a_retry_succeeds(
+    tmp_path, monkeypatch, capsys
+):
+    ceremony, args, runs = genesis_setup(tmp_path, monkeypatch, b"\x07" * 32)
+    accepted = lib.zero_state_auth_policy
+
+    def refuse(*a):
+        raise lib.TestnetError("ConfigParam 48 is not the announced policy")
+
+    monkeypatch.setattr(lib, "zero_state_auth_policy", refuse)
+    assert coordinator.main(args) == 1
+    assert "ConfigParam 48" in capsys.readouterr().err
+    assert runs == ["run-a", "run-b"]
+    assert published(ceremony) == []
+    # A plain rerun is refused cleanly by the scratch runs it left.
+    monkeypatch.setattr(lib, "zero_state_auth_policy", accepted)
+    assert coordinator.main(args) == 1
+    assert "run-a is not empty" in capsys.readouterr().err
+    assert published(ceremony) == []
+    # With the scratch runs discarded, the same ceremony directory runs cleanly.
+    for run in ("run-a", "run-b"):
+        shutil.rmtree(ceremony / run)
+    assert coordinator.main(args) == 0
+    assert (ceremony / "genesis.json").is_file()
+    assert (ceremony / "secret" / "main-wallet.pk").read_bytes() == b"\x07" * 32
+
+
+@pytest.mark.parametrize("left", ["secret/main-wallet.pk", "zerostate.boc", "main-wallet.pub"])
+def test_a_partly_published_genesis_is_refused_before_anything_runs(
+    tmp_path, monkeypatch, capsys, left
+):
+    ceremony, args, runs = genesis_setup(tmp_path, monkeypatch, b"\x08" * 32)
+    (ceremony / left).parent.mkdir(parents=True, exist_ok=True)
+    (ceremony / left).write_bytes(b"earlier")
+    assert coordinator.main(args) == 1
+    assert "an earlier genesis attempt published" in capsys.readouterr().err
+    assert runs == []
+    assert (ceremony / left).read_bytes() == b"earlier"
+    assert published(ceremony) == [left]
+
+
+@pytest.mark.parametrize(
+    "failed_output",
+    list(coordinator.OUTPUTS)
+    + ["gen-zerostate-testnet.fif", "main-wallet.pub", "create-state.out", "genesis.json"],
+)
+def test_genesis_interrupted_publication_never_overwrites_on_retry(
+    tmp_path, monkeypatch, capsys, failed_output
+):
+    ceremony, args, _ = genesis_setup(tmp_path, monkeypatch, b"\x09" * 32)
+    write_new = lib.write_new
+    target = ceremony / failed_output
+
+    def interrupt(path, *a, **k):
+        if path == target:
+            raise lib.TestnetError("interrupted publication")
+        return write_new(path, *a, **k)
+
+    monkeypatch.setattr(lib, "write_new", interrupt)
+    assert coordinator.main(args) == 1
+    assert "interrupted publication" in capsys.readouterr().err
+    retained = {name: (ceremony / name).read_bytes() for name in published(ceremony)}
+    assert retained["secret/main-wallet.pk"] == b"\x09" * 32
+    assert "genesis.json" not in retained
+    monkeypatch.setattr(lib, "write_new", write_new)
+    assert coordinator.main(args) == 1
+    assert "earlier genesis attempt published" in capsys.readouterr().err
+    assert {name: (ceremony / name).read_bytes() for name in published(ceremony)} == retained

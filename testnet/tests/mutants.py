@@ -27,6 +27,7 @@ FAILED = re.compile(r"\b[1-9]\d* failed\b")
 ERRORS = re.compile(r"\b[1-9]\d* errors?\b")
 OPS = W / "scripts/testnet_ops.py"
 EL = W / "scripts/testnet-elections.py"
+CO = W / "scripts/testnet-coordinator.py"
 
 M = [
     (
@@ -485,6 +486,95 @@ M += [
         OPS,
         'if form in ("c", "d") and self.find_wallet_tx(record) is not None:',
         "if False:",
+    ),
+]
+
+M += [
+    ("H1 a partly published genesis rerun", CO, "    if leftover:\n", "    if False:\n"),
+    (
+        "H2 the zero-state AUTH policy checked on the published copy",
+        CO,
+        "    built = runs[0]\n",
+        "    built = ceremony\n    for name in OUTPUTS:\n"
+        "        shutil.copyfile(runs[0] / name, ceremony / name)\n",
+    ),
+    (
+        "P1 the plan's payer not compared with the operator",
+        EL,
+        "    if payer != operator:\n        problems.append(",
+        "    if False:\n        problems.append(",
+    ),
+    (
+        "P2 storage floor not compared",
+        EL,
+        '    if floor != int(authorization["floor_nanotos"]):',
+        "    if False:",
+    ),
+    (
+        "P3 allowance not compared",
+        EL,
+        '    if allowance != target or not context["grant"] <= target < COINS_LIMIT:',
+        "    if False:",
+    ),
+    ("P4 deposit not bounded", EL, "    if deposit != expected_deposit:", "    if False:"),
+    (
+        "P5 per-request limit not bounded",
+        EL,
+        "    if limit != expected_limit or limit >= COINS_LIMIT:",
+        "    if False:",
+    ),
+    (
+        "P6 message value not bounded",
+        EL,
+        "    if value != expected_value or not 0 < value < COINS_LIMIT:",
+        "    if False:",
+    ),
+    (
+        "P7 validity not bounded",
+        EL,
+        "    if (\n        not now < valid_until <= now + PLAN_VALID_FOR_SECONDS + PLAN_CLOCK_SKEW_SECONDS\n        or valid_until >= 1 << 32\n    ):",
+        "    if False:",
+    ),
+    (
+        "P8 expiry not bounded",
+        EL,
+        "    if expires != expires_at or not valid_until < expires < 1 << 32:",
+        "    if False:",
+    ),
+    (
+        "P9 epoch and nonce not compared with the controller",
+        EL,
+        '    if (epoch, nonce) != (context["epoch"], context["nonce"]):',
+        "    if False:",
+    ),
+    (
+        "P10 onboarding signs an unchecked plan",
+        EL,
+        "            check_operations_plan(\n                plan,\n",
+        "            (lambda *a: None)(\n                plan,\n",
+    ),
+    (
+        "P12 settlement trusts the plan's payer",
+        EL,
+        "    if payer != operator:\n        raise lib.TestnetError(f\"the plan's payer",
+        "    if False:\n        raise lib.TestnetError(f\"the plan's payer",
+    ),
+]
+
+
+M += [
+    ("P13 trailing payload ignored", EL, "    if not payload.end():", "    if False:"),
+    (
+        "P14 relay fee calculation changed",
+        EL,
+        "    grant = 4 * control + callback",
+        "    grant = 3 * control + callback",
+    ),
+    (
+        "P15 validators not compared before root signing",
+        EL,
+        "            context = operations.both(lambda node: controller_plan_context(node, controller))",
+        "            context = controller_plan_context(operations.nodes[0], controller)",
     ),
 ]
 

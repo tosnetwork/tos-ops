@@ -1158,14 +1158,162 @@ def stack_int(entry) -> int:
     return int(entry[1], 0)
 
 
+# The coordinator chooses the request lifetime and the payer's fee margin.
+PLAN_VALID_FOR_SECONDS = 1800
+PLAN_CLOCK_SKEW_SECONDS = 30
+PLAN_MARGIN_NANOTOS = NANO
+COINS_LIMIT = 1 << 120
+
+
+def plan_payload(plan: dict) -> tuple[str, list[int]]:
+    """Decode the complete kind-4 payload; trailing bits or refs are refused."""
+    payload = lib.Slice(lib.parse_boc(base64.b64decode(plan["payload"], validate=True)))
+    payer = ops.read_address(payload)
+    terms = [ops.read_coins(payload) for _ in range(4)] + [payload.bits(32)]
+    if not payload.end():
+        raise lib.TestnetError("the operations plan's payload has trailing data")
+    return payer, terms
+
+
+def relay_fees(gas: lib.Cell, forward: lib.Cell) -> tuple[int, int]:
+    """Price the automatic grant and funding processing from ConfigParams 20/24.
+
+    Gas and forwarding prices are 16.16 fixed point, rounded up, as the
+    controller's relay library computes them for the masterchain.
+    """
+    g = lib.Slice(gas)
+    tag = g.bits(8)
+    flat_limit, flat_price = 0, 0
+    if tag == 0xD1:
+        flat_limit, flat_price = g.bits(64), g.bits(64)
+        tag = g.bits(8)
+    if tag not in (0xDD, 0xDE):
+        raise lib.TestnetError("ConfigParam 20 is not a gas price record")
+    price = g.bits(64)
+    for _ in range(5 if tag == 0xDD else 6):
+        g.bits(64)
+    f = lib.Slice(forward)
+    if f.bits(8) != 0xEA:
+        raise lib.TestnetError("ConfigParam 24 is not a forwarding price record")
+    lump, bit_price, cell_price = f.bits(64), f.bits(64), f.bits(64)
+    f.bits(64)  # ihr_price_factor, first_frac, next_frac
+    if not g.end() or not f.end():
+        raise lib.TestnetError("fee configuration has trailing data")
+
+    def gas_fee(units: int) -> int:
+        return flat_price + (max(0, units - flat_limit) * price + 65535) // 65536
+
+    envelope = lump + (bit_price * 4096 + cell_price * 8 + 65535) // 65536
+    control = gas_fee(50_000) + envelope
+    callback = gas_fee(200_000) + envelope
+    grant = 4 * control + callback
+    processing = gas_fee(200_000) + control
+    if not 0 < grant < COINS_LIMIT or not 0 < processing < COINS_LIMIT:
+        raise lib.TestnetError("relay fees are outside the Coins range")
+    return grant, processing
+
+
+def controller_plan_context(node, controller: str) -> dict:
+    """Read authority, existing funding and fee prices independently of the host."""
+    state = read_stack(
+        node.call("runGetMethod", address=controller, method="controller_state", stack=[]),
+        5,
+        "controller_state",
+    )
+    operating = read_stack(
+        node.call("runGetMethod", address=controller, method="operating_state", stack=[]),
+        6,
+        "operating_state",
+    )
+    epoch, nonce = stack_int(state[0]), stack_int(state[1])
+    funds, _, limit, _, _ = [stack_int(e) for e in operating[:5]]
+    if not (0 <= epoch < 1 << 64 and 0 <= nonce < (1 << 64) - 1):
+        raise lib.TestnetError("controller authority is outside its usable uint64 range")
+    if not (0 <= funds < COINS_LIMIT and 0 <= limit < COINS_LIMIT):
+        raise lib.TestnetError("controller operating values are outside the Coins range")
+    if operating[5][0] != "slice" or not isinstance(operating[5][1], dict):
+        raise lib.TestnetError("operating_state payer is not an address slice")
+    sponsor = std_address(lib.parse_boc(base64.b64decode(operating[5][1]["bytes"], validate=True)))
+
+    def config(number):
+        result = node.call("getConfigParam", param=number)
+        return lib.parse_boc(base64.b64decode(result["config"]["bytes"], validate=True))
+
+    grant, processing = relay_fees(config(20), config(24))
+    return dict(
+        epoch=epoch,
+        nonce=nonce,
+        funds=funds,
+        limit=limit,
+        sponsor=sponsor,
+        grant=grant,
+        processing=processing,
+    )
+
+
+def check_operations_plan(
+    plan: dict,
+    operator: str,
+    authorization: dict,
+    target: int,
+    now: float,
+    expires_at: int,
+    context: dict,
+    controller: str,
+) -> None:
+    """Compare every signed field with coordinator inputs and two-node state."""
+    payer, (deposit, allowance, limit, floor, expires) = plan_payload(plan)
+    epoch, nonce = int(plan["epoch"]), int(plan["nonce"])
+    valid_until, value = int(plan["valid_until"]), int(plan["value_nanotos"])
+    expected_deposit = max(0, target - context["funds"])
+    expected_limit = (
+        context["limit"]
+        if context["sponsor"] != controller and context["limit"] >= context["grant"]
+        else 2 * context["grant"]
+    )
+    expected_value = expected_deposit + context["processing"] + PLAN_MARGIN_NANOTOS
+    problems = []
+    if payer != operator:
+        problems.append(f"payer {payer}, not the operator wallet {operator}")
+    if context["sponsor"] not in (controller, operator):
+        problems.append("the existing sponsor is not the operator wallet")
+    if floor != int(authorization["floor_nanotos"]):
+        problems.append(f"storage floor {floor}, not {authorization['floor_nanotos']}")
+    if allowance != target or not context["grant"] <= target < COINS_LIMIT:
+        problems.append(f"allowance {allowance}, not the usable funds target {target}")
+    if deposit != expected_deposit:
+        problems.append(f"deposit {deposit}, expected {expected_deposit}")
+    if limit != expected_limit or limit >= COINS_LIMIT:
+        problems.append(f"per-request limit {limit}, expected {expected_limit}")
+    if value != expected_value or not 0 < value < COINS_LIMIT:
+        problems.append(f"message value {value}, expected {expected_value}")
+    if (
+        not now < valid_until <= now + PLAN_VALID_FOR_SECONDS + PLAN_CLOCK_SKEW_SECONDS
+        or valid_until >= 1 << 32
+    ):
+        problems.append(f"valid until {valid_until} is not within the requested lifetime")
+    if expires != expires_at or not valid_until < expires < 1 << 32:
+        problems.append(f"expiry {expires}, expected {expires_at}")
+    if (epoch, nonce) != (context["epoch"], context["nonce"]):
+        problems.append(
+            f"root epoch/nonce {epoch}/{nonce}, the controller is at {(context['epoch'], context['nonce'])}"
+        )
+    if problems:
+        raise lib.TestnetError(
+            "the operations plan is not the one derived here, nothing was signed: "
+            + "; ".join(problems)
+        )
+
+
 def expect_authorization(plan: dict, operator: str):
     """Completion of the exact request: the controller ran it (its transaction for
     our message succeeded), its root epoch is the planned one and its nonce moved
     past the planned one, and while no later root action intervened (nonce =
-    planned + 1) the operating terms are the plan's payload."""
-    payload = lib.Slice(lib.parse_boc(base64.b64decode(plan["payload"])))
-    payer = ops.read_address(payload)
-    terms = [ops.read_coins(payload) for _ in range(4)] + [payload.bits(32)]
+    planned + 1) the operating terms are the plan's payload, with the operator
+    wallet as the sponsor."""
+    payer, terms = plan_payload(plan)
+    if payer != operator:
+        raise lib.TestnetError(f"the plan's payer {payer} is not the operator wallet {operator}")
     _deposit, permission, limit, floor, expires = terms
 
     def check(operations, record, delivery, evidence):
@@ -1400,15 +1548,28 @@ def onboard(
             plan, signed = record["plan"], record["body_b64"]
         else:
             auth = elections["authorization"]
+            context = operations.both(lambda node: controller_plan_context(node, controller))
+            expires_at = int(time.time()) + int(auth["expires_in_days"]) * 86400
             plan = parse_operations_plan(
                 host.tosctl(
                     f"controller operations plan --controller {controller} --payer {operator} "
                     f"--floor-nanotos {auth['floor_nanotos']} --funds-target-nanotos {auth['funds_target_nanotos']} "
-                    f"--expires-in-days {auth['expires_in_days']}",
+                    f"--expires-at {expires_at} --valid-for {PLAN_VALID_FOR_SECONDS} "
+                    f"--margin-nanotos {PLAN_MARGIN_NANOTOS}",
                     90,
                 ),
                 global_id,
                 controller_hex,
+            )
+            check_operations_plan(
+                plan,
+                operator,
+                auth,
+                int(auth["funds_target_nanotos"]),
+                time.time(),
+                expires_at,
+                context,
+                controller,
             )
             signed = sign_operations(
                 args.controller_tool, args.root_seed, global_id, controller_hex, plan

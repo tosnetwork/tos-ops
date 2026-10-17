@@ -25,6 +25,37 @@ spec.loader.exec_module(elections)
 
 PLAN = (DATA / "operations-plan-epoch1.txt").read_text()
 CONTROLLER = "21380987703eb9b03e8ec236bf23a457a44aea36118c4f467bfd082ca1d32a77"
+PLAN_NANO = 10**9  # one TOS in nanotos, for the plans below
+
+
+def plan_text(
+    payer,
+    allowance,
+    expires,
+    valid_until,
+    deposit=20 * PLAN_NANO,
+    limit=8_589_600_000,
+    floor=5 * PLAN_NANO,
+    epoch=0,
+    nonce=0,
+    value=23_558_960_000,
+):
+    """The real epoch-1 plan output with its signing request (payload, epoch, nonce,
+    valid_until) and message value replaced: a plan as tosctl prints it for these terms."""
+    import re
+
+    bits = (
+        elections.address_bits(payer)
+        + "".join(fakechain.coins_bits(v) for v in (deposit, allowance, limit, floor))
+        + format(expires, "032b")
+    )
+    payload = base64.b64encode(lib.serialize_boc(lib.cell_from_bits(bits))).decode()
+    text = re.sub(
+        r"(fund-operations ROOTSEED \S+ \S+) \S+ \S+ \S+ \S+",
+        lambda m: f"{m.group(1)} {epoch} {nonce} {valid_until} {payload}",
+        PLAN,
+    )
+    return re.sub(r"--amount-nanotos \d+", f"--amount-nanotos {value}", text)
 
 
 def test_plan_gives_the_signing_request_and_the_value():
@@ -949,6 +980,10 @@ COLD_OWNER = None  # set per test from the owner key the fake creates
 GENESIS_CONTROLLER = "-1:" + CONTROLLER
 HOST_WALLET = "-1:" + "6b" * 32
 OP_KEY = "0b" * 32
+OP_WALLET = fakechain.wallet_address(OP_KEY, 698983191)
+BOARD_NOW = fakechain.Chain().now  # the fake chain's clock when onboarding starts
+# The first authorization, to the onboarding funds target, for the operator wallet.
+BOARDING_PLAN = plan_text(OP_WALLET, 20 * NANO, BOARD_NOW + 10 * 86400, BOARD_NOW + 1800)
 
 
 @pytest.fixture
@@ -960,7 +995,7 @@ def pinned_tos():
 
 
 def plan_terms():
-    plan = elections.parse_operations_plan(PLAN, 2, CONTROLLER)
+    plan = elections.parse_operations_plan(BOARDING_PLAN, 2, CONTROLLER)
     payload = lib.Slice(lib.parse_boc(base64.b64decode(plan["payload"])))
     payer = elections.ops.read_address(payload)
     terms = [elections.ops.read_coins(payload) for _ in range(4)] + [payload.bits(32)]
@@ -971,11 +1006,15 @@ def num(value):
     return ["num", hex(value)]
 
 
-def controller_behaviour(chain, epoch=0, nonce_step=1, terms_override=None, sponsor=None):
+def controller_behaviour(
+    chain, epoch=0, nonce_step=1, terms_override=None, sponsor=None, start_epoch=0
+):
     """The controller: deployed by its StateInit; a kind-4 request moves its nonce and
-    installs the terms; getters answer as the node lists them (top first)."""
+    installs the terms; getters answer as the node lists them (top first). It is at
+    root epoch `start_epoch` until the request runs and at `epoch` after it (a root
+    action racing the request)."""
     plan, payer, terms = plan_terms()
-    state = {"nonce": 0, "terms": None}
+    state = {"nonce": 0, "terms": None, "epoch": start_epoch}
 
     def behave(chain_, address, account, message, in_msg):
         value = int(message["value"])
@@ -986,20 +1025,31 @@ def controller_behaviour(chain, epoch=0, nonce_step=1, terms_override=None, spon
             chain_.record_tx(address, in_msg, [], credit=value)
             return
         state["nonce"] += nonce_step
-        state["terms"] = terms_override or terms
+        state["epoch"] = epoch
+        actual_plan = elections.parse_operations_plan(chain.authorization_plan, 2, CONTROLLER)
+        _, actual_terms = elections.plan_payload(actual_plan)
+        state["terms"] = terms_override or actual_terms
         chain_.record_tx(address, in_msg, [], credit=value)
 
     def controller_state():
         return {
             "exit_code": 0,
             "stack": list(
-                reversed([num(epoch), num(state["nonce"]), num(1), num(0), ["cell", {"bytes": ""}]])
+                reversed(
+                    [
+                        num(state["epoch"]),
+                        num(state["nonce"]),
+                        num(1),
+                        num(0),
+                        ["cell", {"bytes": ""}],
+                    ]
+                )
             ),
         }
 
     def operating_state():
         funds, permission, limit, floor, expires = state["terms"] or [0] * 5
-        who = sponsor or payer
+        who = (sponsor or payer) if state["terms"] is not None else GENESIS_CONTROLLER
         slice_ = [
             "slice",
             {
@@ -1120,7 +1170,17 @@ class BoardingHost:
             self.config["bindings"][flag("--node")]["controller_birth_state_init_boc"] = output
             return ""
         if arguments.startswith("controller operations plan"):
-            return PLAN
+            fields = dict(
+                payer=self.operator,
+                allowance=20 * NANO,
+                expires=int(flag("--expires-at"))
+                if flag("--expires-at")
+                else self.chain.now + 10 * 86400,
+                valid_until=self.chain.now + 1800,
+            )
+            fields.update(getattr(self, "plan_overrides", {}))
+            self.chain.authorization_plan = plan_text(**fields)
+            return self.chain.authorization_plan
         if arguments.startswith("controller operations status"):
             if not self.ready:
                 return "[BLOCKING] capital reserve 25 TOS, balance 22 TOS\n"
@@ -1907,3 +1967,159 @@ def test_a_retried_funding_is_what_the_next_steps_require(boarding, monkeypatch)
     assert "fund-owner-node-1.attempt-2" in ids
     assert {"activate-owner-node-1", "principal-node-1", "authorize-operations-node-1"} <= set(ids)
     assert b["ops"].journal.record("fund-owner-node-1")["state"] == "failed"
+
+
+BOARD_EXPIRES = BOARD_NOW + 10 * 86400
+BOARD_VALID_UNTIL = BOARD_NOW + 1800
+
+
+@pytest.mark.parametrize(
+    "terms,message",
+    [
+        ({"payer": HOST_WALLET}, "payer"),
+        ({"floor": 4 * NANO}, "storage floor"),
+        ({"allowance": 30 * NANO}, "allowance"),
+        ({"deposit": 0}, "deposit"),
+        ({"deposit": 21 * NANO}, "deposit"),
+        ({"limit": 0}, "per-request limit"),
+        ({"limit": 21 * NANO}, "per-request limit"),
+        ({"value": 20 * NANO}, "message value"),
+        ({"value": 31 * NANO}, "message value"),
+        ({"valid_until": BOARD_NOW + 2 * 86400}, "valid until"),
+        ({"expires": BOARD_NOW + 30 * 86400}, "expiry"),
+        ({"expires": BOARD_VALID_UNTIL}, "expiry"),
+        ({"nonce": 1}, "epoch/nonce"),
+    ],
+)
+def test_a_plan_with_other_terms_is_refused_before_the_root_key_signs(
+    boarding, monkeypatch, terms, message
+):
+    b = boarding
+    b["host"].plan_overrides = terms
+    signed = []
+
+    def refuse_sign(*args):
+        signed.append(args)
+        raise AssertionError("unsafe plan reached the offline root signer")
+
+    monkeypatch.setattr(elections, "sign_operations", refuse_sign)
+    with pytest.raises(lib.TestnetError, match=f"nothing was signed: .*{message}"):
+        onboard(b)
+    assert signed == []
+    assert b["ops"].journal.record("authorize-operations-node-1") is None
+
+
+def test_a_plan_for_a_controller_at_another_root_epoch_is_refused(boarding):
+    b = boarding
+    controller_behaviour(b["chain"], epoch=1, start_epoch=1)
+    with pytest.raises(lib.TestnetError, match="nothing was signed: .*controller is at \\(1, 0\\)"):
+        onboard(b)
+    assert b["ops"].journal.record("authorize-operations-node-1") is None
+
+
+def test_the_payer_is_compared_with_the_operator_and_not_with_itself():
+    # Settlement compares the on-chain sponsor with the operator wallet: a plan
+    # naming another payer is refused even when the sponsor matches that payer.
+    plan = elections.parse_operations_plan(
+        plan_text(HOST_WALLET, 20 * NANO, BOARD_EXPIRES, BOARD_VALID_UNTIL), 2, CONTROLLER
+    )
+    with pytest.raises(lib.TestnetError, match="is not the operator wallet"):
+        elections.expect_authorization(plan, OP_WALLET)
+
+
+def test_relay_fees_match_the_pinned_zero_state_and_plan():
+    _, _, config = lib.zero_state_config((DATA / "zerostate-v16-auth.boc").read_bytes())
+    assert elections.relay_fees(config[20], config[24]) == (4_294_800_000, 2_558_960_000)
+    plan = elections.parse_operations_plan(PLAN, 2, CONTROLLER)
+    _, terms = elections.plan_payload(plan)
+    assert plan["value_nanotos"] == terms[0] + 2_558_960_000 + NANO
+
+
+@pytest.mark.parametrize("number", [20, 24])
+def test_relay_fees_refuse_malformed_configuration(number):
+    _, _, config = lib.zero_state_config((DATA / "zerostate-v16-auth.boc").read_bytes())
+    original = config[number]
+    for bad in (
+        lib.cell_from_bits("0" * original.bits),
+        lib.Cell(original.data, original.bits, [lib.cell_from_bits("")]),
+        lib.cell_from_bits("".join(f"{b:08b}" for b in original.data) + "0"),
+    ):
+        config[number] = bad
+        with pytest.raises(lib.TestnetError):
+            elections.relay_fees(config[20], config[24])
+
+
+def test_operations_payload_cannot_hide_trailing_bits_or_refs():
+    plan = elections.parse_operations_plan(BOARDING_PLAN, 2, CONTROLLER)
+    original = lib.parse_boc(base64.b64decode(plan["payload"]))
+    for bad in (
+        lib.Cell(original.data, original.bits, [lib.cell_from_bits("")]),
+        lib.cell_from_bits("".join(f"{b:08b}" for b in original.data)[: original.bits] + "0"),
+    ):
+        changed = dict(plan, payload=base64.b64encode(lib.serialize_boc(bad)).decode())
+        with pytest.raises(lib.TestnetError):
+            elections.plan_payload(changed)
+
+
+@pytest.mark.parametrize(
+    "funds,stored_limit,expected_limit",
+    [(6 * NANO, 9 * NANO, 9 * NANO), (20 * NANO, 0, 8_589_600_000)],
+)
+def test_operations_plan_matches_a_deficit_or_zero_deposit(funds, stored_limit, expected_limit):
+    context = dict(
+        epoch=3,
+        nonce=7,
+        funds=funds,
+        limit=stored_limit,
+        sponsor=OP_WALLET,
+        grant=4_294_800_000,
+        processing=2_558_960_000,
+    )
+    deposit = max(0, 20 * NANO - funds)
+    plan = elections.parse_operations_plan(
+        plan_text(
+            OP_WALLET,
+            20 * NANO,
+            BOARD_EXPIRES,
+            BOARD_VALID_UNTIL,
+            deposit=deposit,
+            limit=expected_limit,
+            epoch=3,
+            nonce=7,
+            value=deposit + 2_558_960_000 + NANO,
+        ),
+        2,
+        CONTROLLER,
+    )
+    elections.check_operations_plan(
+        plan,
+        OP_WALLET,
+        lib.load_profile()["elections"]["authorization"],
+        20 * NANO,
+        BOARD_NOW,
+        BOARD_EXPIRES,
+        context,
+        GENESIS_CONTROLLER,
+    )
+
+
+def test_operations_plan_requires_both_validators_authority(boarding, monkeypatch):
+    b = boarding
+    node = b["ops"].nodes[1]
+    original = node.call
+
+    def different_authority(rpc_method, **kwargs):
+        result = original(rpc_method, **kwargs)
+        if rpc_method == "runGetMethod" and kwargs.get("method") == "controller_state":
+            result["stack"][-2] = num(1)
+        return result
+
+    monkeypatch.setattr(node, "call", different_authority)
+
+    def refuse_sign(*a):
+        raise AssertionError("disagreeing validators reached the offline signer")
+
+    monkeypatch.setattr(elections, "sign_operations", refuse_sign)
+    with pytest.raises(lib.TestnetError, match="validators disagree"):
+        onboard(b)
+    assert b["ops"].journal.record("authorize-operations-node-1") is None
