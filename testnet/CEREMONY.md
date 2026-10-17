@@ -333,14 +333,51 @@ It runs `init-operator.sh` on the host (vault, console key, operator wallet),
 records the operator wallet's address as `op-<name>` in
 `ceremony/wallets.json` and refuses an address an earlier epoch recorded (a
 host that kept `/var/lib/tos-ctl` over a reset still has the old wallet key),
-funds the wallet from the bootstrap wallet, activates it, deploys the
-controller and the pool, binds them, imports the controller's birth, plans the
-operating authorization on the host, signs it locally with the root seed and
-sends it, and runs `enable-elections.sh`, which installs
+funds the wallet from the bootstrap wallet with fee and operating money only
+(`operator_funding_tos`, 150), activates it, deploys the controller, creates
+the pool's **owner** here (below), deploys the pool with 2 TOS from the
+operator wallet, binds them, imports the controller's birth, has the owner
+send the stake principal (`pool_tos`) to the pool, plans the operating
+authorization on the host, signs it locally with the root seed and sends it,
+and runs `enable-elections.sh`, which installs
 `systemd/tos-testnet-elections.service` (`Restart=always`). The amounts are
 `elections` in the profile. A rerun continues where a failed run stopped. The
-root seed and `ceremony/secret/main-wallet.pk` never leave the coordinator;
-every signed bootstrap transfer is kept in `ceremony/sent/`.
+root seed, `ceremony/secret/main-wallet.pk` and the pool owners' keys never
+leave the coordinator; every signed bootstrap and owner transfer is kept in
+`ceremony/sent/`.
+
+The single-nominator pool keeps three roles apart: the **owner** holds the
+principal and is the only role that can withdraw it, the **validator** (the
+operator wallet on the host, `op-<name>`) can only send it to the Elector
+through the controller and recover it, and the **controller** stands in the
+election. Since epoch 4 the owner is not the operator wallet: `onboard`
+creates `pool-owner-<name>`, a wallet v3 in the masterchain (subwallet
+`0x504F4F4C`), with `new-wallet-v3.fif` on the coordinator. Its key is
+`ceremony/secret/pool-owner-<name>.pk` (0600), its address and self-deploy
+message are in `ceremony/pool-owners/`, its address in `wallets.json`, and the
+pool, owner, operator and controller in `ceremony/pools.json`. The bootstrap
+wallet funds it with `pool_tos` + 5 TOS. A compromised validator host can
+therefore stake and recover, but not take the principal; the owner can also
+replace the validator address (`CHANGE_VALIDATOR_ADDRESS`).
+
+To take principal out, between elections (a stake at the Elector comes back
+to the pool only when the election task recovers it, `stake_held_for` after
+its term):
+
+```bash
+python3 /opt/tos-testnet/scripts/testnet-elections.py withdraw \
+  --name node-1 --ceremony ./ceremony --tos-root "$TOS_ROOT" \
+  --fift "$TOS_ROOT/build/crypto/fift" --rpc http://127.0.0.1:18081/jsonRPC \
+  (--amount <TOS> | --all) [--dry-run]
+```
+
+It builds the pool's WITHDRAW body (op `0x1000`) with the pool's own
+`crypto/smartcont/single-nominator-pool/withdraw.fif`, signs a bounceable
+1 TOS transfer carrying it from the owner wallet here with the offline key
+(the pool sends the amount and the unspent value back to the owner), keeps the
+signed message in `ceremony/sent/` before sending it, refuses while an
+election is open (`--during-election` overrides), checks that the owner's
+balance grew and appends the result to `ceremony/withdrawals.jsonl`.
 
 The election task runs as the non-login system user `tos-ctl`, never root.
 Every `tosctl` call on the host, from these scripts and from
