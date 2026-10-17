@@ -21,9 +21,12 @@ later reset reads it through --previous-ceremony to refuse reused wallet keys.
           [--previous-ceremony DIR ...]
       Copy the canonical template gen-zerostate.fif, replace only its mainnet
       global id and genesis epoch and the profile's validator schedule
-      (ConfigParam 15 and the initial set's lifetime;
-      testnet_lib.patch_template), and run
-      create-state with SOURCE_DATE_EPOCH. The bootstrap wallet's public key
+      (ConfigParam 15 and the initial set's lifetime), define the AUTH
+      network tag (testnet_lib.patch_template), and run create-state with
+      SOURCE_DATE_EPOCH. The tag comes from TOS_AUTH_NETWORK_TAG (64
+      hexadecimal digits, as tos tooling takes it) and must equal the
+      profile's genesis.auth_network_tag, which is SHA-256 of its rule; a
+      tag an earlier epoch's genesis.json recorded is refused. The bootstrap wallet's public key
       is derived from the new main-wallet.pk and, after a reset, checked
       against every earlier epoch's ceremony directory given with
       --previous-ceremony (repeat for each): the bootstrap wallet sits at the
@@ -31,8 +34,14 @@ later reset reads it through --previous-ceremony to refuse reused wallet keys.
       transfer signed on an earlier epoch from replaying on this one. Then
       create-state runs a second time in a separate directory with the same
       inputs and the same main wallet key, and the step refuses unless every
-      output is byte-identical. Writes genesis.json (with
-      main_wallet_public_key), main-wallet.pub and wallets.json.
+      output is byte-identical. Then it reads the zero state back (after
+      checking its parser against create-state's root hash) and refuses
+      unless ConfigParam 8 is the profile's version, ConfigParam 48 is the
+      initial AUTH policy for this tag and 48 is in both ConfigParam 9
+      (mandatory) and 10 (critical), as the node requires from version 16.
+      Writes genesis.json (with main_wallet_public_key and auth_policy: the
+      tag, its rule and the ConfigParam 48 cell hash), main-wallet.pub and
+      wallets.json.
 
   global-config --ceremony DIR DHT_NODE.json [DHT_NODE.json ...]
       Build global-config.json from the zero state and the signed DHT records
@@ -175,11 +184,19 @@ def cmd_genesis(args: argparse.Namespace) -> None:
             "the epoch must lie between one hour ago and fourteen days ahead; "
             "an old epoch leaves the initial set expired before the first election"
         )
+    auth_tag = lib.supplied_auth_network_tag(profile, os.environ)
+    auth_entry = lib.profile_auth_network_tag(profile)
+    for earlier in args.previous_ceremony:
+        recorded = previous_auth_tag(earlier)
+        if recorded == auth_tag:
+            raise lib.TestnetError(
+                f"{earlier} already used AUTH network tag {auth_tag.hex()}; every epoch needs its own"
+            )
     revision = tos_revision(args.tos_root)
     template = args.tos_root / profile["genesis"]["template"]
     original = template.read_text()
     schedule = lib.validator_schedule(profile)
-    patched = lib.patch_template(original, global_id, args.epoch, schedule)
+    patched = lib.patch_template(original, global_id, args.epoch, schedule, auth_tag)
 
     runs = [ceremony / "run-a", ceremony / "run-b"]
     for run_dir in runs:
@@ -212,6 +229,15 @@ def cmd_genesis(args: argparse.Namespace) -> None:
 
     rhash = (ceremony / "zerostate.rhash").read_bytes()
     fhash = (ceremony / "zerostate.fhash").read_bytes()
+    auth = lib.zero_state_auth_policy(
+        (ceremony / "zerostate.boc").read_bytes(),
+        rhash,
+        global_id,
+        profile["genesis"]["global_version"],
+        auth_tag,
+    )
+    auth["network_tag_rule"] = auth_entry["rule"]
+    auth["network_tag_status"] = auth_entry["status"]
     valid_for = schedule["initial_set_valid_for"]
     utc = datetime.timezone.utc
 
@@ -232,6 +258,7 @@ def cmd_genesis(args: argparse.Namespace) -> None:
             "set_takes_office_utc": at(valid_for),
         },
         "main_wallet_public_key": main_public.hex(),
+        "auth_policy": auth,
         "zero_state": lib.zero_state_entry(rhash, fhash),
         "zero_state_hex": {"root_hash": rhash.hex(), "file_hash": fhash.hex()},
         "basestate0_hex": {
@@ -256,6 +283,7 @@ def cmd_genesis(args: argparse.Namespace) -> None:
                 "genesis epoch check",
                 "election params",
                 "initial set lifetime",
+                "AUTH network tag (inserted after the first line)",
             ],
         },
         "tos_revision": revision,
@@ -269,6 +297,16 @@ def cmd_genesis(args: argparse.Namespace) -> None:
     print(
         f"main-wallet.pk is the only secret output: {secret / 'main-wallet.pk'} (0600). Move it offline."
     )
+
+
+def previous_auth_tag(ceremony: Path) -> bytes | None:
+    """The AUTH network tag an earlier epoch's genesis.json recorded, if it had one."""
+    path = Path(ceremony) / "genesis.json"
+    if not path.is_file():
+        # Refused by previous_wallets unless the directory records a wallet.
+        return None
+    recorded = json.loads(path.read_text()).get("auth_policy", {}).get("network_tag_hex")
+    return None if recorded is None else bytes.fromhex(recorded)
 
 
 def cmd_global_config(args: argparse.Namespace) -> None:

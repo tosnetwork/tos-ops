@@ -1,10 +1,11 @@
 import argparse
+import base64
 import importlib.util
 import json
 
 import pytest
 import testnet_lib as lib
-from conftest import SCRIPTS
+from conftest import DATA, SCRIPTS, one_key_list, serialize_boc
 
 spec = importlib.util.spec_from_file_location("check_testnet", SCRIPTS / "check-testnet.py")
 check_testnet = importlib.util.module_from_spec(spec)
@@ -208,3 +209,78 @@ def test_genesis_and_elected_set_are_exclusive(capsys):
                 "y",
             ]
         )
+
+
+# ---------------------------------------------------------------- ConfigParam 48 (version 16)
+
+ZERO_STATE_PARAMS = lib.zero_state_config((DATA / "zerostate-v16-auth.boc").read_bytes())[2]
+TAG_HEX = "e36440a2e7704d9e26c79c5d9ba462507783b18404e876da9a232d38722e28fd"
+
+
+class FakeNodesWithParams(FakeNodes):
+    """getConfigParam answers each number with a cell, as the node does: a BOC in config.bytes."""
+
+    def __init__(self, nodes, params):
+        super().__init__(nodes)
+        self.params, self.asked = params, []
+
+    def __call__(self, url, method, **params):
+        if method == "getConfigParam":
+            self.asked.append((params["param"], params["seqno"]))
+            boc = serialize_boc(self.params[params["param"]])
+            return {"@type": "configInfo", "config": {"bytes": base64.b64encode(boc).decode()}}
+        return super().__call__(url, method, **params)
+
+
+def run_auth(tmp_path, params, recorded_hash=None):
+    a = args(tmp_path, ["a", "b"])
+    genesis = json.loads(a.genesis.read_text())
+    genesis["global_version"] = 16
+    genesis["auth_policy"] = {
+        "network_tag_hex": TAG_HEX,
+        "config_param_48_hash_hex": recorded_hash or ZERO_STATE_PARAMS[48].hash().hex(),
+    }
+    a.genesis.write_text(json.dumps(genesis))
+    nodes = FakeNodesWithParams({"a": {"head": 50}, "b": {"head": 51}}, params)
+    return check_testnet.check(a, rpc=nodes, now=lambda: NOW), nodes
+
+
+def test_live_auth_policy_is_checked_at_the_common_block(tmp_path):
+    summary, nodes = run_auth(tmp_path, ZERO_STATE_PARAMS)
+    assert summary["config48"] == {
+        "version": 16,
+        "network_tag_hex": TAG_HEX,
+        "sequence": 0,
+        "hash_hex": ZERO_STATE_PARAMS[48].hash().hex(),
+        "unchanged_since_genesis": True,
+        "mandatory_and_critical": True,
+    }
+    assert sorted(nodes.asked) == [(8, 50), (9, 50), (10, 50), (48, 50)]
+
+
+def test_live_auth_policy_reports_a_replaced_record(tmp_path):
+    summary, _ = run_auth(tmp_path, ZERO_STATE_PARAMS, recorded_hash="00" * 32)
+    assert summary["config48"]["unchanged_since_genesis"] is False
+
+
+def test_live_auth_policy_with_another_tag_is_refused(tmp_path):
+    cell = ZERO_STATE_PARAMS[48]
+    data = bytearray(cell.data)
+    data[1] ^= 0x01  # inside the network tag
+    other = lib.Cell(bytes(data), cell.bits, list(cell.refs))
+    with pytest.raises(lib.TestnetError, match="carries tag"):
+        run_auth(tmp_path, {**ZERO_STATE_PARAMS, 48: other})
+
+
+@pytest.mark.parametrize("number,name", [(9, "mandatory"), (10, "critical")])
+def test_live_auth_policy_outside_a_list_is_refused(tmp_path, number, name):
+    with pytest.raises(lib.TestnetError, match=f"not {name}"):
+        run_auth(tmp_path, {**ZERO_STATE_PARAMS, number: one_key_list(47)})
+
+
+def test_live_version_below_the_genesis_is_refused(tmp_path):
+    cell = ZERO_STATE_PARAMS[8]
+    data = bytearray(cell.data)
+    data[4] ^= 0x10  # version 16 -> 0
+    with pytest.raises(lib.TestnetError, match="version 0"):
+        run_auth(tmp_path, {**ZERO_STATE_PARAMS, 8: lib.Cell(bytes(data), cell.bits, [])})

@@ -17,11 +17,14 @@
 #   operators   first start on a placeholder config, consensus seed generated
 #               in the node directory, controller id derived from a root key
 #               kept apart from the node, public record
-#   coordinator manifest, genesis (run twice and compared), global config
+#   coordinator manifest, genesis (run twice and compared, ConfigParam 48 read
+#               back) with the profile's AUTH network tag in
+#               TOS_AUTH_NETWORK_TAG, global config
 #   operators   zero state placed, bind-node, console added, engine started
 #   checker     check-testnet.py: one zero state, one full block id at the
 #               common head, the testnet global id, ConfigParam 34 = the four
-#               genesis identities
+#               genesis identities, live ConfigParam 48 = the genesis tag,
+#               mandatory and critical
 #
 # Differences from a real ceremony, all forced by running on one host: the
 # addresses are 127.0.0.1 (TESTNET_REHEARSAL_ALLOW_PRIVATE=1), each node gets
@@ -122,6 +125,10 @@ log "coordinator: manifest, genesis, global config"
 python3 "$CO" manifest --ceremony "$WORK/ceremony" --tos-root "$TOS_ROOT" \
   "$WORK"/record-{1,2,3,4}.json
 EPOCH=$(($(date +%s) + 30))
+# The coordinator exports the announced AUTH network tag by hand; here it is
+# read from the profile, unless the caller set one (which genesis then checks).
+: "${TOS_AUTH_NETWORK_TAG:=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["genesis"]["auth_network_tag"]["value"])' "$TESTNET/network/profile.json")}"
+export TOS_AUTH_NETWORK_TAG
 python3 "$CO" genesis --ceremony "$WORK/ceremony" --tos-root "$TOS_ROOT" --tos-build "$TOS_BUILD" \
   --epoch "$EPOCH" >"$WORK/genesis.out"
 python3 "$CO" global-config --ceremony "$WORK/ceremony" "$WORK/dht-node-1.json" "$WORK/dht-node-2.json"

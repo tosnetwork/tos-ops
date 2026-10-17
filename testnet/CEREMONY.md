@@ -168,6 +168,7 @@ The record order is the validator index order; fix it before you start.
 S=/opt/tos-testnet/scripts
 python3 $S/testnet-coordinator.py manifest --ceremony ./ceremony --tos-root "$TOS_ROOT" \
   record-o1.json record-o2.json record-o3.json record-o4.json
+export TOS_AUTH_NETWORK_TAG=<genesis.auth_network_tag.value in network/profile.json>
 python3 $S/testnet-coordinator.py genesis --ceremony ./ceremony --tos-root "$TOS_ROOT" \
   --tos-build "$TOS_ROOT/build" --epoch <EPOCH>
 python3 $S/testnet-coordinator.py global-config --ceremony ./ceremony dht-1.json dht-2.json
@@ -177,8 +178,32 @@ After a reset, add the earlier epochs to both steps, once per earlier epoch
 (section 9): `manifest --previous <old>/genesis-records.json` and
 `genesis --previous-ceremony <old>`.
 
+Global version 16 makes ConfigParam 48, the AUTH policy, mandatory and
+critical: the collator, the validator and state admission refuse a version-16
+configuration without it, and the template refuses to run without a public
+AUTH network tag (tos `doc/auth-policy-v1.md`; tos assigns none). The tag is
+`genesis.auth_network_tag` in `network/profile.json`: SHA-256 of the ASCII rule
+`TOS-AUTH-NETWORK-TAG-v1;network=tos-public-testnet;global_id=2;epoch=<N>`, a
+new one every epoch, because every epoch shares global id 2 and Quantum wallet
+keys and signatures bind the tag. Before the next reset, set `campaign_epoch`,
+`rule` and `value` to the next epoch's (`testnet_lib.derive_auth_network_tag`).
+`genesis` takes the tag from `TOS_AUTH_NETWORK_TAG` (64 hexadecimal digits, the
+form tos tooling takes) and refuses unless it equals the profile's value, is no
+tos test namespace or the mainnet candidate's `0x42…`, and no earlier epoch
+named with `--previous-ceremony` recorded it. It defines the tag on the line
+after the template's first, as tos expects of a wrapper.
+
 `genesis` refuses a dirty tos checkout and a template whose mainnet lines
-changed. It generates the zero state twice and compares the outputs. Between
+changed. It generates the zero state twice and compares the outputs. Then it
+reads the zero state back (its cell parser checked against create-state's root
+hash first) and refuses unless ConfigParam 8 is version 16, ConfigParam 48 is
+the initial policy for this tag (sequence 0, nothing retired, no deadline, the
+v1 policy identity `5e4380ae…`) and 48 is in both ConfigParam 9 and 10.
+create-state itself runs the node's configuration check (`valid_config_data`,
+which includes `validate_auth_policy_config`) before it writes a zero state,
+and every node checks it again when it starts. `genesis.json` records the
+result as `auth_policy`: the tag, its rule and the ConfigParam 48 cell hash.
+Between
 the two runs it derives the bootstrap wallet's public key from the new
 `main-wallet.pk` and refuses one that an earlier epoch named with
 `--previous-ceremony` used. It records the key as `main_wallet_public_key` in
@@ -257,7 +282,9 @@ TOS_ROOT=$TOS_ROOT "$TOS_ROOT/.venv/bin/python" /opt/tos-testnet/scripts/check-t
 
 It passes only when the nodes share the ceremony's zero state and one full
 block id at the common head, that block carries the testnet global id and is
-fresh, and ConfigParam 34 is the four genesis identities. Run it from two
+fresh, ConfigParam 34 is the four genesis identities, and (for a genesis.json
+with `auth_policy`) live ConfigParam 48 carries the genesis tag and is
+mandatory and critical, with ConfigParam 8 at version 16 or later. Run it from two
 places that do not share infrastructure (plan G0: two independent observers).
 After the first ordinary election, drop `--genesis-set`.
 

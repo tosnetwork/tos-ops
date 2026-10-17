@@ -211,6 +211,9 @@ def test_public_key_matches_an_independent_ed25519_derivation(tmp_path):
 # ---------------------------------------------------------------- genesis
 
 
+PROFILE_TAG = lib.load_profile()["genesis"]["auth_network_tag"]["value"]
+
+
 def genesis_setup(tmp_path, monkeypatch, wallet_key: bytes):
     """A ceremony with create-state replaced by a stand-in that writes its outputs
     (and main-wallet.pk when run-a has none), and the key derived as sha256."""
@@ -237,6 +240,13 @@ def genesis_setup(tmp_path, monkeypatch, wallet_key: bytes):
     monkeypatch.setattr(coordinator, "create_state", create_state)
     monkeypatch.setattr(coordinator, "tos_revision", lambda root: "0" * 40)
     monkeypatch.setattr(lib, "patch_template", lambda text, *rest: text + "patched\n")
+    monkeypatch.setenv(lib.AUTH_NETWORK_TAG_ENV, PROFILE_TAG)
+
+    def auth_policy(boc, root_hash, global_id, version, tag):
+        assert (global_id, version, tag.hex()) == (2, 16, PROFILE_TAG)
+        return {"network_tag_hex": tag.hex(), "config_param_48_hash_hex": "48" * 32}
+
+    monkeypatch.setattr(lib, "zero_state_auth_policy", auth_policy)
     monkeypatch.setattr(
         lib,
         "wallet_public_key",
@@ -456,3 +466,51 @@ def test_load_refuses_an_empty_previous_ceremony(tmp_path):
     previous.mkdir()
     with pytest.raises(lib.TestnetError, match="records no wallet identity"):
         load_driver(tmp_path, [str(previous)]).run()
+
+
+# ---------------------------------------------------------------- AUTH network tag
+
+
+def test_genesis_records_the_auth_policy(tmp_path, monkeypatch):
+    ceremony, args, runs = genesis_setup(tmp_path, monkeypatch, b"\x04" * 32)
+    assert coordinator.main(args) == 0
+    auth = json.loads((ceremony / "genesis.json").read_text())["auth_policy"]
+    assert auth["network_tag_hex"] == PROFILE_TAG
+    assert auth["config_param_48_hash_hex"] == "48" * 32
+    assert auth["network_tag_rule"] == lib.load_profile()["genesis"]["auth_network_tag"]["rule"]
+
+
+@pytest.mark.parametrize(
+    "value,message",
+    [
+        (None, "is not set"),
+        ("ab" * 31, "64 hexadecimal digits"),
+        ("42" * 32, "reserved"),
+        ("12" * 16 + "34" * 16, "but the profile announces"),
+    ],
+)
+def test_genesis_refuses_a_missing_or_different_tag_before_create_state(
+    tmp_path, monkeypatch, capsys, value, message
+):
+    ceremony, args, runs = genesis_setup(tmp_path, monkeypatch, b"\x05" * 32)
+    if value is None:
+        monkeypatch.delenv(lib.AUTH_NETWORK_TAG_ENV)
+    else:
+        monkeypatch.setenv(lib.AUTH_NETWORK_TAG_ENV, value)
+    assert coordinator.main(args) == 1
+    assert message in capsys.readouterr().err
+    assert runs == []
+    assert not (ceremony / "genesis.json").exists()
+
+
+def test_genesis_refuses_the_tag_of_an_earlier_epoch(tmp_path, monkeypatch, capsys):
+    ceremony, args, runs = genesis_setup(tmp_path, monkeypatch, b"\x06" * 32)
+    previous = tmp_path / "epoch-4"
+    previous.mkdir()
+    (previous / "wallets.json").write_text(json.dumps({"bootstrap": KEY_A}))
+    (previous / "genesis.json").write_text(
+        json.dumps({"auth_policy": {"network_tag_hex": PROFILE_TAG.upper()}})
+    )
+    assert coordinator.main(args + ["--previous-ceremony", str(previous)]) == 1
+    assert "every epoch needs its own" in capsys.readouterr().err
+    assert runs == []
