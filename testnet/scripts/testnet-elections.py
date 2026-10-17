@@ -1015,9 +1015,15 @@ def withdraw(args: argparse.Namespace, operations: ops.Operations, global_id: in
         "pool_tx": record["evidence"]["destination_tx"],
     }
     path = ceremony / WITHDRAWALS_FILE
-    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o644)
-    with os.fdopen(fd, "a") as out:
-        out.write(json.dumps(result, sort_keys=True) + "\n")
+    recorded = (
+        {json.loads(line).get("id") for line in path.read_text().splitlines() if line}
+        if path.is_file()
+        else set()
+    )
+    if args.id not in recorded:  # asking for a settled id again reports it, once recorded
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+        with os.fdopen(fd, "a") as out:
+            out.write(json.dumps(result, sort_keys=True) + "\n")
     print(json.dumps(result, indent=2))
     return result
 

@@ -1559,6 +1559,8 @@ def test_withdraw_by_explicit_id(boarding, withdraw_body_stub):
     sent = list(boarding["chain"].sent)
     elections.withdraw(withdraw_args(boarding, new=False), boarding["ops"], 2)
     assert boarding["chain"].sent == sent
+    lines = (boarding["ceremony"] / "withdrawals.jsonl").read_text().splitlines()
+    assert len(lines) == 1
 
 
 @pytest.mark.parametrize(
