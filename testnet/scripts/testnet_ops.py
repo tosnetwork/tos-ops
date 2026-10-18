@@ -601,7 +601,7 @@ def publish_new(path: Path, entry: dict) -> None:
 
 # Parameters an attempt after a failure fixes anew (the failed one's are stale):
 # an operating authorization is a new root-signed request with its own value.
-ATTEMPT_PARAMS = {"authorize-operations": ("value", "body_hash", "plan", "body_b64")}
+ATTEMPT_PARAMS = {"authorize-operations": ("value", "body_hash", "plan", "body_b64", "expires_at")}
 ATTEMPT = re.compile(
     r"^(?P<step>[a-z0-9][a-z0-9_-]*(?:\.[a-z0-9_-]+)*?)(?:\.attempt-(?P<n>[2-9]|[1-9][0-9]+))?$"
 )
@@ -861,7 +861,7 @@ class Operations:
         no other operation of the wallet is open. Called with the journal lock held."""
         self.check_network()
         for record in self.journal.for_wallet(wallet):
-            if record["id"] != op_id and state_of(record) in ("signed", "broadcast"):
+            if record["id"] != op_id and state_of(record) in ("planned", "signed", "broadcast"):
                 raise OperationRefused(
                     f"operation {record['id']} of {wallet} is open ({record['state']}, external "
                     f"{record.get('external_hash')}); run reconcile, then record or resubmit"
@@ -1435,7 +1435,7 @@ class Operations:
         with self.journal.lock(wallet):
             self.check_network()
             for record in self.journal.for_wallet(wallet):
-                if state_of(record) in ("signed", "broadcast"):
+                if state_of(record) in ("planned", "signed", "broadcast"):
                     raise OperationRefused(f"operation {record['id']} is open")
             history = self.history(wallet, self.journal.baseline(wallet))
             head = self.head(wallet)

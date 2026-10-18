@@ -93,7 +93,7 @@ M = [
     (
         "O2 gate ignores other open operations",
         OPS,
-        'if record["id"] != op_id and state_of(record) in ("signed", "broadcast"):',
+        'if record["id"] != op_id and state_of(record) in ("planned", "signed", "broadcast"):',
         "if False:",
     ),
     (
@@ -287,8 +287,8 @@ M = [
     (
         "E10 readiness not checked",
         EL,
-        'if "BLOCKING" in status or "kind 4 never accepted" in status:',
-        "if False:",
+        '    # Readiness is tosctl\'s full assessment (capital reserve, a usable grant).\n    status = host.tosctl(f"controller operations status --controller {controller}", 90)\n    if "BLOCKING" in status or "kind 4 never accepted" in status:',
+        '    # Readiness is tosctl\'s full assessment (capital reserve, a usable grant).\n    status = host.tosctl(f"controller operations status --controller {controller}", 90)\n    if False:',
     ),
     (
         "E11 a foreign retained birth accepted",
@@ -414,7 +414,6 @@ M += [
         "        if found:\n            return\n",
         "        if bound:\n            return\n",
     ),
-    ("E15 refund enabled", EL, "REFUND_ENABLED = False", "REFUND_ENABLED = True"),
     ("E16 operator subwallet guessed", EL, "    return data[2]", "    return 0"),
 ]
 
@@ -604,8 +603,8 @@ M += [
     (
         "P10 onboarding signs an unchecked plan",
         EL,
-        "            check_operations_plan(\n                plan,\n",
-        "            (lambda *a: None)(\n                plan,\n",
+        "        check_operations_plan(\n            plan,\n",
+        "        (lambda *a: None)(\n            plan,\n",
     ),
     (
         "P12 settlement trusts the plan's payer",
@@ -627,8 +626,106 @@ M += [
     (
         "P15 validators not compared before root signing",
         EL,
-        "            context = operations.both(lambda node: controller_plan_context(node, controller))",
-        "            context = controller_plan_context(operations.nodes[0], controller)",
+        "        context = operations.both(lambda node: controller_plan_context(node, controller))",
+        "        context = controller_plan_context(operations.nodes[0], controller)",
+    ),
+]
+
+
+M += [
+    (
+        "U1 renewal disabled again",
+        EL,
+        '    """A new authorization is its own operation, never a retry of a settled grant."""',
+        '    """A new authorization is its own operation, never a retry of a settled grant."""\n    raise lib.TestnetError("refund disabled")',
+    ),
+    (
+        "U2 root signing without the journal lock",
+        EL,
+        "    with operations.journal.lock(operator):\n        actual_id = operations.journal.newest(op_id)",
+        '    with __import__("contextlib").nullcontext():\n        actual_id = operations.journal.newest(op_id)',
+    ),
+    (
+        "U3 other planned operations ignored",
+        OPS,
+        'if record["id"] != op_id and state_of(record) in ("planned", "signed", "broadcast"):',
+        'if record["id"] != op_id and state_of(record) in ("signed", "broadcast"):',
+    ),
+    (
+        "U4 baseline allowed over a planned operation",
+        OPS,
+        '                if state_of(record) in ("planned", "signed", "broadcast"):',
+        '                if state_of(record) in ("signed", "broadcast"):',
+    ),
+    (
+        "U5 window read on only one validator",
+        EL,
+        "    since, until, election = operations.both(",
+        "    since, until, election = (lambda read: read(operations.nodes[0]))(",
+    ),
+    (
+        "U6 window guard removed",
+        EL,
+        "        reason = window_refusal(since, until, election, lib.validator_schedule(profile), now)",
+        "        reason = None",
+    ),
+    (
+        "U7 reserve shortfall ignored",
+        EL,
+        "    shortfall = reserve_shortfall(balance, value, reserve)",
+        "    shortfall = 0",
+    ),
+    (
+        "U8 renewal resubmit bypasses preflight",
+        EL,
+        '        if record.get("renewal"):\n\n            def prerequisites():\n                authorization_preflight(operations, record, profile)',
+        '        if record.get("renewal"):\n            prerequisites = None',
+    ),
+    (
+        "U9 initial authorization bypasses preflight",
+        EL,
+        "        prerequisites=lambda: authorization_preflight(operations, params, profile),",
+        "        prerequisites=lambda: None,",
+    ),
+    (
+        "U10 retry keeps the old expiry",
+        OPS,
+        '("value", "body_hash", "plan", "body_b64", "expires_at")',
+        '("value", "body_hash", "plan", "body_b64")',
+    ),
+    (
+        "U11 election service not restarted",
+        EL,
+        '            host.run(f"systemctl start {ELECTIONS_SERVICE}")',
+        "            pass",
+    ),
+    (
+        "U12 renewal id may change its parameters",
+        EL,
+        "            if any(record.get(k) != v for k, v in expected.items() if renewal or k in record):",
+        "            if False:",
+    ),
+    (
+        "U13 planned expiry trusts either clock",
+        EL,
+        '                if all(t >= int(plan["valid_until"]) + ops.EXPIRY_MARGIN for t in times):',
+        '                if any(t >= int(plan["valid_until"]) + ops.EXPIRY_MARGIN for t in times):',
+    ),
+    (
+        "U14 a settled renewal is not reported",
+        EL,
+        '            if state == "settled":\n                print(f"{actual_id}: already settled',
+        '            if False:\n                print(f"{actual_id}: already settled',
+    ),
+]
+
+
+M += [
+    (
+        "U15 renewal readiness assessment ignored",
+        EL,
+        '    if "BLOCKING" in status or "kind 4 never accepted" in status:\n        raise lib.TestnetError(\n            f"renewal',
+        '    if False:\n        raise lib.TestnetError(\n            f"renewal',
     ),
 ]
 

@@ -46,27 +46,25 @@ and drive load through a post-quantum high-volume wallet.
 
   refund  --name NAME --host HOST --ssh-key FILE --ceremony DIR
           --controller FILE --root-seed FILE --controller-tool PATH
-          --tos-root DIR --fift PATH --rpc URL [--target-nanotos N]
-          [--dry-run] [--i-checked-the-window]
-      Top up an onboarded validator controller's operating funds (a kind-4
-      fund_operations renewal), paid by the operator wallet op-NAME recorded in
-      DIR/wallets.json. It runs only in the quiet part of a term: it refuses
-      while the Elector has an election open, and within 10 minutes of the
-      current set taking office (ConfigParam 34 utime_since) or of the next
-      election opening (utime_until - elections_start_before); a failed
-      election keeps refusing. --i-checked-the-window overrides that after you
-      have checked by hand. It plans on the host (funds target
-      elections.authorization.refund_target_nanotos, or --target-nanotos), and
-      refuses before signing when the operator wallet would keep less than
-      elections.authorization.operator_reserve_nanotos after the message value
-      and a 1 TOS fee allowance: the election task needs 20.2 TOS there to
-      stake. The error names the top-up to `fund` first. Then it signs here
-      with the root seed, stops tos-testnet-elections (it holds the tosctl
-      vault lock), sends from the operator wallet, starts the service again
-      whatever the send did, and checks that the root authority nonce advanced,
-      the stakes remaining grew and no [BLOCKING] warning remains. Each sent
-      refund is appended to DIR/refunds.jsonl. --dry-run plans, checks the
-      reserve and signs, reports the window, and sends nothing.
+          --tos-root DIR --fift PATH --rpc URL --confirm-rpc URL
+          --id ID [--new] [--target-nanotos N] [--dry-run]
+      Renew operating authorization as a new journaled operation, distinct from
+      onboarding. First top up the operator with `fund --id TOPUP-ID` (about
+      200 TOS); refund defaults to a 260 TOS target and ten-day expiry. --new
+      creates ID; omit it to report a settled renewal or resume a planned one.
+      Open or failed attempts refuse: reconcile / record / resubmit, or retry
+      a terminal failure. A settled authorization is never renewed by retry.
+      Both validators must agree on network, wallet history, controller root
+      epoch/nonce, funding and fees. The coordinator checks every plan field,
+      signs with the offline root seed, checks the host's build-only wallet
+      message, journals it before broadcast and settles by transaction hashes
+      on both validators. No live send is performed by the host.
+      It refuses during an election or within ten minutes of a rotation or
+      next election opening, and unless the operator retains its configured
+      reserve (30 TOS) after value and a 1 TOS wallet fee allowance. There is no
+      window override; resubmit checks the same conditions. The election
+      service is stopped around the operation and restarted even on failure.
+      --dry-run checks and plans only: no signature, journal, send or stop.
 
   withdraw --name NAME --id ID [--new] --ceremony DIR --tos-root DIR --fift PATH
           --rpc URL --confirm-rpc URL (--amount TOS | --all)
@@ -1080,11 +1078,9 @@ def operator_subwallet(operations: ops.Operations, operator: str) -> int:
     return data[2]
 
 
-def host_operation(
+def host_operation_params(
     operations,
-    host,
     name,
-    op_id,
     kind,
     operator,
     destination,
@@ -1092,8 +1088,6 @@ def host_operation(
     state_init_b64=None,
     body_b64=None,
     bounce=False,
-    expect=None,
-    prerequisites=None,
     extra=None,
 ) -> dict:
     state_init_hash = (
@@ -1115,6 +1109,38 @@ def host_operation(
         "subwallet": operator_subwallet(operations, operator),
     }
     params.update(extra or {})
+
+    return params
+
+
+def host_operation(
+    operations,
+    host,
+    name,
+    op_id,
+    kind,
+    operator,
+    destination,
+    value,
+    state_init_b64=None,
+    body_b64=None,
+    bounce=False,
+    expect=None,
+    prerequisites=None,
+    extra=None,
+) -> dict:
+    params = host_operation_params(
+        operations,
+        name,
+        kind,
+        operator,
+        destination,
+        value,
+        state_init_b64,
+        body_b64,
+        bounce,
+        extra,
+    )
 
     def balance_covers() -> None:
         if operations.balance(operator) < value + ops.FEE_ALLOWANCE_NANOTOS:
@@ -1378,6 +1404,150 @@ def expect_authorization(plan: dict, operator: str):
     return check
 
 
+def authorize_operations(
+    args,
+    operations,
+    global_id,
+    profile,
+    host,
+    operator,
+    controller,
+    op_id,
+    target,
+    *,
+    renewal=False,
+    dry_run=False,
+) -> dict:
+    """Plan and sign under the journal lock, then use the common wallet operation.
+
+    The planned request is durable before the host builds an external message.
+    Releasing this lock before run() is safe: the planned operation gates every
+    other operation on this wallet, and run() re-reads it under the same lock.
+    """
+    auth = profile["elections"]["authorization"]
+    request = dict(
+        name=args.name,
+        renewal=renewal,
+        funds_target_nanotos=target,
+        floor_nanotos=int(auth["floor_nanotos"]),
+        operator_reserve_nanotos=operator_reserve(auth) if renewal else 0,
+    )
+    with operations.journal.lock(operator):
+        actual_id = operations.journal.newest(op_id)
+        record = operations.journal.record(actual_id)
+        if record is not None:
+            expected = dict(
+                request, kind="authorize-operations", wallet=operator, destination=controller
+            )
+            if any(record.get(k) != v for k, v in expected.items() if renewal or k in record):
+                raise lib.TestnetError(f"operation {actual_id} exists with other parameters")
+            state = ops.state_of(record)
+            if state == "settled":
+                print(f"{actual_id}: already settled ({record['evidence']['destination_tx']})")
+                return record
+            if state != "planned":
+                raise lib.TestnetError(
+                    f"operation {actual_id} is open or failed ({state}); reconcile / record / resubmit it; "
+                    f"only a failed attempt may use retry --step {op_id}"
+                )
+        operations.gate(operator, actual_id)
+        if renewal:
+            renewal_window(operations, profile)
+        context = operations.both(lambda node: controller_plan_context(node, controller))
+        if record is not None and record.get("plan"):
+            plan, signed = record["plan"], record["body_b64"]
+            expires_at = record["expires_at"]
+            if renewal and operations.clock() >= int(plan["valid_until"]):
+                times = operations.utimes()
+                if all(t >= int(plan["valid_until"]) + ops.EXPIRY_MARGIN for t in times):
+                    # No wallet external was journaled or broadcast in this state.
+                    # The root request is now unusable on either validator, so a
+                    # person can safely request a fresh attempt, never silently.
+                    operations.journal.append(
+                        actual_id,
+                        {
+                            "state": "failed",
+                            "evidence": {
+                                "form": "unsigned-plan-expired",
+                                "explains": [],
+                                "reason": "root request expired before wallet signing",
+                                "utimes": times,
+                            },
+                        },
+                    )
+                    raise lib.TestnetError(
+                        f"operation {actual_id} failed: root request expired before wallet signing; retry --step {op_id}"
+                    )
+        else:
+            expires_at = int(operations.clock()) + int(auth["expires_in_days"]) * 86400
+            plan = parse_operations_plan(
+                host.tosctl(
+                    f"controller operations plan --controller {controller} --payer {operator} "
+                    f"--floor-nanotos {auth['floor_nanotos']} --funds-target-nanotos {target} "
+                    f"--expires-at {expires_at} --valid-for {PLAN_VALID_FOR_SECONDS} "
+                    f"--margin-nanotos {PLAN_MARGIN_NANOTOS}",
+                    90,
+                ),
+                global_id,
+                controller.split(":")[1],
+            )
+            signed = None
+        check_operations_plan(
+            plan,
+            operator,
+            auth,
+            target,
+            operations.clock(),
+            expires_at,
+            context,
+            controller,
+        )
+        authorization_balance(
+            operations, operator, plan["value_nanotos"], request["operator_reserve_nanotos"]
+        )
+        if dry_run:
+            result = dict(request, plan=plan, expires_at=expires_at, dry_run=True)
+            print(json.dumps(result, indent=2))
+            print("dry run: gates checked; nothing signed, journaled, sent or stopped")
+            return result
+        if signed is None:
+            signed = sign_operations(
+                args.controller_tool,
+                args.root_seed,
+                global_id,
+                controller.split(":")[1],
+                plan,
+            )
+        extra = dict(request, plan=plan, body_b64=signed, expires_at=expires_at)
+        params = host_operation_params(
+            operations,
+            args.name,
+            "authorize-operations",
+            operator,
+            controller,
+            plan["value_nanotos"],
+            body_b64=signed,
+            bounce=True,
+            extra=extra,
+        )
+        operations.begin(actual_id, params)
+    return host_operation(
+        operations,
+        host,
+        args.name,
+        op_id,
+        "authorize-operations",
+        operator,
+        controller,
+        plan["value_nanotos"],
+        body_b64=signed,
+        bounce=True,
+        expect=expect_authorization(plan, operator),
+        extra=extra,
+        prerequisites=lambda: authorization_preflight(operations, params, profile),
+    )
+
+
 def onboard(
     args: argparse.Namespace, operations: ops.Operations, global_id: int, profile: dict
 ) -> None:
@@ -1555,56 +1725,17 @@ def onboard(
     )
     record_pool(ceremony, name, principal_sent=True)
 
-    op_id = f"authorize-operations-{name}"
-    record = operations.journal.record(operations.journal.newest(op_id))
-    if ops.state_of(record) != "settled":
-        step("operating authorization")
-        if record is not None and record.get("plan"):
-            # A request planned before an interruption is reused, never re-planned;
-            # an attempt after a failure (no plan yet) is planned anew, once.
-            plan, signed = record["plan"], record["body_b64"]
-        else:
-            auth = elections["authorization"]
-            context = operations.both(lambda node: controller_plan_context(node, controller))
-            expires_at = int(time.time()) + int(auth["expires_in_days"]) * 86400
-            plan = parse_operations_plan(
-                host.tosctl(
-                    f"controller operations plan --controller {controller} --payer {operator} "
-                    f"--floor-nanotos {auth['floor_nanotos']} --funds-target-nanotos {auth['funds_target_nanotos']} "
-                    f"--expires-at {expires_at} --valid-for {PLAN_VALID_FOR_SECONDS} "
-                    f"--margin-nanotos {PLAN_MARGIN_NANOTOS}",
-                    90,
-                ),
-                global_id,
-                controller_hex,
-            )
-            check_operations_plan(
-                plan,
-                operator,
-                auth,
-                int(auth["funds_target_nanotos"]),
-                time.time(),
-                expires_at,
-                context,
-                controller,
-            )
-            signed = sign_operations(
-                args.controller_tool, args.root_seed, global_id, controller_hex, plan
-            )
-        host_operation(
-            operations,
-            host,
-            name,
-            op_id,
-            "authorize-operations",
-            operator,
-            controller,
-            plan["value_nanotos"],
-            body_b64=signed,
-            bounce=True,
-            expect=expect_authorization(plan, operator),
-            extra={"plan": plan, "body_b64": signed},
-        )
+    authorize_operations(
+        args,
+        operations,
+        global_id,
+        profile,
+        host,
+        operator,
+        controller,
+        f"authorize-operations-{name}",
+        int(elections["authorization"]["funds_target_nanotos"]),
+    )
     # Readiness is tosctl's full assessment (capital reserve, a usable grant).
     status = host.tosctl(f"controller operations status --controller {controller}", 90)
     if "BLOCKING" in status or "kind 4 never accepted" in status:
@@ -1699,9 +1830,6 @@ DEFAULT_OPERATOR_RESERVE_NANOTOS = 30 * NANO
 WALLET_SEND_FEE_ALLOWANCE_NANOTOS = NANO
 # No refund this close to a rotation or to the opening of an election.
 WINDOW_MARGIN_SECONDS = 600
-CONFIRM_ATTEMPTS = 9
-CONFIRM_INTERVAL = 10
-REFUND_LOG = "refunds.jsonl"
 SAFE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -1835,172 +1963,134 @@ def recorded_operator(ceremony: Path, name: str) -> str:
     return check_raw_address(wallets[label])
 
 
-def append_refund_log(ceremony: Path, record: dict) -> Path:
-    path = ceremony / REFUND_LOG
-    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o644)
-    with os.fdopen(fd, "a") as out:
-        out.write(json.dumps(record, sort_keys=True) + "\n")
-    return path
-
-
-# The follow-up turns refund into an operation and this on.
-REFUND_ENABLED = False
-REFUND_DISABLED = (
-    "refund is disabled for the epoch-4 launch: it sends from the operator wallet over tosctl "
-    "on the host, outside the operations journal. It becomes an operation in a follow-up due "
-    "before T+19 h (the fifth election); until then see epoch-4-prep.md for the manual path"
-)
-
-
-def refund(
-    args: argparse.Namespace,
-    chain: Chain,
-    global_id: int,
-    profile: dict,
-    host: Host | None = None,
-    now=time.time,
-    sleep=time.sleep,
-    sign=sign_operations,
-) -> dict:
-    # Refused before anything is read, signed, sent or stopped.
-    if not REFUND_ENABLED:
-        raise lib.TestnetError(REFUND_DISABLED)
-    name = args.name
-    if not SAFE_NAME.match(name):
-        raise lib.TestnetError(f"not a node name: {name!r}")
-    authorization = profile["elections"]["authorization"]
-    reserve = operator_reserve(authorization)
-    target = (
-        int(authorization["refund_target_nanotos"])
-        if args.target_nanotos is None
-        else args.target_nanotos
+def renewal_window(operations: ops.Operations, profile: dict) -> None:
+    """No renewal or resubmission may race an election on either validator."""
+    since, until, election = operations.both(
+        lambda node: (
+            *Chain(node.url, node.rpc).validator_term(),
+            Chain(node.url, node.rpc).active_election(),
+        )
     )
-    if target <= 0:
-        raise lib.TestnetError(f"the funds target must be positive: {target}")
-    ceremony = Path(args.ceremony)
-    controller_hex = genesis_controller(args)["controller_id"]
-    controller = f"-1:{controller_hex}"
-    operator = recorded_operator(ceremony, name)
-
-    since, until = chain.validator_term()
-    reason = window_refusal(
-        since, until, chain.active_election(), lib.validator_schedule(profile), int(now())
-    )
-    if reason:
-        if not (args.dry_run or args.i_checked_the_window):
+    for now in [int(operations.clock()), *operations.utimes()]:
+        reason = window_refusal(since, until, election, lib.validator_schedule(profile), now)
+        if reason:
             raise lib.TestnetError(f"not now: {reason}")
-        print(f"window: {reason} (continuing: {'dry run' if args.dry_run else 'overridden'})")
 
-    host = host or Host(args.host, args.ssh_key)
-    status_command = f"controller operations status --controller {controller}"
-    before = parse_operations_status(host.tosctl(status_command, 90))
-    if before["unset"]:
-        raise lib.TestnetError(f"{controller} has no operating authorization; onboard {name} first")
-    balance = chain.account(operator)[1]
-    plan = parse_operations_plan(
-        host.tosctl(
-            f"controller operations plan --controller {controller} --payer {operator} "
-            f"--floor-nanotos {int(authorization['floor_nanotos'])} --funds-target-nanotos {target} "
-            f"--expires-in-days {int(authorization['expires_in_days'])}",
-            90,
-        ),
-        global_id,
-        controller_hex,
-    )
-    value = plan["value_nanotos"]
-    if value <= 0:
-        raise lib.TestnetError(f"the plan sends {value} nanotos")
+
+def authorization_balance(operations, operator: str, value: int, reserve: int) -> None:
+    balance = operations.balance(operator)
     shortfall = reserve_shortfall(balance, value, reserve)
     if shortfall:
         top_up = -(-shortfall // NANO)
         raise lib.TestnetError(
-            f"op-{name} ({operator}) holds {balance / NANO:.9f} TOS; sending {value / NANO:.9f} TOS "
-            f"plus up to {WALLET_SEND_FEE_ALLOWANCE_NANOTOS / NANO:.1f} TOS in fees would leave "
-            f"less than the {reserve / NANO:.9f} TOS reserve the next stake needs "
-            f"(short by {shortfall / NANO:.9f} TOS). Top up the operator wallet with at least "
-            f"{top_up} TOS first: testnet-elections.py fund --to {operator} --amount {top_up} "
-            f"--label op-{name}-top-up"
+            f"op wallet {operator} is short by {shortfall / NANO:.9f} TOS including "
+            f"its {reserve / NANO:.9f} TOS reserve; top up with a journaled fund operation "
+            f"of at least {top_up} TOS first"
         )
-    signed = sign(args.controller_tool, args.root_seed, global_id, controller_hex, plan)
-    record = {
-        "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now())),
-        "name": name,
-        "controller": controller,
-        "operator": operator,
-        "funds_target_nanotos": target,
-        "operator_reserve_nanotos": reserve,
-        "value_nanotos": value,
-        "plan_epoch": plan["epoch"],
-        "plan_nonce": plan["nonce"],
-        "valid_until": plan["valid_until"],
-        "operator_balance_before_nanotos": balance,
-        "stakes_remaining_before": before["stakes_remaining"],
-        "authority_before": [before["epoch"], before["nonce"]],
-        "window": reason,
-    }
-    if args.dry_run:
-        print(json.dumps(record, indent=2))
-        print(
-            f"dry run: would send {value / NANO:.9f} TOS from op-{name} to {controller}; "
-            f"nothing sent, {ELECTIONS_SERVICE} left running"
-        )
-        return record
 
-    # The running election task holds the tosctl vault lock: stop it only around the
-    # send, and start it again whatever the send did.
-    host.run(f"systemctl stop {ELECTIONS_SERVICE}")
-    try:
-        host.tosctl(
-            f"wallet send --from op-{name} --to {controller} --amount-nanotos {value} "
-            f"--body-boc {shlex.quote(signed)} --bounce --yes",
-            150,
+
+def authorization_preflight(operations, record: dict, profile: dict) -> None:
+    """Recheck the same signed request before initial broadcast or resubmission."""
+    if record.get("renewal"):
+        renewal_window(operations, profile)
+    context = operations.both(lambda node: controller_plan_context(node, record["destination"]))
+    check_operations_plan(
+        record["plan"],
+        record["wallet"],
+        {"floor_nanotos": record["floor_nanotos"]},
+        record["funds_target_nanotos"],
+        operations.clock(),
+        record["expires_at"],
+        context,
+        record["destination"],
+    )
+    authorization_balance(
+        operations,
+        record["wallet"],
+        record["value"],
+        record["operator_reserve_nanotos"],
+    )
+
+
+def refund(
+    args: argparse.Namespace, operations: ops.Operations, global_id: int, profile: dict
+) -> dict:
+    """A new authorization is its own operation, never a retry of a settled grant."""
+    if not SAFE_NAME.fullmatch(args.name):
+        raise lib.TestnetError(f"not a node name: {args.name!r}")
+    if not ops.SAFE_ID.fullmatch(args.id or ""):
+        raise lib.TestnetError(f"not an operation id: {args.id!r}")
+    target = args.target_nanotos
+    if target is None:
+        target = int(profile["elections"]["authorization"]["refund_target_nanotos"])
+    if isinstance(target, bool) or not isinstance(target, int) or not 0 < target < COINS_LIMIT:
+        raise lib.TestnetError("the funds target must be positive and within the Coins range")
+    operator = recorded_operator(Path(args.ceremony), args.name)
+    controller = f"-1:{genesis_controller(args)['controller_id']}"
+    with operations.journal.lock(operator):
+        actual_id = operations.journal.newest(args.id)
+        record = operations.journal.record(actual_id)
+        if record is None and not args.new:
+            raise lib.TestnetError(f"no operation {args.id}; use --new for a new renewal")
+        if record is not None and args.new and ops.state_of(record) != "settled":
+            raise lib.TestnetError(f"operation {args.id} already exists; omit --new to inspect it")
+        first = operations.journal.record(
+            operations.journal.newest(f"authorize-operations-{args.name}")
         )
-    except BaseException as exc:
+        if ops.state_of(first) != "settled":
+            raise lib.TestnetError("the onboarding operating authorization is not settled")
+        # A settled operation is reported without touching the service. Parameters
+        # are still compared by authorize_operations before it returns the record.
+        if ops.state_of(record) != "settled":
+            if ops.state_of(record) not in (None, "planned"):
+                raise lib.TestnetError(
+                    f"operation {actual_id} is {ops.state_of(record)}; reconcile / record / resubmit; retry only failed attempts"
+                )
+            operations.gate(operator, actual_id)
+            renewal_window(operations, profile)
+    host = Host(args.host, args.ssh_key)
+    if args.dry_run or ops.state_of(record) == "settled":
+        return authorize_operations(
+            args,
+            operations,
+            global_id,
+            profile,
+            host,
+            operator,
+            controller,
+            args.id,
+            target,
+            renewal=True,
+            dry_run=args.dry_run,
+        )
+    try:
+        host.run(f"systemctl stop {ELECTIONS_SERVICE}")
+        record = authorize_operations(
+            args,
+            operations,
+            global_id,
+            profile,
+            host,
+            operator,
+            controller,
+            args.id,
+            target,
+            renewal=True,
+        )
+    finally:
         try:
             host.run(f"systemctl start {ELECTIONS_SERVICE}")
-        except lib.TestnetError as start:
+        except lib.TestnetError as exc:
             raise lib.TestnetError(
-                f"the send failed ({exc}) and {ELECTIONS_SERVICE} did not start again: {start}; "
-                "start it by hand"
+                f"{ELECTIONS_SERVICE} did not start again: {exc}; start it by hand; "
+                f"reconcile operation {args.id} before any further send"
             ) from exc
-        raise
-    try:
-        host.run(f"systemctl start {ELECTIONS_SERVICE}")
-    except lib.TestnetError as exc:
+    status = host.tosctl(f"controller operations status --controller {controller}", 90)
+    if "BLOCKING" in status or "kind 4 never accepted" in status:
         raise lib.TestnetError(
-            f"the refund was sent, but {ELECTIONS_SERVICE} did not start again: {exc}; "
-            "start it by hand"
-        ) from exc
-
-    after = before
-    for _ in range(CONFIRM_ATTEMPTS):
-        sleep(CONFIRM_INTERVAL)
-        after = parse_operations_status(host.tosctl(status_command, 90))
-        if (after["epoch"], after["nonce"]) > (before["epoch"], before["nonce"]):
-            break
-    balance_after = chain.account(operator)[1]
-    problems = []
-    if (after["epoch"], after["nonce"]) <= (before["epoch"], before["nonce"]):
-        problems.append("the root authority nonce did not advance")
-    if after["stakes_remaining"] <= before["stakes_remaining"]:
-        problems.append("stakes remaining did not increase")
-    if after["blocking"]:
-        problems.append("a [BLOCKING] warning remains")
-    if balance_after < STAKE_WALLET_MINIMUM_NANOTOS:
-        problems.append("the operator wallet holds less than the next stake needs")
-    record.update(
-        operator_balance_after_nanotos=balance_after,
-        operator_spent_nanotos=balance - balance_after,
-        stakes_remaining_after=after["stakes_remaining"],
-        authority_after=[after["epoch"], after["nonce"]],
-        verified=not problems,
-        problems=problems,
-    )
-    log = append_refund_log(ceremony, record)
-    print(json.dumps(record, indent=2))
-    print(f"recorded in {log}")
-    if problems:
-        raise lib.TestnetError(f"refund for {name} not confirmed: {'; '.join(problems)}")
+            f"renewal {record['id']} settled but operating readiness needs attention:\n{status[-1200:]}"
+        )
+    print(f"{record['id']}: renewal settled ({record['evidence']['destination_tx']})")
     return record
 
 
@@ -3099,9 +3189,12 @@ def main(argv: list[str] | None = None) -> int:
         "--controller-tool",
     ):
         p_refund.add_argument(flag, required=True)
+    p_refund.add_argument(
+        "--id", required=True, help="a unique renewal step id, distinct from onboarding"
+    )
+    p_refund.add_argument("--new", action="store_true", help="create the renewal --id")
     p_refund.add_argument("--target-nanotos", type=int)
     p_refund.add_argument("--dry-run", action="store_true")
-    p_refund.add_argument("--i-checked-the-window", action="store_true")
     p_withdraw = sub.add_parser("withdraw", parents=[common])
     p_withdraw.add_argument("--name", required=True)
     p_withdraw.add_argument("--id", required=True, help="the withdrawal's operation id")
@@ -3154,15 +3247,15 @@ def main(argv: list[str] | None = None) -> int:
         profile = lib.load_profile(args.profile)
         global_id = lib.confirmed_global_id(profile)
         chain = Chain(args.rpc)
-        if args.command == "refund":
-            refund(args, chain, global_id, profile)
-        elif args.command == "load" and args.dry_run:
+        if args.command == "load" and args.dry_run:
             check_load_args(args)
             os.umask(0o077)
             LoadDriver(args, chain, global_id).run()
         else:
             operations = operations_for(args, global_id)
-            if args.command == "fund":
+            if args.command == "refund":
+                refund(args, operations, global_id, profile)
+            elif args.command == "fund":
                 fund(args, operations, global_id)
             elif args.command == "load":
                 check_load_args(args)
@@ -3255,6 +3348,11 @@ def manual(args: argparse.Namespace, operations: ops.Operations, profile: dict) 
                         record["wallet"],
                         record["requested_nanotos"],
                     )
+
+        if record.get("renewal"):
+
+            def prerequisites():
+                authorization_preflight(operations, record, profile)
 
         result = operations.resubmit(args.id, prerequisites, expect)
     elif args.settled:
