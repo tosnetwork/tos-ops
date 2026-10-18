@@ -522,181 +522,6 @@ def status_text(stakes, nonce, epoch=0, warnings=()):
     return "\n".join(lines) + "\n"
 
 
-class FakeHost:
-    """The validator host: answers status and plan, records every command in order."""
-
-    def __init__(self, statuses, send_error=None, start_error=None):
-        self.statuses = list(statuses)
-        self.send_error = send_error
-        self.start_error = start_error
-        self.calls = []
-
-    def run(self, command, timeout=300):
-        self.calls.append(("run", command))
-        if command.startswith("systemctl start") and self.start_error:
-            raise lib.TestnetError(self.start_error)
-        return ""
-
-    def tosctl(self, arguments, timeout=240):
-        self.calls.append(("tosctl", arguments))
-        if arguments.startswith("controller operations status"):
-            return self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
-        if arguments.startswith("controller operations plan"):
-            return PLAN
-        if arguments.startswith("wallet send"):
-            if self.send_error:
-                raise lib.TestnetError(self.send_error)
-            return "sent\n"
-        raise AssertionError(f"unexpected tosctl {arguments}")
-
-    def commands(self):
-        return [c[1].split(" --")[0] for c in self.calls]
-
-
-class FakeChain:
-    def __init__(self, balances, active=0, term=(SINCE, UNTIL)):
-        self.balances = list(balances)
-        self.active = active
-        self.term = term
-
-    def validator_term(self):
-        return self.term
-
-    def active_election(self):
-        return self.active
-
-    def account(self, address):
-        assert address == OPERATOR
-        balance = self.balances.pop(0) if len(self.balances) > 1 else self.balances[0]
-        return "active", balance
-
-
-def refund_setup(tmp_path, **extra):
-    ceremony = tmp_path / "ceremony"
-    ceremony.mkdir(parents=True)
-    (ceremony / "genesis-records.json").write_text(json.dumps([{"controller_id": CONTROLLER}]))
-    (ceremony / "wallets.json").write_text(json.dumps({"op-node-1": OPERATOR}))
-    controller = tmp_path / "node-1.json"
-    controller.write_text(json.dumps({"controller_id": CONTROLLER}))
-    args = dict(
-        name="node-1",
-        host="h",
-        ssh_key="k",
-        ceremony=str(ceremony),
-        controller=str(controller),
-        root_seed="root.seed",
-        controller_tool="tos-pq-controller",
-        target_nanotos=None,
-        dry_run=False,
-        i_checked_the_window=False,
-    )
-    args.update(extra)
-    return elections.argparse.Namespace(**args)
-
-
-class Signer:
-    def __init__(self):
-        self.calls = []
-
-    def __call__(self, tool, seed, gid, controller, plan):
-        self.calls.append((gid, controller, plan["nonce"], plan["value_nanotos"]))
-        return "te6signedbody"
-
-
-def run_refund(args, host, chain, signer=None, now=SINCE + 3600):
-    # The refund logic, kept for the follow-up that makes it an operation; disabled
-    # for the launch (test_refund_is_disabled_for_the_launch).
-    enabled = elections.REFUND_ENABLED
-    elections.REFUND_ENABLED = True
-    try:
-        return refund_call(args, host, chain, signer, now)
-    finally:
-        elections.REFUND_ENABLED = enabled
-
-
-def refund_call(args, host, chain, signer=None, now=SINCE + 3600):
-    return elections.refund(
-        args,
-        chain,
-        2,
-        lib.load_profile(),
-        host=host,
-        now=lambda: now,
-        sleep=lambda s: None,
-        sign=signer or Signer(),
-    )
-
-
-def test_refund_sends_with_the_service_stopped_and_records_it(tmp_path):
-    args = refund_setup(tmp_path, target_nanotos=260 * NANO)
-    host = FakeHost([status_text(2, 0), status_text(12, 1)])
-    signer = Signer()
-    record = run_refund(args, host, FakeChain([100 * NANO, 76 * NANO]), signer)
-    assert host.commands() == [
-        "controller operations status",
-        "controller operations plan",
-        "systemctl stop tos-testnet-elections",
-        "wallet send",
-        "systemctl start tos-testnet-elections",
-        "controller operations status",
-    ]
-    plan_call = host.calls[1][1]
-    assert f"--payer {OPERATOR}" in plan_call and "--funds-target-nanotos 260000000000" in plan_call
-    send = host.calls[3][1]
-    assert f"--amount-nanotos {PLAN_VALUE}" in send and "--body-boc te6signedbody" in send
-    assert "--from op-node-1" in send and f"--to -1:{CONTROLLER}" in send
-    assert signer.calls == [(2, CONTROLLER, "0", PLAN_VALUE)]
-    assert record["verified"] and record["problems"] == []
-    assert record["stakes_remaining_after"] == 12 and record["authority_after"] == [0, 1]
-    [line] = (tmp_path / "ceremony" / "refunds.jsonl").read_text().splitlines()
-    assert json.loads(line)["value_nanotos"] == PLAN_VALUE
-
-
-def test_refund_defaults_to_the_ten_day_target_not_the_onboarding_one(tmp_path):
-    authorization = lib.load_profile()["elections"]["authorization"]
-    assert authorization["refund_target_nanotos"] == 260 * NANO
-    assert authorization["refund_target_nanotos"] > authorization["funds_target_nanotos"]
-    host = FakeHost([status_text(2, 0), status_text(12, 1)])
-    run_refund(refund_setup(tmp_path), host, FakeChain([100 * NANO, 76 * NANO]))
-    plan_call = host.calls[1][1]
-    assert "--funds-target-nanotos 260000000000" in plan_call
-
-
-def test_refund_starts_the_service_again_when_the_send_fails(tmp_path):
-    host = FakeHost([status_text(2, 0)], send_error="vault locked")
-    with pytest.raises(lib.TestnetError, match="vault locked"):
-        run_refund(refund_setup(tmp_path), host, FakeChain([100 * NANO]))
-    assert host.commands()[-3:] == [
-        "systemctl stop tos-testnet-elections",
-        "wallet send",
-        "systemctl start tos-testnet-elections",
-    ]
-    assert not (tmp_path / "ceremony" / "refunds.jsonl").exists()
-
-
-def test_refund_says_so_when_the_service_does_not_start_again(tmp_path):
-    host = FakeHost([status_text(2, 0)], send_error="timeout", start_error="unit failed")
-    with pytest.raises(lib.TestnetError, match="did not start again.*by hand"):
-        run_refund(refund_setup(tmp_path), host, FakeChain([100 * NANO]))
-
-
-def test_refund_that_would_drain_the_operator_wallet_is_refused(tmp_path):
-    # 23.56 TOS value + 1 TOS fee allowance + 30 TOS reserve = 54.56 TOS; half a TOS short.
-    balance = PLAN_VALUE + NANO + 30 * NANO - NANO // 2
-    host = FakeHost([status_text(2, 0)])
-    signer = Signer()
-    with pytest.raises(lib.TestnetError) as refused:
-        run_refund(refund_setup(tmp_path), host, FakeChain([balance]), signer)
-    message = str(refused.value)
-    assert "short by 0.500000000 TOS" in message
-    assert f"fund --to {OPERATOR} --amount 1 " in message
-    assert signer.calls == []
-    assert not any(c.startswith(("systemctl", "wallet send")) for c in host.commands())
-    # control: the same wallet with that half TOS more goes through
-    host = FakeHost([status_text(2, 0), status_text(12, 1)])
-    assert run_refund(refund_setup(tmp_path / "ok"), host, FakeChain([balance + NANO // 2]))
-
-
 def test_reserve_formula():
     reserve = 30 * NANO
     assert elections.reserve_shortfall(100 * NANO, 20 * NANO, reserve) == 0
@@ -715,72 +540,6 @@ def test_operator_reserve_comes_from_the_profile_and_covers_a_stake():
     for bad in (20 * NANO, "30000000000", True):
         with pytest.raises(lib.TestnetError):
             elections.operator_reserve({"operator_reserve_nanotos": bad})
-
-
-def test_refund_dry_run_signs_and_sends_nothing(tmp_path):
-    host = FakeHost([status_text(2, 0)])
-    signer = Signer()
-    # a dry run inside an election only reports the window
-    record = run_refund(
-        refund_setup(tmp_path, dry_run=True), host, FakeChain([100 * NANO], active=7), signer
-    )
-    assert host.commands() == ["controller operations status", "controller operations plan"]
-    assert len(signer.calls) == 1
-    assert record["value_nanotos"] == PLAN_VALUE and "election 7" in record["window"]
-    assert not (tmp_path / "ceremony" / "refunds.jsonl").exists()
-
-
-@pytest.mark.parametrize("target", [0, -1])
-def test_refund_refuses_a_target_that_is_not_positive(tmp_path, target):
-    host = FakeHost([status_text(2, 0)])
-    with pytest.raises(lib.TestnetError, match="must be positive"):
-        run_refund(refund_setup(tmp_path, target_nanotos=target), host, FakeChain([100 * NANO]))
-    assert host.calls == []
-
-
-def test_refund_reports_a_refund_the_status_does_not_show(tmp_path):
-    host = FakeHost([status_text(2, 0), status_text(2, 1)])
-    with pytest.raises(lib.TestnetError, match="stakes remaining did not increase"):
-        run_refund(refund_setup(tmp_path), host, FakeChain([100 * NANO, 76 * NANO]))
-    [line] = (tmp_path / "ceremony" / "refunds.jsonl").read_text().splitlines()
-    record = json.loads(line)
-    assert record["verified"] is False
-    assert record["problems"] == ["stakes remaining did not increase"]
-
-
-def test_refund_reports_a_nonce_that_did_not_move_and_a_blocking_warning(tmp_path):
-    host = FakeHost([status_text(2, 0), status_text(12, 0, warnings=["funds below floor"])])
-    with pytest.raises(lib.TestnetError, match="nonce did not advance.*BLOCKING"):
-        run_refund(refund_setup(tmp_path), host, FakeChain([100 * NANO, 76 * NANO]))
-
-
-def test_refund_waits_for_the_quiet_part_of_a_term(tmp_path):
-    for chain, now, reason in (
-        (FakeChain([100 * NANO], active=1790372800), SINCE + 3600, "election 1790372800"),
-        (FakeChain([100 * NANO]), SINCE + 599, "took office 599 s ago"),
-        (FakeChain([100 * NANO]), UNTIL - 7200 - 600, "next election opens"),
-        (FakeChain([100 * NANO]), UNTIL + 50, "next election opens"),  # a failed election
-    ):
-        host = FakeHost([status_text(2, 0)])
-        with pytest.raises(lib.TestnetError, match=reason):
-            run_refund(refund_setup(tmp_path / str(now)), host, chain, now=now)
-        assert host.calls == []
-    # control: the first and the last quiet second, and an override, all go through
-    for now in (SINCE + 600, UNTIL - 7801):
-        host = FakeHost([status_text(2, 0), status_text(12, 1)])
-        assert run_refund(
-            refund_setup(tmp_path / f"quiet-{now}"), host, FakeChain([100 * NANO]), now=now
-        )
-    host = FakeHost([status_text(2, 0), status_text(12, 1)])
-    args = refund_setup(tmp_path / "override", i_checked_the_window=True)
-    assert run_refund(args, host, FakeChain([100 * NANO], active=5))
-
-
-def test_refund_needs_an_onboarded_operator(tmp_path):
-    args = refund_setup(tmp_path)
-    (tmp_path / "ceremony" / "wallets.json").write_text(json.dumps({"op-node-2": OPERATOR}))
-    with pytest.raises(lib.TestnetError, match="records no op-node-1"):
-        run_refund(args, FakeHost([status_text(2, 0)]), FakeChain([100 * NANO]))
 
 
 def test_validator_set_term_from_a_real_config_cell():
@@ -819,17 +578,6 @@ def test_operations_status_is_parsed_through_colour_codes():
     }
     with pytest.raises(lib.TestnetError, match="Stakes remaining"):
         elections.parse_operations_status("Controller operating authorization\n")
-
-
-def test_refund_needs_an_operating_authorization_to_renew(tmp_path):
-    unset = status_text(0, 0).replace(
-        "  Funds:", f"  {'Authorization:':<24} \x1b[1;31mnone recorded\x1b[0m\n  Funds:"
-    )
-    assert elections.parse_operations_status(unset)["unset"]
-    host = FakeHost([unset])
-    with pytest.raises(lib.TestnetError, match="no operating authorization"):
-        run_refund(refund_setup(tmp_path), host, FakeChain([100 * NANO]))
-    assert host.commands() == ["controller operations status"]
 
 
 # ---------------------------------------------------------------- non-root operator tool
@@ -1098,6 +846,8 @@ class BoardingHost:
             return base64.b64encode(self.files[path]).decode() if path in self.files else ""
         if "enable-elections.sh" in command:
             return "active\n"
+        if command.startswith("systemctl "):
+            return ""
         raise AssertionError(command)
 
     def put(self, local, remote, owner):
@@ -1171,9 +921,18 @@ class BoardingHost:
             self.config["bindings"][flag("--node")]["controller_birth_state_init_boc"] = output
             return ""
         if arguments.startswith("controller operations plan"):
+            target = int(flag("--funds-target-nanotos"))
+            context = elections.controller_plan_context(
+                self.chain.node("http://plan"), GENESIS_CONTROLLER
+            )
+            deposit = max(0, target - context["funds"])
             fields = dict(
                 payer=self.operator,
-                allowance=20 * NANO,
+                allowance=target,
+                deposit=deposit,
+                value=deposit + 3_558_960_000,
+                nonce=context["nonce"],
+                epoch=context["epoch"],
                 expires=int(flag("--expires-at"))
                 if flag("--expires-at")
                 else self.chain.now + 10 * 86400,
@@ -1276,7 +1035,7 @@ def boarding(tmp_path, pinned_tos, monkeypatch):
     monkeypatch.setattr(elections.time, "sleep", lambda s: chain.tick())
     monkeypatch.setattr(elections.ops, "SETTLE_SECONDS", 60)
     monkeypatch.setattr(elections.ops.time, "time", lambda: chain.now)
-    controller_behaviour(chain)
+    grant_state = controller_behaviour(chain)
     operations = elections.ops.Operations(
         ceremony,
         [chain.node("http://a"), chain.node("http://b")],
@@ -1299,6 +1058,7 @@ def boarding(tmp_path, pinned_tos, monkeypatch):
     )
     return {
         "chain": chain,
+        "grant_state": grant_state,
         "ops": operations,
         "host": host,
         "args": args,
@@ -1879,18 +1639,6 @@ def test_the_pool_is_checked_again_right_before_the_principal(boarding, monkeypa
     assert b["chain"].sent == sent
 
 
-def test_refund_is_disabled_for_the_launch(tmp_path):
-    class Untouched:
-        def __getattr__(self, name):
-            raise AssertionError(f"refund touched {name} before refusing")
-
-    assert elections.REFUND_ENABLED is False
-    signer = Signer()
-    with pytest.raises(lib.TestnetError, match="disabled for the epoch-4 launch"):
-        refund_call(Untouched(), Untouched(), Untouched(), signer)
-    assert signer.calls == []
-
-
 # ---------------------------------------------------------------- fix plan 3
 
 
@@ -2012,6 +1760,7 @@ def test_a_plan_with_other_terms_is_refused_before_the_root_key_signs(
 def test_a_plan_for_a_controller_at_another_root_epoch_is_refused(boarding):
     b = boarding
     controller_behaviour(b["chain"], epoch=1, start_epoch=1)
+    b["host"].plan_overrides = {"epoch": 0}
     with pytest.raises(lib.TestnetError, match="nothing was signed: .*controller is at \\(1, 0\\)"):
         onboard(b)
     assert b["ops"].journal.record("authorize-operations-node-1") is None
@@ -2334,3 +2083,625 @@ def test_concurrent_onboards_reuse_one_owner_key_set(boarding, monkeypatch):
     assert paths["key"].read_bytes() == b"\x02" * 32
     assert paths["init"].read_bytes() == b"init:" + paths["key"].read_bytes()
     assert elections.address_from_file(paths["addr"]) == b["owner"]
+
+
+# ---------------------------------------------------------------- journaled renewal
+
+
+@pytest.fixture
+def renewal(boarding, monkeypatch):
+    b = boarding
+    onboard(b)
+    chain = b["chain"]
+    elector_idle(chain)
+    b["term"] = (chain.now - 3600, chain.now + 10800)
+    for node in b["ops"].nodes:
+        call = node.rpc
+
+        def rpc(url, rpc_method, _call=call, **params):
+            if rpc_method == "getConfigParam" and params["param"] == 34:
+                since, until = b["term"]
+                bits = "00010010" + format(since, "032b") + format(until, "032b")
+                return {
+                    "config": {
+                        "bytes": base64.b64encode(
+                            lib.serialize_boc(lib.cell_from_bits(bits))
+                        ).decode()
+                    }
+                }
+            return _call(url, rpc_method, **params)
+
+        monkeypatch.setattr(node, "rpc", rpc)
+    b["signatures"] = []
+
+    def root_sign(*args):
+        b["signatures"].append(args)
+        # Signing must be serialized even across processes, not only threads.
+        with pytest.raises(lib.TestnetError, match="another run holds"):
+            with elections.ops.Journal(b["ceremony"]).lock():
+                raise AssertionError("the offline signer ran without the journal lock")
+        return base64.b64encode(lib.serialize_boc(lib.cell_from_bits("1" * 9))).decode()
+
+    monkeypatch.setattr(elections, "sign_operations", root_sign)
+    return b
+
+
+def renewal_args(b, **extra):
+    args = dict(
+        vars(b["args"]), id="renew-node-1-ten-days", new=True, target_nanotos=None, dry_run=False
+    )
+    args.update(extra)
+    return elections.argparse.Namespace(**args)
+
+
+def top_up_operator(b):
+    args = elections.argparse.Namespace(
+        **{k: getattr(b["args"], k) for k in ("ceremony", "tos_root", "fift")},
+        to=OP_WALLET,
+        amount="200",
+        label="renewal-top-up-node-1",
+        op_id="renewal-top-up-node-1",
+        dry_run=False,
+    )
+    return elections.fund(args, b["ops"], 2)
+
+
+def renew(b, **kwargs):
+    return elections.refund(renewal_args(b, **kwargs), b["ops"], 2, lib.load_profile())
+
+
+def test_renewal_top_up_and_authorization_are_two_hash_settled_operations(renewal):
+    b = renewal
+    count = len(b["chain"].sent)
+    topup = top_up_operator(b)
+    record = renew(b)
+    assert topup["state"] == record["state"] == "settled"
+    assert len(b["chain"].sent) == count + 2
+    assert topup["wallet"] == elections.BOOTSTRAP_WALLET
+    assert topup["destination"] == record["wallet"] == OP_WALLET
+    assert record["value"] == 240 * NANO + 3_558_960_000
+    assert record["plan"]["nonce"] == "1"
+    payer, terms = elections.plan_payload(record["plan"])
+    assert payer == OP_WALLET and terms[0:2] == [240 * NANO, 260 * NANO]
+    assert terms[-1] == record["expires_at"]
+    assert record["expires_at"] >= BOARD_NOW + 10 * 86400
+    assert record["evidence"]["wallet_tx"] and record["evidence"]["destination_tx"]
+    assert b["ops"].balance(OP_WALLET) >= 30 * NANO
+    lines = b["ops"].journal.lines(record["id"])
+    assert [line["state"] for line in lines] == ["planned", "signed", "broadcast", "settled"]
+    commands = b["host"].commands
+    stop = commands.index("systemctl stop tos-testnet-elections")
+    build = next(i for i in range(stop, len(commands)) if "wallet send" in commands[i])
+    start = commands.index("systemctl start tos-testnet-elections")
+    assert stop < build < start and "--build-only" in commands[build]
+    assert len(b["signatures"]) == 1
+    before = (list(b["chain"].sent), list(b["host"].commands))
+    assert top_up_operator(b)["id"] == topup["id"]
+    assert renew(b, new=False)["id"] == record["id"]
+    assert before == (b["chain"].sent, b["host"].commands)
+    assert len(b["signatures"]) == 1
+
+
+def test_renewal_dry_run_checks_the_gate_but_signs_stops_and_sends_nothing(renewal):
+    b = renewal
+    top_up_operator(b)
+    sent, commands = list(b["chain"].sent), len(b["host"].commands)
+    result = renew(b, dry_run=True)
+    assert result["dry_run"] and result["funds_target_nanotos"] == 260 * NANO
+    assert b["chain"].sent == sent and b["signatures"] == []
+    assert not any(
+        c.startswith("systemctl") or "wallet send" in c for c in b["host"].commands[commands:]
+    )
+    assert b["ops"].journal.record("renew-node-1-ten-days") is None
+
+
+@pytest.mark.parametrize(
+    "field,value,message",
+    [
+        ("target_nanotos", 0, "must be positive"),
+        ("target_nanotos", -1, "must be positive"),
+        ("target_nanotos", 1 << 120, "Coins range"),
+        ("id", "../bad", "operation id"),
+        ("name", "bad/name", "node name"),
+        ("new", False, "use --new"),
+    ],
+)
+def test_renewal_refuses_bad_request_before_signing(renewal, field, value, message):
+    b = renewal
+    sent = list(b["chain"].sent)
+    with pytest.raises(lib.TestnetError, match=message):
+        renew(b, **{field: value})
+    assert b["signatures"] == [] and b["chain"].sent == sent
+
+
+def test_renewal_refuses_insufficient_operator_reserve_before_signing(renewal):
+    b = renewal
+    with pytest.raises(lib.TestnetError, match="reserve; top up"):
+        renew(b)
+    assert b["signatures"] == []
+    assert b["host"].commands[-1] == "systemctl start tos-testnet-elections"
+
+
+@pytest.mark.parametrize(
+    "change,message",
+    [
+        ({"payer": HOST_WALLET}, "payer"),
+        ({"floor": 4 * NANO}, "storage floor"),
+        ({"allowance": 20 * NANO}, "allowance"),
+        ({"deposit": 0}, "deposit"),
+        ({"limit": 0}, "per-request limit"),
+        ({"value": 260 * NANO}, "message value"),
+        ({"nonce": 0}, "epoch/nonce"),
+        ({"epoch": 1}, "epoch/nonce"),
+        ({"valid_until": BOARD_NOW + 2 * 86400}, "valid until"),
+        ({"expires": BOARD_NOW + 20 * 86400}, "expiry"),
+    ],
+)
+def test_renewal_uses_the_same_independent_plan_checks_as_onboard(renewal, change, message):
+    b = renewal
+    top_up_operator(b)
+    b["host"].plan_overrides = change
+    sent = list(b["chain"].sent)
+    with pytest.raises(lib.TestnetError, match=message):
+        renew(b)
+    assert b["chain"].sent == sent and b["signatures"] == []
+    assert b["host"].commands[-1] == "systemctl start tos-testnet-elections"
+
+
+@pytest.mark.parametrize("boundary", ["election", "rotation", "opening", "failed-election"])
+def test_renewal_window_refuses_on_either_validator_before_stopping(renewal, boundary):
+    b = renewal
+    now = b["chain"].now
+    if boundary == "election":
+        b["chain"].account(elections.ELECTOR)["getters"]["active_election_id"] = lambda: {
+            "exit_code": 0,
+            "stack": [num(7)],
+        }
+    elif boundary == "rotation":
+        b["term"] = (now - 599, now + 13801)
+    elif boundary == "opening":
+        b["term"] = (now - 6600, now + 7800)
+    else:
+        b["term"] = (now - 20000, now - 5600)
+    commands = list(b["host"].commands)
+    with pytest.raises(lib.TestnetError, match="not now"):
+        renew(b)
+    assert b["host"].commands == commands and b["signatures"] == []
+
+
+@pytest.mark.parametrize("disagreement", ["election", "authority", "network", "fees"])
+def test_renewal_requires_two_validators_to_agree(renewal, monkeypatch, disagreement):
+    b = renewal
+    top_up_operator(b)
+    node = b["ops"].nodes[1]
+    call = node.rpc
+
+    def disagree(url, rpc_method, **params):
+        answer = call(url, rpc_method, **params)
+        if disagreement == "election" and params.get("method") == "active_election_id":
+            return {"exit_code": 0, "stack": [num(7)]}
+        if disagreement == "authority" and params.get("method") == "controller_state":
+            answer["stack"][-2] = num(99)
+        if disagreement == "network" and rpc_method == "getBlockHeader":
+            answer["global_id"] = 3
+        if disagreement == "fees" and rpc_method == "getConfigParam" and params["param"] == 20:
+            raise lib.TestnetError("fee configuration unavailable on second validator")
+        return answer
+
+    monkeypatch.setattr(node, "rpc", disagree)
+    with pytest.raises(lib.TestnetError, match="disagree|global id|fee configuration"):
+        renew(b)
+    assert b["signatures"] == []
+
+
+@pytest.mark.parametrize("point", ["planned", "signed", "broadcast", "delivered"])
+def test_renewal_interruption_never_repeats_a_transfer(renewal, monkeypatch, point):
+    b = renewal
+    top_up_operator(b)
+    op_id = "renew-node-1-ten-days"
+    crash(monkeypatch, op_id, point)
+    with pytest.raises(KeyboardInterrupt):
+        renew(b)
+    assert b["host"].commands[-1] == "systemctl start tos-testnet-elections"
+    monkeypatch.setattr(elections.ops, "crash_point", lambda i, p: None)
+    b["chain"].settle_all()
+    if point == "planned":
+        result = renew(b, new=False)
+    else:
+        sent = list(b["chain"].sent)
+        with pytest.raises(lib.TestnetError, match="reconcile"):
+            renew(b, new=False)
+        assert b["chain"].sent == sent
+        args = elections.argparse.Namespace(
+            **vars(b["args"]),
+            command="resubmit" if point == "signed" else "record",
+            id=op_id,
+            settled=True,
+        )
+        if point == "signed":
+            elections.manual(args, b["ops"], lib.load_profile())
+        else:
+            record = b["ops"].journal.record(op_id)
+            state, evidence = b["ops"].settle(record, elections.expect_for(args, record))
+            assert state == "settled"
+            args.hint = evidence["wallet_tx"]
+            elections.manual(args, b["ops"], lib.load_profile())
+        result = renew(b, new=False)
+    assert result["state"] == "settled" and len(b["signatures"]) == 1
+    assert len([r for r in b["ops"].journal.all() if r.get("renewal")]) == 1
+
+
+def test_renewal_resubmit_rechecks_window_and_reserve(renewal, monkeypatch):
+    b = renewal
+    top_up_operator(b)
+    op_id = "renew-node-1-ten-days"
+    crash(monkeypatch, op_id, "signed")
+    with pytest.raises(KeyboardInterrupt):
+        renew(b)
+    monkeypatch.setattr(elections.ops, "crash_point", lambda i, p: None)
+    args = elections.argparse.Namespace(**vars(b["args"]), command="resubmit", id=op_id)
+    b["chain"].account(elections.ELECTOR)["getters"]["active_election_id"] = lambda: {
+        "exit_code": 0,
+        "stack": [num(7)],
+    }
+    sent = list(b["chain"].sent)
+    with pytest.raises(lib.TestnetError, match="not now"):
+        elections.manual(args, b["ops"], lib.load_profile())
+    elector_idle(b["chain"])
+    b["chain"].account(OP_WALLET)["balance"] = 265 * NANO
+    with pytest.raises(lib.TestnetError, match="reserve"):
+        elections.manual(args, b["ops"], lib.load_profile())
+    assert b["chain"].sent == sent
+
+
+def test_a_new_planned_authorization_blocks_other_wallet_operations(renewal, monkeypatch):
+    b = renewal
+    top_up_operator(b)
+    crash(monkeypatch, "renew-node-1-ten-days", "planned")
+    with pytest.raises(KeyboardInterrupt):
+        renew(b)
+    with pytest.raises(lib.TestnetError, match="open"):
+        with b["ops"].journal.lock():
+            b["ops"].gate(OP_WALLET, "another-renewal")
+
+
+def test_a_settled_renewal_refuses_changed_parameters_and_retry(renewal):
+    b = renewal
+    top_up_operator(b)
+    record = renew(b)
+    count = len(b["chain"].sent)
+    with pytest.raises(lib.TestnetError, match="other parameters"):
+        renew(b, new=False, target_nanotos=261 * NANO)
+    assert renew(b)["id"] == record["id"]
+    with pytest.raises(lib.TestnetError, match="only a failed"):
+        b["ops"].retry(record["id"], "a settled grant is not a retry")
+    assert len(b["chain"].sent) == count and len(b["signatures"]) == 1
+
+
+def test_a_failed_renewal_requires_a_linked_retry_with_a_fresh_plan(renewal):
+    b = renewal
+    top_up_operator(b)
+    # The controller executes but installs a different permission: failure (b).
+    state = b["grant_state"]
+    original = b["chain"].behaviour[GENESIS_CONTROLLER]
+
+    def wrong_terms(*args):
+        original(*args)
+        state["terms"][1] = 1
+
+    b["chain"].behaviour[GENESIS_CONTROLLER] = wrong_terms
+    with pytest.raises(lib.TestnetError, match="failed"):
+        renew(b)
+    first = b["ops"].journal.record("renew-node-1-ten-days")
+    assert first["state"] == "failed"
+    with pytest.raises(lib.TestnetError, match="retry only failed"):
+        renew(b, new=False)
+    successor = b["ops"].retry(first["id"], "permission corrected after verified failure")
+    assert successor["predecessor"] == first["id"]
+    b["chain"].behaviour[GENESIS_CONTROLLER] = original
+    b["chain"].account(OP_WALLET)["balance"] += 20 * NANO
+    result = renew(b, new=False)
+    assert result["id"].endswith(".attempt-2") and result["state"] == "settled"
+    assert int(result["plan"]["nonce"]) == int(first["plan"]["nonce"]) + 1
+    assert len(b["signatures"]) == 2
+
+
+@pytest.mark.parametrize("point", ["stop", "build", "start"])
+def test_renewal_restarts_service_and_names_an_unrecoverable_restart(renewal, monkeypatch, point):
+    b = renewal
+    top_up_operator(b)
+    host = b["host"]
+    run, tosctl = host.run, host.tosctl
+
+    def fail_run(command, *args):
+        if command.startswith("systemctl " + point):
+            host.commands.append(command)
+            raise lib.TestnetError("service command failed")
+        return run(command, *args)
+
+    def fail_build(command, *args):
+        if command.startswith("wallet send"):
+            raise lib.TestnetError("build failed")
+        return tosctl(command, *args)
+
+    monkeypatch.setattr(host, "run", fail_run)
+    if point == "build":
+        monkeypatch.setattr(host, "tosctl", fail_build)
+    count = len(b["chain"].sent)
+    with pytest.raises(
+        lib.TestnetError, match="start it by hand" if point == "start" else "failed"
+    ):
+        renew(b)
+    assert host.commands[-1] == "systemctl start tos-testnet-elections"
+    if point != "start":
+        assert len(b["chain"].sent) == count
+
+
+@pytest.mark.parametrize("which", ["global", "controller"])
+def test_renewal_refuses_a_host_plan_for_another_domain(renewal, monkeypatch, which):
+    b = renewal
+    top_up_operator(b)
+    host = b["host"]
+    tosctl = host.tosctl
+
+    def wrong_domain(command, *args):
+        result = tosctl(command, *args)
+        if command.startswith("controller operations plan"):
+            if which == "global":
+                result = result.replace("fund-operations ROOTSEED 2", "fund-operations ROOTSEED 3")
+            else:
+                result = result.replace(CONTROLLER, "ab" * 32)
+        return result
+
+    monkeypatch.setattr(host, "tosctl", wrong_domain)
+    with pytest.raises(lib.TestnetError, match="plan names global id"):
+        renew(b)
+    assert b["signatures"] == []
+
+
+def test_renewal_no_onboarding_or_no_recorded_operator_refuses(renewal):
+    b = renewal
+    path = b["ceremony"] / "operations/authorize-operations-node-1.jsonl"
+    saved = path.read_bytes()
+    path.unlink()
+    with pytest.raises(lib.TestnetError, match="onboarding operating authorization is not settled"):
+        renew(b)
+    path.write_bytes(saved)
+    (b["ceremony"] / "wallets.json").write_text("{}")
+    with pytest.raises(lib.TestnetError, match="records no op-node-1"):
+        renew(b)
+    assert b["signatures"] == []
+
+
+def test_renewal_refuses_unexplained_election_transfers_until_explicit_baseline(renewal):
+    b = renewal
+    top_up_operator(b)
+    chain = b["chain"]
+    chain.send(
+        fakechain.build_external(
+            OP_WALLET,
+            2,
+            chain.account(OP_WALLET)["seqno"],
+            chain.now + 300,
+            fakechain.internal_message(HOST_WALLET, NANO, False),
+            subwallet=698983191,
+        )
+    )
+    chain.settle_all()
+    with pytest.raises(lib.TestnetError, match="no settled or failed operation explains"):
+        renew(b)
+    assert b["signatures"] == []
+    b["ops"].set_baseline(OP_WALLET, "operator reviewed earlier election-task transfers")
+    assert renew(b)["state"] == "settled"
+
+
+def test_renewal_retains_a_frozen_plan_until_both_nodes_prove_it_dead_then_retries(
+    renewal, monkeypatch
+):
+    b = renewal
+    top_up_operator(b)
+    op_id = "renew-node-1-ten-days"
+    crash(monkeypatch, op_id, "planned")
+    with pytest.raises(KeyboardInterrupt):
+        renew(b)
+    monkeypatch.setattr(elections.ops, "crash_point", lambda i, p: None)
+    with pytest.raises(lib.TestnetError, match="open"):
+        b["ops"].set_baseline(OP_WALLET, "must not hide a planned operation")
+    record = b["ops"].journal.record(op_id)
+    b["chain"].now = int(record["plan"]["valid_until"]) + elections.ops.EXPIRY_MARGIN
+    # Still inside the quiet window; both node clocks now prove the root request dead.
+    with pytest.raises(lib.TestnetError, match="retry --step"):
+        renew(b, new=False)
+    assert b["ops"].journal.record(op_id)["state"] == "failed"
+    b["ops"].retry(op_id, "root request expired before wallet signing")
+    assert renew(b, new=False)["state"] == "settled"
+
+
+def test_renewal_settlement_requires_the_second_validators_delivery(renewal, monkeypatch):
+    b = renewal
+    top_up_operator(b)
+    crash(monkeypatch, "renew-node-1-ten-days", "signed")
+    with pytest.raises(KeyboardInterrupt):
+        renew(b)
+    monkeypatch.setattr(elections.ops, "crash_point", lambda i, p: None)
+    record = b["ops"].journal.record("renew-node-1-ten-days")
+    b["chain"].send(base64.b64decode(record["boc"]))
+    b["chain"].settle_all()
+    node = b["ops"].nodes[1]
+    rpc = node.rpc
+    node.rpc = fakechain.NodeRpc(b["chain"], lag=True, broken=False)
+    with pytest.raises(lib.TestnetError, match="disagree|lag"):
+        b["ops"].settle(record, elections.expect_for(b["args"], record))
+    node.rpc = rpc
+    assert b["ops"].settle(record, elections.expect_for(b["args"], record))[0] == "settled"
+
+
+def test_every_renewal_broadcast_path_uses_shared_preflight():
+    import ast
+    import inspect
+
+    authorize = ast.parse(inspect.getsource(elections.authorize_operations))
+    sends = [
+        n
+        for n in ast.walk(authorize)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "host_operation"
+    ]
+    assert len(sends) == 1
+    prerequisite = next(k.value for k in sends[0].keywords if k.arg == "prerequisites")
+    assert isinstance(prerequisite, ast.Lambda)
+    assert isinstance(prerequisite.body, ast.Call)
+    assert prerequisite.body.func.id == "authorization_preflight"
+    manual = ast.parse(inspect.getsource(elections.manual))
+    branches = [
+        n
+        for n in ast.walk(manual)
+        if isinstance(n, ast.If)
+        and isinstance(n.test, ast.Call)
+        and isinstance(n.test.func, ast.Attribute)
+        and n.test.func.attr == "get"
+        and n.test.args
+        and isinstance(n.test.args[0], ast.Constant)
+        and n.test.args[0].value == "renewal"
+    ]
+    assert len(branches) == 1
+    assert any(
+        isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "authorization_preflight"
+        for n in ast.walk(branches[0])
+    )
+    assert '"sendBoc"' not in inspect.getsource(elections.refund)
+    assert '"sendBoc"' not in inspect.getsource(elections.authorize_operations)
+
+
+def test_refund_cli_requires_a_second_validator_before_touching_a_host(renewal, capsys):
+    b = renewal
+    args = renewal_args(b)
+    argv = ["refund", "--id", args.id, "--new"]
+    for flag in (
+        "name",
+        "host",
+        "ssh_key",
+        "ceremony",
+        "controller",
+        "root_seed",
+        "controller_tool",
+        "tos_root",
+        "fift",
+        "rpc",
+    ):
+        argv.extend(["--" + flag.replace("_", "-"), str(getattr(args, flag))])
+    before = list(b["host"].commands)
+    assert elections.main(argv) == 1
+    assert "second validator" in capsys.readouterr().err
+    assert b["host"].commands == before and b["signatures"] == []
+
+
+def test_renewal_rechecks_authority_between_root_signing_and_host_signing(renewal, monkeypatch):
+    b = renewal
+    top_up_operator(b)
+    sign = elections.sign_operations
+
+    def root_then_race(*args):
+        result = sign(*args)
+        b["grant_state"]["nonce"] += 1
+        return result
+
+    monkeypatch.setattr(elections, "sign_operations", root_then_race)
+    commands = len(b["host"].commands)
+    sent = list(b["chain"].sent)
+    with pytest.raises(lib.TestnetError, match="epoch/nonce"):
+        renew(b)
+    assert b["chain"].sent == sent
+    assert not any("wallet send" in c for c in b["host"].commands[commands:])
+    assert b["host"].commands[-1] == "systemctl start tos-testnet-elections"
+
+
+def test_a_planned_renewal_is_not_declared_dead_until_both_clocks_pass_the_margin(
+    renewal, monkeypatch
+):
+    b = renewal
+    top_up_operator(b)
+    op_id = "renew-node-1-ten-days"
+    crash(monkeypatch, op_id, "planned")
+    with pytest.raises(KeyboardInterrupt):
+        renew(b)
+    monkeypatch.setattr(elections.ops, "crash_point", lambda i, p: None)
+    record = b["ops"].journal.record(op_id)
+    b["chain"].now = int(record["plan"]["valid_until"]) + elections.ops.EXPIRY_MARGIN
+    node = b["ops"].nodes[1]
+    original = node.rpc
+
+    def lag_time(url, rpc_method, **params):
+        result = original(url, rpc_method, **params)
+        if rpc_method == "getBlockHeader":
+            result["gen_utime"] -= 1
+        return result
+
+    monkeypatch.setattr(node, "rpc", lag_time)
+    with pytest.raises(lib.TestnetError, match="valid until"):
+        renew(b, new=False)
+    assert b["ops"].journal.record(op_id)["state"] == "planned"
+
+
+def test_renewal_resubmit_refuses_a_changed_root_nonce(renewal, monkeypatch):
+    b = renewal
+    top_up_operator(b)
+    op_id = "renew-node-1-ten-days"
+    crash(monkeypatch, op_id, "signed")
+    with pytest.raises(KeyboardInterrupt):
+        renew(b)
+    monkeypatch.setattr(elections.ops, "crash_point", lambda i, p: None)
+    b["grant_state"]["nonce"] += 1
+    args = elections.argparse.Namespace(**vars(b["args"]), command="resubmit", id=op_id)
+    count = len(b["chain"].sent)
+    with pytest.raises(lib.TestnetError, match="epoch/nonce"):
+        elections.manual(args, b["ops"], lib.load_profile())
+    assert len(b["chain"].sent) == count
+
+
+def test_renewal_does_not_trust_both_stale_node_clocks_past_the_local_window(renewal, monkeypatch):
+    b = renewal
+    now = b["chain"].now
+    monkeypatch.setattr(b["ops"], "clock", lambda: now + 4000)
+    commands = list(b["host"].commands)
+    with pytest.raises(lib.TestnetError, match="not now"):
+        renew(b)
+    assert b["host"].commands == commands and b["signatures"] == []
+
+
+def test_onboard_still_reports_a_settled_authorization_written_before_renewal_metadata(boarding):
+    b = boarding
+    onboard(b)
+    path = b["ceremony"] / "operations/authorize-operations-node-1.jsonl"
+    extra = {
+        "renewal",
+        "funds_target_nanotos",
+        "floor_nanotos",
+        "operator_reserve_nanotos",
+        "expires_at",
+    }
+    lines = [json.loads(line) for line in path.read_text().splitlines()]
+    path.write_text(
+        "".join(
+            json.dumps({k: v for k, v in line.items() if k not in extra}) + "\n" for line in lines
+        )
+    )
+    count = len(b["chain"].sent)
+    onboard(b)
+    assert len(b["chain"].sent) == count
+
+
+def test_renewal_checks_full_readiness_after_hash_settlement_and_does_not_repeat_it(renewal):
+    b = renewal
+    top_up_operator(b)
+    b["host"].ready = False
+    with pytest.raises(lib.TestnetError, match="settled but operating readiness needs attention"):
+        renew(b)
+    record = b["ops"].journal.record("renew-node-1-ten-days")
+    assert record["state"] == "settled"
+    count = len(b["chain"].sent)
+    assert renew(b)["id"] == record["id"]
+    assert len(b["chain"].sent) == count

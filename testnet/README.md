@@ -338,8 +338,9 @@ genesis`, `testnet-elections.py onboard` and `load`), beside `manifest
   run on the hosts is epoch 4, and it must finish before the first election
   opens at T + 4 h (`genesis.json` `first_election`). The host-side scripts as
   root (systemd units, the `tos-ctl` user) were not part of those rehearsals.
-  `refund` is not yet an operation (it sends over tosctl on the host as before)
-  and has not run end to end.
+  `refund` renews authorization as a separate journaled operation, after an
+  ordinary bootstrap `fund` top-up; both require two validators. Its new renewal
+  path has local tests, not a live-network acceptance claim (CEREMONY.md 8.1).
 - Authenticated global-config distribution (production gap G7) and a refresh
   schedule for `init_block` (`scripts/refresh-global-config-init-block.py` in
   tos, run with `--global-id 2`).

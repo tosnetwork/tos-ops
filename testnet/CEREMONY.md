@@ -545,55 +545,78 @@ anew); all checks run again:
 python3 $S retry $C --step ID --reason TEXT
 ```
 
-**`refund` is disabled for the epoch-4 launch**: it sends from the operator wallet
-over tosctl on the host, outside the journal, and refuses before it reads, signs
-or stops anything. It becomes an operation in a follow-up due before the fifth
-election (T + 19 h), when the 20 TOS of the first authorization (about four
-stakes) run out. A settled authorization cannot be renewed with `retry` (that is
-for failed attempts only); until the follow-up there is no supported renewal.
+#### Renewing operating authorization
 
-The operating authorization funds relays for a limited time (the first epoch's
-gave about three days of runway). `tosctl controller operations status
---controller <C>` on the host shows the runway; renew it before it ends, once
-per validator, with the same arguments as `onboard`:
+Epoch 4 started at **2026-10-18 09:30 UTC**. The initial 20 TOS permission covers
+four stakes (T+4/8/12/16 h). Complete renewal before **2026-10-19 04:30 UTC**
+(T+19 h), ahead of the fifth election at 05:30 UTC. Use a quiet window,
+**dry run → node-1 → rest**, after owner review. These commands move value;
+do not run them as part of deployment verification.
+
+First `reconcile` the operator wallet on both validators. The election task's
+stake relay transactions are not coordinator operations: inspect and account
+for them before using `baseline --wallet OPERATOR --reason TEXT` if required.
+Never baseline an unresolved operation. An unknown or disagreeing history,
+unexplained outgoing transfer, or another open operation refuses a new signature.
+
+Top up the recorded operator wallet from the bootstrap wallet, typically about
+200 TOS. This is an ordinary `fund` operation with its own fixed id; it is
+settled by message and transaction hashes on both validators. Repeating the
+same id reports it and does not fund twice. The reserve check may require a
+larger top-up depending on current funds and fees; use its reported amount.
 
 ```bash
-python3 /opt/tos-testnet/scripts/testnet-elections.py refund \
+# C is the common ceremony / tools / --rpc / --confirm-rpc arguments above.
+python3 $S fund $C --id renewal-top-up-node-1 --label renewal-top-up-node-1 \
+  --to <RECORDED_OPERATOR_WALLET> --amount 200 --dry-run
+python3 $S fund $C --id renewal-top-up-node-1 --label renewal-top-up-node-1 \
+  --to <RECORDED_OPERATOR_WALLET> --amount 200
+
+python3 $S refund $C --id renewal-node-1-ten-days --new \
   --name node-1 --host <HOST> --ssh-key <KEY> \
-  --ceremony ./ceremony --controller controllers/node-1.json \
-  --root-seed offline/root-node-1.seed --controller-tool "$TOS_ROOT/build/crypto/tos-pq-controller" \
-  --tos-root "$TOS_ROOT" --fift "$TOS_ROOT/build/crypto/fift" \
-  --rpc http://127.0.0.1:18081/jsonRPC \
-  [--target-nanotos N] [--dry-run]
+  --controller controllers/node-1.json --root-seed offline/root-node-1.seed \
+  --controller-tool "$TOS_ROOT/build/crypto/tos-pq-controller" --dry-run
+# After review, repeat without --dry-run (keep --new: dry-run creates no record).
 ```
 
-It plans the renewal on the host (funds target
-`elections.authorization.refund_target_nanotos`, 260 TOS or ten days of
-stakes, or `--target-nanotos`), signs
-it locally with the root seed, stops `tos-testnet-elections` (it holds the
-tosctl vault lock) only around the send from the operator wallet (as
-`tos-ctl`, like every tosctl call) and always starts it again, then checks that the root authority nonce advanced, the
-stakes remaining grew and no `[BLOCKING]` warning remains. Each sent refund is
-appended to `ceremony/refunds.jsonl`. `--dry-run` plans, checks and signs, and
-sends nothing.
+`refund` targets `elections.authorization.refund_target_nanotos` (260 TOS;
+`--target-nanotos` overrides it) with a ten-day expiry. It reuses onboard's
+independent decoded-payer, global-id, controller, root epoch/nonce, terms and fee
+checks. The root seed stays on the coordinator. The host only builds the wallet
+message; the coordinator validates it, journals it durably, broadcasts it and
+confirms the exact transaction and authorization on both validators. The election
+service is restarted even if signing, building, broadcasting or settlement fails.
+The final status uses tosctl's full operating-readiness assessment. A forced
+termination (for example SIGKILL or coordinator power loss) cannot run the
+restart cleanup: reconcile the operation first, then explicitly start
+`tos-testnet-elections` on that validator and verify it is active before moving
+to the next node. Reporting an already-settled id does not change service state.
 
-Two refusals guard the next election:
+`--dry-run` performs the gates and unsigned plan checks without signing,
+journaling, broadcasting or stopping the service. For an existing operation,
+omit `--new`. A settled id is reported without another signature or send
+(even if `--new` was left on the repeated command);
+changed parameters refuse. A later renewal needs a new deliberate id, never
+`retry` of a settled grant. A failed attempt alone permits
+`retry --step renewal-node-1-ten-days --reason TEXT`; then rerun `refund` with
+the original step id and without `--new` to prepare the new attempt.
 
-- The operator wallet pays both the refund and every stake: the election task
-  sends 20 TOS with each stake and will not stake below 20.2 TOS. A refund that
-  left 17.77 TOS once kept all four validators out of an election. `refund`
-  therefore refuses, before signing, when the wallet would keep less than
-  `elections.authorization.operator_reserve_nanotos` (30 TOS) after the
-  message value and a 1 TOS fee allowance, and names the top-up to send first
-  with `testnet-elections.py fund`.
-- It runs only in the quiet part of a term: not while the Elector has an
-  election open (or finished but not yet installed), and not within 10 minutes
-  after the current set took office or before the next election opens
-  (ConfigParam 34 `utime_until` minus `elections_start_before`). The times come
-  from the chain, not from `genesis.json`, because a failed election moves
-  every later rotation; while an election keeps failing, `refund` keeps
-  refusing. `--i-checked-the-window` overrides this after a manual check, for
-  example when a controller's exhausted funds are what blocks the stakes.
+An interrupted signed/broadcast operation must be resolved with `reconcile`,
+`record` or `resubmit`. These use the same per-kind, two-validator hash evidence
+as onboarding. If an interruption left only a planned root request and it expires
+before any wallet external is signed, a rerun waits until both validator clocks
+prove it expired plus the 60-second margin, records a terminal
+`unsigned-plan-expired` failure, and requires explicit `retry` for a fresh plan. Before both an initial renewal and a resubmission:
+
+- Both validators must agree that no election is open and on the current term.
+  Each node's time must be at least ten minutes after the set took office and
+  ten minutes before the next election opens. Failed elections keep refusing.
+  There is no manual window override.
+- The operator must retain the configured 30 TOS reserve after the message value
+  plus a 1 TOS wallet fee allowance. The election task needs at least 20.2 TOS.
+- The plan must still match controller authority, funds and fee prices. An open
+  message that can no longer execute follows the normal failure-evidence and
+  retry procedure; it is never silently re-signed.
 
 If the first election cannot be conducted, the Elector cancels it at
 `elect_at` and refunds the stakes. The chain does not stop: the genesis set
