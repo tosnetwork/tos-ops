@@ -116,8 +116,11 @@ open election.
 | Observer | at least 2 independent (G0, planned) | a full node another party runs | as full node |
 
 The tooling does not establish which hosts are currently deployed. Verify the
-approved private inventory. A separate production checker is work in progress,
-not merged here. The supplied alert peer has no independent chain view.
+approved private inventory. The read-only [network checker](../production/scripts/README.md)
+provides held-anchor proof and Elector-result checks over HTTP; its
+[recorded evidence](../production/evidence/README.md) states the remaining
+historical-proof availability limit. The supplied alert peer has no independent
+chain view.
 
 Validators serve no public clients. A validator's console (30002/tcp) and its
 JSON-RPC (8081) and exporter (9100) stay on loopback; reach them over SSH.
@@ -211,7 +214,7 @@ of five or more net failures in one round, free space below 20 GiB) and a
   age falls below 60 s, or `NOT CURRENT` and exits 1.
 
 After each rotation, confirm the elected set with the same records file used
-at genesis (TOS_ROOT names a tos checkout to decode with):
+at genesis:
 
 ```bash
 TOS_ROOT=$TOS_ROOT "$TOS_ROOT/.venv/bin/python" testnet/scripts/check-testnet.py \
@@ -220,7 +223,10 @@ TOS_ROOT=$TOS_ROOT "$TOS_ROOT/.venv/bin/python" testnet/scripts/check-testnet.py
 
 It requires as many members as records, all main validators, with exactly the
 records' controllers (consensus keys may change at an election), and prints
-the set's `utime_since`/`utime_until`.
+the set's `utime_since`/`utime_until`. This operator-record check does not prove
+the Elector's result. For Config34's active election and Config32's historical
+active election, use the [HTTP checker](../production/scripts/README.md) with the
+approved global config, AUTH pin and [independently built verifier](../production/scripts/README.md#build-the-verifier).
 
 ## Alerts
 
@@ -382,11 +388,10 @@ genesis`, `testnet-elections.py onboard` and `load`), beside `manifest
 - Onboarding/renewal code has local tests. Live acceptance and current network
   state belong to the approved ceremony record, not this README. Verify the
   root-signed grant and service state after every change.
-- No merged production checker, public RPC deployment, explorer or faucet service
-  is provided by this directory. Templates and funding tools do not deploy those
-  services automatically.
-- Current journal gates do not automatically explain election-task stake relays;
-  a human must reconcile any unexplained history before a deliberate baseline.
+- No public RPC deployment, explorer or faucet service is provided by this
+  directory. Templates and funding tools do not deploy those services automatically.
+- Journal gates recognize only fully matched election-task stake relays; unrelated
+  or unverifiable activity remains unexplained and blocks the gate.
 - Preflight admits aarch64, but the supplied host build script sets x86-64-v2;
   follow this runbook on Ubuntu 24.04 x86_64 only unless a separate build is reviewed.
 - The alert peer sees the coordinator heartbeat, not chain state. Independent

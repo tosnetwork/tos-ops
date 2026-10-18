@@ -1,0 +1,30 @@
+{
+  "captured_at_utc": "2026-10-18T22:04:05.614879+00:00",
+  "source_revision": "85c679c34",
+  "settings_base": "8e64906",
+  "global_id": 2,
+  "read_only": true,
+  "minimum_per_endpoint_interval_seconds": 0.45,
+  "inputs": {
+    "global_config_sha256": "ad2c627cee807253bd3ed72ac8baf9b776714840fcc5e28bb71a1fb770292fe4",
+    "verification_library_sha256": "5cac3277f25dd7d97bc95f652b64dcba4718987fa2d379a78e9ce44ce4f9900d"
+  },
+  "report_sha256": "ea89763ff1d5dfe450c6d9f2450aec43f4c496f105636b04ac8fe79ca7d05fdb",
+  "gates": {
+    "testnet_pytest": "691 passed, 2 skipped; exit 0",
+    "local_pytest": "397 passed, 9 subtests passed; exit 0",
+    "mutation_controls": "NC1-NC19: 19 red, no survivors, no invalid runs; restored focused suite 83 passed",
+    "ruff_check": "exit 0",
+    "ruff_format_check": "exit 0",
+    "diff_check": "exit 0"
+  },
+  "live_exit_status": 1,
+  "live_limitation": "Config32 historical Elector proof unavailable from all four endpoints; current Config34 and anchored head finality passed.",
+  "verification_library_provenance": {
+    "status": "unpinned pre-existing local artifact; superseded by clean-build-metadata.json",
+    "target": "tos-proof-embedded",
+    "configuration": "Release; clang-21; Ninja",
+    "clean_source_revision": null,
+    "source_revision_field_describes": "live node and fixture source, not an attested verifier source tree"
+  }
+}

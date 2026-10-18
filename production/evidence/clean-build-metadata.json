@@ -1,0 +1,37 @@
+{
+  "captured_at_utc": "2026-10-18T22:45:37.464752+00:00",
+  "verifier_source_revision": "85c679c3454f306eb867e25b1960ae3d757bd3dd",
+  "source_tree_clean": true,
+  "build_directory_initially_absent": true,
+  "platform": "Linux x86_64",
+  "compiler": "Ubuntu clang version 21.1.8 (++20251221032842+2078da43e25a-1~exp1~20251221153008.77)",
+  "cmake": "cmake version 3.22.1",
+  "ninja": "1.10.1",
+  "configure_command": "cmake -S \"$TOS_ROOT\" -B \"$TOS_ROOT/build-network-check\" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang-21 -DCMAKE_CXX_COMPILER=clang++-21",
+  "build_command": "cmake --build \"$TOS_ROOT/build-network-check\" --target tos-proof-embedded -j8",
+  "library_path": "$TOS_ROOT/build-network-check/lite-client/proof-verify/libtosproofverify.so",
+  "library_bytes": 11798752,
+  "library_sha256": "9ca8beeeba42dd700c8694f0c0dd308068395e5003dcf345df193c3787aeb08d",
+  "required_exports": [
+    "tos_proof_acquire",
+    "tos_proof_verify_embedded"
+  ],
+  "exports_checked": true,
+  "saved_sha256_manifest_check": "exit 0",
+  "global_config_sha256": "ad2c627cee807253bd3ed72ac8baf9b776714840fcc5e28bb71a1fb770292fe4",
+  "report_sha256": "c913b3747011b085c418f10908cd239e3e2e4025eaecff0d666b6cfa3f10a624",
+  "read_only": true,
+  "minimum_per_endpoint_interval_seconds": 0.45,
+  "live_exit_status": 1,
+  "live_result": "held-anchor PQ finality and active Config34 vs Elector PASS; historical Config32 proof unavailable from all four sources",
+  "configure_exit_status": 0,
+  "build_exit_status": 0,
+  "gates": {
+    "testnet_pytest": "701 passed, 2 skipped; exit 0; new clean-build library supplied",
+    "abi_instruction_tests_before_fix": "3 failed as expected",
+    "abi_instruction_tests_fixed": "4 passed",
+    "ruff_check": "exit 0",
+    "ruff_format_check": "exit 0",
+    "diff_check": "exit 0"
+  }
+}

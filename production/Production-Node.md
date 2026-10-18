@@ -326,8 +326,10 @@ operator control reads; never weaken RPC limits to serve an internal consumer.
 Production health-stack placement and its admission blockers live in the tos
 checkout under `tools/node-health-monitor`. This repository has local-stack
 automation and testnet host watching/Telegram alerting, not an accepted production
-monitor deployment. A separate production checker is work in progress and is not
-merged here.
+monitor deployment. The read-only [network checker](scripts/README.md) verifies
+held-anchor proofs and Elector results over HTTP. Its [build and evidence notes](evidence/README.md)
+state its trust inputs and historical-proof availability limit; it is not a
+production monitor deployment.
 
 Require independent fresh full-block identity, head/shard-client lag, election
 outcomes, authorization runway/expiry, disk/growth, GC/cleanup progress,

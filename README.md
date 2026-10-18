@@ -92,8 +92,12 @@ deployment**.
 - [Hardware-and-Hosting.md](production/Hardware-and-Hosting.md): proposed capacity and hosting-diversity requirements.
 - [systemd/](production/systemd/): proposed validator and elections-task units.
 
-There is no production test suite or merged production checker here. The separate
-production checker is work in progress, not an available tool on `main`.
+The read-only [network checker](production/scripts/README.md) verifies explicit
+network identity, held-anchor PQ finality and Elector results over HTTP. Follow
+its [pinned verifier build](production/scripts/README.md#build-the-verifier) and
+review the [evidence and availability limits](production/evidence/README.md).
+Its fixture and mutation tests are in `testnet/tests`; there is no production
+deployment acceptance suite here.
 
 Root files: [AGENTS.md](AGENTS.md) (`CLAUDE.md` links to it) and
 [.gitignore](.gitignore) contain working guidance and output/secret exclusions.
