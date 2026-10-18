@@ -2,7 +2,7 @@
 
 Run from the tos checkout's uv environment with TOS_ROOT set, for example:
 
-    cd "$TOS_ROOT" && TOS_ROOT="$TOS_ROOT" uv run python -m pytest <network-settings>/local/tests
+    cd "$TOS_ROOT" && TOS_ROOT="$TOS_ROOT" uv run python -m pytest <tos-ops>/local/tests
 """
 
 import os

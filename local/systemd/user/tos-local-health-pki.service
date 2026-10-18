@@ -5,4 +5,4 @@ Description=Rotate the local health-monitoring development PKI when it is due
 Type=oneshot
 UMask=0077
 NoNewPrivileges=yes
-ExecStart=/usr/bin/python3 %h/network-settings/local/scripts/health-pki.py rotate --if-due-within-days 7
+ExecStart=/usr/bin/python3 %h/tos-ops/local/scripts/health-pki.py rotate --if-due-within-days 7

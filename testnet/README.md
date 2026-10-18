@@ -239,7 +239,7 @@ The peer is a heartbeat watchdog, not an independent chain observer.
 
 1. On the coordinator, prepare the user-unit template from
    [systemd/tos-testnet-alert-coordinator.service](systemd/tos-testnet-alert-coordinator.service).
-   It still expects the legacy `%h/network-settings` checkout and inventory at
+   It expects the `%h/tos-ops` checkout and inventory at
    `%h/.config/tos-alert/hosts.json`, with peer label `node-dht`. Confirm those
    inputs or obtain a reviewed template change before installing; do not edit an
    installed unit. Provision coordinator token/chat files privately at mode 0600.

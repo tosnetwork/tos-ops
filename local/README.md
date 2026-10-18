@@ -423,11 +423,9 @@ systemctl --user list-timers tos-local-health-pki.timer
 journalctl --user -u tos-local-health-pki.service
 ```
 
-The tracked PKI user-unit template still hard-codes `%h/network-settings`
-(the legacy checkout basename); the GitHub rename alone does not relocate it.
-Keep that layout for this template. A different checkout requires a reviewed
-template/install change, not a hand-edited installed unit. Directory migration
-is outside this documentation change.
+The tracked PKI user-unit template expects this checkout at `%h/tos-ops`.
+Keep that layout when installing the template. A different checkout path
+requires a reviewed template/install change, not a hand-edited installed unit.
 
 ## Services and configuration
 
