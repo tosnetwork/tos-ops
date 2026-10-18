@@ -86,6 +86,25 @@ def test_a_4gb_vm_is_enough_for_dht_but_not_for_a_validator():
     assert statuses(preflight.evaluate_host(host(), facts, PROFILE))["memory"] == "FAIL"
 
 
+@pytest.mark.parametrize(
+    "roles,memory_gib,expected",
+    [
+        (["fullnode"], 7.7, "PASS"),
+        (["fullnode"], 7, "PASS"),
+        (["fullnode"], 6.99, "FAIL"),
+        (["validator"], 7.7, "FAIL"),
+        (["validator"], 11, "PASS"),
+        (["fullnode", "validator"], 7.7, "FAIL"),
+        (["dht"], 3, "PASS"),
+        (["dht"], 2.99, "FAIL"),
+    ],
+)
+def test_role_memory_boundaries(roles, memory_gib, expected):
+    facts = dict(GOOD_FACTS, mem_kib=str(int(memory_gib * 1048576)))
+    results = preflight.evaluate_host(host(roles=roles), facts, PROFILE)
+    assert statuses(results)["memory"] == expected
+
+
 def test_a_host_with_two_roles_takes_the_stricter_floor_and_both_port_sets():
     assert preflight.role_floor(["dht", "validator"], PROFILE)["min_memory_gib"] == 11
     assert preflight.role_udp_ports(["validator", "dht"], PROFILE) == [30001, 30300, 31001]

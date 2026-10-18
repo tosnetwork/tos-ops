@@ -70,12 +70,12 @@
   },
   "dht": {"k": 6, "a": 3, "network_id": -1},
   "host_requirements": {
-    "note": "Testnet floors checked by scripts/preflight.py before a host is prepared. Measured on 12 GB / 6-core VMs: a running validator holds about 6 GB RSS, and build-node-binaries.sh peaked at 8.4 GB with 4 jobs (3.2 GB for a DHT build with 2). A 12 GB VM reports about 11.6 GiB MemTotal. Production requirements are production/Hardware-and-Hosting.md, not these.",
+    "note": "Testnet floors checked by scripts/preflight.py before a host is prepared. Measured on 12 GB / 6-core VMs: a running validator holds about 6 GB RSS, and build-node-binaries.sh peaked at 8.4 GB with 4 jobs (3.2 GB for a DHT build with 2). A 12 GB VM reports about 11.6 GiB MemTotal. Full nodes with a 1 GiB cache cap hold about 2.5-3 GB RSS (3.0 GB peak under load); an 8 GB VM reports about 7.7 GiB MemTotal and uses a 7 GiB floor. Production requirements are production/Hardware-and-Hosting.md, not these.",
     "os": {"id": "ubuntu", "version_id": "24.04"},
     "architectures": ["x86_64", "aarch64"],
     "roles": {
       "validator": {"min_cpus": 4, "min_memory_gib": 11, "min_disk_free_gib": 60},
-      "fullnode": {"min_cpus": 4, "min_memory_gib": 11, "min_disk_free_gib": 60},
+      "fullnode": {"min_cpus": 4, "min_memory_gib": 7, "min_disk_free_gib": 60},
       "dht": {"min_cpus": 2, "min_memory_gib": 3, "min_disk_free_gib": 20}
     }
   }
