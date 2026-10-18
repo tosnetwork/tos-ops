@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 import testnet_lib as lib
-from conftest import DATA
+from conftest import DATA, one_key_list, serialize_boc
 
 REPORT = (DATA / "consensus-key-report.txt").read_text()
 DHT_NODE = json.loads((DATA / "dht-node-loopback.json").read_text())
@@ -246,6 +246,8 @@ def test_manifest_packs_index_order_and_size():
 
 TEMPLATE = "\n".join(
     [
+        lib.TEMPLATE_FIRST_LINE,
+        lib.TEMPLATE_AUTH_GUARD_LINE,
         "wc_master setworkchain",
         lib.TEMPLATE_GLOBAL_ID_LINE,
         "0x544F5301 default-subwallet-id!",
@@ -263,39 +265,75 @@ SCHEDULE = {
     "elections_end_before": 1800,
     "stake_held_for": 7200,
 }
+TAG = lib.derive_auth_network_tag("tos-public-testnet", 2, 4)
 
 
 def test_patch_replaces_the_pins_and_the_schedule_only():
-    patched = lib.patch_template(TEMPLATE, 2, 1800000000, SCHEDULE)
+    # The testnet's 6 h initial set equals the mainnet template's since tos #206;
+    # another lifetime shows the line is still replaced.
+    patched = lib.patch_template(
+        TEMPLATE, 2, 1800000000, dict(SCHEDULE, initial_set_valid_for=25200), TAG
+    )
     before, after = TEMPLATE.split("\n"), patched.split("\n")
+    # One line inserted after the first: the AUTH network tag, before the guard reads it.
+    assert after[0] == lib.TEMPLATE_FIRST_LINE
+    assert (
+        after[1]
+        == f"0x{TAG.hex()} constant quantum-network-tag   // TOS public testnet AUTH network tag"
+    )
+    assert after[2] == lib.TEMPLATE_AUTH_GUARD_LINE
+    after = after[:1] + after[2:]
     changed = [i for i, (a, b) in enumerate(zip(before, after)) if a != b]
-    assert changed == [1, 3, 4, 5, 7]
-    assert after[1].startswith("2 setglobalid")
-    assert after[3] == "1800000000 constant mainnet_genesis_utime"
-    assert "1800000000" in after[4]
-    assert after[5] == "14400 7200 1800 7200 config.election_params!"
-    assert after[7] == "21600 =: orig_vset_valid_for"
-    assert after[6] == before[6]
+    assert changed == [3, 5, 6, 7, 9]
+    assert after[3].startswith("2 setglobalid")
+    assert after[5] == "1800000000 constant mainnet_genesis_utime"
+    assert "1800000000" in after[6]
+    assert after[7] == "14400 7200 1800 7200 config.election_params!"
+    assert after[9] == "25200 =: orig_vset_valid_for"
+    assert after[8] == before[8]
+
+
+def test_patch_refuses_a_template_without_the_tag_guard_or_with_its_own_tag():
+    with pytest.raises(lib.TestnetError, match="guard"):
+        lib.patch_template(
+            TEMPLATE.replace(lib.TEMPLATE_AUTH_GUARD_LINE, "// gone"), 2, 1800000000, SCHEDULE, TAG
+        )
+    for definition in (
+        "0x01 constant quantum-network-tag",
+        "1 constant quantum-admission-candidate",
+    ):
+        with pytest.raises(lib.TestnetError, match="already defines"):
+            lib.patch_template(TEMPLATE + "\n" + definition, 2, 1800000000, SCHEDULE, TAG)
+    with pytest.raises(lib.TestnetError, match="first line"):
+        lib.patch_template(
+            TEMPLATE.replace(lib.TEMPLATE_FIRST_LINE, "#!/bin/sh"), 2, 1800000000, SCHEDULE, TAG
+        )
+    with pytest.raises(lib.TestnetError, match="reserved"):
+        lib.patch_template(TEMPLATE, 2, 1800000000, SCHEDULE, b"\x42" * 32)
 
 
 def test_patch_refuses_a_changed_template():
     with pytest.raises(lib.TestnetError, match="exactly once"):
         lib.patch_template(
-            TEMPLATE.replace(lib.TEMPLATE_GLOBAL_ID_LINE, "1 setglobalid"), 2, 1800000000, SCHEDULE
+            TEMPLATE.replace(lib.TEMPLATE_GLOBAL_ID_LINE, "1 setglobalid"),
+            2,
+            1800000000,
+            SCHEDULE,
+            TAG,
         )
     doubled = TEMPLATE + "\n" + lib.TEMPLATE_EPOCH_LINE
     with pytest.raises(lib.TestnetError, match="exactly once"):
-        lib.patch_template(doubled, 2, 1800000000, SCHEDULE)
+        lib.patch_template(doubled, 2, 1800000000, SCHEDULE, TAG)
     for line in (lib.TEMPLATE_ELECTION_PARAMS_LINE, lib.TEMPLATE_INITIAL_SET_LINE):
         with pytest.raises(lib.TestnetError, match="exactly once"):
-            lib.patch_template(TEMPLATE.replace(line, "// moved"), 2, 1800000000, SCHEDULE)
+            lib.patch_template(TEMPLATE.replace(line, "// moved"), 2, 1800000000, SCHEDULE, TAG)
 
 
 def test_patch_refuses_mainnet_id_and_old_epoch():
     with pytest.raises(lib.TestnetError):
-        lib.patch_template(TEMPLATE, 1, 1800000000, SCHEDULE)
+        lib.patch_template(TEMPLATE, 1, 1800000000, SCHEDULE, TAG)
     with pytest.raises(lib.TestnetError, match="later"):
-        lib.patch_template(TEMPLATE, 2, 1789434000, SCHEDULE)
+        lib.patch_template(TEMPLATE, 2, 1789434000, SCHEDULE, TAG)
 
 
 def test_patch_matches_the_tos_template_when_available():
@@ -305,9 +343,18 @@ def test_patch_matches_the_tos_template_when_available():
     from pathlib import Path
 
     text = (Path(root) / "crypto/smartcont/gen-zerostate.fif").read_text()
-    patched = lib.patch_template(text, 2, 1800000000, SCHEDULE)
-    diff = [(a, b) for a, b in zip(text.split("\n"), patched.split("\n")) if a != b]
+    patched = lib.patch_template(
+        text, 2, 1800000000, dict(SCHEDULE, initial_set_valid_for=25200), TAG
+    )
+    lines = patched.split("\n")
+    assert lines[1].startswith(f"0x{TAG.hex()} constant quantum-network-tag")
+    del lines[1]
+    diff = [(a, b) for a, b in zip(text.split("\n"), lines) if a != b]
     assert len(diff) == 5
+    # With the repository's own schedule the initial-set line stays as it is.
+    lines = lib.patch_template(text, 2, 1800000000, SCHEDULE, TAG).split("\n")
+    del lines[1]
+    assert len([1 for a, b in zip(text.split("\n"), lines) if a != b]) == 4
 
 
 # ---------------------------------------------------------------- validator schedule
@@ -398,7 +445,6 @@ def test_validator_logs_stay_under_the_owner_cap():
     assert total <= logs["max_total_mb"] == 2048, total
 
 
-
 def test_engine_units_cap_rocksdb_caches_at_one_gib():
     # Owner decision 2026-10-15: each RocksDB cache is capped at 1 GiB on
     # validators and full nodes, testnet and production alike. CellDb V2 only
@@ -418,7 +464,9 @@ def test_engine_units_cap_rocksdb_caches_at_one_gib():
         unit = path.read_text()
         assert re.findall(r"--celldb-cache-size (\d+)", unit) == [str(gib)], path
         assert re.findall(r"--celldb-cache-min-size (\d+)", unit) == [str(gib)], path
-        assert re.findall(r"(?m)^Environment=TOS_ROCKSDB_BLOCK_CACHE_SIZE=(\d+)$", unit) == [str(gib)], path
+        assert re.findall(r"(?m)^Environment=TOS_ROCKSDB_BLOCK_CACHE_SIZE=(\d+)$", unit) == [
+            str(gib)
+        ], path
     # The design document embeds the production unit; the two must not drift.
     doc = (root / "production" / "Production-Node.md").read_text()
     assert units[2].read_text() in doc
@@ -538,13 +586,18 @@ def test_empty_dir_refuses_content(tmp_path):
 
 def serve_jsonrpc(result):
     """A one-shot local JSON-RPC server; returns its URL and the list it records request bodies into."""
+    return serve_answer({"jsonrpc": "2.0", "id": 1, "result": result})
+
+
+def serve_answer(answer, status=200):
+    """A one-shot local server answering one POST with `answer` (JSON, or raw bytes) and `status`."""
     seen = []
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             seen.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
-            body = json.dumps({"jsonrpc": "2.0", "id": 1, "result": result}).encode()
-            self.send_response(200)
+            body = answer if isinstance(answer, bytes) else json.dumps(answer).encode()
+            self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -566,3 +619,260 @@ def test_rpc_passes_a_parameter_named_method_through():
     assert result["stack"] == [["num", "0x5"]]
     assert seen[0]["method"] == "runGetMethod"
     assert seen[0]["params"] == {"address": "-1:" + "11" * 32, "method": "seqno", "stack": []}
+
+
+# JSON-RPC answers in the shape tos validator-engine gives them since tos #227
+# (validator-engine/json-rpc-contract.h): a method error is HTTP 200 with a typed
+# error object; only a refusal before the method runs uses another status, with
+# the same body.
+
+
+def error_answer(code, reason, message, retryable=False):
+    return {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {
+            "code": code,
+            "message": message,
+            "data": {"schema_version": 1, "reason": reason, "retryable": retryable},
+        },
+    }
+
+
+def test_rpc_sends_named_params_in_a_strict_envelope():
+    url, seen = serve_jsonrpc({"last": {"seqno": "7"}})
+    assert lib.rpc(url, "getMasterchainInfo") == {"last": {"seqno": "7"}}
+    assert seen == [{"jsonrpc": "2.0", "id": 1, "method": "getMasterchainInfo", "params": {}}]
+
+
+def test_rpc_raises_the_typed_error_object():
+    url, _ = serve_answer(error_answer(-32004, "CONFIG_PARAM_ABSENT", "config param 48 not found"))
+    with pytest.raises(lib.RpcError) as caught:
+        lib.rpc(url, "getConfigParam", param=48)
+    error = caught.value
+    assert (error.code, error.reason, error.retryable) == (-32004, "CONFIG_PARAM_ABSENT", False)
+    assert "CONFIG_PARAM_ABSENT -32004: config param 48 not found" in str(error)
+
+
+# The node's rate-limit refusal, byte for byte as tos d7ef85b4c writes it
+# (validator-engine/json-rpc-http-policy.h, rate_limited_response): HTTP 429, sent
+# before the request is read, so its id is null.
+NODE_RATE_LIMITED = (
+    b'{"jsonrpc":"2.0","id":null,"error":{"code":-32005,'
+    b'"message":"Rate limit exceeded (per-IP)",'
+    b'"data":{"schema_version":1,"reason":"RATE_LIMITED","retryable":true}}}'
+)
+
+
+def test_rpc_reads_the_nodes_rate_limit_refusal():
+    url, _ = serve_answer(NODE_RATE_LIMITED, 429)
+    with pytest.raises(lib.RpcError) as caught:
+        lib.rpc(url, "getMasterchainInfo")
+    assert caught.value.retryable is True and caught.value.reason == "RATE_LIMITED"
+    assert caught.value.code == -32005
+
+
+@pytest.mark.parametrize("status", lib.RPC_PRE_DISPATCH_STATUSES)
+def test_rpc_reads_every_pre_dispatch_refusal(status):
+    body = dict(error_answer(-32000, "UNAUTHORIZED", "refused"), id=None)
+    url, _ = serve_answer(body, status)
+    with pytest.raises(lib.RpcError, match="UNAUTHORIZED -32000: refused"):
+        lib.rpc(url, "getMasterchainInfo")
+
+
+@pytest.mark.parametrize(
+    "status,body", [(502, b"<html>bad gateway</html>"), (500, NODE_RATE_LIMITED)]
+)
+def test_rpc_refuses_a_status_the_node_does_not_answer_with(status, body):
+    url, _ = serve_answer(body, status)
+    with pytest.raises(lib.TestnetError, match=f"HTTP {status}") as caught:
+        lib.rpc(url, "getMasterchainInfo")
+    assert not isinstance(caught.value, lib.RpcError)
+
+
+def test_rpc_refuses_a_pre_dispatch_status_without_a_json_rpc_body():
+    url, _ = serve_answer(b"<html>too many</html>", 429)
+    with pytest.raises(lib.TestnetError, match="HTTP 429 without a JSON-RPC body") as caught:
+        lib.rpc(url, "getMasterchainInfo")
+    assert not isinstance(caught.value, lib.RpcError)
+
+
+@pytest.mark.parametrize(
+    "answer,message",
+    [
+        ({"id": 1, "result": {}}, "not a JSON-RPC 2.0 answer"),
+        ({"jsonrpc": "2.0", "id": 2, "result": {}}, "request id 2"),
+        # id null only on an error object: a result always echoes the request's id
+        ({"jsonrpc": "2.0", "id": None, "result": {}}, "request id None"),
+        ({"jsonrpc": "2.0", "id": 1}, "neither"),
+        (dict(error_answer(-32603, "INTERNAL_ERROR", "x"), result={}), "both"),
+        # the shape before tos #227: a string error and an ok flag
+        ({"ok": False, "jsonrpc": "2.0", "id": 1, "error": "LITE_SERVER_NOTREADY"}, "malformed"),
+        ({"jsonrpc": "2.0", "id": 1, "error": {"code": "1", "message": "x"}}, "malformed"),
+    ],
+)
+def test_rpc_refuses_answers_outside_the_contract(answer, message):
+    with pytest.raises(lib.TestnetError, match=message) as caught:
+        lib.rpc_result(answer, "http://node", "getMasterchainInfo")
+    assert not isinstance(caught.value, lib.RpcError)
+
+
+def test_rpc_never_branches_on_an_ok_field():
+    # A success is its result; an `ok` field (gone since tos #227) changes nothing.
+    assert lib.rpc_result({"jsonrpc": "2.0", "id": 1, "result": 5}, "u", "m") == 5
+    assert lib.rpc_result({"ok": False, "jsonrpc": "2.0", "id": 1, "result": 5}, "u", "m") == 5
+
+
+# ---------------------------------------------------------------- AUTH network tag
+
+
+def test_profile_tag_is_sha256_of_its_rule():
+    profile = lib.load_profile()
+    entry = lib.profile_auth_network_tag(profile)
+    rule = "TOS-AUTH-NETWORK-TAG-v1;network=tos-public-testnet;global_id=2;epoch=4"
+    assert entry["rule"] == rule
+    assert entry["tag"] == hashlib.sha256(rule.encode()).digest()
+    assert entry["tag"].hex() == "e36440a2e7704d9e26c79c5d9ba462507783b18404e876da9a232d38722e28fd"
+
+
+@pytest.mark.parametrize(
+    "change,message",
+    [
+        ({"value": "00" * 32}, "reserved"),
+        ({"value": "e3" * 31}, "64 hexadecimal"),
+        ({"campaign_epoch": 5}, "not SHA-256"),
+        ({"rule": "something else"}, "not SHA-256"),
+        ({"status": "PROPOSED"}, "status"),
+        ({"campaign_epoch": True}, "campaign_epoch"),
+    ],
+)
+def test_profile_tag_refusals(change, message):
+    profile = copy.deepcopy(lib.load_profile())
+    profile["genesis"]["auth_network_tag"].update(change)
+    with pytest.raises(lib.TestnetError, match=message):
+        lib.profile_auth_network_tag(profile)
+
+
+@pytest.mark.parametrize(
+    "tag", ["42" * 32, "43" * 32, "45" * 32, "46" * 32, bytes(range(32)).hex(), "00" * 32]
+)
+def test_reserved_tags_are_refused(tag):
+    with pytest.raises(lib.TestnetError, match="reserved"):
+        lib.check_auth_network_tag(tag)
+
+
+def test_supplied_tag_must_be_the_announced_one():
+    profile = lib.load_profile()
+    value = profile["genesis"]["auth_network_tag"]["value"]
+    supplied = lib.supplied_auth_network_tag(profile, {"TOS_AUTH_NETWORK_TAG": value.upper()})
+    assert supplied.hex() == value
+    with pytest.raises(lib.TestnetError, match="not set"):
+        lib.supplied_auth_network_tag(profile, {})
+    with pytest.raises(lib.TestnetError, match="announces"):
+        lib.supplied_auth_network_tag(profile, {"TOS_AUTH_NETWORK_TAG": "ab" * 31 + "cd"})
+
+
+# ---------------------------------------------------------------- zero state AUTH policy
+
+# A real version-16 zero state: create-state at tos d7ef85b4c with this profile's
+# tag, from a loopback rehearsal (global id 2), and create-state's own root hash.
+ZERO_STATE = (DATA / "zerostate-v16-auth.boc").read_bytes()
+ZERO_STATE_RHASH = (DATA / "zerostate-v16-auth.rhash").read_bytes()
+PROFILE_TAG = bytes.fromhex("e36440a2e7704d9e26c79c5d9ba462507783b18404e876da9a232d38722e28fd")
+CONFIG48_HASH = "900a85305f8ad2f6bea6b0f51955659a5298bf41ae59cea44f5edaeeddb55d68"
+
+
+def test_cell_hash_matches_create_state():
+    assert lib.parse_boc(ZERO_STATE).hash() == ZERO_STATE_RHASH
+
+
+def test_real_zero_state_auth_policy():
+    auth = lib.zero_state_auth_policy(ZERO_STATE, ZERO_STATE_RHASH, 2, 16, PROFILE_TAG)
+    assert auth["network_tag_hex"] == PROFILE_TAG.hex()
+    assert auth["config_param_48_hash_hex"] == CONFIG48_HASH
+    assert auth["policy_identity_sha256"] == (
+        "5e4380aedc95f8cb72de55f7506de0269b47c03ad1d1ed0e5184c332544262c0"
+    )
+    assert (auth["sequence"], auth["retired"], auth["deadline"]) == (0, 0, None)
+    assert auth["global_version"] == 16
+
+
+@pytest.mark.parametrize(
+    "rhash,global_id,version,tag,message",
+    [
+        (b"\x00" * 32, 2, 16, PROFILE_TAG, "root hash"),
+        (ZERO_STATE_RHASH, 3, 16, PROFILE_TAG, "global id 2"),
+        (ZERO_STATE_RHASH, 2, 17, PROFILE_TAG, "version 16, expected 17"),
+        (ZERO_STATE_RHASH, 2, 16, b"\x01" * 32, "carries tag"),
+    ],
+)
+def test_zero_state_auth_policy_refusals(rhash, global_id, version, tag, message):
+    with pytest.raises(lib.TestnetError, match=message):
+        lib.zero_state_auth_policy(ZERO_STATE, rhash, global_id, version, tag)
+
+
+def config_params():
+    return lib.zero_state_config(ZERO_STATE)[2]
+
+
+def rebuild(cell, flip_bit=None):
+    """A copy of a cell with one data bit flipped."""
+    data = bytearray(cell.data)
+    if flip_bit is not None:
+        data[flip_bit // 8] ^= 0x80 >> (flip_bit % 8)
+    return lib.Cell(bytes(data), cell.bits, list(cell.refs))
+
+
+@pytest.mark.parametrize(
+    "bit,message",
+    [
+        (0, "a1 AUTH policy"),  # the record tag
+        (8 + 256 + 63, None),  # sequence 1: decoded, then refused by the genesis check
+        (8 + 256 + 64 + 15, "unknown suite"),  # a retired bit no suite owns
+        (8 + 256 + 64 + 16, "schedule reference"),  # schedule flag without a reference
+        (600, "policy identity"),  # the last bit of the identity hash
+    ],
+)
+def test_auth_policy_mutations(bit, message):
+    cell = rebuild(config_params()[48], flip_bit=bit)
+    if message is None:
+        assert lib.auth_policy(cell)["sequence"] == 1
+    else:
+        with pytest.raises(lib.TestnetError, match=message):
+            lib.auth_policy(cell)
+
+
+def test_mandatory_and_critical_membership_is_read_from_the_lists():
+    assert list(lib.hashmap_items(one_key_list(47), 32)) == [47]
+    params = config_params()
+    assert 48 in lib.hashmap_items(params[9], 32)
+    assert 48 in lib.hashmap_items(params[10], 32)
+    assert 47 in lib.hashmap_items(params[9], 32)
+    assert -999 % 2**32 in lib.hashmap_items(params[10], 32)
+    assert 2 not in lib.hashmap_items(params[9], 32)
+    assert lib.config_version(params[8])[0] == 16
+
+
+def test_parse_boc_refuses_damage():
+    with pytest.raises(lib.TestnetError, match="not a bag of cells"):
+        lib.parse_boc(b"\x00" * 16)
+    with pytest.raises(lib.TestnetError, match="truncated"):
+        lib.parse_boc(ZERO_STATE[:-40])
+
+
+@pytest.mark.parametrize("number,name", [(9, "mandatory"), (10, "critical")])
+def test_zero_state_auth_policy_refuses_a_policy_outside_the_lists(monkeypatch, number, name):
+    real = lib.zero_state_config
+
+    def without_48(boc):
+        root, global_id, params = real(boc)
+        return root, global_id, {**params, number: one_key_list(47)}
+
+    monkeypatch.setattr(lib, "zero_state_config", without_48)
+    with pytest.raises(lib.TestnetError, match=f"not {name}"):
+        lib.zero_state_auth_policy(ZERO_STATE, ZERO_STATE_RHASH, 2, 16, PROFILE_TAG)
+
+
+def test_serialized_boc_round_trips():
+    for cell in (config_params()[48], config_params()[9], lib.parse_boc(ZERO_STATE)):
+        assert lib.parse_boc(serialize_boc(cell)).hash() == cell.hash()

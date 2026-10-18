@@ -59,8 +59,11 @@ testnet/
 │   ├── init-operator.sh          tosctl vault, console key and operator wallet on a validator host (root)
 │   ├── enable-elections.sh       election policy and the election task on a validator host (root)
 │   ├── testnet-elections.py      fund | onboard: bring a genesis validator into elections;
+│   │                             withdraw: principal back to the offline pool owner;
+│   │                             reconcile | record | resubmit | baseline: a person resolves an open operation;
 │   │                             refund: top up a controller's operating funds (CEREMONY.md 8.1);
 │   │                             load: load test through a post-quantum high-volume wallet (coordinator)
+│   ├── testnet_ops.py            value-moving operations: journal, two-validator gate, settlement by hashes
 │   ├── retire-host.sh            archive a host's evidence, then retire it from an ended epoch (root)
 │   ├── migrate-nonroot-services.sh  once per host: move the election task / alert peer off root (root)
 │   └── rehearse-loopback.sh      the whole ceremony on one host, unprivileged
@@ -140,7 +143,8 @@ scripts refuse or flag it rather than choose silently.
 | D03 genesis epoch | `testnet-coordinator.py genesis --epoch` | chosen at the ceremony; refused if older than one hour or more than 14 days ahead |
 | D03 validator schedule | `network/profile.json` `genesis.initial_set_valid_for_seconds` and `genesis.election_params`; `genesis` replaces the two template lines and records them in `genesis.json` | decided 2026-10-12 after the first epoch: initial set 21,600 s, ConfigParam 15 = 14,400 / 7,200 / 1,800 / 7,200 (first election T + 4 h to T + 5.5 h, a new set and a key block every 4 h). The canonical 131,072 s / 65,536 s schedule left the first epoch without GC for 34 h |
 | Validator retention | `network/profile.json` `retention`, `systemd/tos-testnet-validator.service` | `state_ttl` 3,600 s, `archive_ttl` 86,400 s; a test keeps the unit and the profile equal |
-| D05 privacy | the template deploys no pool | disabled; version 16 (no `quantum-network-tag`) |
+| D05 privacy | the template deploys no pool | disabled; version 16 without `quantum-admission-candidate` |
+| AUTH network tag (ConfigParam 48) | `network/profile.json` `genesis.auth_network_tag`, given to `genesis` as `TOS_AUTH_NETWORK_TAG` | chosen 2026-10-17 for epoch 4 (test lead; the owner may replace the rule): SHA-256 of `TOS-AUTH-NETWORK-TAG-v1;network=tos-public-testnet;global_id=2;epoch=4` = `e36440a2…28fd`, a new tag every epoch. Version 16 makes ConfigParam 48 mandatory and critical; tos assigns no tag (CEREMONY.md section 5) |
 | D02 distribution | how operators receive `global-config.json` | the coordinator publishes it with its SHA-256; nodes install it only on a matching digest |
 | Node binaries | `build-node-binaries.sh --rev <commit>`, then `install-node.sh prepare|binaries --release DIR` | every host compiles its own binaries from the pinned tos commit, for `x86-64-v2` (as tos CI does). Binaries are never copied from another machine: a build made on a Sapphire Rapids Xeon stopped with SIGILL on these Icelake VMs, because RocksDB defaults to `-march=native` |
 | D11 faucet funding | nothing in genesis; the faucet wallet is ordinary | decided 2026-10-12: validator-donated rewards, canonical genesis. The first rewards unfreeze about T + 63.7 h, so the faucet opens on day 3 at the earliest |
@@ -153,12 +157,15 @@ one of them is a different genesis and needs its own review.
 ## Genesis template patch
 
 The canonical `gen-zerostate.fif` pins mainnet: `1 setglobalid` and a
-`SOURCE_DATE_EPOCH` check for 1789434000, whose 131,072-second initial set
-expired on 2026-09-16. `testnet-coordinator.py genesis` copies the template
+`SOURCE_DATE_EPOCH` check for 1789434000 (its initial set is 21,600 s since
+tos #206, 131,072 s before). `testnet-coordinator.py genesis` copies the template
 into the ceremony directory and replaces exactly those three lines, plus the
 two that set the validator schedule (`config.election_params!` and
 `orig_vset_valid_for`, from the profile); if any of them is missing or appears
-twice, the template changed and the ceremony refuses. The patched copy, the original's SHA-256, the tos revision and the
+twice, the template changed and the ceremony refuses. It also inserts one line
+after the first, `0x<tag> constant quantum-network-tag`, the AUTH network tag
+the template's own guard demands for version 16, and refuses a template whose
+guard is gone or that already defines a tag or the admission candidate. The patched copy, the original's SHA-256, the tos revision and the
 `create-state` digest are recorded in `genesis.json`, and genesis is generated
 twice in separate directories and must be byte-identical. tos itself is not
 modified.
@@ -325,12 +332,14 @@ genesis`, `testnet-elections.py onboard` and `load`), beside `manifest
 
 - The plan's two independent G0 rehearsal receipts. Epoch 1 was a real
   multi-host run, but by one coordinator acting for all four operators.
-- Elections: `testnet-elections.py onboard` (CEREMONY.md section 8.1) codifies
-  what epoch 1 ran by hand. Its parsers are pinned to real `tosctl` output, but
-  the whole command has not yet run end to end; its first run is the next
-  epoch, and it must finish before the first election opens at T + 4 h
-  (`genesis.json` `first_election`). `refund` replaces the hand-run renewal of
-  the operating authorization the same way and has not run end to end either.
+- Elections: `testnet-elections.py onboard` (CEREMONY.md section 8.1) ran end
+  to end on loopback rehearsals at tos d7ef85b4c, including runs killed at every
+  value-moving boundary and resolved with reconcile/record/resubmit; its first
+  run on the hosts is epoch 4, and it must finish before the first election
+  opens at T + 4 h (`genesis.json` `first_election`). The host-side scripts as
+  root (systemd units, the `tos-ctl` user) were not part of those rehearsals.
+  `refund` is not yet an operation (it sends over tosctl on the host as before)
+  and has not run end to end.
 - Authenticated global-config distribution (production gap G7) and a refresh
   schedule for `init_block` (`scripts/refresh-global-config-init-block.py` in
   tos, run with `--global-id 2`).

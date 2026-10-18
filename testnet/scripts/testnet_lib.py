@@ -21,6 +21,7 @@ import subprocess
 import tempfile
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -47,7 +48,17 @@ TEMPLATE_GLOBAL_ID_LINE = "1 setglobalid   // TOS mainnet global_id"
 TEMPLATE_EPOCH_LINE = "1789434000 constant mainnet_genesis_utime"
 TEMPLATE_EPOCH_ABORT_LINE = 'now mainnet_genesis_utime = not abort"SOURCE_DATE_EPOCH must be 1789434000 for TOS mainnet genesis"'
 TEMPLATE_ELECTION_PARAMS_LINE = "65536 32768 8192 32768 config.election_params!"
-TEMPLATE_INITIAL_SET_LINE = "131072 =: orig_vset_valid_for"
+# The mainnet initial set lasts 6 h since tos #206 (131,072 s before it).
+TEMPLATE_INITIAL_SET_LINE = "21600 =: orig_vset_valid_for"
+# A version-16 genesis needs a public AUTH network tag (ConfigParam 48) defined
+# before the template's own guard runs. The ceremony inserts the definition
+# right after the first line; the guard must still be there to refuse a
+# template run without it.
+TEMPLATE_FIRST_LINE = "#!/usr/bin/create-state -s"
+TEMPLATE_AUTH_GUARD_LINE = (
+    'def? quantum-network-tag not abort"Version 16 Genesis requires an explicit AUTH network tag"'
+)
+AUTH_TAG_CONSTANT = "quantum-network-tag"
 
 # ConfigParam 15, in the order config.election_params! takes it.
 ELECTION_PARAM_NAMES = (
@@ -606,6 +617,23 @@ def previous_wallets(ceremony: Path, derive_public: Any = None) -> dict[str, str
     return wallets
 
 
+@contextmanager
+def wallet_records_lock(ceremony: Path):
+    """Serialize wallet and pool identity updates across ceremony processes."""
+    ceremony = Path(ceremony)
+    lock_path = ceremony / f".{WALLETS_FILE}.lock"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    try:
+        lock = os.open(lock_path, flags, 0o644)
+    except OSError as exc:
+        raise TestnetError(f"cannot lock {lock_path}: {exc}") from exc
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(lock)
+
+
 def record_wallets(ceremony: Path, wallets: dict[str, str]) -> dict[str, str]:
     """Add wallets to the ceremony's public wallets.json; never change an entry.
 
@@ -617,14 +645,7 @@ def record_wallets(ceremony: Path, wallets: dict[str, str]) -> dict[str, str]:
     ceremony = Path(ceremony)
     fresh = check_wallet_map(wallets, "the wallet record")
     path = ceremony / WALLETS_FILE
-    lock_path = ceremony / f".{WALLETS_FILE}.lock"
-    flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
-    try:
-        lock = os.open(lock_path, flags, 0o644)
-    except OSError as exc:
-        raise TestnetError(f"cannot lock {lock_path}: {exc}") from exc
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with wallet_records_lock(ceremony):
         if path.is_symlink():
             raise TestnetError(f"{path} is a symlink")
         existing = (
@@ -645,8 +666,6 @@ def record_wallets(ceremony: Path, wallets: dict[str, str]) -> dict[str, str]:
             write_new_json(tmp, merged)
             os.replace(tmp, path)
         return merged
-    finally:
-        os.close(lock)
 
 
 def manifest_input(records: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -677,14 +696,24 @@ def pack_manifest(records: list[dict[str, Any]]) -> bytes:
 # ---------------------------------------------------------------- genesis template
 
 
-def patch_template(text: str, global_id: int, epoch: int, schedule: dict[str, int]) -> str:
-    """Return the canonical template with its mainnet pins and schedule replaced.
+def patch_template(
+    text: str, global_id: int, epoch: int, schedule: dict[str, int], auth_tag: bytes
+) -> str:
+    """Return the canonical template with its mainnet pins and schedule replaced
+    and the AUTH network tag defined.
 
-    `schedule` is what validator_schedule() returns. Each replaced line must
-    occur exactly once. A template that changed around these lines has not been
-    reviewed for a testnet ceremony and is refused.
+    `schedule` is what validator_schedule() returns, `auth_tag` what
+    supplied_auth_network_tag() returns. Each replaced line must occur exactly
+    once. A template that changed around these lines has not been reviewed for a
+    testnet ceremony and is refused, and so is one that already defines a tag
+    or selects the frozen admission candidate.
     """
     check_global_id(global_id)
+    tag = check_auth_network_tag(auth_tag.hex() if isinstance(auth_tag, bytes) else auth_tag)
+    if text.count(TEMPLATE_AUTH_GUARD_LINE) != 1:
+        raise TestnetError("the template's AUTH network tag guard is not there exactly once")
+    if f"constant {AUTH_TAG_CONSTANT}" in text or "constant quantum-admission-candidate" in text:
+        raise TestnetError("the template already defines an AUTH tag or the admission candidate")
     if not isinstance(epoch, int) or epoch <= 1789434000:
         raise TestnetError("the testnet genesis epoch must be later than the mainnet template's")
     params = " ".join(str(schedule[name]) for name in ELECTION_PARAM_NAMES)
@@ -704,7 +733,407 @@ def patch_template(text: str, global_id: int, epoch: int, schedule: dict[str, in
         if len(hits) != 1:
             raise TestnetError(f"template line not found exactly once: {old!r}")
         lines[hits[0]] = new
+    if lines[0] != TEMPLATE_FIRST_LINE:
+        raise TestnetError(f"the template's first line is not {TEMPLATE_FIRST_LINE!r}")
+    lines.insert(
+        1,
+        f"0x{tag.hex()} constant {AUTH_TAG_CONSTANT}   // TOS public testnet AUTH network tag",
+    )
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- AUTH network tag
+
+# The public namespace ConfigParam 48 carries. tos assigns none implicitly: a
+# version-16 genesis refuses to run without one (crypto/smartcont/gen-zerostate.fif),
+# and tos tooling takes it as 64 hexadecimal digits in TOS_AUTH_NETWORK_TAG.
+AUTH_NETWORK_TAG_ENV = "TOS_AUTH_NETWORK_TAG"
+AUTH_TAG_RULE_DOMAIN = "TOS-AUTH-NETWORK-TAG-v1"
+# The exact policy identity tos checks (doc/auth-policy-v1.md, crypto/fift/lib/Config.fif).
+AUTH_POLICY_PROFILE = (
+    b"TOS-AUTH-POLICY-v1;config=48;tag=a1;suite=1;retired=u16;sequence=u64;"
+    b"deadline=u32;network=bits256;monotonic"
+)
+AUTH_POLICY_SPEC_HASH = hashlib.sha256(AUTH_POLICY_PROFILE).digest()
+AUTH_POLICY_TAG = 0xA1
+# Namespaces others already use: tos's frozen mainnet admission candidate
+# (0x42 repeated) and the public test values of tos CI and its harnesses (one
+# repeated byte, or bytes 00..1f). A testnet sharing one would share its replay domain.
+RESERVED_AUTH_TAGS = {bytes([b]) * 32 for b in range(256)} | {bytes(range(32))}
+AUTH_TAG_STATUSES = ("CHOSEN", "CONFIRMED")
+
+
+def auth_network_tag_rule(network: str, global_id: int, campaign_epoch: int) -> str:
+    """The ASCII string whose SHA-256 is a testnet epoch's AUTH network tag."""
+    return f"{AUTH_TAG_RULE_DOMAIN};network={network};global_id={global_id};epoch={campaign_epoch}"
+
+
+def derive_auth_network_tag(network: str, global_id: int, campaign_epoch: int) -> bytes:
+    return hashlib.sha256(
+        auth_network_tag_rule(network, global_id, campaign_epoch).encode("ascii")
+    ).digest()
+
+
+def check_auth_network_tag(value: Any) -> bytes:
+    """A tag as tos takes it: exactly 64 hexadecimal digits, and not a reserved value."""
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", value):
+        raise TestnetError("the AUTH network tag must be exactly 64 hexadecimal digits")
+    tag = bytes.fromhex(value)
+    if tag in RESERVED_AUTH_TAGS:
+        raise TestnetError(
+            "the AUTH network tag is a reserved value (the mainnet admission candidate's "
+            "or a tos test namespace)"
+        )
+    return tag
+
+
+def profile_auth_network_tag(profile: dict[str, Any]) -> dict[str, Any]:
+    """The profile's AUTH network tag entry, checked against its derivation rule."""
+    entry = profile.get("genesis", {}).get("auth_network_tag")
+    if not isinstance(entry, dict):
+        raise TestnetError("the profile has no genesis.auth_network_tag")
+    epoch = entry.get("campaign_epoch")
+    if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 1:
+        raise TestnetError(f"genesis.auth_network_tag.campaign_epoch is invalid: {epoch!r}")
+    if entry.get("status") not in AUTH_TAG_STATUSES:
+        raise TestnetError(
+            f"genesis.auth_network_tag.status is {entry.get('status')!r}, not one of "
+            f"{AUTH_TAG_STATUSES}"
+        )
+    tag = check_auth_network_tag(entry.get("value"))
+    global_id = check_global_id(profile.get("global_id", {}).get("value"))
+    network = profile.get("network", "")
+    rule = auth_network_tag_rule(network, global_id, epoch)
+    if entry.get("rule") != rule or tag != derive_auth_network_tag(network, global_id, epoch):
+        raise TestnetError(f"genesis.auth_network_tag is not SHA-256 of {rule!r}")
+    return {"tag": tag, "rule": rule, "campaign_epoch": epoch, "status": entry["status"]}
+
+
+def supplied_auth_network_tag(profile: dict[str, Any], environ: Any) -> bytes:
+    """The tag the ceremony runs with: TOS_AUTH_NETWORK_TAG, equal to the profile's.
+
+    The environment is the input tos tooling takes; the profile is what was
+    announced. Both must name the same value, so neither a stale shell nor an
+    edited profile changes the namespace on its own.
+    """
+    expected = profile_auth_network_tag(profile)
+    value = environ.get(AUTH_NETWORK_TAG_ENV)
+    if value is None:
+        raise TestnetError(
+            f"{AUTH_NETWORK_TAG_ENV} is not set; export the profile's genesis.auth_network_tag "
+            f"value ({expected['tag'].hex()})"
+        )
+    tag = check_auth_network_tag(value)
+    if tag != expected["tag"]:
+        raise TestnetError(
+            f"{AUTH_NETWORK_TAG_ENV} is {value.lower()}, but the profile announces "
+            f"{expected['tag'].hex()} ({expected['rule']})"
+        )
+    return tag
+
+
+# ---------------------------------------------------------------- bag of cells
+
+BOC_MAGIC = bytes.fromhex("b5ee9c72")
+
+
+class Cell:
+    """An ordinary cell: data bits, references, and its representation hash."""
+
+    __slots__ = ("data", "bits", "refs", "_hash", "_depth")
+
+    def __init__(self, data: bytes, bits: int, refs: list[Cell]):
+        self.data, self.bits, self.refs = data, bits, refs
+        self._hash: bytes | None = None
+        self._depth: int | None = None
+
+    def depth(self) -> int:
+        if self._depth is None:
+            self._depth = 1 + max(r.depth() for r in self.refs) if self.refs else 0
+        return self._depth
+
+    def hash(self) -> bytes:
+        """The representation hash (level 0), as the node's get_hash() computes it."""
+        if self._hash is None:
+            full, rem = divmod(self.bits, 8)
+            descriptor = bytes([len(self.refs), full * 2 + (1 if rem else 0)])
+            body = self.data[:full]
+            if rem:
+                kept = self.data[full] & (0xFF << (8 - rem)) & 0xFF
+                body += bytes([kept | (0x80 >> rem)])
+            digest = hashlib.sha256(descriptor + body)
+            for ref in self.refs:
+                digest.update(ref.depth().to_bytes(2, "big"))
+            for ref in self.refs:
+                digest.update(ref.hash())
+            self._hash = digest.digest()
+        return self._hash
+
+
+def cell_from_bits(bits: str, refs: Any = ()) -> Cell:
+    """An ordinary cell from a string of 0/1 and its references."""
+    if len(bits) > 1023 or set(bits) - {"0", "1"} or len(refs) > 4:
+        raise TestnetError("not a cell: at most 1023 bits and 4 references")
+    padded = bits + "0" * (-len(bits) % 8)
+    data = int(padded, 2).to_bytes(len(padded) // 8, "big") if bits else b""
+    return Cell(data, len(bits), list(refs))
+
+
+class Slice:
+    """Reads a cell's bits and references in order."""
+
+    def __init__(self, cell: Cell):
+        self.cell, self.pos, self.ref = cell, 0, 0
+
+    def remaining(self) -> int:
+        return self.cell.bits - self.pos
+
+    def bits(self, n: int) -> int:
+        if n < 0 or self.pos + n > self.cell.bits:
+            raise TestnetError("cell underflow")
+        value = 0
+        for i in range(self.pos, self.pos + n):
+            value = (value << 1) | ((self.cell.data[i // 8] >> (7 - i % 8)) & 1)
+        self.pos += n
+        return value
+
+    def bytes(self, n: int) -> bytes:
+        return self.bits(8 * n).to_bytes(n, "big") if n else b""
+
+    def take_ref(self) -> Cell:
+        if self.ref >= len(self.cell.refs):
+            raise TestnetError("cell has no more references")
+        self.ref += 1
+        return self.cell.refs[self.ref - 1]
+
+    def end(self) -> bool:
+        return self.remaining() == 0 and self.ref == len(self.cell.refs)
+
+
+def serialize_boc(root: Cell) -> bytes:
+    """A single-root bag of ordinary cells, without index or checksum."""
+    order: list[Cell] = []
+    seen: set[int] = set()
+
+    def visit(cell: Cell) -> None:
+        if id(cell) in seen:
+            return
+        seen.add(id(cell))
+        for ref in cell.refs:
+            visit(ref)
+        order.append(cell)
+
+    visit(root)
+    order.reverse()
+    index = {id(cell): i for i, cell in enumerate(order)}
+    ref_size = 1 if len(order) < 256 else 2
+    body = bytearray()
+    for cell in order:
+        full, rem = divmod(cell.bits, 8)
+        data = cell.data[:full]
+        if rem:
+            data += bytes([(cell.data[full] & (0xFF << (8 - rem)) & 0xFF) | (0x80 >> rem)])
+        body += bytes([len(cell.refs), full * 2 + (1 if rem else 0)]) + data
+        for ref in cell.refs:
+            body += index[id(ref)].to_bytes(ref_size, "big")
+    count = len(order).to_bytes(ref_size, "big")
+    header = bytes([ref_size, 4]) + count + (1).to_bytes(ref_size, "big") + bytes(ref_size)
+    return BOC_MAGIC + header + len(body).to_bytes(4, "big") + bytes(ref_size) + bytes(body)
+
+
+def parse_boc(boc: bytes) -> Cell:
+    """The single root of a bag of cells. Only ordinary level-0 cells are admitted."""
+    pos = 0
+
+    def take(size: int) -> int:
+        nonlocal pos
+        if pos + size > len(boc):
+            raise TestnetError("the bag of cells is truncated")
+        value = int.from_bytes(boc[pos : pos + size], "big")
+        pos += size
+        return value
+
+    if boc[:4] != BOC_MAGIC or len(boc) < 6:
+        raise TestnetError("not a bag of cells")
+    pos = 4
+    flags = take(1)
+    ref_size, off_size = flags & 7, take(1)
+    if not 1 <= ref_size <= 4 or not 1 <= off_size <= 8:
+        raise TestnetError("the bag of cells has a malformed header")
+    count, roots, _absent, _total = take(ref_size), take(ref_size), take(ref_size), take(off_size)
+    if roots != 1:
+        raise TestnetError(f"the bag of cells has {roots} roots, expected one")
+    root = take(ref_size)
+    if flags & 0x80:
+        take(count * off_size)
+    raw: list[tuple[bytes, int, list[int]]] = []
+    for _ in range(count):
+        d1, d2 = take(1), take(1)
+        if d1 & 8 or d1 >> 5:
+            raise TestnetError("the bag of cells holds an exotic or higher-level cell")
+        if d1 & 16:
+            take(32 + 2)
+        refs = d1 & 7
+        if refs > 4:
+            raise TestnetError("a cell has more than four references")
+        size = (d2 + 1) // 2
+        data = boc[pos : pos + size]
+        if len(data) != size:
+            raise TestnetError("the bag of cells is truncated")
+        pos += size
+        bits = 8 * size
+        if d2 & 1:
+            last = data[-1]
+            if not last:
+                raise TestnetError("a cell's completion tag is missing")
+            bits = 8 * size - (last & -last).bit_length()
+        raw.append((data, bits, [take(ref_size) for _ in range(refs)]))
+    if root >= count:
+        raise TestnetError("the bag of cells names a root it does not hold")
+    cells: list[Cell | None] = [None] * count
+    for index in range(count - 1, -1, -1):
+        data, bits, refs = raw[index]
+        if any(r <= index or r >= count for r in refs):
+            raise TestnetError("a cell refers backwards or outside the bag")
+        cells[index] = Cell(data, bits, [cells[r] for r in refs])  # type: ignore[misc]
+    return cells[root]  # type: ignore[return-value]
+
+
+def hashmap_items(cell: Cell, key_bits: int) -> dict[int, Slice]:
+    """Every entry of a non-empty Hashmap key_bits X: key -> a slice at its value."""
+    items: dict[int, Slice] = {}
+
+    def walk(node: Cell, prefix: int, left: int) -> None:
+        s = Slice(node)
+        width = left.bit_length()
+        if s.bits(1) == 0:  # hml_short: unary length, then the bits
+            length = 0
+            while s.bits(1):
+                length += 1
+            label = s.bits(length) if length <= left else 0
+        elif s.bits(1) == 0:  # hml_long
+            length = s.bits(width)
+            label = s.bits(length) if length <= left else 0
+        else:  # hml_same
+            bit = s.bits(1)
+            length = s.bits(width)
+            label = ((1 << length) - 1) if bit else 0
+        if length > left:
+            raise TestnetError("a hashmap label is longer than its key")
+        prefix, left = (prefix << length) | label, left - length
+        if left == 0:
+            items[prefix] = s
+            return
+        for branch in (0, 1):
+            walk(s.take_ref(), (prefix << 1) | branch, left - 1)
+
+    walk(cell, 0, key_bits)
+    return items
+
+
+# ---------------------------------------------------------------- zero state AUTH policy
+
+SHARD_STATE_TAG = 0x9023AFE2
+MC_STATE_EXTRA_TAG = 0xCC26
+CONFIG_VERSION_TAG = 0xC4
+
+
+def zero_state_config(boc: bytes) -> tuple[Cell, int, dict[int, Cell]]:
+    """The zero state's root cell, global id and ConfigParams (number -> cell)."""
+    root = parse_boc(boc)
+    s = Slice(root)
+    if s.bits(32) != SHARD_STATE_TAG:
+        raise TestnetError("the zero state is not a ShardStateUnsplit")
+    global_id = s.bits(32)
+    global_id -= (global_id >> 31) << 32
+    if len(root.refs) != 4:
+        raise TestnetError("the zero state has no masterchain extra (McStateExtra)")
+    extra = Slice(root.refs[3])
+    if extra.bits(16) != MC_STATE_EXTRA_TAG:
+        raise TestnetError("the zero state's McStateExtra has the wrong tag")
+    if extra.bits(1):
+        extra.take_ref()  # shard_hashes
+    extra.bits(256)  # config_addr
+    params = {}
+    for number, value in hashmap_items(extra.take_ref(), 32).items():
+        params[number] = value.take_ref()
+    return root, global_id, params
+
+
+def config_version(cell: Cell) -> tuple[int, int]:
+    """ConfigParam 8: (global version, capabilities)."""
+    s = Slice(cell)
+    if cell.bits != 104 or cell.refs or s.bits(8) != CONFIG_VERSION_TAG:
+        raise TestnetError("ConfigParam 8 is not capabilities#c4")
+    return s.bits(32), s.bits(64)
+
+
+def auth_policy(cell: Cell) -> dict[str, Any]:
+    """ConfigParam 48 decoded as tos unpack_auth_policy reads it, or a refusal."""
+    s = Slice(cell)
+    if cell.bits != 601 or s.bits(8) != AUTH_POLICY_TAG:
+        raise TestnetError("ConfigParam 48 is not an a1 AUTH policy record")
+    network = s.bytes(32)
+    sequence, retired = s.bits(64), s.bits(16)
+    if retired & ~2:
+        raise TestnetError(f"ConfigParam 48 retires an unknown suite ({retired:#x})")
+    has_schedule = s.bits(1)
+    if len(cell.refs) != has_schedule:
+        raise TestnetError("ConfigParam 48 schedule reference does not match its flag")
+    deadline = None
+    if has_schedule:
+        entries = hashmap_items(s.take_ref(), 8)
+        if list(entries) != [1] or entries[1].remaining() != 32:
+            raise TestnetError("ConfigParam 48 schedule is not one suite-1 deadline")
+        deadline = entries[1].bits(32)
+    if s.bytes(32) != AUTH_POLICY_SPEC_HASH or not s.end():
+        raise TestnetError("ConfigParam 48 does not carry the v1 policy identity")
+    return {"network": network, "sequence": sequence, "retired": retired, "deadline": deadline}
+
+
+def zero_state_auth_policy(
+    boc: bytes, root_hash: bytes, global_id: int, global_version: int, tag: bytes
+) -> dict[str, Any]:
+    """Check a version-16 zero state's AUTH policy and return what the ceremony records.
+
+    The conditions tos validate_auth_policy_config applies (ConfigParam 48
+    present and well formed, and in both ConfigParam 9 and 10 from version 16),
+    plus what this genesis must be: this tag, sequence zero, nothing retired, no
+    deadline, the profile's global id and version. The parser is first checked
+    against create-state's own root hash.
+    """
+    root, actual_global_id, params = zero_state_config(boc)
+    if root.hash() != root_hash:
+        raise TestnetError("the zero state's root hash differs from create-state's .rhash")
+    if actual_global_id != global_id:
+        raise TestnetError(f"the zero state carries global id {actual_global_id}")
+    for number in (8, 9, 10, 48):
+        if number not in params:
+            raise TestnetError(f"the zero state has no ConfigParam {number}")
+    version, capabilities = config_version(params[8])
+    if version != global_version:
+        raise TestnetError(f"ConfigParam 8 is version {version}, expected {global_version}")
+    policy = auth_policy(params[48])
+    if policy["network"] != tag:
+        raise TestnetError(
+            f"ConfigParam 48 carries tag {policy['network'].hex()}, expected {tag.hex()}"
+        )
+    if policy["sequence"] or policy["retired"] or policy["deadline"] is not None:
+        raise TestnetError("an initial AUTH policy has sequence 0, nothing retired, no deadline")
+    for number, name in ((9, "mandatory"), (10, "critical")):
+        if 48 not in hashmap_items(params[number], 32):
+            raise TestnetError(f"ConfigParam 48 is not {name} (ConfigParam {number})")
+    return {
+        "network_tag_hex": tag.hex(),
+        "config_param_48_hash_hex": params[48].hash().hex(),
+        "policy_identity_sha256": AUTH_POLICY_SPEC_HASH.hex(),
+        "sequence": 0,
+        "retired": 0,
+        "deadline": None,
+        "mandatory_and_critical": True,
+        "global_version": version,
+        "capabilities": capabilities,
+    }
 
 
 # ---------------------------------------------------------------- global config
@@ -811,24 +1240,90 @@ def is_pregenesis(config: dict[str, Any]) -> bool:
 # ---------------------------------------------------------------- JSON-RPC
 
 
+RPC_REQUEST_ID = 1
+# The statuses the node answers with before a method runs (json-rpc-http-policy.h:
+# authentication, unknown GET path, method, content type, rate limit), each with
+# the same JSON-RPC error body. Every method error is HTTP 200.
+RPC_PRE_DISPATCH_STATUSES = (401, 404, 405, 415, 429)
+
+
+class RpcError(TestnetError):
+    """A node's JSON-RPC 2.0 error object (tos validator-engine/json-rpc-contract.h).
+
+    `reason` is the stable machine-readable name a client branches on, `code` the
+    JSON-RPC code it travels under, `retryable` whether the same request can
+    succeed later (a timeout, a node not ready, a rate limit).
+    """
+
+    def __init__(
+        self, url: str, method: str, code: int, reason: str, message: str, retryable: bool
+    ):
+        super().__init__(f"{url} {method}: {reason or 'error'} {code}: {message}")
+        self.code, self.reason, self.message, self.retryable = code, reason, message, retryable
+
+
+def rpc_result(answer: Any, url: str, method: str) -> Any:
+    """The result of one decoded JSON-RPC 2.0 answer, or a refusal.
+
+    The node answers {jsonrpc: "2.0", id, result} or {jsonrpc: "2.0", id,
+    error: {code, message, data: {schema_version, reason, retryable}}}, at
+    HTTP 200 for every method error. Anything else (no envelope, another id,
+    both or neither of result and error, an error that is not an object) is
+    refused rather than read.
+    """
+    if not isinstance(answer, dict) or answer.get("jsonrpc") != "2.0":
+        raise TestnetError(f"{url} {method}: not a JSON-RPC 2.0 answer: {str(answer)[:200]}")
+    # A refusal made before the request was read (rate limit, authentication) cannot
+    # know the id and answers with id null; a result always echoes the id.
+    if answer.get("id") != RPC_REQUEST_ID and not ("error" in answer and answer.get("id") is None):
+        raise TestnetError(f"{url} {method}: the answer is for request id {answer.get('id')!r}")
+    if ("error" in answer) == ("result" in answer):
+        raise TestnetError(f"{url} {method}: the answer has both or neither of result and error")
+    if "result" in answer:
+        return answer["result"]
+    error = answer["error"]
+    if (
+        not isinstance(error, dict)
+        or not isinstance(error.get("code"), int)
+        or isinstance(error.get("code"), bool)
+        or not isinstance(error.get("message"), str)
+    ):
+        raise TestnetError(f"{url} {method}: malformed JSON-RPC error {str(error)[:200]}")
+    data = error.get("data") if isinstance(error.get("data"), dict) else {}
+    reason = data.get("reason") if isinstance(data.get("reason"), str) else ""
+    raise RpcError(
+        url, method, error["code"], reason, error["message"], data.get("retryable") is True
+    )
+
+
 def rpc(url: str, method: str, /, timeout: float = 10, **params: Any) -> Any:
-    """One JSON-RPC 2.0 call. Environment proxies are ignored: the named node must answer.
+    """One JSON-RPC 2.0 call with named parameters. Environment proxies are
+    ignored: the named node must answer.
 
     `url` and `method` are positional-only, so a call's own parameters may use
     those names: `runGetMethod` takes the getter as its `method` parameter.
+    The node refuses positional (array) parameters; this sends none. A method
+    error raises RpcError. A refusal made before the method runs (401, 404,
+    405, 415, 429) carries the same error body and raises RpcError too; a
+    status without a JSON-RPC body raises TestnetError.
     """
-    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
+    body = json.dumps(
+        {"jsonrpc": "2.0", "id": RPC_REQUEST_ID, "method": method, "params": params}
+    ).encode()
     request = urllib.request.Request(url, body, {"Content-Type": "application/json"}, method="POST")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
         with opener.open(request, timeout=timeout) as response:
             answer = json.load(response)
     except urllib.error.HTTPError as exc:
-        # A refused call answers with an error status and the reason in a JSON body.
+        if exc.code not in RPC_PRE_DISPATCH_STATUSES:
+            raise TestnetError(f"{url} {method}: HTTP {exc.code}") from exc
         try:
             answer = json.load(exc)
         except ValueError:
-            raise TestnetError(f"{url} {method}: HTTP {exc.code}") from exc
-    if answer.get("error") or "result" not in answer:
-        raise TestnetError(f"{url} {method}: {answer.get('error', answer)}")
-    return answer["result"]
+            raise TestnetError(f"{url} {method}: HTTP {exc.code} without a JSON-RPC body") from exc
+        if not isinstance(answer, dict) or "error" not in answer:
+            raise TestnetError(f"{url} {method}: HTTP {exc.code}: {str(answer)[:200]}") from exc
+    except ValueError as exc:
+        raise TestnetError(f"{url} {method}: the answer is not JSON") from exc
+    return rpc_result(answer, url, method)

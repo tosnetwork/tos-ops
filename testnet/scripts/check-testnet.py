@@ -25,7 +25,14 @@ itself proves nothing. The check refuses unless:
     validators, and its controllers are exactly the records' controllers. The
     consensus keys are not compared: an election may register new ones. The
     summary reports the set's term (utime_since, utime_until) so a run record
-    can tie it to an election.
+    can tie it to an election;
+  * when genesis.json records an auth_policy (version-16 genesis), live
+    ConfigParam 48 at that block carries the genesis AUTH network tag and is
+    in ConfigParam 9 and 10, and ConfigParam 8 is at least the genesis
+    version. The summary says whether ConfigParam 48 is still the genesis
+    cell (a governance replacement may legitimately move its sequence on). A
+    genesis.json of version 16 or later without auth_policy is refused, not
+    skipped.
 
 Agreement among observers is detection, not a consensus proof: the nodes are
 trusted to report what they hold. Prints a JSON summary; exits 1 on refusal.
@@ -69,6 +76,40 @@ def decode_config34(boc_b64: str) -> dict:
         ) from exc
 
     return decode_validator_set(Cell.one_from_boc(base64.b64decode(boc_b64)))
+
+
+def config_cell(rpc, url: str, param: int, height: int) -> lib.Cell:
+    answer = rpc(url, "getConfigParam", param=param, seqno=height)
+    return lib.parse_boc(base64.b64decode(answer["config"]["bytes"]))
+
+
+def check_auth_policy(rpc, url: str, height: int, genesis: dict) -> dict:
+    """The live AUTH policy at `height`: the genesis tag, mandatory and critical,
+    and the version at least the genesis one. A governance replacement may move
+    the sequence on; the tag never changes, so a different tag is the refusal."""
+    recorded = genesis["auth_policy"]
+    version, _ = lib.config_version(config_cell(rpc, url, 8, height))
+    if version < int(genesis["global_version"]):
+        raise lib.TestnetError(f"ConfigParam 8 is version {version} at block {height}")
+    cell = config_cell(rpc, url, 48, height)
+    policy = lib.auth_policy(cell)
+    if policy["network"].hex() != recorded["network_tag_hex"].lower():
+        raise lib.TestnetError(
+            f"live ConfigParam 48 carries tag {policy['network'].hex()}, the genesis "
+            f"{recorded['network_tag_hex']}"
+        )
+    for number, name in ((9, "mandatory"), (10, "critical")):
+        if 48 not in lib.hashmap_items(config_cell(rpc, url, number, height), 32):
+            raise lib.TestnetError(f"live ConfigParam 48 is not {name} (ConfigParam {number})")
+    return {
+        "version": version,
+        "network_tag_hex": policy["network"].hex(),
+        "sequence": policy["sequence"],
+        "hash_hex": cell.hash().hex(),
+        "unchanged_since_genesis": cell.hash().hex()
+        == recorded["config_param_48_hash_hex"].lower(),
+        "mandatory_and_critical": True,
+    }
 
 
 def check(args: argparse.Namespace, rpc=lib.rpc, now=time.time, decode=decode_config34) -> dict:
@@ -139,6 +180,14 @@ def check(args: argparse.Namespace, rpc=lib.rpc, now=time.time, decode=decode_co
         "heads": {url: node["head"] for url, node in nodes.items()},
         "head_ages": {url: node["age_seconds"] for url, node in nodes.items()},
     }
+    if "auth_policy" in genesis:
+        summary["config48"] = check_auth_policy(rpc, args.rpc[0], height, genesis)
+    elif int(genesis.get("global_version", 0)) >= 16:
+        # Every version-16 genesis carries ConfigParam 48; a genesis.json that does
+        # not record it is not one the ceremony wrote, so the check is not skipped.
+        raise lib.TestnetError(
+            f"genesis.json is version {genesis['global_version']} but records no auth_policy"
+        )
     if args.genesis_set:
         records = lib.check_operator_set(json.loads(Path(args.genesis_set).read_text()))
         param = rpc(args.rpc[0], "getConfigParam", param=34, seqno=height)
