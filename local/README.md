@@ -1,5 +1,9 @@
 # Local PQ network
 
+**Disposable local development only.** Read [agent safety rules](../AGENTS.md)
+before any reset, funding or service change. Facts below describe the scripts
+with tos `85c679c3454f306eb867e25b1960ae3d757bd3dd`, not a live-host status.
+
 `local/scripts/setup-testnet.sh` installs four PQ validators, two observers and
 a separate DHT on one host. It then deploys the shielded pool compiled from the
 tos checkout. Consensus uses ML-DSA-44, ConfigParam 8 is version 16, and
@@ -37,8 +41,18 @@ import, into a root-owned snapshot under `/usr/local/lib/tos-dev-services`.
 
 ## Tests
 
+Prepare the separate tos environment once, using its pinned lockfile and schema:
+
 ```bash
-cd "$TOS_ROOT" && TOS_ROOT="$TOS_ROOT" uv run python -m pytest -q <this-repo>/local/tests
+(cd "$TOS_ROOT" && uv sync --locked && uv run python test/tostester/generate_tl.py)
+```
+
+This writes generated bindings into the tos checkout, not this repository. If
+bindings are generated in an external directory instead, add their parent to
+`PYTHONPATH`. Then run from the tos-ops root:
+
+```bash
+TOS_ROOT="$TOS_ROOT" "$TOS_ROOT/.venv/bin/python" -m pytest -q local/tests
 ```
 
 ## Initialize
@@ -84,12 +98,12 @@ A full reset of the local development network, in order:
 
 ## Disk retention
 
-On this chain a validator writes about 1.4 GB per hour and an observer about
-0.4 GB per hour. With the node defaults, block files and archives are kept for
-`state-ttl + archive-ttl` = 8 days and retired consensus databases are never
-deleted. The local network then needs more than 600 GB and fills a typical
-development disk in 3–4 days. The session statistics file needs nothing: the
-node rotates it to a single `.old` copy at 256 MiB.
+Historical local measurements were about 1.4 GB/hour per validator and
+0.4 GB/hour per observer. They are not capacity bounds. The pinned engine
+enables retired consensus-database cleanup by default, but eligibility still
+follows the durable state-GC floor. Default retention is unsuitable for a small
+disposable disk; use the explicit template TTLs below and observe actual growth.
+The session statistics file rotates to a single `.old` copy at 256 MiB.
 
 The local unit templates therefore pass:
 
@@ -97,13 +111,13 @@ The local unit templates therefore pass:
 | --- | --- |
 | `--state-ttl 3600` | states may be garbage collected after one hour |
 | `--archive-ttl 7200` | archived blocks are kept two hours beyond that |
-| `--enable-validator-consensus-cleanup` | retired validator consensus databases are deleted once the GC floor proves them obsolete. The engine marks this option as acceptance-only and off by default; on this development network it is deliberately on. |
+| `--enable-validator-consensus-cleanup` | States the pinned engine's default explicitly: delete retired databases only once the durable GC floor proves them obsolete. It is not an acceptance-only option in this build. |
 
 A local `ExecStart` override, such as a health-monitoring drop-in, replaces the
 template's command line. It must carry the same three options. Verify with
 `systemctl show tos-pq-validator@1 -p ExecStart`.
 
-**Garbage collection needs key blocks.** The GC floor advances only while it
+**State GC and this revision's consensus cleanup need key blocks.** The GC floor advances only while it
 is behind the last key block, the last validator-set rotation and the
 persistent-state serializer, and only for states older than `state-ttl`. The
 serializer walks every masterchain block and normally keeps up. It pauses only
@@ -223,8 +237,20 @@ not the checkout. To deploy changed driver code:
    "previous transfer is unresolved". In that case, check the sender's last
    transaction and the recipient's credit for the submitted amount before
    recording any resolution. Do not clear the status to force a restart.
-3. Run `local/scripts/install-root-services.sh`, as `setup-testnet.sh` does, then
-   start both services again.
+3. If `tos-pq-privacy` is active, stop it only after its pending operation is
+   confirmed; an unresolved plan needs reconciliation first. The installer refuses
+   any active election/transfer/privacy service. After approval, install the
+   snapshot with all four required arguments:
+
+   ```bash
+   sudo env UV="$(command -v uv)" local/scripts/install-root-services.sh \
+     /usr/local/lib/tos-dev-services "$TOS_ROOT" "$TOS_ROOT/build" \
+     "$TOS_ROOT/tools/shielded-pool-circuit/crosscheck/target/release/local_pool_traffic"
+   ```
+
+4. Start only the previously enabled traffic services and elections again, then
+   verify their status and first confirmed receipts. A snapshot validation failure
+   leaves the previous publication in place; do not bypass it.
 
 ### Diagnose a missing stake confirmation
 
@@ -336,7 +362,10 @@ switch verifies, `activation-pending` there stops PKI rotation. Without
 `local/scripts/health-observe.py` takes one MCP snapshot of every node and saves
 it under the state directory's `observe/`. Expected: all seven nodes answer,
 observers `ok` and validators `partial` with the known gaps listed above;
-`host` answers `CACHE_MISS` until the query serves it.
+`host` is supported when the host collector and query projection provide fresh
+evidence. `CACHE_MISS` means missing/freshness evidence; investigate admission and
+collector/query logs rather than treating it as a healthy result. The local
+configuration requests process, consensus, storage, chain and host, not telemetry.
 
 The validator restart in a reset stops the edges (`BindsTo=`). Start them again
 after `setup-testnet.sh`, even when the network ID does not change.
@@ -394,7 +423,11 @@ systemctl --user list-timers tos-local-health-pki.timer
 journalctl --user -u tos-local-health-pki.service
 ```
 
-The units expect this repository at `~/network-settings`.
+The tracked PKI user-unit template still hard-codes `%h/network-settings`
+(the legacy checkout basename); the GitHub rename alone does not relocate it.
+Keep that layout for this template. A different checkout requires a reviewed
+template/install change, not a hand-edited installed unit. Directory migration
+is outside this documentation change.
 
 ## Services and configuration
 

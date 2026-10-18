@@ -412,7 +412,12 @@ def operations_for(args: argparse.Namespace, global_id: int) -> ops.Operations:
         raise lib.TestnetError(
             "value-moving steps need a second validator: --confirm-rpc URL (another node)"
         )
-    return ops.Operations(Path(args.ceremony), [ops.Node(args.rpc), ops.Node(confirm)], global_id)
+    return ops.Operations(
+        Path(args.ceremony),
+        [ops.Node(args.rpc), ops.Node(confirm)],
+        global_id,
+        profile_path=getattr(args, "profile", lib.PROFILE_PATH),
+    )
 
 
 def fund(args: argparse.Namespace, operations: ops.Operations, global_id: int) -> dict | None:

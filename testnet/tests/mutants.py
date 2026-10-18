@@ -31,6 +31,72 @@ CO = W / "scripts/testnet-coordinator.py"
 
 M = [
     (
+        "ER9 relay election id does not have to match",
+        OPS,
+        "            active != stake_at",
+        "            False",
+    ),
+    (
+        "ER10 custom profile ignored",
+        OPS,
+        'limits = lib.load_profile(self.profile_path)["elections"]',
+        'limits = lib.load_profile()["elections"]',
+    ),
+    (
+        "ER11 current time substituted for relay time",
+        OPS,
+        'or not active - start_before <= tx["utime"] < active - end_before',
+        "or not active - start_before <= int(self.clock()) < active - end_before",
+    ),
+    (
+        "ER1 election relay classification disabled",
+        OPS,
+        '        path = self.ceremony / "pools.json"',
+        '        return None\n        path = self.ceremony / "pools.json"',
+    ),
+    (
+        "ER2 relay to a different pool accepted",
+        OPS,
+        'or message["destination"] != matches[0]',
+        "or False",
+    ),
+    (
+        "ER3 relay budget ignored",
+        OPS,
+        'if not 0 < message["value"] <= budget + allowance:',
+        "if False:",
+    ),
+    (
+        "ER4 additional outbound message ignored",
+        OPS,
+        'if len(tx["out"]) != 1:',
+        'if not tx["out"]:',
+    ),
+    (
+        "ER5 relay outside election window accepted",
+        OPS,
+        'or not active - start_before <= tx["utime"] < active - end_before',
+        "or False",
+    ),
+    (
+        "ER6 historical window trusts only first validator",
+        OPS,
+        "block, active, start_before, end_before = self.both(window)",
+        "block, active, start_before, end_before = window(self.nodes[0])",
+    ),
+    (
+        "ER7 historical block identity ignored",
+        OPS,
+        'if election.get("block_id") != block or config.get("block_id") != block:',
+        "if False:",
+    ),
+    (
+        "ER8 non-stake body accepted",
+        OPS,
+        "if init is not None or b.bits(32) != 0x4E73744B:",
+        "if init is not None or b.bits(32) < 0:",
+    ),
+    (
         "W5 owner artifacts published without the shared ceremony lock",
         EL,
         "    with lib.wallet_records_lock(ceremony):\n        paths = pool_owner_paths(ceremony, name)",
@@ -87,7 +153,7 @@ M = [
     (
         "O1 gate ignores unexplained activity",
         OPS,
-        '            if leaves(tx, wallet) and tx["hash"] not in explained:\n                described',
+        '            if (\n                leaves(tx, wallet)\n                and tx["hash"] not in explained\n                and self.election_relay(wallet, tx) is None\n            ):\n                described',
         "            if False:\n                described",
     ),
     (

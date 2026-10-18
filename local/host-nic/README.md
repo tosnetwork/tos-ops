@@ -1,5 +1,11 @@
 # Host uplink: I219 transmit-hang workaround
 
+**Host-specific local workaround, not a testnet validator requirement.**
+The templates target `eno1`/`e1000e`; confirm the actual hardware and obtain
+explicit approval before installation or fault injection. Keep provider console
+access: link recovery deliberately interrupts connectivity. Never test `/dev/kmsg`
+fault injection on a public validator. On a refusal, retain logs and stop.
+
 The host's on-board Intel I219-LM (`eno1`, driver `e1000e`) can wedge its
 transmit queue under sustained traffic, such as several CI VMs downloading
 through NAT. The kernel then logs `eno1: Detected Hardware Unit Hang` every

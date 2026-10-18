@@ -1,47 +1,33 @@
-# Production network
+# Production network: planning only
 
-Settings for nodes on the production network. This is a **design and template
-set, not an accepted deployment**. The design every file here follows is
-[Production-Node.md](Production-Node.md). Its section 12 tracks twelve gaps
-(G1–G12) and what tos PR #148 closes. The global config's authenticated
-distribution, production sizing, cleanup evidence from a live multi-host network,
-a live multi-node key rotation and an accepted production unit are still open.
+This directory holds **designs and service templates, not an accepted production
+deployment**. For an independent public-testnet operator use
+[OPERATOR.md](../testnet/OPERATOR.md); for any operation read
+[AGENTS.md](../AGENTS.md). Do not copy the local/testnet profile into mainnet.
 
-| Path | Contents |
+| File | Use |
 | --- | --- |
-| `Production-Node.md` | Design: node roles, key custody, options, retention, joining, validator lifecycle, monitoring, gaps |
-| `Hardware-and-Hosting.md` | Physical requirements per role, disk endurance, bare metal vs VM, and hosting-provider diversity rules drawn from Solana's outages (proposal; gap G8) |
-| `systemd/tos-validator.service` | Proposed hardened validator unit (design section 7) |
-| `systemd/tos-elections.service` | The validator host's elections task, `tosctl service` as the user `tos-ctl` (design sections 4 and 7) |
+| [Production-Node.md](Production-Node.md) | Roles, custody, layout, retention, lifecycle, maintenance and [acceptance gaps](Production-Node.md#12-gaps-before-this-procedure-can-be-followed) |
+| [Hardware-and-Hosting.md](Hardware-and-Hosting.md) | Proposed capacity, endurance and failure-domain requirements |
+| [tos-validator.service](systemd/tos-validator.service) | Proposed non-root validator unit |
+| [tos-elections.service](systemd/tos-elections.service) | Proposed non-root operator/elections unit |
 
-The unit assumes the layout from design section 4:
+There is no production installer or deployment acceptance suite here.
+The templates assume `/usr/local/bin`,
+`/etc/tos`, `/var/lib/tos/<role>` and `/var/log/tos/<role>`; installation, network
+artifacts, release provenance and live acceptance need separate approval.
 
-- `/usr/local/bin` for release binaries;
-- `/etc/tos/global-config.json`;
-- `/var/lib/tos/<role>` for the database;
-- `/var/log/tos/<role>` for logs.
-
-Before using it:
-
-- install binaries only from a tagged release, verified by digest;
-- generate `<db>/config.json` with the two-phase first start (design section 5);
-- on a validator, bind the consensus key with `tos-pq-consensus-key bind-node`
-  while the node is stopped (design section 5.1);
-- review the retention options against the disk plan (design section 6);
-- check that the build cleans up retired consensus databases by default
-  (`validator-engine --help` lists `--disable-validator-consensus-cleanup`,
-  design section 6.4).
-
-Do not copy anything from `local/` here. Deterministic seeds, the faucet wallet,
-the development drivers and `--test-consensus-cleanup-crash-before-erase` are
-development-only.
-
-Node keys (consensus seed, keyring, console keys) and the controller root key
-are never stored in this repository. See design section 3 for where each one
-lives.
+Node interfaces were checked against tos `85c679c3454f306eb867e25b1960ae3d757bd3dd`.
+Available tooling does not establish mainnet readiness. Keep generated state,
+keys and private inventory outside the repository.
 
 ## Network correctness checks
 
 The read-only [HTTP checker](scripts/README.md) takes an explicit network identity,
-compares independent nodes, checks Elector results and reuses the consensus proof
-verifier from a held anchor. It needs no validator keys or SSH.
+compares independent nodes, checks the active and previous Elector results and
+reuses the consensus proof verifier from a held anchor. It needs no validator
+keys or SSH. Follow its [pinned proof-library build instructions](scripts/README.md#build-the-verifier)
+before running it. Its [recorded evidence](evidence/README.md) identifies the
+verifier build and the historical Config32 proof availability limitation.
+Fixture tests and mutation controls live in `testnet/tests`; this tooling does
+not establish mainnet readiness or replace deployment acceptance.

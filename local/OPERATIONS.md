@@ -1,5 +1,10 @@
 # Persistent local PQ network
 
+**Local development only; no public funds or production privacy claim.**
+Get explicit approval under [AGENTS.md](../AGENTS.md) before reset, funding or
+service changes. Read [prerequisites](README.md#prerequisites) first. Stop and
+retain receipts on any refusal; do not clear journals to force a retry.
+
 `sudo TOS_ROOT="$TOS_ROOT" local/scripts/setup-testnet.sh --clean` creates a fresh development network:
 four PQ validators, two non-validator observers, a DHT, an independent
 lite-client and the development shielded pool. `--build` rebuilds its binaries.

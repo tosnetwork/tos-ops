@@ -1,76 +1,140 @@
-# Network settings
+# tos-ops
 
-Node service settings, operating documents and scripts for the TOS networks the
-team runs. Each network has its own subdirectory. The tos repository holds the
-node software; this repository holds how we configure, deploy and operate it.
+Operations tools and runbooks for TOS networks: host preparation, installation,
+activation and retirement; the genesis ceremony; journaled funding, validator
+onboarding, authorization renewal and withdrawals; monitoring, alerting and
+cross-node checks.
 
-## Directory layout
+This repository holds no node source code or operational keys. Scripts that need
+node code, binaries or Python modules locate a separate **tos** checkout through
+`TOS_ROOT` or explicit path arguments. Keys and generated ceremony/runtime output
+belong outside the repository.
 
-```
-.
-├── README.md                    this file
-├── AGENTS.md                    working rules for agents and people (CLAUDE.md links here)
-├── .gitignore                   keeps keys, seeds, tokens and certificates out
-├── local/                       single-host local PQ development network
-│   ├── README.md                guide: setup, controller funding, retention, health rebinding
-│   ├── OPERATIONS.md            elections, random transfers, shielded-pool traffic
-│   ├── PREPARATION.md           topology and port plan
-│   ├── DEFECTS-20261006.md      record of the election-authorization and snapshot defects
-│   ├── scripts/                 installer, control, drivers, snapshot installer
-│   │   ├── setup-testnet.sh
-│   │   ├── testnet-ctl.sh
-│   │   ├── local_pq_testnet.py
-│   │   ├── local-pq-elections.py
-│   │   ├── local-pq-election-absence-drill.py
-│   │   ├── local-pq-fund-controllers.py
-│   │   ├── local_pq_funding.py           operating-authorization renewal (deficit, readback)
-│   │   ├── local_pq_funding_policy.py    30-day sizing, renew at 25 %
-│   │   ├── local_pq_transactions.py      faucet lock and crash-safe send journal
-│   │   ├── local_pq_election_evidence.py
-│   │   ├── local_pq_test_wire.py
-│   │   ├── check-local-pq-elections.py   election health check (testnet-ctl.sh check)
-│   │   ├── check-local-pq-resources.py   snapshot admission: run the generator protected
-│   │   ├── check-local-pq-protected-resources.py
-│   │   ├── local-pq-transfers.py
-│   │   ├── local-pq-privacy.py
-│   │   ├── check-local-pq-relays.py
-│   │   ├── run-local-lite-client.py
-│   │   ├── install-root-services.sh
-│   │   └── install-root-services-check.py
-│   ├── systemd/                 unit templates
-│   │   ├── tos-pq-dht.service
-│   │   ├── tos-pq-validator@.service
-│   │   ├── tos-pq-observer@.service
-│   │   └── tos-pq-lite-client.service
-│   └── tests/                   driver and installer tests (pytest)
-├── testnet/                     multi-host public testnet: genesis ceremony and node bring-up
-│   ├── README.md                scope, roles, ports, open decisions, verification
-│   ├── CEREMONY.md              step by step: operators, DHT hosts, coordinator
-│   ├── network/profile.json     global id, ports, retention, paths
-│   ├── scripts/                 operator, DHT, coordinator, installer, checker, loopback rehearsal
-│   ├── systemd/                 validator, full node, DHT, elections and alert units (none as root)
-│   ├── firewall/                inbound nftables example
-│   └── tests/                   script tests (pytest)
-└── production/                  production network design and templates
-    ├── README.md
-    ├── Production-Node.md       design: roles, keys, binding, retention, cleanup, validator lifecycle, votes, gaps
-    ├── Hardware-and-Hosting.md  physical requirements and hosting-provider diversity (lessons from Solana)
-    └── systemd/
-        ├── tos-validator.service
-        └── tos-elections.service
+**Agent entry point:** [AGENTS.md](AGENTS.md). **Validator operators:**
+[testnet/OPERATOR.md](testnet/OPERATOR.md).
+
+**Start here:** [network bring-up](testnet/CEREMONY.md) ·
+[onboarding](testnet/CEREMONY.md#81-onboarding-a-genesis-validator-for-elections) ·
+[renewal](testnet/CEREMONY.md#renewing-operating-authorization) ·
+[reset](testnet/CEREMONY.md#9-resetting-the-testnet) ·
+[alerts](testnet/README.md#alerts).
+
+## Layout
+
+### `local/` — disposable development network
+
+One-host PQ validators, observers, DHT and lite client, with optional election
+rotation and test traffic. Development keys, funding and privacy parameters must
+never be used on a public network.
+
+| Entry | Purpose |
+| --- | --- |
+| [README.md](local/README.md) | Setup, retention, service layout and health-stack rebinding. |
+| [OPERATIONS.md](local/OPERATIONS.md) | Election, transfer and development shielded-pool traffic procedures. |
+| [setup-testnet.sh](local/scripts/setup-testnet.sh) | Install/reset the local chain; `--clean` deletes the previous `/data` contents. |
+| [testnet-ctl.sh](local/scripts/testnet-ctl.sh) | Start, stop, inspect and check the local services. |
+| [local-pq-elections.py](local/scripts/local-pq-elections.py) | Drive local elections with retained submission and acceptance evidence. |
+| [local-pq-transfers.py](local/scripts/local-pq-transfers.py) / [local-pq-privacy.py](local/scripts/local-pq-privacy.py) | Generate and verify ordinary transfers / development-key pool operations. |
+| [health-deploy.py](local/scripts/health-deploy.py) | Configure and verify the local health-monitoring stack. |
+| [health-observe.py](local/scripts/health-observe.py) | Collect MCP node snapshots using bounded observation grants. |
+| [health-pki.py](local/scripts/health-pki.py) | Check, rotate and recover the development monitoring PKI. |
+| [systemd/](local/systemd/) | Node and lite-client templates, plus the user PKI-rotation timer. |
+| [health/](local/health/) | Local monitoring rule inventory. |
+| [host-nic/](local/host-nic/README.md) | Host-specific NIC watchdog and offload units. |
+
+Tests: [local/tests/](local/tests/). From the repository root, with a built tos
+checkout and its Python environment/test bindings prepared:
+
+```bash
+TOS_ROOT="$TOS_ROOT" "$TOS_ROOT/.venv/bin/python" -m pytest -q local/tests
 ```
 
-## Conventions
+### `testnet/` — public testnet operations
 
-- **No secrets.** Never commit SSH keys, private keys, consensus or root seeds,
-  wallet keys, console or edge tokens, or TLS private keys. `.gitignore` blocks
-  the usual file names, but check every change before committing.
-  Development-only fixture seeds are generated at setup time under `/data` and
-  stay there.
-- **English** for all files.
-- **Scripts depend on a tos checkout.** Scripts that use tos code or binaries
-  find them through the `TOS_ROOT` environment variable. Record the tos
-  revision a change was verified against in its commit message.
-- **One network per directory.** Do not copy development-only material
-  (deterministic seeds, faucet wallets, the local drivers) into `testnet/` or
-  `production/`.
+Multi-host tooling with a public [network profile](testnet/network/profile.json),
+[example inventory](testnet/network/inventory.example.json) and per-role services.
+Real inventories and ceremony directories stay outside the tree.
+
+| Entry | Purpose |
+| --- | --- |
+| [OPERATOR.md](testnet/OPERATOR.md) | Operator tasks, custody, maintenance and incident response. |
+| [CEREMONY.md](testnet/CEREMONY.md) | Authoritative bring-up, onboarding, value-operation and reset procedures. |
+| [README.md](testnet/README.md) | Roles, monitoring, alert setup and verification guidance. |
+| [preflight.py](testnet/scripts/preflight.py) / [setup-time.sh](testnet/scripts/setup-time.sh) | Check host resources, UDP reachability and time synchronization. |
+| [build-node-binaries.sh](testnet/scripts/build-node-binaries.sh) / [build-tosctl.sh](testnet/scripts/build-tosctl.sh) | Build pinned node/operator binaries on their destination hosts. |
+| [install-node.sh](testnet/scripts/install-node.sh) | Prepare, install binaries and activate validator, full-node or DHT roles. |
+| [testnet-operator.py](testnet/scripts/testnet-operator.py) / [testnet-dht.py](testnet/scripts/testnet-dht.py) | Produce operator and signed DHT public records. |
+| [testnet-coordinator.py](testnet/scripts/testnet-coordinator.py) | Validate records and generate the manifest, genesis and global config. |
+| [testnet-elections.py](testnet/scripts/testnet-elections.py) / [testnet_ops.py](testnet/scripts/testnet_ops.py) | `fund`, `onboard`, `refund` (renewal), `withdraw`, and manual `reconcile`, `record`, `resubmit`, `baseline`, `retry`; durable journals and two-validator settlement. |
+| [check-testnet.py](testnet/scripts/check-testnet.py) | Compare independent nodes' network identity, fresh full block IDs and selected configuration. |
+| [watch-testnet.py](testnet/scripts/watch-testnet.py) / [check-host-disk.py](testnet/scripts/check-host-disk.py) | Retain host/node samples and report anomalies. |
+| [alert-relay.py](testnet/scripts/alert-relay.py) | Telegram alerts, acknowledgements, silence windows and coordinator/peer heartbeats. |
+| [retire-host.sh](testnet/scripts/retire-host.sh) | Archive evidence, then retire a host bound to the explicitly confirmed old zero state. |
+| [systemd/](testnet/systemd/) / [firewall/](testnet/firewall/) | Node, elections and alert units; inbound firewall example. |
+| [rehearse-loopback.sh](testnet/scripts/rehearse-loopback.sh) | Rehearse genesis and node activation on an isolated loopback network. |
+
+Tests: [testnet/tests/](testnet/tests/); operation mutation controls are in
+[mutants.py](testnet/tests/mutants.py). From the repository root:
+
+```bash
+TOS_ROOT="$TOS_ROOT" "$TOS_ROOT/.venv/bin/python" -m pytest -q testnet/tests
+```
+
+### `production/` — designs and templates
+
+[Production-Node.md](production/Production-Node.md) covers roles, custody,
+retention, joining, validator lifecycle and monitoring; its
+[gap register](production/Production-Node.md#12-gaps-before-this-procedure-can-be-followed)
+records the procedure's limits. This directory is **not an accepted production
+deployment**.
+
+- [README.md](production/README.md): scope and prerequisites for using the templates.
+- [Hardware-and-Hosting.md](production/Hardware-and-Hosting.md): proposed capacity and hosting-diversity requirements.
+- [systemd/](production/systemd/): proposed validator and elections-task units.
+
+The read-only [network checker](production/scripts/README.md) verifies explicit
+network identity, held-anchor PQ finality and Elector results over HTTP. Follow
+its [pinned verifier build](production/scripts/README.md#build-the-verifier) and
+review the [evidence and availability limits](production/evidence/README.md).
+Its fixture and mutation tests are in `testnet/tests`; there is no production
+deployment acceptance suite here.
+
+Root files: [AGENTS.md](AGENTS.md) (`CLAUDE.md` links to it) and
+[.gitignore](.gitignore) contain working guidance and output/secret exclusions.
+
+## Workflows
+
+### Bring up a network
+
+1. Follow [CEREMONY.md steps 0–4](testnet/CEREMONY.md#0-before-anything-coordinator): pin the tos revision, preflight hosts, prepare validators/DHT and exchange public records.
+2. Follow [steps 5–7](testnet/CEREMONY.md#5-coordinator-manifest-genesis-global-config): generate and publish genesis/config, activate, then compare nodes.
+3. For a disposable local chain instead, use [local initialization](local/README.md#initialize).
+
+### Onboard, renew or withdraw
+
+1. Follow [onboarding §8.1](testnet/CEREMONY.md#81-onboarding-a-genesis-validator-for-elections), including both-validator checks and readiness before enabling elections.
+2. For later operating funds, follow [renewal](testnet/CEREMONY.md#renewing-operating-authorization): journal a `fund` top-up, then a separate `refund` authorization in a quiet election window.
+3. Use the same [§8.1 operation procedures](testnet/CEREMONY.md#81-onboarding-a-genesis-validator-for-elections) for withdrawal or interrupted operations. Inspect `reconcile`; verify evidence with `record`, resubmit only the original message, or explicitly `retry` a terminal failure. A baseline is a deliberate history acknowledgement, not an automatic recovery.
+
+### Retire and reset
+
+1. Follow [§9](testnet/CEREMONY.md#9-resetting-the-testnet): confirm the ended epoch's zero state and archive evidence before retirement.
+2. Preserve the previous ceremony records, then start a new ceremony with fresh identities and the documented previous-epoch checks. Local resets use the separate [local reset checklist](local/README.md#startup-checklist-after-a-reset).
+
+### Check and observe
+
+1. Use [live-chain checks](testnet/CEREMONY.md#7-coordinator-the-chain-is-live) with `check-testnet.py` against at least two independent endpoints; agreement is observation, not a consensus proof.
+2. Follow [network watching](testnet/README.md#watching-the-network) for ongoing host samples, and [local health rebinding](local/README.md#rebinding-the-local-health-stack) after a development-chain reset.
+
+### Relay alerts
+
+1. Follow [alert setup](testnet/README.md#alerts) for the coordinator and peer units, private credentials and heartbeat monitoring.
+2. Use its silence/unsilence and acknowledgement procedures; the peer watches the coordinator's heartbeat, not the chain itself.
+
+## Working rules
+
+- Write English. Never commit keys, seeds, tokens, certificates, inventories with secrets, personal data or personal home paths.
+- Accept paths through arguments or `TOS_ROOT`; do not embed an operator's machine layout.
+- Keep generated genesis, journals, receipts, logs, databases, backups and build output outside the tree. Review staged changes even when `.gitignore` covers a filename.
+- Small changes land directly on `main`; larger changes use a PR and review. Record the tos revision used for verification. Test the relevant environment before pushing.
+- Keep disposable keys, faucet funding and development drivers in `local/`; do not copy them into public-network deployments.
