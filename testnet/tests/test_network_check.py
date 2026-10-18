@@ -299,7 +299,7 @@ def dictionary(entries, size):
     return build(entries, size)
 
 
-def retained_elector_data():
+def retained_elector_data(active=34):
     past = {}
     for i, number in enumerate((32, 34), 1):
         v = n.decode_set(CELLS[number])
@@ -316,9 +316,10 @@ def retained_elector_data():
             + "0"
         )
         past[i] = wire.cell_from_bits(bits, [dictionary(frozen, 256)])
-    current = n.decode_set(CELLS[34])
+    current = n.decode_set(CELLS[active])
     return wire.cell_from_bits(
-        "001" + "0000" + f"{2:032b}{int(current['hash'], 16):0256b}", [dictionary(past, 32)]
+        "001" + "0000" + f"{2 if active == 34 else 1:032b}{int(current['hash'], 16):0256b}",
+        [dictionary(past, 32)],
     )
 
 
@@ -358,14 +359,12 @@ def production_args(tmp_path):
 def test_full_production_pipeline_labels_missing_proof_routes_weaker(tmp_path):
     nodes = ProductionNodes()
     result = n.check_network(production_args(tmp_path), nodes, lambda: NOW)
-    assert result["ok"], result
-    assert result["strength"] == "node_equality_only"
+    assert not result["ok"], result
+    assert result["checks"][-1]["name"] == "config32_vs_elector"
+    assert "cannot be proven historically" in result["checks"][-1]["reason"]
     assert nodes.proof_calls == ["a", "b"]
     assert any(
         c["name"] == "config34_vs_elector" and c["status"] == "PASS" for c in result["checks"]
-    )
-    assert any(
-        c["name"] == "config32_vs_elector" and c["status"] == "PASS" for c in result["checks"]
     )
     assert any(
         c["name"] == "anchored_finality" and c["status"] == "WEAKER" for c in result["checks"]
@@ -466,6 +465,11 @@ class VerifiedFixture:
         ]
         if self.mutation == "config":
             cells[0]["cell_hash"] = "00" * 32
+        if target["seqno"] == 5:
+            cells = [p for p in cells if p["index"] != 34] + [
+                {"index": 34, "boc": RECORD["params"]["32"], "cell_hash": CELLS[32].hash().hex()}
+            ]
+        data = retained_elector_data(32) if target["seqno"] == 5 else self.data
         return {
             "target": {**target, "gen_utime": NOW - 6 if self.mutation == "time" else NOW - 5},
             "config_params": cells,
@@ -473,14 +477,16 @@ class VerifiedFixture:
             "account": {
                 "address": account,
                 "active": True,
-                "state_boc": wire.b64(wire.serialize_boc(proven_account(self.data, account))),
-                "data_hash": "00" * 32 if self.mutation == "data" else self.data.hash().hex(),
+                "state_boc": wire.b64(wire.serialize_boc(proven_account(data, account))),
+                "data_hash": "00" * 32 if self.mutation == "data" else data.hash().hex(),
             },
         }
 
 
 class ProofNodes(ProductionNodes):
     def __call__(self, url, method, **params):
+        if method == "lookupBlock":
+            return block(5)
         if method == "getProofQuery" and url == "b":
             self.proof_calls.append(url)
             return {"reply": "fixture"}
@@ -493,7 +499,7 @@ def test_supported_second_node_proofs_are_used(tmp_path):
     result = n.check_network(production_args(tmp_path), nodes, lambda: NOW, verifier)
     assert result["ok"], result
     assert result["strength"] == "anchor_verified"
-    assert verifier.urls == ["b"]
+    assert verifier.urls == ["b", "b"]
 
 
 @pytest.mark.parametrize("mutation", ["time", "config", "data"])
@@ -552,7 +558,7 @@ class HistoricalVerifier(VerifiedFixture):
             result["config_params"] = [p for p in result["config_params"] if p["index"] == 1] + [
                 {"index": 34, "boc": RECORD["params"]["32"], "cell_hash": CELLS[32].hash().hex()}
             ]
-            data = retained_elector_data()
+            data = retained_elector_data(32)
             result["account"]["state_boc"] = wire.b64(wire.serialize_boc(proven_account(data)))
             result["account"]["data_hash"] = data.hash().hex()
         return result
@@ -635,7 +641,8 @@ def test_explicit_global_id_one_uses_the_same_production_pipeline(tmp_path):
     args.global_id = 1
     nodes.params["19"] = wire.b64(wire.serialize_boc(wire.cell_from_bits(f"{1:032b}")))
     result = n.check_network(args, nodes, lambda: NOW)
-    assert result["ok"], result
+    assert not result["ok"], result
+    assert result["checks"][-1]["name"] == "config32_vs_elector"
     assert next(c for c in result["checks"] if c["name"] == "global_id")["evidence"] == 1
 
 
@@ -710,3 +717,90 @@ def test_init_anchor_is_compared_even_without_proof_routes(tmp_path):
     result = n.check_network(args, ProductionNodes(), lambda: NOW)
     assert not result["ok"]
     assert "init block differs" in result["checks"][-1]["reason"]
+
+
+def test_only_the_active_election_can_validate_a_set():
+    elector = n.decode_elector(retained_elector_data())
+    assert n.compare_elected(n.decode_set(CELLS[34]), elector)["election_id"] == 2
+    with pytest.raises(n.NetworkError, match=r"elections \[1\], not Elector active election 2"):
+        n.compare_elected(n.decode_set(CELLS[32]), elector)
+    elector["active_id"] = 99
+    with pytest.raises(n.NetworkError, match="unique Elector result commitment"):
+        n.compare_elected(n.decode_set(CELLS[34]), elector)
+
+
+def test_previous_set_cannot_use_a_retained_but_inactive_historical_election(tmp_path):
+    class WrongActive(HistoricalVerifier):
+        def fetch(self, rpc, url, anchor, target, params, now, account=n.ELECTOR):
+            result = super().fetch(rpc, url, anchor, target, params, now, account)
+            if target["seqno"] == 5:
+                data = retained_elector_data(34)
+                result["account"]["state_boc"] = wire.b64(wire.serialize_boc(proven_account(data)))
+                result["account"]["data_hash"] = data.hash().hex()
+            return result
+
+    nodes = HistoricalNodes()
+    result = n.check_network(production_args(tmp_path), nodes, lambda: NOW, WrongActive(nodes.data))
+    assert not result["ok"]
+    assert result["checks"][-1]["name"] == "config32_vs_elector"
+    assert "elections [1], not Elector active election 2" in result["checks"][-1]["reason"]
+
+
+@pytest.mark.parametrize("previous", [False, True])
+def test_initial_set_proof_tries_every_named_source(tmp_path, previous):
+    empty = wire.cell_from_bits("000" + "0000" + "0" * (32 + 256))
+
+    class AllServed(HistoricalNodes):
+        def __call__(self, url, method, **params):
+            if method == "getConfigParam" and params["param"] == 32 and not previous:
+                raise wire.RpcError(url, method, -32004, "CONFIG_PARAM_ABSENT", "absent", False)
+            if method == "getProofQuery":
+                return {"reply": "fixture"}
+            if method == "getBlockHeader":
+                result = super().__call__(url, method, **params)
+                if not previous:
+                    result["prev_key_block_seqno"] = 0
+                return result
+            return super().__call__(url, method, **params)
+
+    class InitialVerifier(HistoricalVerifier):
+        def __init__(self, data):
+            super().__init__(data)
+            self.initial_sources = []
+
+        def fetch(self, rpc, url, anchor, target, params, now, account=n.ELECTOR):
+            if target["seqno"] == 1:
+                self.initial_sources.append(url)
+                if url == "a":
+                    raise wire.RpcError(
+                        url,
+                        "getProofQuery",
+                        -32603,
+                        "INTERNAL_ERROR",
+                        "Proof response unavailable",
+                        False,
+                    )
+            result = super().fetch(rpc, url, anchor, target, params, now, account)
+            if target["seqno"] == 1:
+                cell = CELLS[32 if previous else 34]
+                result["config_params"] = [
+                    {
+                        "index": 34,
+                        "boc": wire.b64(wire.serialize_boc(cell)),
+                        "cell_hash": cell.hash().hex(),
+                    }
+                ]
+            if not previous or target["seqno"] == 5:
+                result["chain"]["key_blocks"] = []
+                result["account"]["state_boc"] = wire.b64(wire.serialize_boc(proven_account(empty)))
+                result["account"]["data_hash"] = empty.hash().hex()
+            return result
+
+    nodes = AllServed()
+    if not previous:
+        nodes.data = empty
+        del nodes.params["32"]
+    verifier = InitialVerifier(nodes.data)
+    result = n.check_network(production_args(tmp_path), nodes, lambda: NOW, verifier)
+    assert result["ok"], result["checks"][-1]
+    assert verifier.initial_sources == ["a", "b"]

@@ -347,6 +347,13 @@ def decode_elector(data):
 
 def compare_elected(vset, elector):
     matching = [p for p in elector["past"] if p["hash"] == vset["hash"]]
+    matched_ids = [p["election_id"] for p in matching]
+    require(
+        vset["hash"] == elector["active_hash"],
+        f"validator set commitment matches elections {matched_ids}, not Elector active election "
+        f"{elector['active_id']} ({elector['active_hash']})",
+    )
+    matching = [p for p in matching if p["election_id"] == elector["active_id"]]
     require(len(matching) == 1, "validator set has no unique Elector result commitment")
     past = matching[0]
     actual = {v["id"]: v["weight"] for v in vset["validators"]}
@@ -654,19 +661,16 @@ def check_election_sets(sets, elector, initial, initial_hash=None):
             },
             "previous": {"status": "NOT_APPLICABLE", "reason": "no previous set"},
         }
-    result = {"current": compare_elected(current, elector)}
+    compare_elected(current, elector)
     require(sets.get(32) is not None, "elected current set has no ConfigParam 32")
     previous = decode_set(sets[32])
     require(
         previous["since"] < current["since"] and previous["until"] <= current["since"],
         "Config32 is not a previous validator term",
     )
-    result["previous"] = (
-        compare_elected(decode_set(sets[32]), elector)
-        if sets.get(32)
-        else {"status": "NOT_APPLICABLE", "reason": "no previous set"}
-    )
-    return result
+    # Retained records alone do not identify which election was previously active.
+    # Check this set against the active result at its authenticated historical head.
+    raise NetworkError("previous set requires its historical active Elector result")
 
 
 def check_network(args, rpc=None, now=time.time, verifier=None):
@@ -889,8 +893,8 @@ def check_network(args, rpc=None, now=time.time, verifier=None):
             first_header = rpc(args.rpc[0], "getBlockHeader", workchain=-1, shard=SHARD, seqno=1)
             first_id = normalize_id(first_header["id"])
             if verified is not None:
-                first = verifier.fetch(
-                    rpc, proof_url, identity["anchor"], first_id, [34], now(), elector_addr
+                first, _, _ = fetch_proof(
+                    verifier, rpc, sources, identity["anchor"], first_id, [34], now(), elector_addr
                 )
                 initial_cell = lib.parse_boc(
                     base64.b64decode(first["config_params"][0]["boc"], validate=True)
@@ -901,8 +905,9 @@ def check_network(args, rpc=None, now=time.time, verifier=None):
         try:
             elections = check_election_sets(sets, elector, initial, initial_hash)
         except NetworkError:
-            # Previous frozen data can have been unfreezed. Prove it at its last active block instead.
+            # Bind the previous result to when it was active, not merely retained.
             compare_elected(decode_set(sets[34]), elector)
+            name = "config32_vs_elector"
             require(
                 sets.get(32) is not None and verifier is not None and verified is not None,
                 "previous set result is unavailable and cannot be proven historically",
@@ -950,9 +955,10 @@ def check_network(args, rpc=None, now=time.time, verifier=None):
                 and identity["anchor"]["seqno"] == 0
             ):
                 first_header = rpc(proof_url, "getBlockHeader", workchain=-1, shard=SHARD, seqno=1)
-                first = verifier.fetch(
+                first, _, _ = fetch_proof(
+                    verifier,
                     rpc,
-                    proof_url,
+                    sources,
                     identity["anchor"],
                     normalize_id(first_header["id"]),
                     [34],

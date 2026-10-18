@@ -848,6 +848,44 @@ M += [
         'full_id(held["id"]) == full_id(identity["anchor"]),',
         "True,",
     ),
+    (
+        "NC20 retained election accepted instead of active result",
+        NETWORK,
+        """    matched_ids = [p["election_id"] for p in matching]
+    require(
+        vset["hash"] == elector["active_hash"],
+        f"validator set commitment matches elections {matched_ids}, not Elector active election "
+        f"{elector['active_id']} ({elector['active_hash']})",
+    )
+    matching = [p for p in matching if p["election_id"] == elector["active_id"]]""",
+        "",
+    ),
+    (
+        "NC21 active election id ignored",
+        NETWORK,
+        '    matching = [p for p in matching if p["election_id"] == elector["active_id"]]',
+        "",
+    ),
+    (
+        "NC22 retained previous election bypasses historical active binding",
+        NETWORK,
+        '    raise NetworkError("previous set requires its historical active Elector result")',
+        """    record = next(p for p in elector["past"] if p["hash"] == previous["hash"])
+    return {"current": compare_elected(current, elector), "previous": compare_elected(
+        previous, dict(elector, active_id=record["election_id"], active_hash=record["hash"]))}""",
+    ),
+    (
+        "NC23 initial current set uses only the first proof source",
+        NETWORK,
+        'verifier, rpc, sources, identity["anchor"], first_id, [34], now(), elector_addr',
+        'verifier, rpc, [proof_url], identity["anchor"], first_id, [34], now(), elector_addr',
+    ),
+    (
+        "NC24 historical initial set uses only the first proof source",
+        NETWORK,
+        '                    sources,\n                    identity["anchor"],',
+        '                    [proof_url],\n                    identity["anchor"],',
+    ),
 ]
 
 

@@ -53,11 +53,12 @@ The JSON report contains a named status and evidence for each completed check:
   the reported header and satisfy freshness;
 - Config1 selects the Elector address; its configuration and account proofs at that same block, compared with
   the public replies from every endpoint;
-- Config34's exact cell hash equals the Elector's retained `vset_hash`, and
-  elected identities and weights equal its frozen records;
-- Config32 similarly equals the previous election's result and is really an
-  earlier term. If that frozen record has been removed, historical proof
-  acquisition checks it at its last active block.
+- Config34's exact cell hash equals the Elector's active result, identified by
+  both `active_hash` and `active_id`, and elected identities and weights equal
+  that election's frozen records;
+- Config32 is really an earlier term and equals the active election result
+  authenticated at its last active block. A retained record alone cannot
+  establish that an election was previously active.
 
 Frozen records contain identity, owner, weight and stake, **not public keys**.
 The full elected-set cell hash is therefore essential: it commits to the keys,
