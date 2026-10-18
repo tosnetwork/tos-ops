@@ -730,6 +730,127 @@ M += [
 ]
 
 
+NETWORK = W.parent / "production/network_check.py"
+M += [
+    (
+        "NC1 foreign zero state accepted",
+        NETWORK,
+        'if full_id(info["init"]) != expected_zero:',
+        "if False:",
+    ),
+    (
+        "NC2 divergent full block ids accepted",
+        NETWORK,
+        "if len(set(ids.values())) != 1:",
+        "if False:",
+    ),
+    ("NC3 stale heads called healthy", NETWORK, "if newest_age > args.max_age:", "if False:"),
+    ("NC4 foreign header global id accepted", NETWORK, "    if foreign:\n", "    if False:\n"),
+    (
+        "NC5 Elector full-set commitment bypassed",
+        NETWORK,
+        'matching = [p for p in elector["past"] if p["hash"] == vset["hash"]]',
+        'matching = [p for p in elector["past"] if len(p["members"]) == vset["total"]][:1]',
+    ),
+    (
+        "NC6 frozen identities and weights ignored",
+        NETWORK,
+        'actual == expected, "Config validator members/weights differ from Elector frozen result"',
+        'True, "Config validator members/weights differ from Elector frozen result"',
+    ),
+    (
+        "NC7 consensus proof verification bypassed",
+        NETWORK,
+        "        a, r = json.dumps(anchor).encode(), json.dumps(request).encode()",
+        '        return {"status": "verified", "target": request["target"]}\n        a, r = json.dumps(anchor).encode(), json.dumps(request).encode()',
+    ),
+    (
+        "NC8 invalid proof route answer downgraded to equality",
+        NETWORK,
+        'if exc.code != -32601 or exc.reason != "METHOD_NOT_FOUND":',
+        "if False:",
+    ),
+    (
+        "NC9 initial-set commitment ignored",
+        NETWORK,
+        'require(current["hash"] == initial_hash, "unelected current set differs from initial set")',
+        'require(True, "unelected current set differs from initial set")',
+    ),
+    (
+        "NC10 version floor bypassed",
+        NETWORK,
+        'require(version >= args.min_version, "ConfigParam 8 version below required minimum")',
+        'require(True, "ConfigParam 8 version below required minimum")',
+    ),
+    (
+        "NC11 expected AUTH tag bypassed",
+        NETWORK,
+        'policy["network"] == hash_bytes(args.expected_auth_tag),',
+        "True,",
+    ),
+    (
+        "NC12 PQ key id not rederived",
+        NETWORK,
+        'require(key_id == derived, "validator key id differs from public key")',
+        'require(True, "validator key id differs from public key")',
+    ),
+    (
+        "NC13 identical current and previous terms accepted",
+        NETWORK,
+        'previous["since"] < current["since"] and previous["until"] <= current["since"],',
+        "True,",
+    ),
+    (
+        "NC14 authenticated header timestamp ignored",
+        NETWORK,
+        'require(\n                int(verified["target"]["gen_utime"]) == int(header["gen_utime"]),',
+        "require(\n                True,",
+    ),
+]
+
+
+M += [
+    (
+        "NC15 historical lookup uses the wrong time selector",
+        NETWORK,
+        'unixtime=decode_set(sets[34])["since"] - 1',
+        'utime=decode_set(sets[34])["since"] - 1',
+    )
+]
+
+
+M += [
+    (
+        "NC16 mandatory AUTH skipped on an older version",
+        NETWORK,
+        "or 48 in lib.hashmap_items(sets[9], 32)",
+        "or False",
+    )
+]
+
+
+M += [
+    (
+        "NC17 configured Elector locator bypassed",
+        NETWORK,
+        "elector_addr = elector_address(sets[1])",
+        "elector_addr = ELECTOR",
+    ),
+    (
+        "NC18 inconsistent held zero anchors accepted",
+        NETWORK,
+        'require(anchor["seqno"] != 0 or anchor == zero, "conflicting zero and init anchors")',
+        'require(True, "conflicting zero and init anchors")',
+    ),
+    (
+        "NC19 held init block equality ignored",
+        NETWORK,
+        'full_id(held["id"]) == full_id(identity["anchor"]),',
+        "True,",
+    ),
+]
+
+
 def suite(env: dict) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider", str(W / "tests")],

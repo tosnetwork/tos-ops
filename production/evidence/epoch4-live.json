@@ -1,0 +1,777 @@
+{
+  "ok": false,
+  "checks": [
+    {
+      "name": "node_count",
+      "status": "PASS",
+      "evidence": {
+        "distinct_endpoints": 4
+      }
+    },
+    {
+      "name": "zero_state",
+      "status": "PASS",
+      "evidence": {
+        "workchain": -1,
+        "shard": "-9223372036854775808",
+        "seqno": 0,
+        "root_hash": "1pNiiHNcZuQEv2cIyaQHH+Zl8g5QV7ID9/o+8JV9kz4=",
+        "file_hash": "YWroZpqwuo+wlSS4NamKHRAOtukiJT2UQRz6gJYVigs="
+      }
+    },
+    {
+      "name": "common_full_block_id",
+      "status": "PASS",
+      "evidence": {
+        "@type": "tos.blockIdExt",
+        "workchain": -1,
+        "shard": "-9223372036854775808",
+        "seqno": 110627,
+        "root_hash": "hBARUhX8mBU2hVwv+3k2I2OTRUQi5pg/p8IXHJ29olA=",
+        "file_hash": "QdTWpTSXYkwvVJwxjPV+pc6Z2U6Xjt2z94T44mRSjzM="
+      }
+    },
+    {
+      "name": "global_id",
+      "status": "PASS",
+      "evidence": 2
+    },
+    {
+      "name": "head_freshness",
+      "status": "PASS",
+      "evidence": {
+        "http://127.0.0.1:18381/jsonRPC": 1,
+        "http://127.0.0.1:18382/jsonRPC": 1,
+        "http://127.0.0.1:18383/jsonRPC": 1,
+        "http://127.0.0.1:18384/jsonRPC": 1
+      }
+    },
+    {
+      "name": "held_init_anchor",
+      "status": "PASS",
+      "evidence": {
+        "workchain": -1,
+        "shard": "-9223372036854775808",
+        "seqno": 0,
+        "root_hash": "1pNiiHNcZuQEv2cIyaQHH+Zl8g5QV7ID9/o+8JV9kz4=",
+        "file_hash": "YWroZpqwuo+wlSS4NamKHRAOtukiJT2UQRz6gJYVigs="
+      }
+    },
+    {
+      "name": "elector_address",
+      "status": "PASS",
+      "evidence": {
+        "config_param": 1,
+        "address": "-1:3333333333333333333333333333333333333333333333333333333333333333"
+      }
+    },
+    {
+      "name": "config19",
+      "status": "PASS",
+      "evidence": 2
+    },
+    {
+      "name": "config8",
+      "status": "PASS",
+      "evidence": {
+        "version": 16,
+        "capabilities": 494
+      }
+    },
+    {
+      "name": "config48",
+      "status": "PASS",
+      "evidence": {
+        "tag": "e36440a2e7704d9e26c79c5d9ba462507783b18404e876da9a232d38722e28fd",
+        "hash": "900a85305f8ad2f6bea6b0f51955659a5298bf41ae59cea44f5edaeeddb55d68",
+        "mandatory_and_critical": true
+      }
+    },
+    {
+      "name": "anchored_finality",
+      "status": "PASS",
+      "evidence": {
+        "strength": "anchor_verified",
+        "source": "http://127.0.0.1:18381/jsonRPC",
+        "unavailable_sources": [],
+        "anchor": {
+          "workchain": -1,
+          "shard": "-9223372036854775808",
+          "seqno": 0,
+          "root_hash": "1pNiiHNcZuQEv2cIyaQHH+Zl8g5QV7ID9/o+8JV9kz4=",
+          "file_hash": "YWroZpqwuo+wlSS4NamKHRAOtukiJT2UQRz6gJYVigs="
+        },
+        "target": {
+          "workchain": -1,
+          "shard": "-9223372036854775808",
+          "seqno": 110627,
+          "root_hash": "hBARUhX8mBU2hVwv+3k2I2OTRUQi5pg/p8IXHJ29olA=",
+          "file_hash": "QdTWpTSXYkwvVJwxjPV+pc6Z2U6Xjt2z94T44mRSjzM="
+        },
+        "chain": {
+          "links": 5,
+          "key_blocks": [
+            {
+              "workchain": -1,
+              "shard": "8000000000000000",
+              "seqno": 48732,
+              "root_hash": "1fdbbf6767c9326a072f00a136f76bbb446e8a46340017b27cd265e893685e53",
+              "file_hash": "30ae7596c3c4b71f9c23e6e1e8926ab1c7a607da925b0c306b5f08ecbbd7b848"
+            },
+            {
+              "workchain": -1,
+              "shard": "8000000000000000",
+              "seqno": 52709,
+              "root_hash": "e3c69e7aa43e9d4ce179d5e9a85262daa4ef47a45d8704d3203cf94beb85d4ac",
+              "file_hash": "0b7539d15b2d593b8b160b279d0bff694ca99366a19f189b9993f77708ec1cf6"
+            },
+            {
+              "workchain": -1,
+              "shard": "8000000000000000",
+              "seqno": 83608,
+              "root_hash": "4e126e0f5122cfa2eb854560f77a1d1860b86a91a2b6bde2e0dd7b3d0de13b05",
+              "file_hash": "d7020ff3b6e4d0517174167b8f6936025320fd316bd6bf63fc194f3139d49f01"
+            },
+            {
+              "workchain": -1,
+              "shard": "8000000000000000",
+              "seqno": 87974,
+              "root_hash": "b98015fadae73aa0a38150927c6c63bb6a407995efe4df27dda45bfcf4ee711b",
+              "file_hash": "ddcb3fad2bb9f94e47ef5f46f5c86f5c53c491ca6383a61e03dc672bfd707928"
+            }
+          ]
+        },
+        "elector_data_hash": "eebbbcc41d74ab0c389075febee6c4b982045f513ff52b052041dba30a41ee4f",
+        "method": "existing consensus core: key-block chain and exact target PQ finality"
+      }
+    },
+    {
+      "name": "elector_snapshot",
+      "status": "PASS",
+      "evidence": {
+        "block": {
+          "workchain": -1,
+          "shard": "-9223372036854775808",
+          "seqno": 110627,
+          "root_hash": "hBARUhX8mBU2hVwv+3k2I2OTRUQi5pg/p8IXHJ29olA=",
+          "file_hash": "QdTWpTSXYkwvVJwxjPV+pc6Z2U6Xjt2z94T44mRSjzM="
+        },
+        "address": "-1:3333333333333333333333333333333333333333333333333333333333333333",
+        "data_hash": "eebbbcc41d74ab0c389075febee6c4b982045f513ff52b052041dba30a41ee4f"
+      }
+    },
+    {
+      "name": "config34_vs_elector",
+      "status": "PASS",
+      "evidence": {
+        "status": "PASS",
+        "election_id": 1792351800,
+        "set_hash": "18d52b9c06ff233b24db9b7f6af6b5da632e7d7b9834ead20355b6a892396dd1",
+        "members": 4,
+        "keys_and_order_bound_by": "Elector vset_hash",
+        "validators": [
+          {
+            "id": "458834cc2fea9077e5947408f5d6ec859519dcc780fbeb98dd5fbaf10bd3be5c",
+            "algorithm": 1,
+            "key_id": "7529a4d10dc34f58ccee6d2dd0f836c52e9e5035c19b5ed67247fd94260a5f39",
+            "weight": 288230376151711744,
+            "adnl": "805fc648e247e127398656245113fe0664fc6860c58c713664751c316965e0ad",
+            "public_key_sha256": "9539333740230465d7cc2f3a46f77ebc74c13fb91d3f87932f849094d56cf449"
+          },
+          {
+            "id": "6442eec0e2603d19802095fe76196175242fbe5ae00aa64337d878f507a7b0e1",
+            "algorithm": 1,
+            "key_id": "fd7cea5c9d48c63be51c25061c903fc32509127c519bfbcf3e187d3ba4520abb",
+            "weight": 288230376151711744,
+            "adnl": "def2fdccb34b1c76768ed9a97481daa5ad77122cb494e4187e3708ce0745c648",
+            "public_key_sha256": "bad5d9187eaded7f916c0aa51954e28f9583c28915a1d136e652d4ea63457088"
+          },
+          {
+            "id": "8c7e90613ac0b9ea91cc9a0cc99b1bffdf097bb2d3b2dc703765872e2a7c723f",
+            "algorithm": 1,
+            "key_id": "b16b88c521d63e0c9acdd14b661738debddd3230383b12f1251d3e47015e371b",
+            "weight": 288230376151711744,
+            "adnl": "53e31592139fd1885548a14cea98a11eebeee6e42aff73e15f8b3910eea3b28f",
+            "public_key_sha256": "f0959609225c3a7bec38e45cde62114bbcc283038b90dd1b4bb754120d1d5d2e"
+          },
+          {
+            "id": "16ae23a4522d23147022a3b49dea4abfcae0da1b5b65acc479886d8b220e2d27",
+            "algorithm": 1,
+            "key_id": "c097c1f3bc61326b66f3ab99841d1b7f0742ec77b58d9df118598687561fd72a",
+            "weight": 288230376151711744,
+            "adnl": "e59a234d853cb2c2cc08dc71a69cdfadaf1bde7f9ee91f71b253ae0379f19efc",
+            "public_key_sha256": "fb75665b0463a3207a25cbba5c76f3407b39ac34a01418c5bd1a37a4dfb5d77d"
+          }
+        ]
+      }
+    },
+    {
+      "name": "config32_vs_elector",
+      "status": "FAIL",
+      "reason": "proof material unavailable from every named source: [{'url': 'http://127.0.0.1:18381/jsonRPC', 'reason': 'http://127.0.0.1:18381/jsonRPC getProofQuery: INTERNAL_ERROR -32603: Proof response unavailable'}, {'url': 'http://127.0.0.1:18382/jsonRPC', 'reason': 'http://127.0.0.1:18382/jsonRPC getProofQuery: INTERNAL_ERROR -32603: Proof response unavailable'}, {'url': 'http://127.0.0.1:18383/jsonRPC', 'reason': 'http://127.0.0.1:18383/jsonRPC getProofQuery: INTERNAL_ERROR -32603: Proof response unavailable'}, {'url': 'http://127.0.0.1:18384/jsonRPC', 'reason': 'http://127.0.0.1:18384/jsonRPC getProofQuery: INTERNAL_ERROR -32603: Proof response unavailable'}]"
+    }
+  ],
+  "identity": {
+    "global_id": 2,
+    "zero_state": {
+      "workchain": -1,
+      "shard": "-9223372036854775808",
+      "seqno": 0,
+      "root_hash": "1pNiiHNcZuQEv2cIyaQHH+Zl8g5QV7ID9/o+8JV9kz4=",
+      "file_hash": "YWroZpqwuo+wlSS4NamKHRAOtukiJT2UQRz6gJYVigs="
+    },
+    "anchor": {
+      "workchain": -1,
+      "shard": "-9223372036854775808",
+      "seqno": 0,
+      "root_hash": "1pNiiHNcZuQEv2cIyaQHH+Zl8g5QV7ID9/o+8JV9kz4=",
+      "file_hash": "YWroZpqwuo+wlSS4NamKHRAOtukiJT2UQRz6gJYVigs="
+    }
+  },
+  "rpc_evidence": [
+    {
+      "url": "http://127.0.0.1:18381/jsonRPC",
+      "method": "getMasterchainInfo",
+      "params": {},
+      "response_sha256": "520e956b2aa8765db27c4a3eb95cf7d8260b43fbc0dcb0c56572ac62c020b6df"
+    },
+    {
+      "url": "http://127.0.0.1:18382/jsonRPC",
+      "method": "getMasterchainInfo",
+      "params": {},
+      "response_sha256": "520e956b2aa8765db27c4a3eb95cf7d8260b43fbc0dcb0c56572ac62c020b6df"
+    },
+    {
+      "url": "http://127.0.0.1:18383/jsonRPC",
+      "method": "getMasterchainInfo",
+      "params": {},
+      "response_sha256": "520e956b2aa8765db27c4a3eb95cf7d8260b43fbc0dcb0c56572ac62c020b6df"
+    },
+    {
+      "url": "http://127.0.0.1:18384/jsonRPC",
+      "method": "getMasterchainInfo",
+      "params": {},
+      "response_sha256": "520e956b2aa8765db27c4a3eb95cf7d8260b43fbc0dcb0c56572ac62c020b6df"
+    },
+    {
+      "url": "http://127.0.0.1:18381/jsonRPC",
+      "method": "getBlockHeader",
+      "params": {
+        "workchain": -1,
+        "shard": "-9223372036854775808",
+        "seqno": 110627
+      },
+      "response_sha256": "d59cbf3533e310b2c3554cbf554c4e0a3bedee762419dfa31e4e68b90b09ee54"
+    },
+    {
+      "url": "http://127.0.0.1:18382/jsonRPC",
+      "method": "getBlockHeader",
+      "params": {
+        "workchain": -1,
+        "shard": "-9223372036854775808",
+        "seqno": 110627
+      },
+      "response_sha256": "d59cbf3533e310b2c3554cbf554c4e0a3bedee762419dfa31e4e68b90b09ee54"
+    },
+    {
+      "url": "http://127.0.0.1:18383/jsonRPC",
+      "method": "getBlockHeader",
+      "params": {
+        "workchain": -1,
+        "shard": "-9223372036854775808",
+        "seqno": 110627
+      },
+      "response_sha256": "d59cbf3533e310b2c3554cbf554c4e0a3bedee762419dfa31e4e68b90b09ee54"
+    },
+    {
+      "url": "http://127.0.0.1:18384/jsonRPC",
+      "method": "getBlockHeader",
+      "params": {
+        "workchain": -1,
+        "shard": "-9223372036854775808",
+        "seqno": 110627
+      },
+      "response_sha256": "d59cbf3533e310b2c3554cbf554c4e0a3bedee762419dfa31e4e68b90b09ee54"
+    },
+    {
+      "url": "http://127.0.0.1:18381/jsonRPC",
+      "method": "getBlockHeader",
+      "params": {
+        "workchain": -1,
+        "shard": "-9223372036854775808",
+        "seqno": 110627
+      },
+      "response_sha256": "d59cbf3533e310b2c3554cbf554c4e0a3bedee762419dfa31e4e68b90b09ee54"
+    },
+    {
+      "url": "http://127.0.0.1:18382/jsonRPC",
+      "method": "getBlockHeader",
+      "params": {
+        "workchain": -1,
+        "shard": "-9223372036854775808",
+        "seqno": 110627
+      },
+      "response_sha256": "d59cbf3533e310b2c3554cbf554c4e0a3bedee762419dfa31e4e68b90b09ee54"
+    },
+    {
+      "url": "http://127.0.0.1:18383/jsonRPC",
+      "method": "getBlockHeader",
+      "params": {
+        "workchain": -1,
+        "shard": "-9223372036854775808",
+        "seqno": 110627
+      },
+      "response_sha256": "d59cbf3533e310b2c3554cbf554c4e0a3bedee762419dfa31e4e68b90b09ee54"
+    },
+    {
+      "url": "http://127.0.0.1:18384/jsonRPC",
+      "method": "getBlockHeader",
+      "params": {
+        "workchain": -1,
+        "shard": "-9223372036854775808",
+        "seqno": 110627
+      },
+      "response_sha256": "d59cbf3533e310b2c3554cbf554c4e0a3bedee762419dfa31e4e68b90b09ee54"
+    },
+    {
+      "url": "http://127.0.0.1:18381/jsonRPC",
+      "method": "getBlockHeader",
+      "params": {
+        "workchain": -1,
+        "shard": "-9223372036854775808",
+        "seqno": 110627
+      },
+      "response_sha256": "d59cbf3533e310b2c3554cbf554c4e0a3bedee762419dfa31e4e68b90b09ee54"
+    },
+    {
+      "url": "http://127.0.0.1:18381/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 1,
+        "seqno": 110627
+      },
+      "response_sha256": "83e3129ef82df28c515866861ddefcb2d4d315d7e0bc468a893ec7e05d2838e4"
+    },
+    {
+      "url": "http://127.0.0.1:18382/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 1,
+        "seqno": 110627
+      },
+      "response_sha256": "83e3129ef82df28c515866861ddefcb2d4d315d7e0bc468a893ec7e05d2838e4"
+    },
+    {
+      "url": "http://127.0.0.1:18383/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 1,
+        "seqno": 110627
+      },
+      "response_sha256": "83e3129ef82df28c515866861ddefcb2d4d315d7e0bc468a893ec7e05d2838e4"
+    },
+    {
+      "url": "http://127.0.0.1:18384/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 1,
+        "seqno": 110627
+      },
+      "response_sha256": "83e3129ef82df28c515866861ddefcb2d4d315d7e0bc468a893ec7e05d2838e4"
+    },
+    {
+      "url": "http://127.0.0.1:18381/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 8,
+        "seqno": 110627
+      },
+      "response_sha256": "6ea5e42c5a07b4087fd3abd9f362c9c42c50b29ba8c8a9d8c5ec9911b538919d"
+    },
+    {
+      "url": "http://127.0.0.1:18382/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 8,
+        "seqno": 110627
+      },
+      "response_sha256": "6ea5e42c5a07b4087fd3abd9f362c9c42c50b29ba8c8a9d8c5ec9911b538919d"
+    },
+    {
+      "url": "http://127.0.0.1:18383/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 8,
+        "seqno": 110627
+      },
+      "response_sha256": "6ea5e42c5a07b4087fd3abd9f362c9c42c50b29ba8c8a9d8c5ec9911b538919d"
+    },
+    {
+      "url": "http://127.0.0.1:18384/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 8,
+        "seqno": 110627
+      },
+      "response_sha256": "6ea5e42c5a07b4087fd3abd9f362c9c42c50b29ba8c8a9d8c5ec9911b538919d"
+    },
+    {
+      "url": "http://127.0.0.1:18381/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 9,
+        "seqno": 110627
+      },
+      "response_sha256": "1ed0fb067b1607c1e7c92ed48cd34e90ffba857a5ab6d1d017f9b67b14734ad8"
+    },
+    {
+      "url": "http://127.0.0.1:18382/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 9,
+        "seqno": 110627
+      },
+      "response_sha256": "1ed0fb067b1607c1e7c92ed48cd34e90ffba857a5ab6d1d017f9b67b14734ad8"
+    },
+    {
+      "url": "http://127.0.0.1:18383/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 9,
+        "seqno": 110627
+      },
+      "response_sha256": "1ed0fb067b1607c1e7c92ed48cd34e90ffba857a5ab6d1d017f9b67b14734ad8"
+    },
+    {
+      "url": "http://127.0.0.1:18384/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 9,
+        "seqno": 110627
+      },
+      "response_sha256": "1ed0fb067b1607c1e7c92ed48cd34e90ffba857a5ab6d1d017f9b67b14734ad8"
+    },
+    {
+      "url": "http://127.0.0.1:18381/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 10,
+        "seqno": 110627
+      },
+      "response_sha256": "6d3c6266a8109e9589a63c49fc3d1f9683d312d8921cb1325cbf164a2654eca2"
+    },
+    {
+      "url": "http://127.0.0.1:18382/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 10,
+        "seqno": 110627
+      },
+      "response_sha256": "6d3c6266a8109e9589a63c49fc3d1f9683d312d8921cb1325cbf164a2654eca2"
+    },
+    {
+      "url": "http://127.0.0.1:18383/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 10,
+        "seqno": 110627
+      },
+      "response_sha256": "6d3c6266a8109e9589a63c49fc3d1f9683d312d8921cb1325cbf164a2654eca2"
+    },
+    {
+      "url": "http://127.0.0.1:18384/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 10,
+        "seqno": 110627
+      },
+      "response_sha256": "6d3c6266a8109e9589a63c49fc3d1f9683d312d8921cb1325cbf164a2654eca2"
+    },
+    {
+      "url": "http://127.0.0.1:18381/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 19,
+        "seqno": 110627
+      },
+      "response_sha256": "74eace4c4e399cc1fd02a628826701f2560044528c5920a9650ec3b771dbe8ae"
+    },
+    {
+      "url": "http://127.0.0.1:18382/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 19,
+        "seqno": 110627
+      },
+      "response_sha256": "74eace4c4e399cc1fd02a628826701f2560044528c5920a9650ec3b771dbe8ae"
+    },
+    {
+      "url": "http://127.0.0.1:18383/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 19,
+        "seqno": 110627
+      },
+      "response_sha256": "74eace4c4e399cc1fd02a628826701f2560044528c5920a9650ec3b771dbe8ae"
+    },
+    {
+      "url": "http://127.0.0.1:18384/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 19,
+        "seqno": 110627
+      },
+      "response_sha256": "74eace4c4e399cc1fd02a628826701f2560044528c5920a9650ec3b771dbe8ae"
+    },
+    {
+      "url": "http://127.0.0.1:18381/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 34,
+        "seqno": 110627
+      },
+      "response_sha256": "9f23fe988596aff301c2cbf37910d8888fa06a9e9ec843d0a105f330951fa0c8"
+    },
+    {
+      "url": "http://127.0.0.1:18382/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 34,
+        "seqno": 110627
+      },
+      "response_sha256": "9f23fe988596aff301c2cbf37910d8888fa06a9e9ec843d0a105f330951fa0c8"
+    },
+    {
+      "url": "http://127.0.0.1:18383/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 34,
+        "seqno": 110627
+      },
+      "response_sha256": "9f23fe988596aff301c2cbf37910d8888fa06a9e9ec843d0a105f330951fa0c8"
+    },
+    {
+      "url": "http://127.0.0.1:18384/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 34,
+        "seqno": 110627
+      },
+      "response_sha256": "9f23fe988596aff301c2cbf37910d8888fa06a9e9ec843d0a105f330951fa0c8"
+    },
+    {
+      "url": "http://127.0.0.1:18381/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 32,
+        "seqno": 110627
+      },
+      "response_sha256": "478efcdb944a0a0c8716686fec13afcb6a0db6302ac7b44661c2e8a363b9ab7e"
+    },
+    {
+      "url": "http://127.0.0.1:18382/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 32,
+        "seqno": 110627
+      },
+      "response_sha256": "478efcdb944a0a0c8716686fec13afcb6a0db6302ac7b44661c2e8a363b9ab7e"
+    },
+    {
+      "url": "http://127.0.0.1:18383/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 32,
+        "seqno": 110627
+      },
+      "response_sha256": "478efcdb944a0a0c8716686fec13afcb6a0db6302ac7b44661c2e8a363b9ab7e"
+    },
+    {
+      "url": "http://127.0.0.1:18384/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 32,
+        "seqno": 110627
+      },
+      "response_sha256": "478efcdb944a0a0c8716686fec13afcb6a0db6302ac7b44661c2e8a363b9ab7e"
+    },
+    {
+      "url": "http://127.0.0.1:18381/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 48,
+        "seqno": 110627
+      },
+      "response_sha256": "27074f963d4a70ccc9edc82f7ababa30b5a6eaa44af6aa78e3311e956f2d1235"
+    },
+    {
+      "url": "http://127.0.0.1:18382/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 48,
+        "seqno": 110627
+      },
+      "response_sha256": "27074f963d4a70ccc9edc82f7ababa30b5a6eaa44af6aa78e3311e956f2d1235"
+    },
+    {
+      "url": "http://127.0.0.1:18383/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 48,
+        "seqno": 110627
+      },
+      "response_sha256": "27074f963d4a70ccc9edc82f7ababa30b5a6eaa44af6aa78e3311e956f2d1235"
+    },
+    {
+      "url": "http://127.0.0.1:18384/jsonRPC",
+      "method": "getConfigParam",
+      "params": {
+        "param": 48,
+        "seqno": 110627
+      },
+      "response_sha256": "27074f963d4a70ccc9edc82f7ababa30b5a6eaa44af6aa78e3311e956f2d1235"
+    },
+    {
+      "url": "http://127.0.0.1:18381/jsonRPC",
+      "method": "getProofQuery",
+      "params": {
+        "query": "Lua1iQ=="
+      },
+      "response_sha256": "298471de6848f9826a91f93faadbd8878357c2e48e97932478dda76c51b41e45"
+    },
+    {
+      "url": "http://127.0.0.1:18381/jsonRPC",
+      "method": "getProofQuery",
+      "params": {
+        "query": "MDh2zwEAAAD/////AAAAAAAAAIAAAAAA1pNiiHNcZuQEv2cIyaQHH+Zl8g5QV7ID9/o+8JV9kz5hauhmmrC6j7CVJLg1qYodEA626SIlPZRBHPqAlhWKC/////8AAAAAAAAAgCOwAQCEEBFSFfyYFTaFXC/7eTYjY5NFRCLmmD+nwhccnb2iUEHU1qU0l2JML1ScMYz1fqXOmdlOl47ds/eE+OJkUo8z"
+      },
+      "response_sha256": "4ac3ac8b1be8b5f2aabeff53d05719ac4837186608927c05b47a3ac9fa4bc791"
+    },
+    {
+      "url": "http://127.0.0.1:18381/jsonRPC",
+      "method": "getProofQuery",
+      "params": {
+        "query": "4kEfIwAAAAD/////AAAAAAAAAIAjsAEAhBARUhX8mBU2hVwv+3k2I2OTRUQi5pg/p8IXHJ29olBB1NalNJdiTC9UnDGM9X6lzpnZTpeO3bP3hPjiZFKPMwgAAAABAAAACAAAAAkAAAAKAAAAEwAAACAAAAAiAAAAMAAAAA=="
+      },
+      "response_sha256": "f158abedf579223b0b6c8b59ede257a84f66beb810ad21825f3137270f557cd4"
+    },
+    {
+      "url": "http://127.0.0.1:18381/jsonRPC",
+      "method": "getProofQuery",
+      "params": {
+        "query": "4J85xv////8AAAAAAAAAgCOwAQCEEBFSFfyYFTaFXC/7eTYjY5NFRCLmmD+nwhccnb2iUEHU1qU0l2JML1ScMYz1fqXOmdlOl47ds/eE+OJkUo8z/////zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMz"
+      },
+      "response_sha256": "f23f831fd273cc192b01c4327c4aecd29bd2ac1a3fa0cace1ada4e626d458a3b"
+    },
+    {
+      "url": "http://127.0.0.1:18381/jsonRPC",
+      "method": "getAddressInformation",
+      "params": {
+        "address": "-1:3333333333333333333333333333333333333333333333333333333333333333",
+        "seqno": 110627
+      },
+      "response_sha256": "d566bf5bc2537eb0f6d81d26581d777a7e9c1731e5cae813ae9dd96554af4c1b"
+    },
+    {
+      "url": "http://127.0.0.1:18382/jsonRPC",
+      "method": "getAddressInformation",
+      "params": {
+        "address": "-1:3333333333333333333333333333333333333333333333333333333333333333",
+        "seqno": 110627
+      },
+      "response_sha256": "d566bf5bc2537eb0f6d81d26581d777a7e9c1731e5cae813ae9dd96554af4c1b"
+    },
+    {
+      "url": "http://127.0.0.1:18383/jsonRPC",
+      "method": "getAddressInformation",
+      "params": {
+        "address": "-1:3333333333333333333333333333333333333333333333333333333333333333",
+        "seqno": 110627
+      },
+      "response_sha256": "d566bf5bc2537eb0f6d81d26581d777a7e9c1731e5cae813ae9dd96554af4c1b"
+    },
+    {
+      "url": "http://127.0.0.1:18384/jsonRPC",
+      "method": "getAddressInformation",
+      "params": {
+        "address": "-1:3333333333333333333333333333333333333333333333333333333333333333",
+        "seqno": 110627
+      },
+      "response_sha256": "d566bf5bc2537eb0f6d81d26581d777a7e9c1731e5cae813ae9dd96554af4c1b"
+    },
+    {
+      "url": "http://127.0.0.1:18381/jsonRPC",
+      "method": "lookupBlock",
+      "params": {
+        "workchain": -1,
+        "shard": "-9223372036854775808",
+        "unixtime": 1792351799
+      },
+      "response_sha256": "08592bf4f67313ae1f105101c46d2d0261665c117890629bdca628e201815dfb"
+    },
+    {
+      "url": "http://127.0.0.1:18381/jsonRPC",
+      "method": "getProofQuery",
+      "params": {
+        "query": "MDh2zwEAAAD/////AAAAAAAAAIAAAAAA1pNiiHNcZuQEv2cIyaQHH+Zl8g5QV7ID9/o+8JV9kz5hauhmmrC6j7CVJLg1qYodEA626SIlPZRBHPqAlhWKC/////8AAAAAAAAAgKRXAQBkLjm2ZR5XPOpMhZJgcGtVDFf8F2TCaT/UCgXo2upLY0gjmMfZ+un55Wb1oRR93X1y1WwNH+8EdIWLmK2gszfY"
+      },
+      "response_sha256": "8b6ff9e8bb8a52668d0afa021f154155a8a22932b8ecd40481936810c8c99438"
+    },
+    {
+      "url": "http://127.0.0.1:18381/jsonRPC",
+      "method": "getProofQuery",
+      "params": {
+        "query": "4kEfIwAAAAD/////AAAAAAAAAICkVwEAZC45tmUeVzzqTIWSYHBrVQxX/Bdkwmk/1AoF6NrqS2NII5jH2frp+eVm9aEUfd19ctVsDR/vBHSFi5itoLM32AIAAAABAAAAIgAAAA=="
+      },
+      "response_sha256": "61c4e0ad8f6901737088616d78d673d6b21cbe0a01bb02f8c1ddae8620bf3b0f"
+    },
+    {
+      "url": "http://127.0.0.1:18382/jsonRPC",
+      "method": "getProofQuery",
+      "params": {
+        "query": "MDh2zwEAAAD/////AAAAAAAAAIAAAAAA1pNiiHNcZuQEv2cIyaQHH+Zl8g5QV7ID9/o+8JV9kz5hauhmmrC6j7CVJLg1qYodEA626SIlPZRBHPqAlhWKC/////8AAAAAAAAAgKRXAQBkLjm2ZR5XPOpMhZJgcGtVDFf8F2TCaT/UCgXo2upLY0gjmMfZ+un55Wb1oRR93X1y1WwNH+8EdIWLmK2gszfY"
+      },
+      "response_sha256": "fef423528b15bdaddd2746ed5f4297a561a69e59df984337abd2cbea80688bfc"
+    },
+    {
+      "url": "http://127.0.0.1:18382/jsonRPC",
+      "method": "getProofQuery",
+      "params": {
+        "query": "4kEfIwAAAAD/////AAAAAAAAAICkVwEAZC45tmUeVzzqTIWSYHBrVQxX/Bdkwmk/1AoF6NrqS2NII5jH2frp+eVm9aEUfd19ctVsDR/vBHSFi5itoLM32AIAAAABAAAAIgAAAA=="
+      },
+      "response_sha256": "61c4e0ad8f6901737088616d78d673d6b21cbe0a01bb02f8c1ddae8620bf3b0f"
+    },
+    {
+      "url": "http://127.0.0.1:18383/jsonRPC",
+      "method": "getProofQuery",
+      "params": {
+        "query": "MDh2zwEAAAD/////AAAAAAAAAIAAAAAA1pNiiHNcZuQEv2cIyaQHH+Zl8g5QV7ID9/o+8JV9kz5hauhmmrC6j7CVJLg1qYodEA626SIlPZRBHPqAlhWKC/////8AAAAAAAAAgKRXAQBkLjm2ZR5XPOpMhZJgcGtVDFf8F2TCaT/UCgXo2upLY0gjmMfZ+un55Wb1oRR93X1y1WwNH+8EdIWLmK2gszfY"
+      },
+      "response_sha256": "8a71c83987aa88c3351ff3a177cb6fd96d57a3e09d5249254c2d1d70984d5995"
+    },
+    {
+      "url": "http://127.0.0.1:18383/jsonRPC",
+      "method": "getProofQuery",
+      "params": {
+        "query": "4kEfIwAAAAD/////AAAAAAAAAICkVwEAZC45tmUeVzzqTIWSYHBrVQxX/Bdkwmk/1AoF6NrqS2NII5jH2frp+eVm9aEUfd19ctVsDR/vBHSFi5itoLM32AIAAAABAAAAIgAAAA=="
+      },
+      "response_sha256": "61c4e0ad8f6901737088616d78d673d6b21cbe0a01bb02f8c1ddae8620bf3b0f"
+    },
+    {
+      "url": "http://127.0.0.1:18384/jsonRPC",
+      "method": "getProofQuery",
+      "params": {
+        "query": "MDh2zwEAAAD/////AAAAAAAAAIAAAAAA1pNiiHNcZuQEv2cIyaQHH+Zl8g5QV7ID9/o+8JV9kz5hauhmmrC6j7CVJLg1qYodEA626SIlPZRBHPqAlhWKC/////8AAAAAAAAAgKRXAQBkLjm2ZR5XPOpMhZJgcGtVDFf8F2TCaT/UCgXo2upLY0gjmMfZ+un55Wb1oRR93X1y1WwNH+8EdIWLmK2gszfY"
+      },
+      "response_sha256": "fef423528b15bdaddd2746ed5f4297a561a69e59df984337abd2cbea80688bfc"
+    },
+    {
+      "url": "http://127.0.0.1:18384/jsonRPC",
+      "method": "getProofQuery",
+      "params": {
+        "query": "4kEfIwAAAAD/////AAAAAAAAAICkVwEAZC45tmUeVzzqTIWSYHBrVQxX/Bdkwmk/1AoF6NrqS2NII5jH2frp+eVm9aEUfd19ctVsDR/vBHSFi5itoLM32AIAAAABAAAAIgAAAA=="
+      },
+      "response_sha256": "61c4e0ad8f6901737088616d78d673d6b21cbe0a01bb02f8c1ddae8620bf3b0f"
+    }
+  ]
+}

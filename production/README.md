@@ -39,3 +39,9 @@ development-only.
 Node keys (consensus seed, keyring, console keys) and the controller root key
 are never stored in this repository. See design section 3 for where each one
 lives.
+
+## Network correctness checks
+
+The read-only [HTTP checker](scripts/README.md) takes an explicit network identity,
+compares independent nodes, checks Elector results and reuses the consensus proof
+verifier from a held anchor. It needs no validator keys or SSH.
