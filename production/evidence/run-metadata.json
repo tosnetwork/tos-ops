@@ -19,5 +19,12 @@
     "diff_check": "exit 0"
   },
   "live_exit_status": 1,
-  "live_limitation": "Config32 historical Elector proof unavailable from all four endpoints; current Config34 and anchored head finality passed."
+  "live_limitation": "Config32 historical Elector proof unavailable from all four endpoints; current Config34 and anchored head finality passed.",
+  "verification_library_provenance": {
+    "status": "unpinned pre-existing local artifact; superseded by clean-build-metadata.json",
+    "target": "tos-proof-embedded",
+    "configuration": "Release; clang-21; Ninja",
+    "clean_source_revision": null,
+    "source_revision_field_describes": "live node and fixture source, not an attested verifier source tree"
+  }
 }

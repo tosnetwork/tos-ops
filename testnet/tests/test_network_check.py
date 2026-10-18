@@ -9,6 +9,7 @@ import os
 import sys
 import urllib.error
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import testnet_lib as wire
@@ -427,6 +428,7 @@ def test_missing_proof_backend_is_not_node_verified(tmp_path):
 
     result = n.check_network(production_args(tmp_path), Served(), lambda: NOW)
     assert not result["ok"] and "install" in result["checks"][-1]["reason"]
+    assert "production/scripts/README.md#build-the-verifier" in result["checks"][-1]["reason"]
 
 
 def test_previous_set_must_really_be_previous():
@@ -679,10 +681,20 @@ def test_real_proven_configuration_and_elector_match_at_the_same_block():
     assert n.compare_elected(vset, n.decode_elector(data))["status"] == "PASS"
 
 
-def test_missing_native_symbols_refuse_cleanly(monkeypatch):
-    monkeypatch.setattr(n.ct, "CDLL", lambda _: object())
-    with pytest.raises(n.NetworkError, match="consensus proof ABI"):
+@pytest.mark.parametrize("missing", ["file", "tos_proof_acquire", "tos_proof_verify_embedded"])
+def test_missing_native_symbols_refuse_cleanly(monkeypatch, missing):
+    def load(_):
+        if missing == "file":
+            raise OSError("library unavailable")
+        exports = {"tos_proof_acquire": lambda: None, "tos_proof_verify_embedded": lambda: None}
+        del exports[missing]
+        return SimpleNamespace(**exports)
+
+    monkeypatch.setattr(n.ct, "CDLL", load)
+    with pytest.raises(n.NetworkError, match="consensus proof ABI") as refused:
         n.ProofVerifier("unused")
+    assert "build target tos-proof-embedded" in str(refused.value)
+    assert "production/scripts/README.md#build-the-verifier" in str(refused.value)
 
 
 def test_config1_selects_the_proven_elector_account_and_public_reads(tmp_path):

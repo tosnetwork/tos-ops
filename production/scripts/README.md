@@ -9,7 +9,7 @@ python3 production/scripts/check-network.py \
   --global-id 1 --global-config /etc/tos/global-config.json \
   --rpc https://node-a.example/jsonRPC --rpc https://node-b.example/jsonRPC \
   --min-version 16 --expected-auth-tag <64-hex-tag> \
-  --proof-library /opt/tos/lib/libtosproofverify.so
+  --proof-library "$TOS_ROOT/build-network-check/lite-client/proof-verify/libtosproofverify.so"
 ```
 
 Global id 2 uses the same command with `--global-id 2` and that network's
@@ -25,15 +25,61 @@ added. Full proof verification uses the existing consensus verification library
 through its C ABI, with HTTP callbacks to `getProofQuery`. It is not a new
 Python signature implementation. A verified library can be installed on a
 non-validator machine; `TOS_ROOT` is optional and only supplies its default path.
-To build the library from an authenticated source checkout:
+The explicit example above uses the clean build below; the optional automatic
+lookup still uses `$TOS_ROOT/build/lite-client/proof-verify/libtosproofverify.so`.
+It does not build or install the library for you.
+
+## Build the verifier
+
+Use an independently held, authenticated tos checkout at
+`85c679c3454f306eb867e25b1960ae3d757bd3dd`, with its vendored dependencies intact.
+Install the prerequisites described in that commit's `BUILD.md`. The tested
+profile is Linux x86-64, Release, clang-21/clang++-21 and Ninja. Run from this
+settings repository, with `TOS_ROOT` naming that checkout:
 
 ```sh
-cmake --build "$TOS_ROOT/build" --target tos-proof-embedded
+set -eu
+TOS_COMMIT=85c679c3454f306eb867e25b1960ae3d757bd3dd
+test "$(git -C "$TOS_ROOT" rev-parse HEAD)" = "$TOS_COMMIT"
+test -z "$(git -C "$TOS_ROOT" status --porcelain --untracked-files=no)"
+# Use a new directory, not an existing node build.
+test ! -e "$TOS_ROOT/build-network-check"
+cmake -S "$TOS_ROOT" -B "$TOS_ROOT/build-network-check" -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_C_COMPILER=clang-21 -DCMAKE_CXX_COMPILER=clang++-21
+cmake --build "$TOS_ROOT/build-network-check" --target tos-proof-embedded -j8
+export PROOF_VERIFY_LIBRARY="$TOS_ROOT/build-network-check/lite-client/proof-verify/libtosproofverify.so"
+for symbol in tos_proof_acquire tos_proof_verify_embedded; do
+  nm -D --defined-only "$PROOF_VERIFY_LIBRARY" | awk '{print $3}' | grep -Fx "$symbol" || exit 1
+done
+(cd "$TOS_ROOT/build-network-check/lite-client/proof-verify" &&
+  sha256sum libtosproofverify.so > libtosproofverify.so.sha256 &&
+  sha256sum -c libtosproofverify.so.sha256)
 ```
 
-The default path is
-`$TOS_ROOT/build/lite-client/proof-verify/libtosproofverify.so`. The HTTP transport
-is read-only, limits each response to 96 MiB, and starts at most one request per
+Use a fresh directory; change `build-network-check` consistently if that name
+is already in use. Reduce `-j8` on machines with less build memory. `tos-proof-embedded` is a
+shared-library target marked `EXCLUDE_FROM_ALL`: building the node or the default
+target does not produce it. It emits the `.so` at the exact path above, with the
+two C ABI exports `tos_proof_acquire` and `tos_proof_verify_embedded`; either
+missing symbol or a load failure is refused with a pointer to this section.
+Record the source commit, compiler version, build flags and resulting digest
+alongside the check report. Keep the checksum manifest independently; after
+copying the library, compare it with that trusted manifest before use. For later
+runs, repeat `sha256sum -c libtosproofverify.so.sha256` from the library directory
+using that saved manifest; do not regenerate it from a replacement binary. A digest
+recorded by an endpoint being checked is not an independent reference.
+
+Never fetch the checkout, verifier binary, manifest or trusted network anchor
+from a checked endpoint. The digest in the evidence identifies one local build,
+not a promise of bit-identical binaries across compilers, build paths or flags.
+See [the clean-build evidence](../evidence/README.md) for the measured digest and
+live rerun. Python packages or a running validator are not needed to build or
+load this C ABI.
+
+## HTTP resource bounds
+
+The HTTP transport is read-only, limits each response to 96 MiB, and starts at most one request per
 450 ms per endpoint. Native proof acquisition has a 64 MiB material budget and
 an acquisition deadline. No transaction, configuration or local node state is
 written. Pick independently operated endpoints; multiple URL aliases do not
@@ -97,11 +143,11 @@ point for that stronger check.
 ## Tests
 
 ```sh
-TOS_ROOT=<source-checkout> \
-PROOF_VERIFY_LIBRARY=<verified-library> \
+TOS_ROOT="$TOS_ROOT" \
+PROOF_VERIFY_LIBRARY="$TOS_ROOT/build-network-check/lite-client/proof-verify/libtosproofverify.so" \
   python3 -m pytest -q testnet/tests
-TOS_ROOT=<source-checkout> \
-PROOF_VERIFY_LIBRARY=<verified-library> \
+TOS_ROOT="$TOS_ROOT" \
+PROOF_VERIFY_LIBRARY="$TOS_ROOT/build-network-check/lite-client/proof-verify/libtosproofverify.so" \
   python3 testnet/tests/mutants.py
 ```
 

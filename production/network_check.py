@@ -476,7 +476,10 @@ class ProofVerifier:
             self.acquire = self.library.tos_proof_acquire
             self.verify = self.library.tos_proof_verify_embedded
         except (OSError, AttributeError) as exc:
-            raise NetworkError(f"cannot load consensus proof ABI: {exc}") from exc
+            raise NetworkError(
+                f"cannot load consensus proof ABI: {exc}; build target tos-proof-embedded "
+                "using production/scripts/README.md#build-the-verifier"
+            ) from exc
         self.acquire.restype = ct.c_int
         self.acquire.argtypes = [
             ct.c_char_p,
@@ -796,7 +799,8 @@ def check_network(args, rpc=None, now=time.time, verifier=None):
             if verifier is None:
                 require(
                     args.proof_library and Path(args.proof_library).is_file(),
-                    "proof route is served; install the consensus proof library (--proof-library)",
+                    "proof route is served; install the consensus proof library (--proof-library); "
+                    "build target tos-proof-embedded using production/scripts/README.md#build-the-verifier",
                 )
                 verifier = ProofVerifier(args.proof_library)
             sources = [proof_url] + [u for u in args.rpc if u != proof_url]
