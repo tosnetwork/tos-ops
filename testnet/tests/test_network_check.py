@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import sys
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -391,6 +392,16 @@ def test_production_policy_refusals(tmp_path, problem):
     result = n.check_network(args, nodes, lambda: NOW)
     assert result["ok"] is False, result
     assert result["checks"][-1]["status"] == "FAIL"
+    expected_check, expected_reason = {
+        "tag": ("auth_policy", "AUTH tag differs"),
+        "hash": ("auth_policy", "Config48 hash differs"),
+        "version": ("config8", "version below required minimum"),
+        "mandatory": ("auth_policy", "absent from ConfigParam 9"),
+        "key": ("auth_policy", "requires an independently expected AUTH"),
+        "snapshot": ("elector_data", "cell underflow"),
+    }[problem]
+    assert result["checks"][-1]["name"] == expected_check
+    assert expected_reason in result["checks"][-1]["reason"]
 
 
 def test_a_served_route_with_bad_material_never_falls_back(tmp_path):
@@ -804,3 +815,30 @@ def test_initial_set_proof_tries_every_named_source(tmp_path, previous):
     result = n.check_network(production_args(tmp_path), nodes, lambda: NOW, verifier)
     assert result["ok"], result["checks"][-1]
     assert verifier.initial_sources == ["a", "b"]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [OSError("connection reset"), urllib.error.URLError("offline"), TimeoutError("timed out")],
+)
+def test_transport_failure_retries_the_next_source_with_a_valid_proof(failure):
+    calls = []
+    anchor, request, parts = proof_fixture()
+
+    class Backend:
+        def fetch(self, rpc, url, *rest):
+            calls.append(url)
+            if url == "a":
+                raise failure
+            return proof_library().verify_material(anchor, request, parts, 1791200932)
+
+    result, url, missing = n.fetch_proof(Backend(), None, ["a", "b"], None, None, None, NOW)
+    assert result["status"] == "verified" and url == "b"
+    assert calls == ["a", "b"]
+    assert missing == [{"url": "a", "reason": str(failure)}]
+
+
+def test_documented_mutation_command_runs_all_labels():
+    commands = (ROOT / "production/scripts/README.md").read_text().splitlines()
+    invocation = [line.strip() for line in commands if "python3 testnet/tests/mutants.py" in line]
+    assert invocation == ["python3 testnet/tests/mutants.py"]

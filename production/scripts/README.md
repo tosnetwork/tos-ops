@@ -102,7 +102,7 @@ PROOF_VERIFY_LIBRARY=<verified-library> \
   python3 -m pytest -q testnet/tests
 TOS_ROOT=<source-checkout> \
 PROOF_VERIFY_LIBRARY=<verified-library> \
-  python3 testnet/tests/mutants.py NC1 NC2 NC3 NC4 NC5 NC6 NC7 NC8 NC9 NC10 NC11 NC12 NC13 NC14 NC15 NC16 NC17 NC18 NC19
+  python3 testnet/tests/mutants.py
 ```
 
 The recorded proof tests need that library; without it they explicitly skip.

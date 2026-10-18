@@ -886,6 +886,18 @@ M += [
         '                    sources,\n                    identity["anchor"],',
         '                    [proof_url],\n                    identity["anchor"],',
     ),
+    (
+        "NC25 proof transport failure prevents source fallback",
+        NETWORK,
+        '        except OSError as exc:\n            unavailable.append({"url": url, "reason": str(exc)})',
+        "        except OSError:\n            raise",
+    ),
+    (
+        "NC26 verification failure retried as a transport failure",
+        NETWORK,
+        '        except OSError as exc:\n            unavailable.append({"url": url, "reason": str(exc)})',
+        '        except (OSError, NetworkError) as exc:\n            unavailable.append({"url": url, "reason": str(exc)})',
+    ),
 ]
 
 

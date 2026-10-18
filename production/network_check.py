@@ -611,7 +611,8 @@ class ProofVerifier:
 def fetch_proof(verifier, rpc, urls, anchor, target, params, now, account=ELECTOR):
     """Try another archival source only when no proof material was available.
 
-    Native verification errors are not RPC errors and are never retried away.
+    Transport failures mean no material was obtained. Native verification
+    errors are not transport or RPC errors and are never retried away.
     """
     unavailable = []
     for url in urls:
@@ -628,6 +629,8 @@ def fetch_proof(verifier, rpc, urls, anchor, target, params, now, account=ELECTO
             )
             if not missing:
                 raise
+            unavailable.append({"url": url, "reason": str(exc)})
+        except OSError as exc:
             unavailable.append({"url": url, "reason": str(exc)})
     raise NetworkError(f"proof material unavailable from every named source: {unavailable}")
 
