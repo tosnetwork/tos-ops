@@ -22,6 +22,7 @@ from conftest import DATA, SCRIPTS
 spec = importlib.util.spec_from_file_location("testnet_elections", SCRIPTS / "testnet-elections.py")
 elections = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(elections)
+REAL_ENSURE_POOL_OWNER = elections.ensure_pool_owner
 
 PLAN = (DATA / "operations-plan-epoch1.txt").read_text()
 CONTROLLER = "21380987703eb9b03e8ec236bf23a457a44aea36118c4f467bfd082ca1d32a77"
@@ -2255,3 +2256,81 @@ def test_withdraw_all_records_a_variable_payment(boarding, withdraw_body_stub):
     assert record["requested_nanotos"] is None and record["state"] == "settled"
     assert 0 < result["paid_nanotos"] < elections.parse_tos(elections.WITHDRAW_ALL_TOS, "all")
     assert result["pool"] == pool
+
+
+def test_concurrent_onboards_reuse_one_owner_key_set(boarding, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier, Event, Lock
+
+    b = boarding
+    boarded(b)
+    paths = elections.pool_owner_paths(b["ceremony"], "node-1")
+    for path in paths.values():
+        path.unlink()
+    first_generating, second_entered, second_generating = Event(), Event(), Event()
+    counter_lock = Lock()
+    calls = []
+    ready = Barrier(2)
+    entrants = []
+
+    def generate(command, cwd, **kwargs):
+        work = Path(cwd)
+        with counter_lock:
+            calls.append((work / "owner.pk").is_file())
+            number = len(calls)
+        if number == 1:
+            first_generating.set()
+            assert second_entered.wait(60)
+            # Without serialization the second generator publishes a different key
+            # before the first one resumes. With the lock it cannot enter here.
+            second_generating.wait(0.2)
+        else:
+            second_generating.set()
+        if not (work / "owner.pk").exists():
+            (work / "owner.pk").write_bytes(bytes([number + 1]) * 32)
+        own = b["owner"] if (work / "owner.pk").read_bytes() == b"\x02" * 32 else "-1:" + "ef" * 32
+        (work / "owner.addr").write_bytes(
+            bytes.fromhex(own.split(":")[1]) + (-1).to_bytes(4, "big", signed=True)
+        )
+        (work / "owner-query.boc").write_bytes(b"init:" + (work / "owner.pk").read_bytes())
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    def ensure(args, name, global_id, previous):
+        with counter_lock:
+            entrants.append(name)
+            number = len(entrants)
+        ready.wait(timeout=60)
+        if number == 2:
+            assert first_generating.wait(60)
+            second_entered.set()
+        return REAL_ENSURE_POOL_OWNER(args, name, global_id, previous, run=generate)
+
+    class OwnerReady(Exception):
+        pass
+
+    def stop_before_owner_funding(args, operations, *a, **kw):
+        if args.op_id == "fund-owner-node-1":
+            raise OwnerReady
+        return operations.journal.record(args.op_id)
+
+    monkeypatch.setattr(
+        elections,
+        "host_operation",
+        lambda operations, host, name, op_id, *a, **kw: operations.journal.record(op_id),
+    )
+    monkeypatch.setattr(elections, "ensure_pool_owner", ensure)
+    monkeypatch.setattr(elections, "fund", stop_before_owner_funding)
+
+    def run():
+        with pytest.raises(OwnerReady):
+            onboard(b)
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        first = workers.submit(run)
+        second = workers.submit(run)
+        first.result(timeout=90)
+        second.result(timeout=90)
+    assert calls == [False, True]
+    assert paths["key"].read_bytes() == b"\x02" * 32
+    assert paths["init"].read_bytes() == b"init:" + paths["key"].read_bytes()
+    assert elections.address_from_file(paths["addr"]) == b["owner"]

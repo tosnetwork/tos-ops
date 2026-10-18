@@ -688,56 +688,59 @@ def ensure_pool_owner(
     without its key is refused). Refused when an earlier epoch recorded the address.
     """
     ceremony = Path(args.ceremony)
-    paths = pool_owner_paths(ceremony, name)
-    if paths["addr"].is_file() and not paths["key"].is_file():
-        raise lib.TestnetError(
-            f"{paths['addr']} exists but its key {paths['key']} does not; nothing that key "
-            "cannot sign for is funded"
-        )
-    smartcont = Path(args.tos_root) / "crypto" / "smartcont"
-    with tempfile.TemporaryDirectory(prefix="pool-owner-") as work:
-        work_dir = Path(work)
-        (work_dir / "gid.fif").write_text(f"{global_id} constant tos-global-id\n")
-        if paths["key"].is_file():
-            lib.write_new(work_dir / "owner.pk", paths["key"].read_bytes(), 0o600)
-        result = run(
-            [
-                args.fift,
-                "-I",
-                f"{Path(args.tos_root) / 'crypto' / 'fift' / 'lib'}:{smartcont}",
-                "-L",
-                "gid.fif",
-                "-s",
-                str(smartcont / "new-wallet-v3.fif"),
-                "-1",
-                str(POOL_OWNER_SUBWALLET),
-                "owner",
-            ],
-            cwd=work_dir,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        made = [work_dir / f for f in ("owner.pk", "owner.addr", "owner-query.boc")]
-        if result.returncode != 0 or not all(p.is_file() for p in made):
-            raise lib.TestnetError(f"pool owner wallet: {(result.stdout + result.stderr)[-600:]}")
-        if paths["addr"].is_file():
-            if paths["addr"].read_bytes() != made[1].read_bytes():
+    with lib.wallet_records_lock(ceremony):
+        paths = pool_owner_paths(ceremony, name)
+        if paths["addr"].is_file() and not paths["key"].is_file():
+            raise lib.TestnetError(
+                f"{paths['addr']} exists but its key {paths['key']} does not; nothing that key "
+                "cannot sign for is funded"
+            )
+        smartcont = Path(args.tos_root) / "crypto" / "smartcont"
+        with tempfile.TemporaryDirectory(prefix="pool-owner-") as work:
+            work_dir = Path(work)
+            (work_dir / "gid.fif").write_text(f"{global_id} constant tos-global-id\n")
+            if paths["key"].is_file():
+                lib.write_new(work_dir / "owner.pk", paths["key"].read_bytes(), 0o600)
+            result = run(
+                [
+                    args.fift,
+                    "-I",
+                    f"{Path(args.tos_root) / 'crypto' / 'fift' / 'lib'}:{smartcont}",
+                    "-L",
+                    "gid.fif",
+                    "-s",
+                    str(smartcont / "new-wallet-v3.fif"),
+                    "-1",
+                    str(POOL_OWNER_SUBWALLET),
+                    "owner",
+                ],
+                cwd=work_dir,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            made = [work_dir / f for f in ("owner.pk", "owner.addr", "owner-query.boc")]
+            if result.returncode != 0 or not all(p.is_file() for p in made):
                 raise lib.TestnetError(
-                    f"{paths['key']} does not belong to the recorded pool owner "
-                    f"{address_from_file(paths['addr'])}"
+                    f"pool owner wallet: {(result.stdout + result.stderr)[-600:]}"
                 )
-        else:
-            lib.private_dir(ceremony / "secret")
-            if not paths["key"].is_file():
-                lib.write_new(paths["key"], made[0].read_bytes(), 0o600)
-            paths["addr"].parent.mkdir(mode=0o755, exist_ok=True)
-            if not paths["init"].is_file():
-                lib.write_new(paths["init"], made[2].read_bytes())
-            lib.write_new(paths["addr"], made[1].read_bytes())
-    address = address_from_file(paths["addr"])
-    if not address.startswith("-1:"):
-        raise lib.TestnetError(f"the pool owner {address} is not in the masterchain")
+            if paths["addr"].is_file():
+                if paths["addr"].read_bytes() != made[1].read_bytes():
+                    raise lib.TestnetError(
+                        f"{paths['key']} does not belong to the recorded pool owner "
+                        f"{address_from_file(paths['addr'])}"
+                    )
+            else:
+                lib.private_dir(ceremony / "secret")
+                if not paths["key"].is_file():
+                    lib.write_new(paths["key"], made[0].read_bytes(), 0o600)
+                paths["addr"].parent.mkdir(mode=0o755, exist_ok=True)
+                if not paths["init"].is_file():
+                    lib.write_new(paths["init"], made[2].read_bytes())
+                lib.write_new(paths["addr"], made[1].read_bytes())
+        address = address_from_file(paths["addr"])
+        if not address.startswith("-1:"):
+            raise lib.TestnetError(f"the pool owner {address} is not in the masterchain")
     record_fresh_wallets(ceremony, {f"pool-owner-{name}": address}, previous)
     return address
 

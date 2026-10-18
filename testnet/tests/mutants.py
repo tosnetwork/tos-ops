@@ -31,6 +31,12 @@ CO = W / "scripts/testnet-coordinator.py"
 
 M = [
     (
+        "W5 owner artifacts published without the shared ceremony lock",
+        EL,
+        "    with lib.wallet_records_lock(ceremony):\n        paths = pool_owner_paths(ceremony, name)",
+        '    with __import__("contextlib").nullcontext():\n        paths = pool_owner_paths(ceremony, name)',
+    ),
+    (
         "W1 withdrawal resubmit bypasses the shared preflight",
         EL,
         '                    withdrawal_preflight(\n                        operations,\n                        args.tos_root,\n                        record["destination"],\n                        record["wallet"],\n                        record["requested_nanotos"],\n                    )',
@@ -75,8 +81,8 @@ M = [
     (
         "Q4 pool updates omit the shared lock",
         EL,
-        "    with lib.wallet_records_lock(ceremony):",
-        "    with __import__('contextlib').nullcontext():",
+        "    with lib.wallet_records_lock(ceremony):\n        pools = read_pools(ceremony)",
+        "    with __import__('contextlib').nullcontext():\n        pools = read_pools(ceremony)",
     ),
     (
         "O1 gate ignores unexplained activity",
