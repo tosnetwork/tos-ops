@@ -69,19 +69,21 @@ and drive load through a post-quantum high-volume wallet.
       reserve and signs, reports the window, and sends nothing.
 
   withdraw --name NAME --id ID [--new] --ceremony DIR --tos-root DIR --fift PATH
-          --rpc URL --confirm-rpc URL (--amount TOS | --all) [--during-election]
+          --rpc URL --confirm-rpc URL (--amount TOS | --all)
           [--dry-run]
       Take stake principal out of NAME's pool (DIR/pools.json) to its owner, as
       operation ID (--new creates it; an existing id never changes its
       parameters, and a settled one only reports its outcome). The pool's
       WITHDRAW (op 0x1000, the pool's own withdraw.fif) is signed here with the
       owner's offline key as a bounceable 1 TOS transfer from the owner wallet.
-      Refused while an election is open unless --during-election, and unless
+      Refused while an election is open, and unless
       the pool is the recorded address with the pinned code and the owner role
       (the validator role may have been replaced). It settles when both
       validators show the pool's payment and the owner's transaction that kept
-      it; appended to DIR/withdrawals.jsonl. Only liquid balance can leave: a
-      stake returns to the pool after stake_held_for.
+      it, at least the requested --amount (--all accepts a variable payment).
+      A short payment is a terminal failure recording what was paid; a settled
+      result is appended to DIR/withdrawals.jsonl. Only liquid balance can leave:
+      a stake returns to the pool after stake_held_for.
 
   reconcile | record --id ID (--settled | --failed a|b|c|d) [--hint TX]
           | resubmit --id ID | baseline --wallet ADDR --reason TEXT
@@ -949,6 +951,31 @@ def withdraw_id_record(operations: ops.Operations, args: argparse.Namespace) -> 
     return record
 
 
+def withdrawal_preflight(
+    operations: ops.Operations, tos_root, pool: str, owner: str, requested_nanotos: int | None
+) -> None:
+    """The same safety checks apply before the first send and every resubmission."""
+    operations.check_network()
+    owner_role_check(operations, tos_root, pool, owner)
+    election = operations.both(lambda node: Chain(node.url, node.rpc).active_election())
+    if election:
+        raise lib.TestnetError(
+            f"election {election} is open: the election task stakes from this balance; "
+            "withdraw between elections"
+        )
+    pool_balance = operations.balance(pool)
+    available = pool_balance - POOL_STORAGE_NANOTOS
+    if available <= 0:
+        raise lib.TestnetError(f"the pool holds only {pool_balance / NANO:.9f} TOS")
+    if requested_nanotos is not None and requested_nanotos > available:
+        raise lib.TestnetError(
+            f"the pool holds {pool_balance / NANO:.9f} TOS, {available / NANO:.9f} withdrawable "
+            "(staked funds return to the pool after the Elector releases them)"
+        )
+    if operations.balance(owner) < OWNER_MESSAGE_NANOTOS + ops.FEE_ALLOWANCE_NANOTOS // 10:
+        raise lib.TestnetError("the owner wallet cannot pay for the withdrawal message")
+
+
 def withdraw(args: argparse.Namespace, operations: ops.Operations, global_id: int) -> dict:
     """Take stake principal out of a pool to its offline owner, as operation --id."""
     name = args.name
@@ -968,25 +995,10 @@ def withdraw(args: argparse.Namespace, operations: ops.Operations, global_id: in
     if existing is None and ops.state_of(principal) != "settled":
         raise lib.TestnetError(f"the principal of {name} is not settled; nothing to withdraw yet")
 
+    requested_nanotos = None if args.all else parse_tos(args.amount, "--amount")
+
     def prerequisites() -> None:
-        owner_role_check(operations, args.tos_root, pool, owner)
-        election = operations.both(lambda node: Chain(node.url, node.rpc).active_election())
-        if election and not args.during_election:
-            raise lib.TestnetError(
-                f"election {election} is open: the election task stakes from this balance; "
-                "withdraw between elections or pass --during-election"
-            )
-        pool_balance = operations.balance(pool)
-        available = pool_balance - POOL_STORAGE_NANOTOS
-        if available <= 0:
-            raise lib.TestnetError(f"the pool holds only {pool_balance / NANO:.9f} TOS")
-        if not args.all and parse_tos(args.amount, "--amount") > available:
-            raise lib.TestnetError(
-                f"the pool holds {pool_balance / NANO:.9f} TOS, {available / NANO:.9f} withdrawable "
-                "(staked funds return to the pool after the Elector releases them)"
-            )
-        if operations.balance(owner) < OWNER_MESSAGE_NANOTOS + ops.FEE_ALLOWANCE_NANOTOS // 10:
-            raise lib.TestnetError("the owner wallet cannot pay for the withdrawal message")
+        withdrawal_preflight(operations, args.tos_root, pool, owner, requested_nanotos)
 
     with tempfile.TemporaryDirectory(prefix="withdraw-") as work:
         body = withdraw_body(args, amount_tos, Path(work))
@@ -1005,7 +1017,7 @@ def withdraw(args: argparse.Namespace, operations: ops.Operations, global_id: in
             OWNER_MESSAGE_NANOTOS,
             body,
             prerequisites,
-            {"amount_tos": amount_tos},
+            {"amount_tos": amount_tos, "requested_nanotos": requested_nanotos},
         )
     result = {
         "id": args.id,
@@ -3094,7 +3106,6 @@ def main(argv: list[str] | None = None) -> int:
     how_much = p_withdraw.add_mutually_exclusive_group(required=True)
     how_much.add_argument("--amount")
     how_much.add_argument("--all", action="store_true")
-    p_withdraw.add_argument("--during-election", action="store_true")
     p_withdraw.add_argument("--dry-run", action="store_true")
     p_reconcile = sub.add_parser("reconcile", parents=[common])
     p_reconcile.add_argument("--wallet", action="append", default=[])
@@ -3228,15 +3239,19 @@ def manual(args: argparse.Namespace, operations: ops.Operations, profile: dict) 
                         entry.get("operator"),
                         entry.get("controller"),
                     )
+                    if (
+                        operations.balance(record["wallet"])
+                        < record["value"] + ops.FEE_ALLOWANCE_NANOTOS // 10
+                    ):
+                        raise lib.TestnetError("the wallet cannot pay the message any more")
                 else:
-                    owner_role_check(
-                        operations, args.tos_root, record["destination"], record["wallet"]
+                    withdrawal_preflight(
+                        operations,
+                        args.tos_root,
+                        record["destination"],
+                        record["wallet"],
+                        record["requested_nanotos"],
                     )
-                if (
-                    operations.balance(record["wallet"])
-                    < record["value"] + ops.FEE_ALLOWANCE_NANOTOS // 10
-                ):
-                    raise lib.TestnetError("the wallet cannot pay the message any more")
 
         result = operations.resubmit(args.id, prerequisites, expect)
     elif args.settled:

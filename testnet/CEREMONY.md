@@ -507,13 +507,15 @@ parameters can never change. The command works in five steps:
 2. It signs, on the coordinator with the offline key, a bounceable 1 TOS transfer
    from the owner wallet carrying that body. The pool sends the amount and the
    unspent value back to the owner.
-3. It refuses while an election is open (`--during-election` overrides).
+3. It refuses while an election is open, including on resubmission.
 4. It checks the pool's address, the pinned code and its **owner** role. The
    validator role is not checked, because the owner may have replaced it.
 5. It settles only when both validators show the pool's payment and the owner
    wallet's transaction that **retained** it: credit equal to the payment, compute
-   success, no message sent on. The result is appended to
-   `ceremony/withdrawals.jsonl`.
+   success, no message sent on. For `--amount`, the payment must be at least the
+   requested amount. A smaller retained payment is a terminal failure recording
+   what was paid; a person may request a new operation. `--all` accepts the variable
+   payment. A settled result is appended to `ceremony/withdrawals.jsonl`.
 
 `check-testnet.py` refuses a `genesis.json` of version 16 or later that records no
 `auth_policy`, so this branch's checker does not accept epoch 3's genesis (version

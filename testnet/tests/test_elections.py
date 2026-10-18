@@ -1581,7 +1581,6 @@ def withdraw_args(b, **extra):
         new=True,
         amount="5",
         all=False,
-        during_election=False,
         dry_run=False,
     )
     args.update(extra)
@@ -2125,8 +2124,7 @@ def test_operations_plan_requires_both_validators_authority(boarding, monkeypatc
     assert b["ops"].journal.record("authorize-operations-node-1") is None
 
 
-@pytest.mark.parametrize("during_election", [False, True])
-def test_withdraw_refuses_disagreeing_election_views(boarding, withdraw_body_stub, during_election):
+def test_withdraw_refuses_disagreeing_election_views(boarding, withdraw_body_stub):
     boarded(boarding)
     chain = boarding["chain"]
     elector_idle(chain)
@@ -2141,9 +2139,7 @@ def test_withdraw_refuses_disagreeing_election_views(boarding, withdraw_body_stu
     second.rpc = rpc
     sent = list(chain.sent)
     with pytest.raises(elections.ops.Unknown, match="disagree"):
-        elections.withdraw(
-            withdraw_args(boarding, during_election=during_election), boarding["ops"], 2
-        )
+        elections.withdraw(withdraw_args(boarding), boarding["ops"], 2)
     assert chain.sent == sent
 
 
@@ -2197,3 +2193,65 @@ def test_ceremony_decisions_do_not_select_one_validator(entry):
         and node.attr == "nodes"
         for node in ast.walk(tree)
     ), "ceremony decisions must use the two-validator helper"
+
+
+def open_withdrawal(boarding, monkeypatch):
+    boarded(boarding)
+    elector_idle(boarding["chain"])
+    crash(monkeypatch, "withdraw-1", "signed")
+    with pytest.raises(KeyboardInterrupt):
+        elections.withdraw(withdraw_args(boarding), boarding["ops"], 2)
+    monkeypatch.setattr(elections.ops, "crash_point", lambda i, p: None)
+    return elections.argparse.Namespace(
+        **dict(vars(withdraw_args(boarding, new=False)), command="resubmit")
+    )
+
+
+def test_withdrawal_resubmit_refuses_an_open_election(boarding, withdraw_body_stub, monkeypatch):
+    args = open_withdrawal(boarding, monkeypatch)
+    chain = boarding["chain"]
+    chain.account(elections.ELECTOR)["getters"]["active_election_id"] = lambda: {
+        "exit_code": 0,
+        "stack": [num(7)],
+    }
+    sent = list(chain.sent)
+    with pytest.raises(lib.TestnetError, match="election 7 is open"):
+        elections.manual(args, boarding["ops"], lib.load_profile())
+    assert chain.sent == sent
+    assert boarding["ops"].journal.record("withdraw-1")["state"] == "signed"
+
+
+@pytest.mark.parametrize("resubmit", [False, True])
+def test_every_withdrawal_send_uses_shared_preflight(
+    boarding, withdraw_body_stub, monkeypatch, resubmit
+):
+    if resubmit:
+        args = open_withdrawal(boarding, monkeypatch)
+    else:
+        boarded(boarding)
+        args = withdraw_args(boarding)
+    sent = list(boarding["chain"].sent)
+    calls = []
+
+    def refuse(operations, tos_root, pool, owner, requested_nanotos):
+        calls.append((pool, owner, requested_nanotos))
+        raise lib.TestnetError("shared withdrawal preflight refused")
+
+    monkeypatch.setattr(elections, "withdrawal_preflight", refuse)
+    with pytest.raises(lib.TestnetError, match="shared withdrawal preflight refused"):
+        if resubmit:
+            elections.manual(args, boarding["ops"], lib.load_profile())
+        else:
+            elections.withdraw(args, boarding["ops"], 2)
+    assert len(calls) == 1 and calls[0][2] == 5 * NANO
+    assert boarding["chain"].sent == sent
+
+
+def test_withdraw_all_records_a_variable_payment(boarding, withdraw_body_stub):
+    pool = boarded(boarding)
+    elector_idle(boarding["chain"])
+    result = elections.withdraw(withdraw_args(boarding, all=True, amount=None), boarding["ops"], 2)
+    record = boarding["ops"].journal.record("withdraw-1")
+    assert record["requested_nanotos"] is None and record["state"] == "settled"
+    assert 0 < result["paid_nanotos"] < elections.parse_tos(elections.WITHDRAW_ALL_TOS, "all")
+    assert result["pool"] == pool

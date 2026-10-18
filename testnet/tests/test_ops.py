@@ -537,9 +537,17 @@ def withdraw_world(world, refuse=False, owner_bounces=False):
     return chain, operations
 
 
-def withdraw(operations, chain, op_id="withdraw-1", nanotos=5 * NANO, salt=b""):
+def withdraw(operations, chain, op_id="withdraw-1", nanotos=5 * NANO, salt=b"", all_amount=False):
     body = withdraw_body(nanotos)
-    p = params(NANO, POOL, OWNER, kind="withdraw", bounce=True, body_hash=body.hash().hex())
+    p = params(
+        NANO,
+        POOL,
+        OWNER,
+        kind="withdraw",
+        bounce=True,
+        body_hash=body.hash().hex(),
+        requested_nanotos=None if all_amount else nanotos,
+    )
     return operations.run(
         op_id, p, signer(chain, OWNER, POOL, NANO, True, body, salt=salt), lambda d: None
     )
@@ -1569,3 +1577,26 @@ def test_chain_reads_use_the_two_validator_helper():
                 if node.value.id == "self" and node.attr == "nodes":
                     direct.append(method.name)
     assert direct == [], f"chain reads bypass the two-validator helper: {direct}"
+
+
+@pytest.mark.parametrize("all_amount", [False, True])
+def test_a_capped_withdrawal_is_failed_unless_all_was_requested(world, all_amount):
+    chain, operations = withdraw_world(world)
+    chain.account(POOL)["balance"] = 3 * NANO
+    before = chain.account(OWNER)["balance"]
+    if all_amount:
+        record = withdraw(operations, chain, all_amount=True)
+        assert record["state"] == "settled"
+    else:
+        with pytest.raises(ops.OperationRefused, match="less than requested"):
+            withdraw(operations, chain)
+        record = operations.journal.record("withdraw-1")
+        assert record["state"] == "failed" and record["evidence"]["form"] == "b"
+    evidence = record["evidence"]
+    assert 0 < evidence["paid_nanotos"] < 5 * NANO
+    assert chain.account(OWNER)["balance"] > before
+    if not all_amount:
+        assert evidence["owner_tx"] in evidence["explains"]
+        # The short payment is accounted for, so a separate operation can proceed.
+        chain.account(POOL)["balance"] = 10_000 * NANO
+        assert withdraw(operations, chain, op_id="withdraw-2")["state"] == "settled"

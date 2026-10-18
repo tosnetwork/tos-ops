@@ -31,6 +31,30 @@ CO = W / "scripts/testnet-coordinator.py"
 
 M = [
     (
+        "W1 withdrawal resubmit bypasses the shared preflight",
+        EL,
+        '                    withdrawal_preflight(\n                        operations,\n                        args.tos_root,\n                        record["destination"],\n                        record["wallet"],\n                        record["requested_nanotos"],\n                    )',
+        "                    pass",
+    ),
+    (
+        "W2 initial withdrawal bypasses the shared preflight",
+        EL,
+        "        withdrawal_preflight(operations, args.tos_root, pool, owner, requested_nanotos)",
+        "        pass",
+    ),
+    (
+        "W3 short retained payment settles an explicit request",
+        OPS,
+        'if requested is not None and payment["value"] < requested:',
+        "if False:",
+    ),
+    (
+        "W4 all withdrawals incorrectly require the requested sentinel amount",
+        OPS,
+        '        requested = record["requested_nanotos"]',
+        '        requested = record["requested_nanotos"] or 10**30',
+    ),
+    (
         "Q1 withdrawal trusts the first election view",
         EL,
         "election = operations.both(lambda node: Chain(node.url, node.rpc).active_election())",
@@ -232,13 +256,13 @@ M = [
     (
         "E5 withdraw without the owner-role check",
         EL,
-        "        owner_role_check(operations, args.tos_root, pool, owner)\n",
+        "    owner_role_check(operations, tos_root, pool, owner)\n",
         "",
     ),
     (
         "E6 withdraw during an election",
         EL,
-        "if election and not args.during_election:",
+        "if election:",
         "if False:",
     ),
     ("E7 --new on an existing id", EL, "if args.new and record is not None:", "if False:"),

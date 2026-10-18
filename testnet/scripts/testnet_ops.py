@@ -1225,6 +1225,14 @@ class Operations:
             failed["receipt_out"] = [m["hash"] for m in receipt["out"]]
             return "failed", failed
         evidence["paid_nanotos"] = payment["value"]
+        requested = record["requested_nanotos"]
+        if requested is not None and payment["value"] < requested:
+            return "failed", dict(
+                evidence,
+                form="b",
+                reason=f"the pool paid {payment['value']} nanotos, less than requested {requested}",
+                explains=evidence["explains"] + [receipt["hash"]],
+            )
         return "settled", evidence
 
     # -- manual paths (each under the journal lock, the record re-read under it)
