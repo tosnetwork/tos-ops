@@ -159,7 +159,7 @@ sudo /opt/tos-testnet/scripts/install-node.sh activate --role validator \
   --genesis <PUBLISHED_GENESIS_DIRECTORY> --validator-id <CONTROLLER_ID>
 systemctl is-active tos-testnet-validator
 sudo journalctl -u tos-testnet-validator -n 100 --no-pager
-sudo grep 'post-quantum consensus custody' /var/log/tos/validator/node.log*
+sudo sh -c 'grep "post-quantum consensus custody" /var/log/tos/validator/node.log*'
 ```
 
 Expected: active unit; custody line names your controller and exact key id/window.
@@ -209,7 +209,7 @@ Elector acceptance **and** the next Config34 activation, checked by the coordina
 **Operator daily and after every restart/rotation:**
 
 ```bash
-python3 /opt/tos-testnet/scripts/check-host-disk.py --min-free-gib 15 --cpu-sample 3
+sudo python3 /opt/tos-testnet/scripts/check-host-disk.py --min-free-gib 15 --cpu-sample 3
 systemctl is-active tos-testnet-validator tos-testnet-elections
 sudo journalctl -u tos-testnet-elections --since '-1 hour' --no-pager
 sudo journalctl -u tos-testnet-validator --since '-1 hour' --no-pager

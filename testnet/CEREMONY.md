@@ -258,8 +258,8 @@ places the zero state in `/var/lib/tos/validator/static/` and runs
 and then starts `tos-testnet-validator`. Check the custody line:
 
 ```bash
-journalctl -u tos-testnet-validator | grep 'post-quantum consensus custody'
-grep 'post-quantum consensus custody' /var/log/tos/validator/node.log*
+sudo journalctl -u tos-testnet-validator | grep 'post-quantum consensus custody'
+sudo sh -c 'grep "post-quantum consensus custody" /var/log/tos/validator/node.log*'
 ```
 
 DHT host: `install-node.sh activate --role dht --global-config ... --sha256 ...`.

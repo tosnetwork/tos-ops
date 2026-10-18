@@ -180,7 +180,7 @@ minute idle, 31 MB a minute at ~6.4M gas per block, back to about 750 MB after
 each election. These are observations, not disk bounds. One host, on the host:
 
 ```bash
-python3 /opt/tos-testnet/scripts/check-host-disk.py --min-free-gib 15 --cpu-sample 3
+sudo python3 /opt/tos-testnet/scripts/check-host-disk.py --min-free-gib 15 --cpu-sample 3
 ```
 
 It prints free space, `consensus/` size and session count, the validator
