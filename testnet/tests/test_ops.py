@@ -1600,3 +1600,170 @@ def test_a_capped_withdrawal_is_failed_unless_all_was_requested(world, all_amoun
         # The short payment is accounted for, so a separate operation can proceed.
         chain.account(POOL)["balance"] = 10_000 * NANO
         assert withdraw(operations, chain, op_id="withdraw-2")["state"] == "settled"
+
+
+@pytest.fixture
+def relay_world(world):
+    chain, operations, ceremony = world
+    (ceremony / "pools.json").write_text(json.dumps({"node-1": {"operator": BOOT, "pool": DEST}}))
+    election = chain.now + 3600
+    block = {
+        "workchain": -1,
+        "shard": str(lib.MASTERCHAIN_SHARD),
+        "seqno": 7,
+        "root_hash": "01" * 32,
+        "file_hash": "02" * 32,
+    }
+    calls = []
+    for node in operations.nodes:
+        original = node.rpc
+
+        def rpc(url, method, /, _original=original, **kw):
+            calls.append((url, method, kw))
+            if method == "lookupBlock":
+                return dict(block)
+            if method == "runGetMethod" and kw.get("method") == "active_election_id":
+                return {"exit_code": 0, "stack": [["num", hex(election)]], "block_id": dict(block)}
+            if method == "getConfigParam" and kw["param"] == 15:
+                cell = lib.cell_from_bits(
+                    "".join(format(n, "032b") for n in (14400, 7200, 1800, 7200))
+                )
+                return {
+                    "config": {"bytes": base64.b64encode(lib.serialize_boc(cell)).decode()},
+                    "block_id": dict(block),
+                }
+            return _original(url, method, **kw)
+
+        node.rpc = rpc
+    body = lib.cell_from_bits(
+        format(0x4E73744B, "032b")
+        + "0" * 64
+        + fakechain.coins_bits(10002 * NANO)
+        + format(election, "032b")
+    )
+    return chain, operations, ceremony, body, calls
+
+
+def send_relay(chain, body, destination=DEST, value=20 * NANO):
+    chain.send(
+        build_external(
+            BOOT, 2, 1, chain.now + 300, internal_message(destination, value, False, body=body)
+        )
+    )
+    chain.settle_all()
+
+
+def test_election_relay_explains_history_and_is_visible_in_reconcile(relay_world):
+    chain, operations, _, body, calls = relay_world
+    send_relay(chain, body)
+    chain.now += 18000  # renewal is now quiet; the relay's historical window is what matters
+    report = operations.reconcile([BOOT])
+    assert report["unexplained"] == []
+    assert len(report["explained"]) == 1
+    [row] = report["explained"]
+    assert row["explained_by"] == "election-relay" and row["wallet"] == BOOT
+    assert row["tx"] and row["election_id"] == 1_800_003_600
+    assert run(operations, chain=chain)["state"] == "settled"
+    historical = [
+        (url, kw)
+        for url, method, kw in calls
+        if method == "runGetMethod" and kw.get("method") == "active_election_id"
+    ]
+    assert {url for url, _ in historical} == {"http://a", "http://b"}
+    assert all(kw["seqno"] == 7 for _, kw in historical)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "pool",
+        "budget",
+        "outside",
+        "two",
+        "body",
+        "no-pool",
+        "disagreement",
+        "missing-history",
+        "before-window",
+        "after-window",
+        "stake-id",
+        "block-mismatch",
+    ],
+)
+def test_non_election_activity_stays_unexplained(relay_world, bad):
+    chain, operations, ceremony, body, _ = relay_world
+    if bad == "no-pool":
+        (ceremony / "pools.json").unlink()
+    if bad == "two":
+        chain.extra_out[BOOT] = (OTHER, NANO)
+    if bad == "before-window":
+        chain.now -= 4000
+    if bad == "after-window":
+        chain.now += 2000
+    if bad == "stake-id":
+        body = lib.cell_from_bits(
+            format(0x4E73744B, "032b")
+            + "0" * 64
+            + fakechain.coins_bits(10002 * NANO)
+            + format(chain.now + 3601, "032b")
+        )
+    if bad == "block-mismatch":
+        original = operations.nodes[1].rpc
+
+        def mismatched(url, method, /, **kw):
+            result = original(url, method, **kw)
+            if method == "getConfigParam" and kw["param"] == 15:
+                result["block_id"]["root_hash"] = "ff" * 32
+            return result
+
+        operations.nodes[1].rpc = mismatched
+    if bad == "body":
+        body = lib.cell_from_bits(
+            format(0x47657424, "032b")
+            + "0" * 64
+            + fakechain.coins_bits(10002 * NANO)
+            + format(chain.now + 3600, "032b")
+        )
+    if bad in ("outside", "disagreement", "missing-history"):
+        for node in operations.nodes:
+            original = node.rpc
+
+            def rpc(url, method, /, _original=original, **kw):
+                if method == "runGetMethod" and kw.get("method") == "active_election_id":
+                    if bad == "missing-history":
+                        raise lib.TestnetError("historical state unavailable")
+                    result = _original(url, method, **kw)
+                    if bad == "outside" or url == "http://b":
+                        result["stack"] = [["num", "0x0"]]
+                    return result
+                return _original(url, method, **kw)
+
+            node.rpc = rpc
+    send_relay(
+        chain,
+        body,
+        OTHER if bad == "pool" else DEST,
+        20 * NANO + NANO // 5 + 1 if bad == "budget" else 20 * NANO,
+    )
+    with pytest.raises(ops.OperationRefused):
+        run(operations, chain=chain)
+    assert len(chain.sent) == 1
+    assert operations.reconcile([BOOT])["unexplained"]
+
+
+def test_relay_budget_inclusive_boundary(relay_world):
+    chain, operations, _, body, _ = relay_world
+    send_relay(chain, body, value=20 * NANO + NANO // 5)
+    assert run(operations, chain=chain)["state"] == "settled"
+
+
+def test_relay_budget_uses_profile_allowance(relay_world, monkeypatch):
+    chain, operations, _, body, _ = relay_world
+    profile = lib.load_profile()
+    profile["elections"]["pool_relay_fee_allowance_nanotos"] = 0
+    profile_path = operations.ceremony / "custom-profile.json"
+    profile_path.write_text(json.dumps(profile))
+    operations.profile_path = profile_path
+    send_relay(chain, body, value=20 * NANO + 1)
+    with pytest.raises(ops.OperationRefused):
+        run(operations, chain=chain)

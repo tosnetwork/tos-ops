@@ -53,6 +53,9 @@
   },
   "elections": {
     "note": "What testnet-elections.py onboard moves for each genesis validator. Since epoch 4 the stake principal never passes through the operator wallet on the host: the bootstrap wallet funds an offline pool owner (pool_tos + pool_owner_reserve_tos), the owner sends pool_tos to the pool, and the operator wallet gets only fee and operating money (controller deployment, pool deployment, operating authorizations, the 20 TOS relay budget per stake). The bootstrap wallet holds 100,000 TOS: four validators at 150 + 20,015 leave 19,340. Each pool holds two fixed stakes of 10,002 (the Elector subtracts 1 TOS before it compares with the 10,000 minimum), for the first and the overlapping second election.",
+    "pool_relay_budget_nanotos": 20000000000,
+    "pool_relay_fee_allowance_nanotos": 200000000,
+    "pool_relay_budget_note": "Stake relays attach POOL_RELAY_BUDGET (20 TOS); the history gate allows at most that plus WALLET_COMPUTE_FEE (0.2 TOS), as defined by the election runner. Only a single new-stake message to the recorded operator pool during its historical Elector/ConfigParam 15 window is explained.",
     "operator_funding_tos": 150,
     "controller_deploy_tos": 15,
     "pool_deploy_tos": 2,

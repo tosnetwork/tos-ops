@@ -669,3 +669,22 @@ The coordinator copies every host's archive, with its `.sha256`, into the
 retired epoch's record before the next ceremony starts. An incident that was
 not yet analysed must not lose its logs to a reset; the first reset did
 exactly that (memo `public-testnet/EPOCH-1-FINDINGS.md`, E1-10).
+
+
+### Election relay history
+
+The operations gate and `reconcile` recognize the election task's single NEW_STAKE
+message from a recorded masterchain operator wallet to its own `pools.json` pool.
+The attached value must be positive and at most the profile's
+`pool_relay_budget_nanotos` (20 TOS) plus `pool_relay_fee_allowance_nanotos`
+(0.2 TOS, the election runner's wallet compute allowance). No additional outbound
+message or extra currency is accepted. The transaction must have taken effect;
+the stake's election id and the BOC timestamp must fall inside the historical
+Elector/ConfigParam 15 window, read at the relay's block on both validators.
+
+`reconcile` keeps these transactions visible in `explained` with
+`explained_by: election-relay`, transaction hash, election id and block identity.
+They no longer require a manual baseline after each election. Other outgoing
+activity remains unexplained. If either validator lacks the historical state,
+or their history/window/block identities differ, the gate still refuses; it
+never substitutes the current election or silently records a baseline.

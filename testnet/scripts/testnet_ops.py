@@ -443,7 +443,9 @@ def verify_transaction(data: Any, tx_hash: str, address: str, tx_lt: int) -> dic
             raise Unknown(f"transaction {tx_hash} is not a transaction")
         account = s.bytes(32).hex()
         lt = s.bits(64)
-        s.bits(256 + 64 + 32 + 15 + 2 + 2)
+        s.bits(256 + 64)
+        utime = s.bits(32)
+        s.bits(15 + 2 + 2)
         if f"{address.split(':')[0]}:{account}" != address or lt != tx_lt:
             raise Unknown(f"transaction {tx_hash} belongs to {account} at lt {lt}")
         m = lib.Slice(s.take_ref())
@@ -485,6 +487,7 @@ def verify_transaction(data: Any, tx_hash: str, address: str, tx_lt: int) -> dic
     return {
         "hash": tx_hash,
         "lt": tx_lt,
+        "utime": utime,
         "data": data,
         "in_kind": incoming["kind"] if incoming else None,
         "in_hash": incoming["hash"] if incoming else None,
@@ -757,7 +760,14 @@ class Operations:
     """The two validators, the journal and the network an operation runs against."""
 
     def __init__(
-        self, ceremony: Path, nodes: list[Node], global_id: int, clock=time.time, sleep=time.sleep
+        self,
+        ceremony: Path,
+        nodes: list[Node],
+        global_id: int,
+        clock=time.time,
+        sleep=time.sleep,
+        *,
+        profile_path: Path = lib.PROFILE_PATH,
     ):
         if len(nodes) != 2 or nodes[0].url == nodes[1].url:
             raise OperationRefused("value-moving steps need two different validators")
@@ -765,6 +775,7 @@ class Operations:
         self.nodes, self.global_id = nodes, global_id
         self.journal = Journal(ceremony)
         self.clock, self.sleep = clock, sleep
+        self.profile_path = profile_path
 
     # -- network
 
@@ -854,6 +865,124 @@ class Operations:
     def utimes(self) -> list[int]:
         return self.read_both(lambda node: node.utime())
 
+    def election_relay(self, wallet: str, tx: dict) -> dict | None:
+        """Recognize only a recorded operator's bounded stake relay in its historical
+        election window. Missing archive evidence never authorizes a new signature."""
+        path = self.ceremony / "pools.json"
+        if not path.is_file() or not wallet.startswith("-1:"):
+            return None
+        pools = json.loads(path.read_text())
+        matches = [
+            entry["pool"]
+            for entry in pools.values()
+            if entry.get("operator") == wallet and entry.get("pool")
+        ]
+        if len(matches) != 1 or not took_effect(tx) or tx["in_kind"] != "external":
+            return None
+        if len(tx["out"]) != 1:
+            return None
+        message = tx["out"][0]
+        if (
+            message["kind"] != "internal"
+            or message["destination"] != matches[0]
+            or message["source"] != wallet
+            or message["bounced"]
+        ):
+            return None
+        limits = lib.load_profile(self.profile_path)["elections"]
+        budget = limits.get("pool_relay_budget_nanotos")
+        allowance = limits.get("pool_relay_fee_allowance_nanotos")
+        if (
+            type(budget) is not int
+            or type(allowance) is not int
+            or budget <= 0
+            or allowance < 0
+            or budget + allowance >= 2**120
+        ):
+            raise Unknown("invalid profile stake relay budget")
+        if not 0 < message["value"] <= budget + allowance:
+            return None
+        # Decode the outgoing message, not the external's template or JSON summary.
+        try:
+            root = lib.parse_boc(base64.b64decode(tx["data"], validate=True))
+            messages = lib.Slice(root.refs[0])
+            if messages.bits(1):
+                messages.take_ref()
+            if not messages.bits(1):
+                return None
+            entries = lib.hashmap_items(messages.take_ref(), 15)
+            outgoing = next(iter(entries.values())).take_ref()
+            m = lib.Slice(outgoing)
+            m.bits(4)
+            read_address(m)
+            read_address(m)
+            read_currency(m)  # refuses extra currencies as an additional effect
+            read_coins(m)
+            read_coins(m)
+            m.bits(64 + 32)
+            init, _, body = read_init_and_body(m)
+            b = lib.Slice(body)
+            if init is not None or b.bits(32) != 0x4E73744B:
+                return None
+            b.bits(64)
+            if read_coins(b) <= 0:
+                return None
+            stake_at = b.bits(32)
+        except (lib.TestnetError, ValueError, IndexError):
+            return None
+
+        def window(node):
+            block = node.call(
+                "lookupBlock",
+                workchain=lib.MASTERCHAIN,
+                shard=str(lib.MASTERCHAIN_SHARD),
+                lt=str(tx["lt"]),
+            )
+            seqno = int(block["seqno"])
+            election = node.call(
+                "runGetMethod",
+                address="-1:" + "33" * 32,
+                method="active_election_id",
+                stack=[],
+                seqno=seqno,
+            )
+            config = node.call("getConfigParam", param=15, seqno=seqno, with_proof=True)
+            if election.get("block_id") != block or config.get("block_id") != block:
+                raise Unknown("historical election/config block identity mismatch")
+            if election.get("exit_code") != 0:
+                raise Unknown("historical active_election_id failed")
+            try:
+                active = int(election["stack"][0][1], 0)
+                c = lib.Slice(
+                    lib.parse_boc(base64.b64decode(config["config"]["bytes"], validate=True))
+                )
+                elected_for, start_before, end_before, _held = [c.bits(32) for _ in range(4)]
+                if not c.end() or not 0 < end_before < start_before < elected_for:
+                    raise Unknown("invalid historical ConfigParam 15")
+            except (KeyError, IndexError, TypeError, ValueError, lib.TestnetError) as exc:
+                raise Unknown(f"unknown historical election window: {exc}") from exc
+            return block, active, start_before, end_before
+
+        try:
+            block, active, start_before, end_before = self.both(window)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise Unknown(f"unknown historical relay block: {exc}") from exc
+        if (
+            active != stake_at
+            or not active
+            or not active - start_before <= tx["utime"] < active - end_before
+        ):
+            return None
+        return {
+            "wallet": wallet,
+            "tx": tx["hash"],
+            "lt": tx["lt"],
+            "out": tx["out"],
+            "explained_by": "election-relay",
+            "election_id": active,
+            "block": block,
+        }
+
     # -- the gate
 
     def gate(self, wallet: str, op_id: str) -> None:
@@ -869,7 +998,11 @@ class Operations:
         boundary = self.journal.baseline(wallet)
         explained = self.journal.explained()
         for tx in self.history(wallet, boundary):
-            if leaves(tx, wallet) and tx["hash"] not in explained:
+            if (
+                leaves(tx, wallet)
+                and tx["hash"] not in explained
+                and self.election_relay(wallet, tx) is None
+            ):
                 described = ", ".join(f"{m['value']} to {m['destination']}" for m in tx["out"])
                 raise OperationRefused(
                     f"{wallet} transaction {tx['hash']} (lt {tx['lt']}) sent {described}, which no "
@@ -1405,7 +1538,7 @@ class Operations:
 
     def reconcile(self, wallets: list[str]) -> dict:
         """Read only: every record against the chain, and unexplained activity."""
-        report: dict = {"operations": [], "unexplained": []}
+        report: dict = {"operations": [], "unexplained": [], "explained": []}
         for record in self.journal.all():
             if not record:
                 continue
@@ -1424,9 +1557,18 @@ class Operations:
             try:
                 for tx in self.history(wallet, self.journal.baseline(wallet)):
                     if leaves(tx, wallet) and tx["hash"] not in explained:
-                        report["unexplained"].append(
-                            {"wallet": wallet, "tx": tx["hash"], "lt": tx["lt"], "out": tx["out"]}
-                        )
+                        relay = self.election_relay(wallet, tx)
+                        if relay is not None:
+                            report["explained"].append(relay)
+                        else:
+                            report["unexplained"].append(
+                                {
+                                    "wallet": wallet,
+                                    "tx": tx["hash"],
+                                    "lt": tx["lt"],
+                                    "out": tx["out"],
+                                }
+                            )
             except Unknown as exc:
                 report["unexplained"].append({"wallet": wallet, "unknown": str(exc)})
         return report
