@@ -12,6 +12,11 @@ O, D: activate (verify SHA-256, start before the epoch)  <----------------------
 C: check-testnet.py across independent nodes
 ```
 
+For host tasks and failure handling, use [OPERATOR.md](OPERATOR.md). All live
+changes and signing require explicit human approval under [AGENTS.md](../AGENTS.md).
+Commands here are templates, not permission to execute. The reference tos build
+is `85c679c3454f306eb867e25b1960ae3d757bd3dd`; pin the approved ceremony commit.
+
 Paths below assume `testnet/` is installed at `/opt/tos-testnet` (root-owned,
 world-readable) and release binaries in `/usr/local/bin`.
 
@@ -104,11 +109,10 @@ all interfaces, so a host behind NAT works if the router forwards UDP 30001
 and UDP 31001 to it. Two nodes behind the same NAT reach each other through
 the announced public address, so the router must also support NAT hairpinning.
 
-Back up the seed now, encrypted and offline (Production-Node.md section 3.1):
-
-```bash
-sudo -u tos tos-pq-consensus-key export /var/lib/tos/validator/keys/pq-consensus.seed | ENCRYPT > BACKUP
-```
+Have the human operator back up the seed encrypted and offline using the
+approved backup procedure; see [consensus custody](../production/Production-Node.md#31-consensus-key).
+The agent must not read, copy or display its plaintext. Do not use an unencrypted
+file or log as an intermediate backup.
 
 ## 2. Operator: controller id (offline root key)
 
@@ -168,7 +172,7 @@ The record order is the validator index order; fix it before you start.
 S=/opt/tos-testnet/scripts
 python3 $S/testnet-coordinator.py manifest --ceremony ./ceremony --tos-root "$TOS_ROOT" \
   record-o1.json record-o2.json record-o3.json record-o4.json
-export TOS_AUTH_NETWORK_TAG=<genesis.auth_network_tag.value in network/profile.json>
+export TOS_AUTH_NETWORK_TAG="$(python3 -c 'import json; print(json.load(open("/opt/tos-testnet/network/profile.json"))["genesis"]["auth_network_tag"]["value"])')"
 python3 $S/testnet-coordinator.py genesis --ceremony ./ceremony --tos-root "$TOS_ROOT" \
   --tos-build "$TOS_ROOT/build" --epoch <EPOCH>
 python3 $S/testnet-coordinator.py global-config --ceremony ./ceremony dht-1.json dht-2.json
@@ -254,8 +258,8 @@ places the zero state in `/var/lib/tos/validator/static/` and runs
 and then starts `tos-testnet-validator`. Check the custody line:
 
 ```bash
-journalctl -u tos-testnet-validator | grep 'post-quantum consensus custody'
-grep 'post-quantum consensus custody' /var/log/tos/validator/node.log*
+sudo journalctl -u tos-testnet-validator | grep 'post-quantum consensus custody'
+sudo sh -c 'grep "post-quantum consensus custody" /var/log/tos/validator/node.log*'
 ```
 
 DHT host: `install-node.sh activate --role dht --global-config ... --sha256 ...`.
@@ -383,7 +387,8 @@ coordinator.
 
 Each has a record in `ceremony/operations/<id>.jsonl`. The lines are append-only
 and each is fsynced with its directory. The signed message is durable there
-before it is broadcast, and a per-wallet lock is held until it is.
+before it is broadcast, and the shared ceremony journal lock is held across reread, validation,
+signing and broadcast. It serializes operations across wallets and processes.
 
 The operator wallet's messages are built and signed by tosctl on the host, but
 **never broadcast there**: `wallet send --build-only` hands the message to the
@@ -393,7 +398,7 @@ one, checking:
 - the signing wallet;
 - global id 2;
 - the wallet's current seqno on both validators;
-- an expiry within 120 s;
+- the subwallet and an expiry within 120 s plus 30 s clock skew;
 - send mode 3;
 - the exact destination, value, bounce flag, StateInit and body.
 
@@ -422,13 +427,14 @@ it. A person then resolves it:
 
 ```bash
 S=/opt/tos-testnet/scripts/testnet-elections.py
-C="--ceremony ./ceremony --tos-root $TOS_ROOT --fift $TOS_ROOT/build/crypto/fift \
-   --rpc http://127.0.0.1:18081/jsonRPC --confirm-rpc http://127.0.0.1:28081/jsonRPC"
-python3 $S reconcile $C                       # read only: every record against the chain
-python3 $S record $C --id ID --settled --hint TXHASH
-python3 $S record $C --id ID --failed a|b|c|d [--hint TXHASH]
-python3 $S resubmit $C --id ID                # the original message, never re-signed
-python3 $S baseline $C --wallet ADDR --reason TEXT
+C=(--ceremony ./ceremony --tos-root "$TOS_ROOT" --fift "$TOS_ROOT/build/crypto/fift"
+   --rpc http://127.0.0.1:18081/jsonRPC --confirm-rpc http://127.0.0.1:28081/jsonRPC)
+python3 "$S" reconcile "${C[@]}"                       # read only: every record against the chain
+python3 "$S" record "${C[@]}" --id ID --settled --hint TXHASH
+# Choose ONE evidence form a, b, c or d; hint is required where the form needs it.
+python3 "$S" record "${C[@]}" --id ID --failed b --hint TXHASH
+python3 "$S" resubmit "${C[@]}" --id ID                # the original message, never re-signed
+python3 "$S" baseline "${C[@]}" --wallet ADDR --reason TEXT
 ```
 
 What each command does:
@@ -495,8 +501,10 @@ to the pool only when the election task recovers it, `stake_held_for` after
 its term), name the withdrawal's operation id:
 
 ```bash
-python3 $S withdraw $C --name node-1 --id withdraw-node-1-1 --new (--amount <TOS> | --all)
-python3 $S withdraw $C --name node-1 --id withdraw-node-1-1      # its outcome again, nothing sent
+python3 "$S" withdraw "${C[@]}" --name node-1 --id withdraw-node-1-1 --new --all --dry-run
+# After approval, repeat with --new --all but without --dry-run.
+# To report the settled outcome later, omit --new and keep the same amount selection:
+python3 "$S" withdraw "${C[@]}" --name node-1 --id withdraw-node-1-1 --all
 ```
 
 `--new` creates the id. Without it, only an existing id is accepted, and its
@@ -517,10 +525,9 @@ parameters can never change. The command works in five steps:
    what was paid; a person may request a new operation. `--all` accepts the variable
    payment. A settled result is appended to `ceremony/withdrawals.jsonl`.
 
-`check-testnet.py` refuses a `genesis.json` of version 16 or later that records no
-`auth_policy`, so this branch's checker does not accept epoch 3's genesis (version
-16, written before ConfigParam 48 existed); check epoch 3 with the main branch's
-until it is retired.
+`check-testnet.py` refuses a version-16 `genesis.json` without `auth_policy`.
+Do not use an older checker to bypass it: use the matching approved ceremony
+artifacts or ask the coordinator to resolve the identity mismatch.
 
 The election task runs as the non-login system user `tos-ctl`, never root.
 Every `tosctl` call on the host, from these scripts and from
@@ -533,7 +540,8 @@ root moves over once with `migrate-nonroot-services.sh --role validator`
 (testnet/README.md), outside an open election.
 
 `testnet-elections.py fund --id ID --label LABEL` sends from the bootstrap wallet
-on its own as operation ID (with `--dry-run` it only signs). `load` makes each
+on its own as operation ID. **Its `--dry-run` still signs and saves a private BOC
+under `sent/`, but does not journal or broadcast**; obtain signing permission first. `load` makes each
 bootstrap transfer its own operation.
 
 A step whose operation failed terminally is never retried under its id and never
@@ -542,14 +550,15 @@ one and keeps the step's parameters (an operating authorization is planned
 anew); all checks run again:
 
 ```bash
-python3 $S retry $C --step ID --reason TEXT
+python3 "$S" retry "${C[@]}" --step ID --reason TEXT
 ```
 
 #### Renewing operating authorization
 
-Epoch 4 started at **2026-10-18 09:30 UTC**. The initial 20 TOS permission covers
-four stakes (T+4/8/12/16 h). Complete renewal before **2026-10-19 04:30 UTC**
-(T+19 h), ahead of the fifth election at 05:30 UTC. Use a quiet window,
+The profile initially funds 20 TOS and renews toward 260 TOS over ten days.
+Use live stakes-remaining, expiry and ConfigParam 15 rather than a wall-clock
+launch date to schedule renewal. The historical epoch-4 target was before T+19 h
+(2026-10-19 04:30 UTC), ahead of its fifth election. Use a quiet window,
 **dry run → node-1 → rest**, after owner review. These commands move value;
 do not run them as part of deployment verification.
 
@@ -567,12 +576,12 @@ larger top-up depending on current funds and fees; use its reported amount.
 
 ```bash
 # C is the common ceremony / tools / --rpc / --confirm-rpc arguments above.
-python3 $S fund $C --id renewal-top-up-node-1 --label renewal-top-up-node-1 \
+python3 "$S" fund "${C[@]}" --id renewal-top-up-node-1 --label renewal-top-up-node-1 \
   --to <RECORDED_OPERATOR_WALLET> --amount 200 --dry-run
-python3 $S fund $C --id renewal-top-up-node-1 --label renewal-top-up-node-1 \
+python3 "$S" fund "${C[@]}" --id renewal-top-up-node-1 --label renewal-top-up-node-1 \
   --to <RECORDED_OPERATOR_WALLET> --amount 200
 
-python3 $S refund $C --id renewal-node-1-ten-days --new \
+python3 "$S" refund "${C[@]}" --id renewal-node-1-ten-days --new \
   --name node-1 --host <HOST> --ssh-key <KEY> \
   --controller controllers/node-1.json --root-seed offline/root-node-1.seed \
   --controller-tool "$TOS_ROOT/build/crypto/tos-pq-controller" --dry-run
@@ -592,7 +601,7 @@ restart cleanup: reconcile the operation first, then explicitly start
 `tos-testnet-elections` on that validator and verify it is active before moving
 to the next node. Reporting an already-settled id does not change service state.
 
-`--dry-run` performs the gates and unsigned plan checks without signing,
+`refund --dry-run` performs the gates and unsigned plan checks without signing,
 journaling, broadcasting or stopping the service. For an existing operation,
 omit `--new`. A settled id is reported without another signature or send
 (even if `--new` was left on the repeated command);
@@ -605,7 +614,7 @@ An interrupted signed/broadcast operation must be resolved with `reconcile`,
 `record` or `resubmit`. These use the same per-kind, two-validator hash evidence
 as onboarding. If an interruption left only a planned root request and it expires
 before any wallet external is signed, a rerun waits until both validator clocks
-prove it expired plus the 60-second margin, records a terminal
+prove it expired plus the 120-second margin, records a terminal
 `unsigned-plan-expired` failure, and requires explicit `retry` for a fresh plan. Before both an initial renewal and a resubmission:
 
 - Both validators must agree that no election is open and on the current term.

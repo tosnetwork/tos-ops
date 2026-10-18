@@ -1,9 +1,14 @@
 # Local PQ deployment preparation
 
+This is a **local-only topology and preparation reference**, not a statement
+that a host is stopped, reset or ready. Inspect `/data/network.json`, actual
+service state and [the initialization runbook](README.md#initialize) first.
+All resets require explicit human approval; never reuse this procedure on testnet.
+
 Topology: one DHT, four PQ validators, two non-validator full nodes and one
 standalone lite-client process. Only the four validators belong to Config34.
 
-| Role | Data directory | ADNL/QUIC | LiteServer | Console | JSON-RPC |
+| Role | Data directory | ADNL UDP | LiteServer | Console | JSON-RPC |
 | --- | --- | --- | --- | --- | --- |
 | DHT | `/data/testnet/node0` | 2001 | — | — | — |
 | Validator 1–4 | `/data/testnet/node1` … `node4` | 2002/2005/2008/2011 | 2003/2006/2009/2012 | 2004/2007/2010/2013 | 8011–8014 |
@@ -15,16 +20,16 @@ standalone lite-client process. Only the four validators belong to Config34.
 `/data/preparation`. `prepare-observers` creates independent observer identities
 and configs against the retained Genesis without invoking native tools,
 starting services, changing validator membership or sending transactions.
-Observers have no PQ consensus seed or validator configuration. The installed
-services must remain stopped during protocol review.
+Observers have no PQ consensus seed or validator configuration. During a protocol review, keep the services stopped until the human approves
+activation. Inspect actual service state rather than assuming planning stopped them.
 
-Runtime chain databases, archives, consensus journals and logs have been
-removed. Existing keys, configs and Genesis are retained. The old pool deployment
-and health receipts are removed: the reset chain has no deployed pool yet.
+A historical preparation retained keys/configs/genesis while removing runtime
+data. Do not assume that condition on a current host. `plan` and
+`prepare-observers` do not authorize deleting or starting an existing chain;
+inspect the retained plan and network identity before a human approves deployment.
 
-After protocol review, use the reviewed binaries for all nodes together. The
-new service templates and lite-client wrapper still need installation; this
-preparation does not install or start them. Check resources and free ports,
+After protocol review, use the reviewed binaries for all nodes together. Planning does not install the service templates or lite-client wrapper and
+does not start them; that requires the approved installation step. Check resources and free ports,
 start the DHT/validators/observers, then verify a common full block ID and the
 four-member PQ Config34. Re-deploy and verify the pool before starting the
 standalone lite-client service.
