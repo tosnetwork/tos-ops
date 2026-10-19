@@ -31,6 +31,12 @@ CO = W / "scripts/testnet-coordinator.py"
 
 M = [
     (
+        "DH11 masterchain lookup uses account prefix instead of full shard",
+        OPS,
+        "if int(wc) == lib.MASTERCHAIN:",
+        "if False:",
+    ),
+    (
         "DH10 block pagination cursor omitted",
         OPS,
         'after = {"after_account": rows[-1]["account"], "after_lt": str(rows[-1]["lt"])}',

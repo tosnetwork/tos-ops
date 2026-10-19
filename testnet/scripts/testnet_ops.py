@@ -386,6 +386,9 @@ class Node:
         shard = prefix | 1
         if shard >= 2**63:
             shard -= 2**64
+        # Native masterchain lookup accepts only the full masterchain shard.
+        if int(wc) == lib.MASTERCHAIN:
+            shard = lib.MASTERCHAIN_SHARD
         cursor = created_lt
         last = self.call("getMasterchainInfo")["last"]
         head = self.call(

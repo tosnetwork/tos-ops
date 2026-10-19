@@ -1928,3 +1928,17 @@ def test_delivery_paginates_one_block_by_account_and_lt(world, monkeypatch):
     assert all(
         kw["after_account"] == BOOT.split(":")[1] and kw["after_lt"] == "1001" for kw in cursors
     )
+
+
+def test_masterchain_delivery_uses_the_full_masterchain_shard(world):
+    chain, operations, _ = world
+    for node in operations.nodes:
+        original = node.rpc
+
+        def rpc(url, method, /, _original=original, **kw):
+            if method == "lookupBlock" and kw["workchain"] == lib.MASTERCHAIN:
+                assert int(kw["shard"]) == lib.MASTERCHAIN_SHARD
+            return _original(url, method, **kw)
+
+        node.rpc = rpc
+    assert run(operations, chain=chain)["state"] == "settled"
