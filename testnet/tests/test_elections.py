@@ -2705,3 +2705,34 @@ def test_renewal_checks_full_readiness_after_hash_settlement_and_does_not_repeat
     count = len(b["chain"].sent)
     assert renew(b)["id"] == record["id"]
     assert len(b["chain"].sent) == count
+
+
+def test_manual_abandonment_dry_run_and_record(boarding, capsys):
+    b = boarding
+    b["chain"].now = int(elections.time.time()) + 10
+    b["ops"].begin(
+        "unsigned-load-refill",
+        {
+            "kind": "fund",
+            "wallet": elections.BOOTSTRAP_WALLET,
+            "destination": OPERATOR,
+            "value": NANO,
+            "body_hash": elections.EMPTY_BODY_HASH,
+            "bounce": False,
+            "state_init_hash": None,
+            "subwallet": 0,
+        },
+    )
+    before = b["ops"].journal.lines("unsigned-load-refill")
+    args = elections.argparse.Namespace(
+        command="record", id="unsigned-load-refill", abandoned=True, dry_run=True
+    )
+    elections.manual(args, b["ops"], lib.load_profile())
+    evidence = json.loads(capsys.readouterr().out)
+    assert evidence["state"] == "planned" and evidence["dry_run"]
+    assert len(evidence["evidence"]["observations"]) == 2
+    assert b["ops"].journal.lines(args.id) == before
+    args.dry_run = False
+    elections.manual(args, b["ops"], lib.load_profile())
+    assert json.loads(capsys.readouterr().out)["state"] == "failed"
+    assert b["chain"].sent == []

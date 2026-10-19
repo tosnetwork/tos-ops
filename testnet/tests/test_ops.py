@@ -5,6 +5,7 @@ messages captured from the d7ef85b4c rehearsal (data/ops-*.json)."""
 import base64
 import json
 import os
+import time
 
 import fakechain
 import pytest
@@ -2042,3 +2043,203 @@ def test_withdrawal_queue_processing_uses_the_runner_batch_size(relay_world, lim
     send_relay(chain, election_task_body(0x02, stake_body, limit=limit), value=NANO // 5)
     report = operations.reconcile([BOOT])
     assert report["unexplained"] and not report["explained"]
+
+
+def test_new_operation_is_not_journaled_before_its_gate_passes(world):
+    chain, operations, _ = world
+    operations.begin("blocked-plan", params())
+    before = operations.journal.all()
+    for name in ("load-refill-1", "load-relayer-1"):
+        with pytest.raises(ops.OperationRefused, match="open"):
+            run(operations, name, chain=chain)
+        assert operations.journal.record(name) is None, "a refused load restart left a new plan"
+    assert operations.journal.all() == before
+    assert chain.sent == []
+
+
+def planned_fund(world):
+    chain, operations, _ = world
+    chain.now = int(time.time()) + 10
+    with operations.journal.lock():
+        record = operations.begin("unsigned-refill", params())
+    return chain, operations, record
+
+
+def test_abandon_unsigned_fund_dry_run_then_terminal_record(world):
+    chain, operations, record = planned_fund(world)
+    original = operations.journal.lines(record["id"])
+    preview = operations.record_abandoned(record["id"], dry_run=True)
+    assert preview["state"] == "planned" and preview["dry_run"]
+    assert len(preview["evidence"]["observations"]) == 2
+    assert all(o["matching_transactions"] == [] for o in preview["evidence"]["observations"])
+    assert operations.journal.lines(record["id"]) == original
+    result = operations.record_abandoned(record["id"])
+    assert result["state"] == "failed"
+    assert result["evidence"]["form"] == "unsigned-fund-plan-abandoned"
+    assert operations.journal.lines(record["id"])[0] == original[0]
+    assert len(operations.journal.lines(record["id"])) == 2
+    with pytest.raises(ops.OperationRefused, match="unsigned planned"):
+        operations.record_abandoned(record["id"])
+    assert len(operations.journal.lines(record["id"])) == 2
+    assert chain.sent == []
+    operations.gate(BOOT, "next-refill")
+
+
+@pytest.mark.parametrize(
+    "field,value", [("boc", "bytes"), ("external_hash", "ab" * 32), ("seqno", 1)]
+)
+def test_abandon_refuses_any_signing_evidence(world, field, value):
+    _, operations, record = planned_fund(world)
+    operations.journal.append(record["id"], {"state": "planned", field: value})
+    before = operations.journal.lines(record["id"])
+    with pytest.raises(ops.OperationRefused, match="signing evidence"):
+        operations.record_abandoned(record["id"])
+    assert operations.journal.lines(record["id"]) == before
+
+
+@pytest.mark.parametrize("emitted", [False, True])
+def test_abandon_refuses_a_matching_wallet_transaction_even_without_outputs(world, emitted):
+    chain, operations, record = planned_fund(world)
+    boc = signer(chain)(chain.account(BOOT)["seqno"])
+    if emitted:
+        chain.send(boc)
+        chain.tick()
+    else:
+        root = lib.parse_boc(boc)
+        incoming = {
+            "kind": "external",
+            "hash": base64.b64encode(root.hash()).decode(),
+            "_cell": root,
+        }
+        chain.record_tx(BOOT, incoming, [], success=False, aborted=True)
+    before = operations.journal.lines(record["id"])
+    with pytest.raises(ops.OperationRefused, match="matches the planned fund"):
+        operations.record_abandoned(record["id"])
+    assert operations.journal.lines(record["id"]) == before
+
+
+def test_abandon_does_not_use_a_baseline_to_hide_a_matching_transfer(world):
+    chain, operations, record = planned_fund(world)
+    chain.send(signer(chain)(chain.account(BOOT)["seqno"]))
+    chain.tick()
+    operations.journal.set_baseline(BOOT, operations.head(BOOT), "test boundary")
+    with pytest.raises(ops.OperationRefused, match="matches the planned fund"):
+        operations.record_abandoned(record["id"])
+
+
+def test_abandon_rechecks_after_its_first_absence_read(world, monkeypatch):
+    chain, operations, record = planned_fund(world)
+    original = operations.fund_plan_absence
+    count = 0
+
+    def read(*args):
+        nonlocal count
+        result = original(*args)
+        count += 1
+        if count == 1:
+            chain.send(signer(chain)(chain.account(BOOT)["seqno"]))
+            chain.tick()
+        return result
+
+    monkeypatch.setattr(operations, "fund_plan_absence", read)
+    with pytest.raises(ops.OperationRefused, match="matches the planned fund"):
+        operations.record_abandoned(record["id"])
+    assert operations.journal.record(record["id"])["state"] == "planned"
+
+
+@pytest.mark.parametrize("failure", ["timeout", "disagree", "stale"])
+def test_abandon_unknown_is_not_absence(world, monkeypatch, failure):
+    _, operations, record = planned_fund(world)
+    if failure == "stale":
+        monkeypatch.setattr(operations, "utimes", lambda: [0, 0])
+    elif failure == "timeout":
+
+        def broken(*args):
+            raise ops.Unknown("history timeout")
+
+        monkeypatch.setattr(operations.nodes[1], "history", broken)
+    else:
+        chain = world[0]
+        chain.send(signer(chain, destination=OTHER)(chain.account(BOOT)["seqno"]))
+        chain.tick()
+        monkeypatch.setattr(operations.nodes[1], "history", lambda *args: [])
+    with pytest.raises(ops.Unknown):
+        operations.record_abandoned(record["id"])
+    assert operations.journal.record(record["id"])["state"] == "planned"
+
+
+def test_signing_before_the_signed_journal_write_cannot_broadcast(world, monkeypatch):
+    chain, operations, _ = world
+    chain.now = int(time.time()) + 10
+    original = operations.journal.append
+    sign = signer(chain)
+
+    def fail_write(op_id, entry):
+        if entry["state"] == "signed":
+            raise OSError("signed journal fsync failed")
+        return original(op_id, entry)
+
+    monkeypatch.setattr(operations.journal, "append", fail_write)
+    with pytest.raises(OSError, match="fsync"):
+        run(operations, sign=sign, chain=chain)
+    assert sign.calls == [1]
+    assert chain.sent == []
+    assert operations.journal.record("fund-a")["state"] == "planned"
+    monkeypatch.setattr(operations.journal, "append", original)
+    assert operations.record_abandoned("fund-a")["state"] == "failed"
+
+
+def test_abandon_does_not_touch_another_wallet(world):
+    chain, operations, record = planned_fund(world)
+    chain.wallet(OTHER, 100 * NANO, public_key="0f" * 32)
+    operations.begin("other-wallet-plan", params(wallet=OTHER))
+    other_before = operations.journal.lines("other-wallet-plan")
+    chain.send(signer(chain, wallet=OTHER)(chain.account(OTHER)["seqno"]))
+    chain.tick()
+    assert operations.record_abandoned(record["id"])["state"] == "failed"
+    assert operations.journal.lines("other-wallet-plan") == other_before
+
+
+def test_abandon_refuses_non_funding_plans(world):
+    _, operations, record = planned_fund(world)
+    operations.journal.append(record["id"], {"state": "planned", "kind": "activate-owner"})
+    with pytest.raises(ops.OperationRefused, match="unsigned planned fund"):
+        operations.record_abandoned(record["id"])
+
+
+def test_abandon_ignores_a_matching_transfer_before_the_plan(world):
+    chain, operations, record = planned_fund(world)
+    from datetime import datetime, timezone
+
+    since = int(
+        datetime.strptime(record["utc"], "%Y-%m-%dT%H:%M:%SZ")
+        .replace(tzinfo=timezone.utc)
+        .timestamp()
+    )
+    chain.now = since - 10
+    chain.send(signer(chain)(chain.account(BOOT)["seqno"]))
+    chain.tick()
+    chain.now = since + 20
+    assert operations.record_abandoned(record["id"])["state"] == "failed"
+
+
+def test_abandon_stops_before_unavailable_history_older_than_the_plan(world, monkeypatch):
+    chain, operations, record = planned_fund(world)
+    since = int(time.time())
+    chain.now = since - 20
+    chain.send(signer(chain, destination=OTHER)(chain.account(BOOT)["seqno"]))
+    chain.settle_all()
+    chain.now = since + 20
+    for node in operations.nodes:
+        real = node.rpc
+        calls = []
+
+        def limited(url, method, /, _real=real, _calls=calls, **params):
+            if method == "getTransactionsStd":
+                _calls.append(params)
+                if params["lt"] != _calls[0]["lt"] or params["limit"] != 1:
+                    raise lib.TestnetError("older history has been collected")
+            return _real(url, method, **params)
+
+        monkeypatch.setattr(node, "rpc", limited)
+    assert operations.record_abandoned(record["id"])["state"] == "failed"

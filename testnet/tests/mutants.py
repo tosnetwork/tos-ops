@@ -31,6 +31,61 @@ CO = W / "scripts/testnet-coordinator.py"
 
 M = [
     (
+        "O32 gate precedes plan creation",
+        OPS,
+        'record = self.journal.record(op_id)\n            if state_of(record) in (None, "planned"):',
+        'record = self.begin(op_id, params)\n            if state_of(record) in (None, "planned"):',
+    ),
+    (
+        "O33 matching unsigned funding intent ignored",
+        OPS,
+        '                if any(\n                    message.get("destination")',
+        '                if False and any(\n                    message.get("destination")',
+    ),
+    (
+        "O34 signing evidence ignored",
+        OPS,
+        "or any(line.get(key) is not None for key in signed_fields)",
+        "or False",
+    ),
+    (
+        "O35 abandoned history disagreement ignored",
+        OPS,
+        'if observations[0]["history"] != observations[1]["history"]:',
+        "if False:",
+    ),
+    ("O36 aborted inbound intent ignored", OPS, 'messages.append(decoded["internal"])', "pass"),
+    (
+        "O37 last absence recheck removed",
+        OPS,
+        "# Recheck both validators immediately before the terminal append.\n            evidence = self.fund_plan_absence(record, since)",
+        "# Recheck both validators immediately before the terminal append.\n            pass",
+    ),
+    (
+        "O38 baseline hides planned transfer",
+        OPS,
+        'node.history(record["wallet"], None, since)}',
+        'node.history(record["wallet"], self.journal.baseline(record["wallet"]), since)}',
+    ),
+    (
+        "O39 nonfund plan abandoned",
+        OPS,
+        'if state_of(record) != "planned" or record.get("kind") != "fund":',
+        "if False:",
+    ),
+    (
+        "O40 stale validators accepted for abandonment",
+        OPS,
+        "if any(now < since for now in chain_times):",
+        "if False:",
+    ),
+    (
+        "O41 earlier transfer blocks abandonment",
+        OPS,
+        'relevant = [tx for tx in history if tx["utime"] >= since]',
+        "relevant = history",
+    ),
+    (
         "DH11 masterchain lookup uses account prefix instead of full shard",
         OPS,
         "if int(wc) == lib.MASTERCHAIN:",

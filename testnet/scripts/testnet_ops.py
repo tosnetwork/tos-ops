@@ -38,6 +38,7 @@ import json
 import os
 import re
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -324,12 +325,14 @@ class Node:
         )
         return int(header["gen_utime"])
 
-    def history(self, address: str, boundary: dict | None) -> list[dict]:
+    def history(self, address: str, boundary: dict | None, since: int | None = None) -> list[dict]:
         """Transactions newer than `boundary` (None: the whole account), newest first,
         each decoded from its own BOC (verify_transaction).
 
         getTransactionsStd pages backward through previous_transaction_id. The
-        boundary must be reached exactly; anything else is Unknown."""
+        boundary must be reached exactly; anything else is Unknown. A since cutoff
+        stops only after decoding an older transaction, without requesting older
+        pages that may already have been collected."""
         info = self.account(address)
         last = info.get("last_transaction_id") or {}
         lt, hash_b64 = str(last.get("lt", "0")), last.get("hash", "")
@@ -340,7 +343,11 @@ class Node:
         out, seen = [], set()
         for _ in range(HISTORY_PAGES):
             page = self.call(
-                "getTransactionsStd", address=address, lt=lt, hash=hash_b64, limit=HISTORY_PAGE
+                "getTransactionsStd",
+                address=address,
+                lt=lt,
+                hash=hash_b64,
+                limit=1 if since is not None else HISTORY_PAGE,
             )
             txs = page.get("transactions") if isinstance(page, dict) else None
             if not isinstance(txs, list) or not txs:
@@ -364,6 +371,8 @@ class Node:
                 seen.add(tx_hash)
                 progress = True
                 out.append(verify_transaction(tx.get("data"), tx_hash, address, tx_lt))
+                if since is not None and out[-1]["utime"] < since:
+                    return out
             prev = page.get("previous_transaction_id") or {}
             if str(prev.get("lt", "")) == "0":
                 if boundary:
@@ -1168,6 +1177,9 @@ class Operations:
         wallet = params["wallet"]
         with self.journal.lock(wallet):
             op_id = self.journal.newest(step)
+            record = self.journal.record(op_id)
+            if state_of(record) in (None, "planned"):
+                self.gate(wallet, op_id)
             record = self.begin(op_id, params)
             if state_of(record) == "settled":
                 return record
@@ -1180,7 +1192,6 @@ class Operations:
                 raise OperationRefused(
                     f"operation {op_id} is open ({record['state']}); run reconcile, then record or resubmit"
                 )
-            self.gate(wallet, op_id)
             if prerequisites:
                 prerequisites()
             boundary = self.head(wallet)
@@ -1501,6 +1512,103 @@ class Operations:
                 )
             self.journal.append(op_id, {"state": "settled", "evidence": evidence, "by": "record"})
             return self.journal.record(op_id)
+
+    def record_abandoned(self, op_id: str, dry_run: bool = False) -> dict:
+        """Close only an unsigned coordinator funding plan, after two-node absence checks.
+
+        The funding signer returns bytes from a removed temporary directory. run()
+        fsyncs those bytes as signed before sendBoc; no planned fund can broadcast
+        through that path, including a crash between signing and the journal write.
+        """
+        with self.journal.lock():
+            lines = self.journal.lines(op_id)
+            record = self.journal.record(op_id)
+            if state_of(record) != "planned" or record.get("kind") != "fund":
+                raise OperationRefused("abandonment requires an unsigned planned fund")
+            signed_fields = ("boc", "external_hash", "seqno", "valid_until", "boundary", "identity")
+            if any(
+                line["state"] != "planned"
+                or any(line.get(key) is not None for key in signed_fields)
+                for line in lines
+            ):
+                raise OperationRefused(
+                    "the plan contains signing evidence; use normal reconciliation"
+                )
+            try:
+                since = int(
+                    datetime.strptime(lines[0]["utc"], "%Y-%m-%dT%H:%M:%SZ")
+                    .replace(tzinfo=timezone.utc)
+                    .timestamp()
+                )
+            except (ValueError, KeyError) as exc:
+                raise OperationRefused("the plan has no valid creation time") from exc
+            evidence = self.fund_plan_absence(record, since)
+            if dry_run:
+                return {"id": op_id, "state": "planned", "dry_run": True, "evidence": evidence}
+            # Recheck both validators immediately before the terminal append.
+            evidence = self.fund_plan_absence(record, since)
+            self.journal.append(op_id, {"state": "failed", "evidence": evidence, "by": "record"})
+            return self.journal.record(op_id)
+
+    def fund_plan_absence(self, record: dict, since: int) -> dict:
+        chain_times = self.utimes()
+        if any(now < since for now in chain_times):
+            raise Unknown("both validators must have reached the plan's creation time")
+        observations = self.read_both(
+            lambda node: {"node": node.url, "history": node.history(record["wallet"], None, since)}
+        )
+        if observations[0]["history"] != observations[1]["history"]:
+            raise Unknown("the validators disagree on the planned fund's wallet history")
+        summaries = []
+        for observation in observations:
+            history = observation["history"]
+            relevant = [tx for tx in history if tx["utime"] >= since]
+            for tx in relevant:
+                messages = list(tx["out"])
+                if tx["in_kind"] == "external":
+                    try:
+                        root = lib.parse_boc(base64.b64decode(tx["data"], validate=True))
+                        incoming = lib.Slice(root.refs[0])
+                        if not incoming.bits(1):
+                            raise Unknown("external transaction has no inbound message")
+                        decoded = decode_external(lib.serialize_boc(incoming.take_ref()))
+                        if decoded["internal"]:
+                            messages.append(decoded["internal"])
+                    except (lib.TestnetError, ValueError, IndexError) as exc:
+                        raise Unknown(
+                            f"cannot inspect funding intent in {tx['hash']}: {exc}"
+                        ) from exc
+                if any(
+                    message.get("destination") == record["destination"]
+                    and message.get("value") == record["value"]
+                    and message.get("body_hash") == record["body_hash"]
+                    for message in messages
+                ):
+                    raise OperationRefused(
+                        f"transaction {tx['hash']} matches the planned fund; reconcile it, do not abandon"
+                    )
+            summaries.append(
+                {
+                    "node": observation["node"],
+                    "transactions_checked": len(history),
+                    "transactions_since_plan": len(relevant),
+                    "head": {key: history[0][key] for key in ("hash", "lt", "utime")}
+                    if history
+                    else None,
+                    "matching_transactions": [],
+                }
+            )
+        return {
+            "form": "unsigned-fund-plan-abandoned",
+            "wallet": record["wallet"],
+            "destination": record["destination"],
+            "value": record["value"],
+            "body_hash": record["body_hash"],
+            "planned_since": since,
+            "checked_chain_times": chain_times,
+            "observations": summaries,
+            "explains": [],
+        }
 
     def record_failed(self, op_id: str, form: str, hint: str | None = None, expect=None) -> dict:
         with self.journal.lock():

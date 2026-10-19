@@ -711,6 +711,34 @@ is needed, so state TTL does not erase recognition. `reconcile` retains the
 kind, transaction hash/time, query id and outputs, plus election/stake/window
 fields for new-stake. Other outgoing effects remain unexplained.
 
+### Abandoning an unsigned funding plan
+
+If a coordinator funding run stopped with a `planned` record and no signed
+message, use the supported recovery path rather than editing the journal:
+
+```bash
+python3 $S/testnet-elections.py record --ceremony ./ceremony \
+  --rpc <VALIDATOR_1_RPC> --confirm-rpc <VALIDATOR_2_RPC> \
+  --id <OPERATION_ID> --abandoned --dry-run
+# Review the two-validator evidence, then repeat without --dry-run.
+```
+
+This applies only to unsigned planned `fund` operations. Any signing evidence,
+a matching transfer or external funding intent since the plan's creation time,
+unavailable/incomplete history, or disagreement refuses the operation. The
+check reads signing-wallet history back through a decoded transaction older
+than the plan (or account creation), ignoring baselines, on both
+validators of the ceremony network; the real command repeats the absence check
+before appending a terminal `failed` record. Dry-run appends nothing. It neither
+explains nor changes any other wallet's transactions or journal records.
+
+The coordinator's funding signer returns bytes from a temporary directory that
+is removed before returning. The signed BOC is journaled and fsynced before
+`sendBoc`; a crash before that journal write cannot have broadcast through this
+path. Signed/broadcast records still require the existing reconciliation rules.
+A refused gate is checked before a new funding plan is created, so repeatedly
+starting the load cannot accumulate new plans behind an existing open one.
+
 ### Destination settlement on busy accounts
 
 Delivery is located by the outgoing message's hash and decoded `created_lt`,
