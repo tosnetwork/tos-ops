@@ -53,6 +53,10 @@ SETTLE_SECONDS = 150
 POLL_SECONDS = 3
 HISTORY_PAGE = 16
 HISTORY_PAGES = 256
+# Operational search envelope from the emitted message, independent of account history.
+DELIVERY_BLOCKS = 512
+DELIVERY_BLOCK_PAGES = 128
+DELIVERY_PAGE = 256
 # Clock and propagation margin before an expired message counts as dead.
 EXPIRY_MARGIN = 120
 # wallet-v3: tosctl builds with 120 s, wallet-v3.fif here with 300 s.
@@ -370,6 +374,95 @@ class Node:
             lt, hash_b64 = str(prev.get("lt")), prev.get("hash")
         raise Unknown(f"{self.url}: {address} history longer than {HISTORY_PAGES} pages")
 
+    def delivery(self, destination: str, message_hash: str, created_lt: int) -> dict | None:
+        """Find the emitted message in a bounded sequence of destination shard blocks.
+
+        LT routing follows the destination prefix through topology changes. Every
+        page/header is bound to the lookup's full block identity. No account-history
+        cursor or current account state is involved.
+        """
+        wc, account = destination.split(":")
+        prefix = int(account[:16], 16)
+        shard = prefix | 1
+        if shard >= 2**63:
+            shard -= 2**64
+        cursor = created_lt
+        last = self.call("getMasterchainInfo")["last"]
+        head = self.call(
+            "getBlockHeader", workchain=-1, shard=str(lib.MASTERCHAIN_SHARD), seqno=last["seqno"]
+        )
+        stop = int(head["end_lt"])
+        seen = set()
+        for _ in range(DELIVERY_BLOCKS):
+            if cursor >= stop:
+                return None
+            block = self.call("lookupBlock", workchain=int(wc), shard=str(shard), lt=str(cursor))
+            try:
+                block_wc, block_shard = int(block["workchain"]), int(block["shard"])
+                seqno = int(block["seqno"])
+                b64hash(block["root_hash"])
+                b64hash(block["file_hash"])
+                unsigned = block_shard & (2**64 - 1)
+                low = unsigned & -unsigned
+                mask = (2**64 - 1) ^ (2 * low - 1)
+                if (
+                    block_wc != int(wc)
+                    or not -(2**63) <= block_shard < 2**63
+                    or not low
+                    or not 0 <= seqno < 2**32
+                    or prefix & mask != unsigned & mask
+                ):
+                    raise ValueError("lookup is not a block of the destination shard")
+                key = (block_wc, block_shard, seqno, block["root_hash"], block["file_hash"])
+                if key in seen:
+                    raise ValueError("block search made no progress")
+                seen.add(key)
+                args = {"workchain": block_wc, "shard": str(block_shard), "seqno": seqno}
+                header = self.call("getBlockHeader", **args)
+                if header.get("id") != block or int(header["end_lt"]) < cursor:
+                    raise ValueError("block header identity/range mismatch")
+                after = {}
+                previous = None
+                for _ in range(DELIVERY_BLOCK_PAGES):
+                    page = self.call(
+                        "getBlockTransactionsExt", **args, count=DELIVERY_PAGE, **after
+                    )
+                    if page.get("id") != block or type(page.get("incomplete")) is not bool:
+                        raise ValueError("transaction page block identity mismatch")
+                    rows = page.get("transactions")
+                    if not isinstance(rows, list) or len(rows) > DELIVERY_PAGE:
+                        raise ValueError("invalid transaction page")
+                    for row in rows:
+                        row_account = row["account"].lower()
+                        if len(row_account) != 64:
+                            raise ValueError("invalid transaction account")
+                        position = (int(row_account, 16), int(row["lt"]))
+                        if previous is not None and position <= previous:
+                            raise ValueError("transaction page made no progress")
+                        previous = position
+                        if row_account == account:
+                            tx = verify_transaction(
+                                row.get("data"),
+                                b64hash(row["hash"]).hex(),
+                                destination,
+                                position[1],
+                            )
+                            if tx["in_kind"] == "internal" and tx["in_hash"] == message_hash:
+                                if tx["lt"] <= created_lt:
+                                    raise ValueError("delivery precedes message creation")
+                                return dict(tx, block=block)
+                    if not page["incomplete"]:
+                        break
+                    if not rows:
+                        raise ValueError("empty incomplete transaction page")
+                    after = {"after_account": rows[-1]["account"], "after_lt": str(rows[-1]["lt"])}
+                else:
+                    raise Unknown("delivery block exceeds transaction-page budget")
+                cursor = int(header["end_lt"]) + 1
+            except (KeyError, TypeError, ValueError, lib.TestnetError) as exc:
+                raise Unknown(f"{self.url}: unknown delivery block: {exc}") from exc
+        raise Unknown(f"delivery search exceeds {DELIVERY_BLOCKS} shard blocks; remains unsettled")
+
 
 # ---------------------------------------------------------------- transactions from their BOC
 
@@ -395,8 +488,12 @@ def decode_message(cell: lib.Cell) -> dict:
         value = read_coins(s)
         if s.bits(1):
             s.take_ref()  # extra currencies
+        read_coins(s)  # ihr_fee
+        read_coins(s)  # fwd_fee
+        created_lt = s.bits(64)
         return {
             "kind": "internal",
+            "created_lt": created_lt,
             "hash": cell.hash().hex(),
             "source": source,
             "destination": destination,
@@ -866,8 +963,8 @@ class Operations:
         return self.read_both(lambda node: node.utime())
 
     def election_relay(self, wallet: str, tx: dict) -> dict | None:
-        """Recognize only a recorded operator's bounded stake relay in its historical
-        election window. Missing archive evidence never authorizes a new signature."""
+        """Recognize only a recorded operator's bounded stake relay in its genesis-configured
+        election window, using the transaction itself and current configuration."""
         path = self.ceremony / "pools.json"
         if not path.is_file() or not wallet.startswith("-1:"):
             return None
@@ -924,51 +1021,39 @@ class Operations:
             b = lib.Slice(body)
             if init is not None or b.bits(32) != 0x4E73744B:
                 return None
-            b.bits(64)
-            if read_coins(b) <= 0:
+            query_id = b.bits(64)
+            stake = read_coins(b)
+            if stake <= 0:
                 return None
             stake_at = b.bits(32)
         except (lib.TestnetError, ValueError, IndexError):
             return None
 
+        genesis = json.loads((self.ceremony / "genesis.json").read_text())
+        try:
+            expected = tuple(genesis["election_params"][name] for name in lib.ELECTION_PARAM_NAMES)
+            if any(type(n) is not int or not 0 < n < 2**32 for n in expected):
+                raise ValueError("invalid genesis election parameters")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise Unknown(f"unknown genesis election parameters: {exc}") from exc
+
         def window(node):
-            block = node.call(
-                "lookupBlock",
-                workchain=lib.MASTERCHAIN,
-                shard=str(lib.MASTERCHAIN_SHARD),
-                lt=str(tx["lt"]),
-            )
-            seqno = int(block["seqno"])
-            election = node.call(
-                "runGetMethod",
-                address="-1:" + "33" * 32,
-                method="active_election_id",
-                stack=[],
-                seqno=seqno,
-            )
-            config = node.call("getConfigParam", param=15, seqno=seqno, with_proof=True)
-            if election.get("block_id") != block or config.get("block_id") != block:
-                raise Unknown("historical election/config block identity mismatch")
-            if election.get("exit_code") != 0:
-                raise Unknown("historical active_election_id failed")
+            config = node.call("getConfigParam", param=15)
             try:
-                active = int(election["stack"][0][1], 0)
                 c = lib.Slice(
                     lib.parse_boc(base64.b64decode(config["config"]["bytes"], validate=True))
                 )
-                elected_for, start_before, end_before, _held = [c.bits(32) for _ in range(4)]
-                if not c.end() or not 0 < end_before < start_before < elected_for:
-                    raise Unknown("invalid historical ConfigParam 15")
-            except (KeyError, IndexError, TypeError, ValueError, lib.TestnetError) as exc:
-                raise Unknown(f"unknown historical election window: {exc}") from exc
-            return block, active, start_before, end_before
+                values = tuple(c.bits(32) for _ in range(4))
+                if not c.end() or values != expected:
+                    raise Unknown("ConfigParam 15 changed since genesis; relay window is unknown")
+                return values
+            except (KeyError, TypeError, ValueError, lib.TestnetError) as exc:
+                raise Unknown(f"unknown current election parameters: {exc}") from exc
 
-        try:
-            block, active, start_before, end_before = self.both(window)
-        except (KeyError, TypeError, ValueError) as exc:
-            raise Unknown(f"unknown historical relay block: {exc}") from exc
+        elected_for, start_before, end_before, _held = self.both(window)
+        active = stake_at
         if (
-            active != stake_at
+            not 0 < end_before < start_before < elected_for
             or not active
             or not active - start_before <= tx["utime"] < active - end_before
         ):
@@ -980,10 +1065,10 @@ class Operations:
             "out": tx["out"],
             "explained_by": "election-relay",
             "election_id": active,
-            "block": block,
+            "query_id": query_id,
+            "stake_nanotos": stake,
+            "election_params": list(expected),
         }
-
-    # -- the gate
 
     def gate(self, wallet: str, op_id: str) -> None:
         """Refuse unless the wallet's history is complete, agreed and explained, and
@@ -1242,16 +1327,8 @@ class Operations:
                 return tx
         return None
 
-    def find_delivery(self, destination: str, message_hash: str, after_lt: int) -> dict | None:
-        def read(node):
-            for tx in node.history(destination, None):
-                if tx["lt"] <= after_lt:
-                    return None
-                if tx["in_hash"] == message_hash and tx["in_kind"] == "internal":
-                    return tx
-            return None
-
-        found = self.read_both(read)
+    def find_delivery(self, destination: str, message_hash: str, created_lt: int) -> dict | None:
+        found = self.read_both(lambda node: node.delivery(destination, message_hash, created_lt))
         if found[0] != found[1]:
             raise Unknown(f"the validators disagree or one lags on the delivery of {message_hash}")
         return found[0]
@@ -1293,7 +1370,7 @@ class Operations:
             )
         message = wanted[0]
         evidence["message"] = message["hash"]
-        delivery = self.find_delivery(record["destination"], message["hash"], tx["lt"])
+        delivery = self.find_delivery(record["destination"], message["hash"], message["created_lt"])
         if delivery is None:
             return "pending", dict(evidence, reason="the message is not delivered yet")
         evidence["destination_tx"] = delivery["hash"]
@@ -1341,7 +1418,7 @@ class Operations:
             return "failed", dict(evidence, form="b", reason="the pool paid the owner nothing")
         payment = payments[0]
         evidence["payment"] = payment["hash"]
-        receipt = self.find_delivery(record["wallet"], payment["hash"], pool_tx["lt"])
+        receipt = self.find_delivery(record["wallet"], payment["hash"], payment["created_lt"])
         if receipt is None:
             return "pending", dict(evidence, reason="payment emitted, not yet received")
         evidence["owner_tx"] = receipt["hash"]

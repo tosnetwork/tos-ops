@@ -1607,31 +1607,20 @@ def relay_world(world):
     chain, operations, ceremony = world
     (ceremony / "pools.json").write_text(json.dumps({"node-1": {"operator": BOOT, "pool": DEST}}))
     election = chain.now + 3600
-    block = {
-        "workchain": -1,
-        "shard": str(lib.MASTERCHAIN_SHARD),
-        "seqno": 7,
-        "root_hash": "01" * 32,
-        "file_hash": "02" * 32,
-    }
     calls = []
+    j = json.loads((ceremony / "genesis.json").read_text())
+    j["election_params"] = dict(zip(lib.ELECTION_PARAM_NAMES, (14400, 7200, 1800, 7200)))
+    (ceremony / "genesis.json").write_text(json.dumps(j))
     for node in operations.nodes:
         original = node.rpc
 
         def rpc(url, method, /, _original=original, **kw):
             calls.append((url, method, kw))
-            if method == "lookupBlock":
-                return dict(block)
-            if method == "runGetMethod" and kw.get("method") == "active_election_id":
-                return {"exit_code": 0, "stack": [["num", hex(election)]], "block_id": dict(block)}
             if method == "getConfigParam" and kw["param"] == 15:
                 cell = lib.cell_from_bits(
                     "".join(format(n, "032b") for n in (14400, 7200, 1800, 7200))
                 )
-                return {
-                    "config": {"bytes": base64.b64encode(lib.serialize_boc(cell)).decode()},
-                    "block_id": dict(block),
-                }
+                return {"config": {"bytes": base64.b64encode(lib.serialize_boc(cell)).decode()}}
             return _original(url, method, **kw)
 
         node.rpc = rpc
@@ -1664,13 +1653,14 @@ def test_election_relay_explains_history_and_is_visible_in_reconcile(relay_world
     assert row["explained_by"] == "election-relay" and row["wallet"] == BOOT
     assert row["tx"] and row["election_id"] == 1_800_003_600
     assert run(operations, chain=chain)["state"] == "settled"
-    historical = [
-        (url, kw)
-        for url, method, kw in calls
-        if method == "runGetMethod" and kw.get("method") == "active_election_id"
-    ]
-    assert {url for url, _ in historical} == {"http://a", "http://b"}
-    assert all(kw["seqno"] == 7 for _, kw in historical)
+    current = [(url, kw) for url, method, kw in calls if method == "getConfigParam"]
+    assert {url for url, _ in current} == {"http://a", "http://b"}
+    assert all("seqno" not in kw for _, kw in current)
+    assert not any(
+        method == "runGetMethod" and kw.get("method") == "active_election_id"
+        for _, method, kw in calls
+    )
+    assert row["query_id"] == 0 and row["stake_nanotos"] == 10002 * NANO
 
 
 @pytest.mark.parametrize(
@@ -1683,11 +1673,11 @@ def test_election_relay_explains_history_and_is_visible_in_reconcile(relay_world
         "body",
         "no-pool",
         "disagreement",
-        "missing-history",
+        "changed-config",
         "before-window",
         "after-window",
         "stake-id",
-        "block-mismatch",
+        "malformed-config",
     ],
 )
 def test_non_election_activity_stays_unexplained(relay_world, bad):
@@ -1705,18 +1695,8 @@ def test_non_election_activity_stays_unexplained(relay_world, bad):
             format(0x4E73744B, "032b")
             + "0" * 64
             + fakechain.coins_bits(10002 * NANO)
-            + format(chain.now + 3601, "032b")
+            + format(chain.now + 36000, "032b")
         )
-    if bad == "block-mismatch":
-        original = operations.nodes[1].rpc
-
-        def mismatched(url, method, /, **kw):
-            result = original(url, method, **kw)
-            if method == "getConfigParam" and kw["param"] == 15:
-                result["block_id"]["root_hash"] = "ff" * 32
-            return result
-
-        operations.nodes[1].rpc = mismatched
     if bad == "body":
         body = lib.cell_from_bits(
             format(0x47657424, "032b")
@@ -1724,18 +1704,23 @@ def test_non_election_activity_stays_unexplained(relay_world, bad):
             + fakechain.coins_bits(10002 * NANO)
             + format(chain.now + 3600, "032b")
         )
-    if bad in ("outside", "disagreement", "missing-history"):
+    if bad == "outside":
+        chain.now += 20000
+    if bad in ("changed-config", "disagreement", "malformed-config"):
         for node in operations.nodes:
             original = node.rpc
 
             def rpc(url, method, /, _original=original, **kw):
-                if method == "runGetMethod" and kw.get("method") == "active_election_id":
-                    if bad == "missing-history":
-                        raise lib.TestnetError("historical state unavailable")
-                    result = _original(url, method, **kw)
-                    if bad == "outside" or url == "http://b":
-                        result["stack"] = [["num", "0x0"]]
-                    return result
+                if method == "getConfigParam" and kw["param"] == 15:
+                    if bad == "malformed-config":
+                        return {"config": {"bytes": "AA=="}}
+                    if bad == "changed-config" or url == "http://b":
+                        cell = lib.cell_from_bits(
+                            "".join(format(n, "032b") for n in (14400, 7100, 1800, 7200))
+                        )
+                        return {
+                            "config": {"bytes": base64.b64encode(lib.serialize_boc(cell)).decode()}
+                        }
                 return _original(url, method, **kw)
 
             node.rpc = rpc
@@ -1767,3 +1752,179 @@ def test_relay_budget_uses_profile_allowance(relay_world, monkeypatch):
     send_relay(chain, body, value=20 * NANO + 1)
     with pytest.raises(ops.OperationRefused):
         run(operations, chain=chain)
+
+
+def test_busy_destination_settles_without_paging_its_history(world):
+    chain, operations, _ = world
+    record = run(operations, chain=chain)
+    incoming = {"_cell": fakechain.message_cell(OTHER, DEST, 0, False)}
+    for _ in range(ops.HISTORY_PAGES * ops.HISTORY_PAGE + 1):
+        chain.record_tx(DEST, incoming, [], credit=0)
+    with pytest.raises(ops.Unknown, match="history longer"):
+        operations.nodes[0].history(DEST, None)
+    for node in operations.nodes:
+        original = node.rpc
+
+        def rpc(url, method, /, _original=original, **kw):
+            assert not (method == "getTransactionsStd" and kw["address"] == DEST)
+            return _original(url, method, **kw)
+
+        node.rpc = rpc
+    state, evidence = operations.settle(dict(record, state="broadcast"))
+    assert state == "settled" and evidence["destination_tx"]
+
+
+def test_missing_delivery_is_pending_without_history_scan(world, monkeypatch):
+    chain, operations, _ = world
+    crash_at(monkeypatch, "fund-a", "signed")
+    with pytest.raises(Crash):
+        run(operations, chain=chain)
+    record = operations.journal.record("fund-a")
+    chain.send(base64.b64decode(record["boc"]))
+    chain.tick()  # Source executes; internal message is still queued.
+    state, evidence = operations.settle(record)
+    assert state == "pending" and evidence["reason"] == "the message is not delivered yet"
+
+
+@pytest.mark.parametrize("bad", ["block", "header", "boc", "order", "empty-page", "loop", "range"])
+def test_delivery_search_refuses_unbound_or_nonprogressing_answers(world, monkeypatch, bad):
+    chain, operations, _ = world
+    record = run(operations, chain=chain)
+    node = operations.nodes[1]
+    original = node.rpc
+
+    def rpc(url, method, /, **kw):
+        result = original(url, method, **kw)
+        if method == "lookupBlock" and bad == "range":
+            result["workchain"] = 0
+        if method == "getBlockHeader" and kw.get("seqno") != 10:
+            if bad == "header":
+                result["id"]["file_hash"] = base64.b64encode(b"z" * 32).decode()
+            if bad == "loop":
+                result["end_lt"] = "0"
+        if method == "getBlockTransactionsExt":
+            if bad == "block":
+                result["id"]["root_hash"] = base64.b64encode(b"z" * 32).decode()
+            if bad == "empty-page":
+                result.update(transactions=[], incomplete=True)
+            if result["transactions"]:
+                if bad == "boc":
+                    result["transactions"][0]["hash"] = base64.b64encode(b"z" * 32).decode()
+                if bad == "order":
+                    result["transactions"] *= 2
+        return result
+
+    node.rpc = rpc
+    with pytest.raises(ops.Unknown):
+        operations.settle(dict(record, state="broadcast"))
+
+
+def test_delivery_search_has_an_explicit_block_budget(world, monkeypatch):
+    chain, operations, _ = world
+    record = run(operations, chain=chain)
+    monkeypatch.setattr(ops, "DELIVERY_BLOCKS", 1)
+    with pytest.raises(ops.Unknown, match="exceeds 1 shard blocks"):
+        operations.settle(dict(record, state="broadcast"))
+
+
+def test_relay_reads_no_expired_state(relay_world):
+    chain, operations, _, body, calls = relay_world
+    send_relay(chain, body)
+    chain.now += 10 * 86400
+    for node in operations.nodes:
+        original = node.rpc
+
+        def no_archive(url, method, /, _original=original, **kw):
+            if method == "lookupBlock" or (
+                method in {"getConfigParam", "runGetMethod"} and "seqno" in kw
+            ):
+                raise lib.TestnetError("expired historical state")
+            return _original(url, method, **kw)
+
+        node.rpc = no_archive
+    report = operations.reconcile([BOOT])
+    assert not report["unexplained"] and report["explained"][0]["explained_by"] == "election-relay"
+    assert not any(method == "lookupBlock" for _, method, _ in calls)
+
+
+def test_relay_current_config_is_compared_to_genesis_not_profile(relay_world):
+    chain, operations, ceremony, body, _ = relay_world
+    send_relay(chain, body)
+    p = ceremony / "genesis.json"
+    genesis = json.loads(p.read_text())
+    genesis["election_params"]["stake_held_for"] += 1
+    p.write_text(json.dumps(genesis))
+    report = operations.reconcile([BOOT])
+    assert report["unexplained"] and not report["explained"]
+
+
+def test_delivery_matches_the_exact_inbound_hash(world):
+    chain, operations, _ = world
+    record = run(operations, chain=chain)
+    tx = operations.find_wallet_tx(record)
+    message = tx["out"][0]
+    assert operations.find_delivery(DEST, "ff" * 32, message["created_lt"]) is None
+
+
+def test_delivery_requires_both_validators(world):
+    chain, operations, _ = world
+    record = run(operations, chain=chain)
+    node = operations.nodes[1]
+    original = node.rpc
+
+    def missing(url, method, /, **kw):
+        result = original(url, method, **kw)
+        if method == "getBlockTransactionsExt":
+            result["transactions"] = []
+            result["incomplete"] = False
+        return result
+
+    node.rpc = missing
+    with pytest.raises(ops.Unknown, match="disagree"):
+        operations.settle(dict(record, state="broadcast"))
+
+
+def test_delivery_paginates_one_block_by_account_and_lt(world, monkeypatch):
+    chain, operations, _ = world
+    record = run(operations, chain=chain)
+    monkeypatch.setattr(ops, "DELIVERY_PAGE", 1)
+    pages = []
+    for node in operations.nodes:
+        original = node.rpc
+
+        def rpc(url, method, /, _original=original, **kw):
+            block = _original(url, "lookupBlock", workchain=-1, lt="9000")
+            if method == "lookupBlock":
+                return dict(block)
+            if method == "getBlockHeader" and kw["seqno"] == 9000:
+                return {"id": dict(block), "end_lt": "1002"}
+            if method == "getBlockTransactionsExt":
+                pages.append((url, dict(kw)))
+                rows = [
+                    {
+                        "account": address.split(":")[1],
+                        "lt": t["transaction_id"]["lt"],
+                        "hash": t["transaction_id"]["hash"],
+                        "data": t["data"],
+                    }
+                    for address, account in chain.accounts.items()
+                    for t in account["txs"]
+                ]
+                rows.sort(key=lambda r: (r["account"], int(r["lt"])))
+                if "after_lt" in kw:
+                    rows = [
+                        r
+                        for r in rows
+                        if (r["account"], int(r["lt"])) > (kw["after_account"], int(kw["after_lt"]))
+                    ]
+                return {"id": dict(block), "transactions": rows[:1], "incomplete": len(rows) > 1}
+            return _original(url, method, **kw)
+
+        node.rpc = rpc
+    assert operations.settle(dict(record, state="broadcast"))[0] == "settled"
+    assert len(pages) == 4
+    cursors = [kw for _, kw in pages if "after_lt" in kw]
+    assert len(cursors) == 2
+    assert all(
+        kw["after_account"] == BOOT.split(":")[1] and kw["after_lt"] == "1001" for kw in cursors
+    )

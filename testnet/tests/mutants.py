@@ -31,10 +31,70 @@ CO = W / "scripts/testnet-coordinator.py"
 
 M = [
     (
-        "ER9 relay election id does not have to match",
+        "DH10 block pagination cursor omitted",
         OPS,
-        "            active != stake_at",
-        "            False",
+        'after = {"after_account": rows[-1]["account"], "after_lt": str(rows[-1]["lt"])}',
+        "after = {}",
+    ),
+    (
+        "DH1 busy recipient searched through account history",
+        OPS,
+        "found = self.read_both(lambda node: node.delivery(destination, message_hash, created_lt))",
+        'found = self.read_both(lambda node: next((tx for tx in node.history(destination, None) if tx["in_kind"] == "internal" and tx["in_hash"] == message_hash), None))',
+    ),
+    (
+        "DH2 wrong inbound message accepted",
+        OPS,
+        'if tx["in_kind"] == "internal" and tx["in_hash"] == message_hash:',
+        'if tx["in_kind"] == "internal":',
+    ),
+    (
+        "DH3 transaction page block identity ignored",
+        OPS,
+        'if page.get("id") != block or type(page.get("incomplete")) is not bool:',
+        'if type(page.get("incomplete")) is not bool:',
+    ),
+    (
+        "DH4 header block identity ignored",
+        OPS,
+        'if header.get("id") != block or int(header["end_lt"]) < cursor:',
+        'if int(header["end_lt"]) < cursor:',
+    ),
+    (
+        "DH5 reported transaction hash ignored",
+        OPS,
+        'b64hash(row["hash"]).hex(),',
+        'lib.parse_boc(base64.b64decode(row["data"])).hash().hex(),',
+    ),
+    (
+        "DH6 nonprogressing transaction page accepted",
+        OPS,
+        "if previous is not None and position <= previous:",
+        "if False:",
+    ),
+    (
+        "DH7 inclusive lookup boundary repeated",
+        OPS,
+        'cursor = int(header["end_lt"]) + 1',
+        'cursor = int(header["end_lt"])',
+    ),
+    (
+        "DH8 second validator delivery ignored",
+        OPS,
+        "if found[0] != found[1]:",
+        "if False:",
+    ),
+    (
+        "DH9 delivery block budget bypassed",
+        OPS,
+        "range(DELIVERY_BLOCKS)",
+        "range(DELIVERY_BLOCKS * 10)",
+    ),
+    (
+        "ER9 changed current election parameters accepted",
+        OPS,
+        "if not c.end() or values != expected:",
+        "if not c.end():",
     ),
     (
         "ER10 custom profile ignored",
@@ -79,16 +139,16 @@ M = [
         "or False",
     ),
     (
-        "ER6 historical window trusts only first validator",
+        "ER6 current window trusts only first validator",
         OPS,
-        "block, active, start_before, end_before = self.both(window)",
-        "block, active, start_before, end_before = window(self.nodes[0])",
+        "elected_for, start_before, end_before, _held = self.both(window)",
+        "elected_for, start_before, end_before, _held = window(self.nodes[0])",
     ),
     (
-        "ER7 historical block identity ignored",
+        "ER7 current profile substituted for genesis",
         OPS,
-        'if election.get("block_id") != block or config.get("block_id") != block:',
-        "if False:",
+        'expected = tuple(genesis["election_params"][name] for name in lib.ELECTION_PARAM_NAMES)',
+        'expected = tuple(lib.load_profile(self.profile_path)["genesis"]["election_params"][name] for name in lib.ELECTION_PARAM_NAMES)',
     ),
     (
         "ER8 non-stake body accepted",
