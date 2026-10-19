@@ -966,8 +966,11 @@ class Operations:
         return self.read_both(lambda node: node.utime())
 
     def election_relay(self, wallet: str, tx: dict) -> dict | None:
-        """Recognize only a recorded operator's bounded stake relay in its genesis-configured
-        election window, using the transaction itself and current configuration."""
+        """Recognize the runner's bounded pool messages from their verified transaction.
+
+        Only new-stake carries an election id and needs a genesis-configured window.
+        Recovery and maintenance bodies have exact layouts and native value ceilings.
+        """
         path = self.ceremony / "pools.json"
         if not path.is_file() or not wallet.startswith("-1:"):
             return None
@@ -989,19 +992,6 @@ class Operations:
             or message["bounced"]
         ):
             return None
-        limits = lib.load_profile(self.profile_path)["elections"]
-        budget = limits.get("pool_relay_budget_nanotos")
-        allowance = limits.get("pool_relay_fee_allowance_nanotos")
-        if (
-            type(budget) is not int
-            or type(allowance) is not int
-            or budget <= 0
-            or allowance < 0
-            or budget + allowance >= 2**120
-        ):
-            raise Unknown("invalid profile stake relay budget")
-        if not 0 < message["value"] <= budget + allowance:
-            return None
         # Decode the outgoing message, not the external's template or JSON summary.
         try:
             root = lib.parse_boc(base64.b64decode(tx["data"], validate=True))
@@ -1022,14 +1012,59 @@ class Operations:
             m.bits(64 + 32)
             init, _, body = read_init_and_body(m)
             b = lib.Slice(body)
-            if init is not None or b.bits(32) != 0x4E73744B:
+            if init is not None:
                 return None
+            opcode = b.bits(32)
             query_id = b.bits(64)
-            stake = read_coins(b)
-            if stake <= 0:
+            # runner.rs and the pool client's maintenance(): only these messages
+            # can leave the election wallet, with one internal message per send.
+            kinds = {
+                0x4E73744B: ("new-stake", None),
+                0x47657424: ("recover-stake", 200_000_000),
+                0x06: ("update-validator-set", 200_000_000),
+                0x04: ("validator-deposit", 10_000_000_000),
+                0x02: ("process-withdraw-requests", 200_000_000),
+            }
+            if opcode not in kinds:
                 return None
-            stake_at = b.bits(32)
+            kind, ceiling = kinds[opcode]
+            if kind == "new-stake":
+                stake = read_coins(b)
+                if stake <= 0:
+                    return None
+                stake_at = b.bits(32)
+            else:
+                if kind == "process-withdraw-requests" and b.bits(8) != 8:
+                    return None
+                if not b.end() or not 0 < message["value"] <= ceiling:
+                    return None
         except (lib.TestnetError, ValueError, IndexError):
+            return None
+
+        explanation = {
+            "wallet": wallet,
+            "tx": tx["hash"],
+            "lt": tx["lt"],
+            "out": tx["out"],
+            "explained_by": f"election-{kind}",
+            "utime": tx["utime"],
+            "query_id": query_id,
+        }
+        if kind != "new-stake":
+            return explanation
+
+        limits = lib.load_profile(self.profile_path)["elections"]
+        budget = limits.get("pool_relay_budget_nanotos")
+        allowance = limits.get("pool_relay_fee_allowance_nanotos")
+        if (
+            type(budget) is not int
+            or type(allowance) is not int
+            or budget <= 0
+            or allowance < 0
+            or budget + allowance >= 2**120
+        ):
+            raise Unknown("invalid profile stake relay budget")
+        if not 0 < message["value"] <= budget + allowance:
             return None
 
         genesis = json.loads((self.ceremony / "genesis.json").read_text())
@@ -1061,17 +1096,12 @@ class Operations:
             or not active - start_before <= tx["utime"] < active - end_before
         ):
             return None
-        return {
-            "wallet": wallet,
-            "tx": tx["hash"],
-            "lt": tx["lt"],
-            "out": tx["out"],
-            "explained_by": "election-relay",
-            "election_id": active,
-            "query_id": query_id,
-            "stake_nanotos": stake,
-            "election_params": list(expected),
-        }
+        return dict(
+            explanation,
+            election_id=active,
+            stake_nanotos=stake,
+            election_params=list(expected),
+        )
 
     def gate(self, wallet: str, op_id: str) -> None:
         """Refuse unless the wallet's history is complete, agreed and explained, and

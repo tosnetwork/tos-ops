@@ -682,20 +682,34 @@ exactly that (memo `public-testnet/EPOCH-1-FINDINGS.md`, E1-10).
 
 ### Election relay history
 
-The gate recognizes a bounded election-task relay only from the verified
-transaction BOC: one outbound internal new-stake message, its query id, positive
-stake and election id, the recorded operator's own pool, no StateInit or extra
-currencies, and value at most `pool_relay_budget_nanotos` plus the documented
-`pool_relay_fee_allowance_nanotos`. Other outgoing effects remain unexplained.
+The gate recognizes election-task pool messages only from their verified
+transaction BOC: one outbound internal message to the recorded operator's own
+pool, no StateInit or extra currencies, and no other outbound effect. Each body
+must carry the expected opcode and query id. Recovery and maintenance bodies
+must end after their documented fields.
 
-The transaction's own `utime` must be in
+| Kind (`explained_by: election-<kind>`) | Opcode | Maximum attached value | Other fields |
+| --- | --- | --- | --- |
+| `new-stake` | `0x4e73744b` | `pool_relay_budget_nanotos` + `pool_relay_fee_allowance_nanotos` | Positive stake, election id |
+| `recover-stake` | `0x47657424` | 0.2 TOS recovery fee allowance | None |
+| `update-validator-set` | `0x06` | 0.2 TOS maintenance gas | None |
+| `validator-deposit` | `0x04` | 10 TOS per-tick rent top-up ceiling | None |
+| `process-withdraw-requests` | `0x02` | 0.2 TOS maintenance gas | Batch limit exactly 8 (uint8) |
+
+All values must be positive. The last three are the multi-nominator pool client's
+maintenance actions; the single-nominator pool used here has no maintenance
+actions. These are the runner's message shapes and ceilings, not permission to
+send arbitrary value to a pool.
+
+Only new-stake carries an election id. Its transaction `utime` must be in
 `[election_id - elections_start_before, election_id - elections_end_before)`.
 Both validators must return current ConfigParam 15 equal to the parameters saved
-in `genesis.json`. If they changed, are unavailable or disagree, the historical
-window is unknown and the gate refuses. No getter or config read at a historical
-seqno is needed, so state TTL does not erase recognition. `reconcile` retains
-`explained_by: election-relay`, transaction hash, election/query ids, stake and
-window parameters; this is not a blanket exemption for transfers to a pool.
+in `genesis.json`. If they changed, are unavailable or disagree, that window is
+unknown and the gate refuses. Recovery and maintenance carry no election id and
+are not limited to an open-election window. No historical getter or config read
+is needed, so state TTL does not erase recognition. `reconcile` retains the
+kind, transaction hash/time, query id and outputs, plus election/stake/window
+fields for new-stake. Other outgoing effects remain unexplained.
 
 ### Destination settlement on busy accounts
 
