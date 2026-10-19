@@ -682,18 +682,33 @@ exactly that (memo `public-testnet/EPOCH-1-FINDINGS.md`, E1-10).
 
 ### Election relay history
 
-The operations gate and `reconcile` recognize the election task's single NEW_STAKE
-message from a recorded masterchain operator wallet to its own `pools.json` pool.
-The attached value must be positive and at most the profile's
-`pool_relay_budget_nanotos` (20 TOS) plus `pool_relay_fee_allowance_nanotos`
-(0.2 TOS, the election runner's wallet compute allowance). No additional outbound
-message or extra currency is accepted. The transaction must have taken effect;
-the stake's election id and the BOC timestamp must fall inside the historical
-Elector/ConfigParam 15 window, read at the relay's block on both validators.
+The gate recognizes a bounded election-task relay only from the verified
+transaction BOC: one outbound internal new-stake message, its query id, positive
+stake and election id, the recorded operator's own pool, no StateInit or extra
+currencies, and value at most `pool_relay_budget_nanotos` plus the documented
+`pool_relay_fee_allowance_nanotos`. Other outgoing effects remain unexplained.
 
-`reconcile` keeps these transactions visible in `explained` with
-`explained_by: election-relay`, transaction hash, election id and block identity.
-They no longer require a manual baseline after each election. Other outgoing
-activity remains unexplained. If either validator lacks the historical state,
-or their history/window/block identities differ, the gate still refuses; it
-never substitutes the current election or silently records a baseline.
+The transaction's own `utime` must be in
+`[election_id - elections_start_before, election_id - elections_end_before)`.
+Both validators must return current ConfigParam 15 equal to the parameters saved
+in `genesis.json`. If they changed, are unavailable or disagree, the historical
+window is unknown and the gate refuses. No getter or config read at a historical
+seqno is needed, so state TTL does not erase recognition. `reconcile` retains
+`explained_by: election-relay`, transaction hash, election/query ids, stake and
+window parameters; this is not a blanket exemption for transfers to a pool.
+
+### Destination settlement on busy accounts
+
+Delivery is located by the outgoing message's hash and decoded `created_lt`,
+starting with `lookupBlock` for the destination prefix and walking shard blocks
+with `getBlockHeader` / `getBlockTransactionsExt`. It does not page the recipient's
+whole account history. Full block identities, page progress and transaction BOC
+hash/account/LT binding are checked, and both validators must agree on the result.
+The same search confirms a withdrawal's retained owner receipt.
+
+The operational envelope is 512 destination-shard blocks from message creation,
+up to 128 pages of 256 transactions per block. Exhaustion or unavailable archive
+blocks is an explicit unknown result, never a settled or failed payment. A missing
+delivery stays pending. Signing-wallet history gates and expiry/consumed proofs
+still require complete history; this change does not weaken those checks or
+change any journal state automatically.

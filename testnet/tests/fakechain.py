@@ -451,8 +451,72 @@ class NodeRpc:
             raise lib.TestnetError(f"{url} unavailable")
         if method == "getMasterchainInfo":
             return {"init": dict(chain.zero_state), "last": {"seqno": 10}}
+
+        def block_id(wc, seq):
+            return {
+                "workchain": wc,
+                "shard": str(lib.MASTERCHAIN_SHARD),
+                "seqno": seq,
+                "root_hash": base64.b64encode(
+                    hashlib.sha256(f"block:{wc}:{seq}".encode()).digest()
+                ).decode(),
+                "file_hash": base64.b64encode(
+                    hashlib.sha256(f"file:{wc}:{seq}".encode()).digest()
+                ).decode(),
+            }
+
+        if method == "lookupBlock":
+            return block_id(params["workchain"], int(params["lt"]))
         if method == "getBlockHeader":
-            return {"global_id": chain.global_id, "gen_utime": chain.now + self.utime_offset}
+            seq = int(params["seqno"])
+            end = (
+                max(
+                    (
+                        int(t["transaction_id"]["lt"])
+                        for a in chain.accounts.values()
+                        for t in a["txs"]
+                    ),
+                    default=1000,
+                )
+                + 2
+                if seq == 10
+                else seq
+            )
+            return {
+                "id": block_id(params.get("workchain", -1), seq),
+                "end_lt": str(end),
+                "global_id": chain.global_id,
+                "gen_utime": chain.now + self.utime_offset,
+            }
+        if method == "getBlockTransactionsExt":
+            rows = []
+            for address, account in chain.accounts.items():
+                if int(address.split(":")[0]) != params["workchain"]:
+                    continue
+                for tx in self.visible(account):
+                    tid = tx["transaction_id"]
+                    if int(tid["lt"]) == params["seqno"]:
+                        rows.append(
+                            {
+                                "account": address.split(":")[1],
+                                "lt": tid["lt"],
+                                "hash": tid["hash"],
+                                "data": tx["data"],
+                            }
+                        )
+            rows.sort(key=lambda row: (row["account"], int(row["lt"])))
+            if "after_lt" in params:
+                rows = [
+                    r
+                    for r in rows
+                    if (r["account"], int(r["lt"]))
+                    > (params["after_account"], int(params["after_lt"]))
+                ]
+            return {
+                "id": block_id(params["workchain"], params["seqno"]),
+                "transactions": rows[: params["count"]],
+                "incomplete": len(rows) > params["count"],
+            }
         if method == "sendBoc":
             chain.send(base64.b64decode(params["boc"]))
             return {}

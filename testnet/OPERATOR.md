@@ -231,10 +231,11 @@ review dry runs, do one node, verify, then the rest. Both validators must agree
 on the quiet election window and funds/fees. Operator confirms the election
 service is active afterward and the exact new authorization is visible.
 
-Current main does not automatically explain election-task stake relays in the
-operation journal. A refusal for unexplained operator history requires human
-reconciliation on both validators and, only after verification, an explicit
-baseline. Do not automatically baseline or assume every 20 TOS transfer is a relay.
+The gate explains only fully matched election-task relays from their transaction
+BOCs and a genesis-unchanged ConfigParam 15 on both validators; see
+[relay history](CEREMONY.md#election-relay-history). Other unexplained transfers
+still require human reconciliation. Never automatically baseline or assume every
+20 TOS transfer is a relay.
 
 ## 8. Upgrade, rollback and key rotation
 
