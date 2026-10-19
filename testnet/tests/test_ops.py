@@ -1650,7 +1650,7 @@ def test_election_relay_explains_history_and_is_visible_in_reconcile(relay_world
     assert report["unexplained"] == []
     assert len(report["explained"]) == 1
     [row] = report["explained"]
-    assert row["explained_by"] == "election-relay" and row["wallet"] == BOOT
+    assert row["explained_by"] == "election-new-stake" and row["wallet"] == BOOT
     assert row["tx"] and row["election_id"] == 1_800_003_600
     assert run(operations, chain=chain)["state"] == "settled"
     current = [(url, kw) for url, method, kw in calls if method == "getConfigParam"]
@@ -1843,7 +1843,9 @@ def test_relay_reads_no_expired_state(relay_world):
 
         node.rpc = no_archive
     report = operations.reconcile([BOOT])
-    assert not report["unexplained"] and report["explained"][0]["explained_by"] == "election-relay"
+    assert (
+        not report["unexplained"] and report["explained"][0]["explained_by"] == "election-new-stake"
+    )
     assert not any(method == "lookupBlock" for _, method, _ in calls)
 
 
@@ -1942,3 +1944,101 @@ def test_masterchain_delivery_uses_the_full_masterchain_shard(world):
 
         node.rpc = rpc
     assert run(operations, chain=chain)["state"] == "settled"
+
+
+ELECTION_TASK_MESSAGES = [
+    ("new-stake", 0x4E73744B, 20 * NANO + NANO // 5),
+    ("recover-stake", 0x47657424, NANO // 5),
+    ("update-validator-set", 0x06, NANO // 5),
+    ("validator-deposit", 0x04, 10 * NANO),
+    ("process-withdraw-requests", 0x02, NANO // 5),
+]
+
+
+def election_task_body(opcode, stake_body, *, query_id=1800000000, limit=8, suffix="", refs=()):
+    if opcode == 0x4E73744B:
+        return stake_body
+    bits = format(opcode, "032b") + format(query_id, "064b")
+    if opcode == 0x02:
+        bits += format(limit, "08b")
+    return lib.cell_from_bits(bits + suffix, list(refs))
+
+
+@pytest.mark.parametrize("kind,opcode,ceiling", ELECTION_TASK_MESSAGES)
+def test_each_election_task_message_is_explained(relay_world, kind, opcode, ceiling):
+    chain, operations, _, stake_body, calls = relay_world
+    body = election_task_body(opcode, stake_body)
+    send_relay(chain, body, value=ceiling)
+    chain.now += 10 * 86400
+    report = operations.reconcile([BOOT])
+    assert not report["unexplained"]
+    [row] = report["explained"]
+    assert row["explained_by"] == f"election-{kind}"
+    assert row["wallet"] == BOOT and row["out"][0]["value"] == ceiling
+    assert row["query_id"] == (0 if kind == "new-stake" else 1800000000)
+    if kind != "new-stake":
+        assert "election_id" not in row
+        assert not any(method == "getConfigParam" for _, method, _ in calls)
+    assert run(operations, chain=chain)["state"] == "settled"
+
+
+@pytest.mark.parametrize("kind,opcode,ceiling", ELECTION_TASK_MESSAGES)
+@pytest.mark.parametrize("bad", ["pool", "budget", "opcode", "two", "zero"])
+def test_each_election_task_message_keeps_shared_refusals(relay_world, kind, opcode, ceiling, bad):
+    chain, operations, _, stake_body, _ = relay_world
+    body = election_task_body(opcode, stake_body)
+    if bad == "opcode":
+        # Keep the expected fields, changing only the opcode to an unrecognized one.
+        bits = format(0x7702, "032b") + format(
+            lib.Slice(body).bits(body.bits) & ((1 << (body.bits - 32)) - 1),
+            f"0{body.bits - 32}b",
+        )
+        body = lib.cell_from_bits(bits, list(body.refs))
+    if bad == "two":
+        chain.extra_out[BOOT] = (OTHER, NANO)
+    send_relay(
+        chain,
+        body,
+        destination=OTHER if bad == "pool" else DEST,
+        value=ceiling + 1 if bad == "budget" else (0 if bad == "zero" else ceiling),
+    )
+    report = operations.reconcile([BOOT])
+    assert report["unexplained"] and not report["explained"]
+    with pytest.raises(ops.OperationRefused):
+        run(operations, chain=chain)
+    assert len(chain.sent) == 1
+
+
+@pytest.mark.parametrize("opcode", [0x47657424, 0x06, 0x04, 0x02])
+@pytest.mark.parametrize("bad", ["truncated", "bits", "refs", "init"])
+def test_recovery_and_maintenance_require_exact_bodies(relay_world, opcode, bad):
+    chain, operations, _, stake_body, _ = relay_world
+    body = election_task_body(
+        opcode,
+        stake_body,
+        suffix="0" if bad == "bits" else "",
+        refs=[lib.cell_from_bits("")] if bad == "refs" else [],
+    )
+    if bad == "truncated":
+        body = lib.cell_from_bits(format(opcode, "032b"))
+    init = fakechain.wallet_state_init("ab" * 32) if bad == "init" else None
+    chain.send(
+        build_external(
+            BOOT,
+            2,
+            1,
+            chain.now + 300,
+            internal_message(DEST, NANO // 5, False, body=body, init=init),
+        )
+    )
+    chain.settle_all()
+    report = operations.reconcile([BOOT])
+    assert report["unexplained"] and not report["explained"]
+
+
+@pytest.mark.parametrize("limit", [0, 7, 9, 255])
+def test_withdrawal_queue_processing_uses_the_runner_batch_size(relay_world, limit):
+    chain, operations, _, stake_body, _ = relay_world
+    send_relay(chain, election_task_body(0x02, stake_body, limit=limit), value=NANO // 5)
+    report = operations.reconcile([BOOT])
+    assert report["unexplained"] and not report["explained"]

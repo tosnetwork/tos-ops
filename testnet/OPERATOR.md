@@ -231,8 +231,9 @@ review dry runs, do one node, verify, then the rest. Both validators must agree
 on the quiet election window and funds/fees. Operator confirms the election
 service is active afterward and the exact new authorization is visible.
 
-The gate explains only fully matched election-task relays from their transaction
-BOCs and a genesis-unchanged ConfigParam 15 on both validators; see
+The gate explains only fully matched election-task pool messages from their
+transaction BOCs. New-stake also requires a genesis-unchanged ConfigParam 15 on
+both validators; recovery and maintenance have their own body/value limits. See
 [relay history](CEREMONY.md#election-relay-history). Other unexplained transfers
 still require human reconciliation. Never automatically baseline or assume every
 20 TOS transfer is a relay.
