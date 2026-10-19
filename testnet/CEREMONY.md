@@ -754,3 +754,45 @@ blocks is an explicit unknown result, never a settled or failed payment. A missi
 delivery stays pending. Signing-wallet history gates and expiry/consumed proofs
 still require complete history; this change does not weaken those checks or
 change any journal state automatically.
+
+### Bootstrap wallet checkpoints
+
+The coordinator bootstrap wallet has a pinned wallet-v3 code hash, genesis public
+key and subwallet zero. Its gate audits from the latest verified checkpoint,
+not from an increasingly old baseline. Other signing wallets retain the existing
+full-history gate; election-runner relay checkpointing is a separate follow-up,
+required before the next operator renewal that gates an operator wallet.
+
+**Trust assumption:** the bootstrap signing key is custodied only by the
+coordinator, and the local append-only journal is honest. The dry-run prints
+this assumption. For an explicitly pruned interval, each consumed seqno must
+have exactly one terminal operation whose wallet transaction hash was verified
+on both validators when recorded. Its stored signed message must bind that
+seqno, wallet, network, subwallet and transfer. The current active identity and
+counter must agree on both validators. A matching counter alone, an unsigned
+abandonment, an expired attempt, a broadcast or a manual baseline cannot explain
+an outgoing effect. Incoming credits do not consume counters or send payments.
+Timeout, empty history, disagreement and an unknown consumer still refuse.
+
+To migrate an existing terminal bootstrap operation, use the same common
+network arguments as `record`, first with no write:
+
+```sh
+python3 testnet/scripts/testnet-elections.py record \
+  --ceremony "$CEREMONY" --tos-root "$TOS_ROOT" --fift "$FIFT" \
+  --rpc "$RPC" --confirm-rpc "$CONFIRM_RPC" \
+  --id "$TERMINAL_OPERATION" --checkpoint --dry-run
+```
+
+Review the origin, anchor, counter interval, both observations, receipt list and
+custody assumption. On success and with authorization, repeat without
+`--dry-run`. This cannot sign or broadcast; it appends a certificate to that
+existing terminal operation without replacing its evidence. Repetition is
+idempotent. No baseline or unrelated operation is changed.
+
+Subsequent settlements append their certificate in the same synced terminal
+journal line. Certificates bind the network, wallet incarnation, previous
+digest, decoded transaction receipts and terminal consumer receipts. A fork or
+regression refuses. If a payment settles but its prefix cannot be certified,
+its true terminal result is retained with `checkpoint_refusal`; subsequent
+spending remains blocked. `reconcile` checks the same prefix without writing.

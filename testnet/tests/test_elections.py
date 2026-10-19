@@ -2736,3 +2736,22 @@ def test_manual_abandonment_dry_run_and_record(boarding, capsys):
     elections.manual(args, b["ops"], lib.load_profile())
     assert json.loads(capsys.readouterr().out)["state"] == "failed"
     assert b["chain"].sent == []
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_manual_checkpoint_routes_without_signing(boarding, capsys, monkeypatch, dry_run):
+    calls = []
+
+    def checkpoint(op_id, dry_run=False):
+        calls.append((op_id, dry_run))
+        return {"dry_run": dry_run, "assumption": elections.ops.CUSTODY_ASSUMPTION}
+
+    monkeypatch.setattr(boarding["ops"], "record_checkpoint", checkpoint)
+    args = elections.argparse.Namespace(
+        command="record", id="terminal", checkpoint=True, dry_run=dry_run
+    )
+    elections.manual(args, boarding["ops"], lib.load_profile())
+    assert calls == [("terminal", dry_run)]
+    assert json.loads(capsys.readouterr().out)["dry_run"] is dry_run
+    assert boarding["chain"].sent == []
+    assert boarding["ops"].journal.all() == []

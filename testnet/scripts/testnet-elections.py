@@ -83,7 +83,7 @@ and drive load through a post-quantum high-volume wallet.
       result is appended to DIR/withdrawals.jsonl. Only liquid balance can leave:
       a stake returns to the pool after stake_held_for.
 
-  reconcile | record --id ID (--settled | --failed a|b|c|d | --abandoned) [--hint TX]
+  reconcile | record --id ID (--settled | --failed a|b|c|d | --abandoned | --checkpoint) [--hint TX]
           | resubmit --id ID | baseline --wallet ADDR --reason TEXT
           (with --ceremony DIR --tos-root DIR --fift PATH --rpc URL --confirm-rpc URL)
       The person's side of an open operation (testnet_ops.py): reconcile
@@ -3214,12 +3214,17 @@ def main(argv: list[str] | None = None) -> int:
     p_record.add_argument("--id", required=True)
     outcome = p_record.add_mutually_exclusive_group(required=True)
     outcome.add_argument("--settled", action="store_true")
+    outcome.add_argument(
+        "--checkpoint", action="store_true", help="Verify the bootstrap closed prefix"
+    )
     outcome.add_argument("--failed", choices=("a", "b", "c", "d"))
     outcome.add_argument(
         "--abandoned", action="store_true", help="Close a verified unsigned planned fund"
     )
     p_record.add_argument(
-        "--dry-run", action="store_true", help="Verify abandonment without recording"
+        "--dry-run",
+        action="store_true",
+        help="Verify abandonment or a bootstrap checkpoint without recording",
     )
     p_record.add_argument("--hint", help="the wallet or destination transaction hash (hex)")
     p_resubmit = sub.add_parser("resubmit", parents=[common])
@@ -3331,8 +3336,12 @@ def manual(args: argparse.Namespace, operations: ops.Operations, profile: dict) 
         args.command == "record"
         and getattr(args, "dry_run", False)
         and not getattr(args, "abandoned", False)
+        and not getattr(args, "checkpoint", False)
     ):
-        raise lib.TestnetError("record --dry-run is only supported with --abandoned")
+        raise lib.TestnetError("record --dry-run requires --abandoned or --checkpoint")
+    if args.command == "record" and getattr(args, "checkpoint", False):
+        print(json.dumps(operations.record_checkpoint(args.id, dry_run=args.dry_run), indent=2))
+        return
     if args.command == "record" and getattr(args, "abandoned", False):
         result = operations.record_abandoned(args.id, dry_run=getattr(args, "dry_run", False))
         print(json.dumps(result, indent=2))

@@ -2243,3 +2243,338 @@ def test_abandon_stops_before_unavailable_history_older_than_the_plan(world, mon
 
         monkeypatch.setattr(node, "rpc", limited)
     assert operations.record_abandoned(record["id"])["state"] == "failed"
+
+
+# ------------------------------------------------ bootstrap closed-prefix checkpoints
+
+
+@pytest.fixture
+def checkpoint_world(world, monkeypatch):
+    chain, operations, ceremony = world
+    genesis = json.loads((ceremony / "genesis.json").read_text())
+    genesis["main_wallet_public_key"] = "b0" * 32
+    (ceremony / "genesis.json").write_text(json.dumps(genesis))
+    monkeypatch.setattr(
+        ops, "BOOTSTRAP_CODE_HASH", fakechain.WALLET_CODE.hash().hex(), raising=False
+    )
+    chain.account(BOOT)["seqno"] = 0
+    account = chain.account(BOOT)
+    account["data"] = fakechain.wallet_data(
+        account["seqno"], account["subwallet"], account["public_key"]
+    )
+    return world
+
+
+def checkpoint_prune(operations, monkeypatch, before=None, error="pruned"):
+    for node in operations.nodes:
+        original = node.rpc
+
+        def rpc(url, method, _original=original, **kw):
+            if method == "getTransactionsStd" and (before is None or int(kw["lt"]) <= before):
+                if error == "empty":
+                    return {"transactions": []}
+                raise lib.RpcError(
+                    url,
+                    method,
+                    -32603 if error == "pruned" else -503,
+                    "INTERNAL_ERROR",
+                    "lt not in db" if error == "pruned" else "timeout",
+                    False,
+                )
+            return _original(url, method, **kw)
+
+        monkeypatch.setattr(node, "rpc", rpc)
+
+
+def checkpoint_legacy(world):
+    chain, operations, _ = world
+    result = run(operations, "checkpoint-first", chain=chain)
+    # A legacy receipt has the same terminal acknowledgement, without a certificate.
+    path = operations.journal.path(result["id"])
+    lines = [dict(line) for line in operations.journal.lines(result["id"])]
+    for line in lines:
+        line.pop("checkpoint", None)
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines))
+    return result
+
+
+def test_checkpoint_pruned_legacy_prefix_and_readonly_migration(checkpoint_world, monkeypatch):
+    chain, operations, _ = checkpoint_world
+    first = checkpoint_legacy(checkpoint_world)
+    checkpoint_prune(operations, monkeypatch)
+    before = operations.journal.path(first["id"]).read_bytes()
+    report = operations.record_checkpoint(first["id"], dry_run=True)
+    assert report["counter_interval"] == [0, 1]
+    assert report["pruned_gap"] and len(report["observations"]) == 2
+    assert "only by the coordinator" in report["assumption"]
+    assert operations.journal.path(first["id"]).read_bytes() == before
+    operations.record_checkpoint(first["id"])
+    size = operations.journal.path(first["id"]).stat().st_size
+    operations.record_checkpoint(first["id"])
+    assert operations.journal.path(first["id"]).stat().st_size == size
+    operations.gate(BOOT, "future")
+    assert operations.reconcile([BOOT])["unexplained"] == []
+    assert operations.journal.path(first["id"]).stat().st_size == size
+
+
+def test_checkpoint_anchor_is_not_fetched(checkpoint_world, monkeypatch):
+    chain, operations, _ = checkpoint_world
+    first = run(operations, "checkpoint-first", chain=chain)
+    cp = first.get("checkpoint")
+    assert cp is not None, first.get("checkpoint_refusal")
+    checkpoint_prune(operations, monkeypatch, before=int(cp["head"]["lt"]))
+    operations.gate(BOOT, "future")
+    second = run(operations, "checkpoint-second", chain=chain)
+    assert second.get("checkpoint"), second.get("checkpoint_refusal")
+    assert second["checkpoint"]["previous"] == cp["digest"]
+    operations.gate(BOOT, "future")
+
+
+@pytest.mark.parametrize("damage", ["missing", "duplicate", "unsigned", "wrong-hash", "unexecuted"])
+def test_checkpoint_counter_needs_verified_receipts(checkpoint_world, monkeypatch, damage):
+    chain, operations, _ = checkpoint_world
+    first = checkpoint_legacy(checkpoint_world)
+    checkpoint_prune(operations, monkeypatch)
+    if damage == "duplicate":
+        for line in operations.journal.lines(first["id"]):
+            operations.journal.append("checkpoint-duplicate", line)
+    else:
+        evidence = dict(first["evidence"])
+        fields = {}
+        if damage == "missing":
+            evidence.pop("wallet_tx")
+        elif damage == "unsigned":
+            fields["boc"] = None
+        elif damage == "unexecuted":
+            chain.account(BOOT)["seqno"] = 0
+            chain.account(BOOT)["data"] = fakechain.wallet_data(0, 0, "b0" * 32)
+        else:
+            fields["external_hash"] = "0" * 64
+        operations.journal.append(first["id"], dict(fields, state="settled", evidence=evidence))
+    with pytest.raises(ops.OperationRefused):
+        operations.record_checkpoint(first["id"], dry_run=True)
+    assert operations.bootstrap_certificate(BOOT) is None
+
+
+@pytest.mark.parametrize("error", ["empty", "timeout"])
+def test_checkpoint_partial_history_is_not_pruning(checkpoint_world, monkeypatch, error):
+    _, operations, _ = checkpoint_world
+    first = checkpoint_legacy(checkpoint_world)
+    checkpoint_prune(operations, monkeypatch, error=error)
+    with pytest.raises(ops.Unknown):
+        operations.record_checkpoint(first["id"], dry_run=True)
+
+
+def test_checkpoint_unexplained_consumer_cannot_be_hidden(checkpoint_world, monkeypatch):
+    chain, operations, _ = checkpoint_world
+    first = run(operations, "checkpoint-first", chain=chain)
+    chain.send(signer(chain)(1))
+    chain.tick()
+    with pytest.raises(ops.Unknown, match="unexplained seqno 1"):
+        operations.gate(BOOT, "future")
+    checkpoint_prune(operations, monkeypatch)
+    with pytest.raises(ops.Unknown, match="unexplained seqno 1"):
+        operations.record_checkpoint(first["id"], dry_run=True)
+
+
+@pytest.mark.parametrize("field", ["code", "public_key", "subwallet", "seqno", "state", "overflow"])
+def test_checkpoint_incarnation_change_refused(checkpoint_world, field):
+    chain, operations, _ = checkpoint_world
+    run(operations, "checkpoint-first", chain=chain)
+    account = chain.account(BOOT)
+    if field == "overflow":
+        field = "seqno"
+        account["seqno"] = 0xFFFFFFFF
+        account["data"] = fakechain.wallet_data(0xFFFFFFFF, 0, account["public_key"])
+        with pytest.raises(ops.Unknown):
+            operations.gate(BOOT, "future")
+        return
+    account[field] = {
+        "code": lib.cell_from_bits("0"),
+        "public_key": "12" * 32,
+        "subwallet": 5,
+        "seqno": 0,
+        "state": "uninitialized",
+    }[field]
+    account = chain.account(BOOT)
+    account["data"] = fakechain.wallet_data(
+        account["seqno"], account["subwallet"], account["public_key"]
+    )
+    with pytest.raises(ops.Unknown):
+        operations.gate(BOOT, "future")
+
+
+def test_checkpoint_certificate_binding_and_fork_refused(checkpoint_world):
+    chain, operations, _ = checkpoint_world
+    first = run(operations, "checkpoint-first", chain=chain)
+    cp = dict(first["checkpoint"])
+    cp["post_seqno"] += 1
+    operations.journal.append(first["id"], {"state": "settled", "checkpoint": cp})
+    with pytest.raises(ops.Unknown, match="digest"):
+        operations.gate(BOOT, "future")
+
+
+def test_checkpoint_append_failure_does_not_replace_parent(checkpoint_world, monkeypatch):
+    chain, operations, _ = checkpoint_world
+    first = run(operations, "checkpoint-first", chain=chain)
+    cp = first["checkpoint"]
+    original = operations.journal.append
+
+    def fail(op_id, entry):
+        if entry.get("checkpoint"):
+            raise OSError("fsync refused")
+        original(op_id, entry)
+
+    monkeypatch.setattr(operations.journal, "append", fail)
+    with pytest.raises(OSError, match="fsync"):
+        run(operations, "checkpoint-second", chain=chain)
+    assert operations.bootstrap_certificate(BOOT) == cp
+
+
+def test_checkpoint_two_validators_must_agree(checkpoint_world, monkeypatch):
+    chain, operations, _ = checkpoint_world
+    first = checkpoint_legacy(checkpoint_world)
+    node = operations.nodes[1]
+    original = node.rpc
+
+    def disagree(url, method, **kw):
+        answer = original(url, method, **kw)
+        if method == "getAddressInformation" and kw["address"] == BOOT:
+            answer["data"] = base64.b64encode(
+                lib.serialize_boc(fakechain.wallet_data(2, 0, "b0" * 32))
+            ).decode()
+        return answer
+
+    monkeypatch.setattr(node, "rpc", disagree)
+    with pytest.raises(ops.Unknown, match="disagree"):
+        operations.record_checkpoint(first["id"], dry_run=True)
+    assert operations.bootstrap_certificate(BOOT) is None
+
+
+def test_checkpoint_valid_digest_fork_refused(checkpoint_world):
+    chain, operations, _ = checkpoint_world
+    first = run(operations, "checkpoint-first", chain=chain)
+    cp = dict(first["checkpoint"])
+    cp["assumption"] += " conflicting"
+    cp["digest"] = ops.certificate_digest({k: v for k, v in cp.items() if k != "digest"})
+    operations.journal.append(first["id"], {"state": "settled", "checkpoint": cp})
+    with pytest.raises(ops.Unknown, match="fork"):
+        operations.gate(BOOT, "future")
+
+
+def test_checkpoint_retry_does_not_inherit_certificate(world):
+    _, operations, _ = world
+    operations.journal.append(
+        "checkpoint-failed",
+        dict(
+            params(),
+            state="failed",
+            evidence={"form": "b"},
+            checkpoint={"digest": "untrusted"},
+            gate_witness={"head": "stale"},
+            checkpoint_refusal="old",
+        ),
+    )
+    successor = operations.retry("checkpoint-failed", "retry verified failure")
+    assert "checkpoint" not in successor
+    assert "gate_witness" not in successor
+    assert "checkpoint_refusal" not in successor
+
+
+def test_checkpoint_unsigned_abandonment_does_not_consume_counter(checkpoint_world):
+    chain, operations, _ = checkpoint_world
+    first = checkpoint_legacy(checkpoint_world)
+    operations.journal.append(
+        "checkpoint-abandoned",
+        dict(
+            params(),
+            state="failed",
+            evidence={"form": "unsigned-fund-plan-abandoned", "explains": []},
+        ),
+    )
+    report = operations.record_checkpoint(first["id"], dry_run=True)
+    assert len(report["receipts"]) == 1 and report["post_seqno"] == 1
+
+
+def test_checkpoint_open_records_refuse_migration(checkpoint_world):
+    chain, operations, _ = checkpoint_world
+    first = checkpoint_legacy(checkpoint_world)
+    operations.journal.append("checkpoint-open", dict(params(), state="planned"))
+    with pytest.raises(ops.OperationRefused, match="open"):
+        operations.record_checkpoint(first["id"], dry_run=True)
+
+
+def test_checkpoint_terminal_survives_uncertifiable_prefix(checkpoint_world, monkeypatch):
+    chain, operations, _ = checkpoint_world
+    first = checkpoint_legacy(checkpoint_world)
+    record = operations.journal.record(first["id"])
+    checkpoint_prune(operations, monkeypatch)
+    evidence = dict(record["evidence"])
+    # The recorded operation is real, but an additional consumer is unexplained.
+    chain.send(signer(chain)(1))
+    chain.tick()
+    operations.append_terminal(record, "settled", evidence)
+    result = operations.journal.record(first["id"])
+    assert result["state"] == "settled" and result["evidence"] == evidence
+    assert "unexplained seqno" in result["checkpoint_refusal"]
+    assert operations.bootstrap_certificate(BOOT) is None
+
+
+def test_checkpoint_all_entry_points_share_verifier():
+    import inspect
+
+    for method in (
+        ops.Operations.gate,
+        ops.Operations.reconcile,
+        ops.Operations.append_terminal,
+        ops.Operations.record_checkpoint,
+    ):
+        assert "verify_bootstrap_prefix(" in inspect.getsource(method)
+    assert "self.gate(wallet, op_id)" in inspect.getsource(ops.Operations.run)
+    for method in (
+        ops.Operations.watch,
+        ops.Operations.record_settled,
+        ops.Operations.record_failed,
+    ):
+        assert "self.append_terminal(" in inspect.getsource(method)
+    assert "self.bootstrap_tail(" in inspect.getsource(ops.Operations.wallet_attempts)
+
+
+def test_checkpoint_interior_receipt_gap_refused(checkpoint_world, monkeypatch):
+    chain, operations, _ = checkpoint_world
+    first = checkpoint_legacy(checkpoint_world)
+    second = run(operations, "checkpoint-second", chain=chain)
+    # Remove certificates to exercise legacy migration, not an already certified prefix.
+    for record in (first, second):
+        path = operations.journal.path(record["id"])
+        lines = operations.journal.lines(record["id"])
+        for line in lines:
+            line.pop("checkpoint", None)
+            if record["id"] == first["id"] and line["state"] == "settled":
+                line["evidence"].pop("wallet_tx", None)
+        path.write_text("".join(json.dumps(line) + "\n" for line in lines))
+    checkpoint_prune(operations, monkeypatch)
+    with pytest.raises(ops.Unknown, match="unexplained seqno"):
+        operations.record_checkpoint(second["id"], dry_run=True)
+
+
+def test_checkpoint_pruned_history_uses_verified_anchor(checkpoint_world, monkeypatch):
+    chain, operations, _ = checkpoint_world
+    run(operations, "checkpoint-first", chain=chain)
+    checkpoint_prune(operations, monkeypatch)
+    try:
+        operations.gate(BOOT, "future")
+    except ops.OperationRefused as exc:
+        pytest.fail(f"gate still requests pruned pre-checkpoint history: {exc}")
+
+
+def test_checkpoint_pruned_head_regression_refused(checkpoint_world, monkeypatch):
+    chain, operations, _ = checkpoint_world
+    first = run(operations, "checkpoint-first", chain=chain)
+    incoming = internal_message(BOOT, NANO, False)
+    chain.record_tx(BOOT, dict(ops.decode_message(incoming), _cell=incoming), [], credit=NANO)
+    operations.record_checkpoint(first["id"])
+    chain.account(BOOT)["txs"].pop()
+    checkpoint_prune(operations, monkeypatch)
+    with pytest.raises(ops.Unknown, match="head regressed"):
+        operations.gate(BOOT, "future")

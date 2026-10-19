@@ -34,6 +34,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -67,6 +68,17 @@ ACTIVATION_VALID_UNTIL = 0xFFFFFFFF
 # What a wallet v3 self-deployment needs on its account before it is sent.
 ACTIVATION_FEE_NANOTOS = NANO // 10
 WALLET_V3_MODE = 3
+BOOTSTRAP_WALLET = "-1:" + "11" * 32
+# Hash of WCode3 used by the independently held genesis artifact.
+BOOTSTRAP_CODE_HASH = "5829bd66ea5884eef70788d0609acad76af5c418aed2fc17709def2224cf9164"
+CUSTODY_ASSUMPTION = "The bootstrap signing key is custodied only by the coordinator."
+
+
+def certificate_digest(value: dict) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
 
 COORDINATOR_KINDS = ("fund", "activate-owner", "principal", "withdraw")
 HOST_KINDS = ("deploy-controller", "deploy-pool", "authorize-operations")
@@ -552,7 +564,7 @@ def verify_transaction(data: Any, tx_hash: str, address: str, tx_lt: int) -> dic
             raise Unknown(f"transaction {tx_hash} is not a transaction")
         account = s.bytes(32).hex()
         lt = s.bits(64)
-        s.bits(256 + 64)
+        previous_hash, previous_lt = s.bytes(32).hex(), s.bits(64)
         utime = s.bits(32)
         s.bits(15 + 2 + 2)
         if f"{address.split(':')[0]}:{account}" != address or lt != tx_lt:
@@ -597,6 +609,7 @@ def verify_transaction(data: Any, tx_hash: str, address: str, tx_lt: int) -> dic
         "hash": tx_hash,
         "lt": tx_lt,
         "utime": utime,
+        "previous": {"hash": previous_hash, "lt": str(previous_lt)},
         "data": data,
         "in_kind": incoming["kind"] if incoming else None,
         "in_hash": incoming["hash"] if incoming else None,
@@ -1112,7 +1125,307 @@ class Operations:
             election_params=list(expected),
         )
 
-    def gate(self, wallet: str, op_id: str) -> None:
+    def bootstrap_identity(self, wallet: str) -> list | None:
+        genesis = json.loads((self.ceremony / "genesis.json").read_text())
+        key = genesis.get("main_wallet_public_key")
+        if wallet != BOOTSTRAP_WALLET or not key:
+            return None
+        return [BOOTSTRAP_CODE_HASH, key.lower(), 0]
+
+    def bootstrap_snapshot(self, wallet: str) -> dict:
+        expected = self.bootstrap_identity(wallet)
+        if expected is None:
+            raise OperationRefused("checkpoint adapter supports only the pinned bootstrap wallet")
+
+        def read(node):
+            info = node.account(wallet)
+            if info.get("state") != "active":
+                raise Unknown("checkpoint wallet must be active")
+            try:
+                code = lib.parse_boc(base64.b64decode(info["code"], validate=True))
+                data = lib.Slice(lib.parse_boc(base64.b64decode(info["data"], validate=True)))
+                seqno, subwallet, key = data.bits(32), data.bits(32), data.bytes(32).hex()
+                identity = [code.hash().hex(), key, subwallet]
+                if not data.end() or identity != expected or seqno == 0xFFFFFFFF:
+                    raise Unknown("checkpoint wallet identity changed or counter exhausted")
+                last = info.get("last_transaction_id") or {}
+                head = (
+                    None
+                    if int(last.get("lt", 0)) == 0
+                    else {"hash": b64hash(last["hash"]).hex(), "lt": str(last["lt"])}
+                )
+                return {"head": head, "seqno": seqno, "identity": identity}
+            except (KeyError, ValueError, lib.TestnetError) as exc:
+                raise Unknown(f"checkpoint wallet snapshot refused: {exc}") from exc
+
+        return self.both(read)
+
+    def bootstrap_certificate(self, wallet: str) -> dict | None:
+        genesis = json.loads((self.ceremony / "genesis.json").read_text())
+        certificates = {}
+        for record in self.journal.for_wallet(wallet):
+            for line in self.journal.lines(record["id"]):
+                cp = line.get("checkpoint")
+                if cp is None:
+                    continue
+                body = {k: v for k, v in cp.items() if k != "digest"}
+                if (
+                    line.get("state") not in ("settled", "failed")
+                    or cp.get("digest") != certificate_digest(body)
+                    or cp.get("version") != 1
+                    or cp.get("wallet") != wallet
+                    or cp.get("zero_state") != genesis["zero_state"]
+                    or cp.get("global_id") != self.global_id
+                    or cp.get("identity") != self.bootstrap_identity(wallet)
+                    or cp.get("source_operation") != record["id"]
+                    or not isinstance(cp.get("head"), dict)
+                    or type(cp.get("post_seqno")) is not int
+                    or not 0 <= cp["post_seqno"] < 0xFFFFFFFF
+                ):
+                    raise Unknown("invalid checkpoint certificate binding or digest")
+                certificates[cp["digest"]] = cp
+        parent = None
+        previous_seqno, previous_lt = -1, -1
+        while certificates:
+            children = [cp for cp in certificates.values() if cp.get("previous") == parent]
+            if len(children) != 1:
+                raise Unknown("checkpoint certificates fork or have a missing parent")
+            cp = children[0]
+            if cp["post_seqno"] < previous_seqno or int(cp["head"]["lt"]) <= previous_lt:
+                raise Unknown("checkpoint certificates regress")
+            parent = cp["digest"]
+            previous_seqno, previous_lt = cp["post_seqno"], int(cp["head"]["lt"])
+            del certificates[parent]
+        return cp if parent else None
+
+    def bootstrap_tail(self, wallet: str, snapshot: dict, boundary: dict | None) -> dict:
+        """Follow decoded previous pointers; only explicit archive absence permits a gap."""
+
+        def read(node):
+            cursor = snapshot["head"]
+            txs = []
+            for _ in range(HISTORY_PAGES):
+                if cursor == boundary or cursor is None or int(cursor["lt"]) == 0:
+                    if boundary and cursor != boundary:
+                        raise Unknown("wallet history ended before the checkpoint")
+                    return {"transactions": txs, "pruned": False}
+                try:
+                    answer = node.call(
+                        "getTransactionsStd",
+                        address=wallet,
+                        limit=1,
+                        lt=cursor["lt"],
+                        hash=base64.b64encode(bytes.fromhex(cursor["hash"])).decode(),
+                    )
+                except Unknown as exc:
+                    cause = exc.__cause__
+                    if (
+                        isinstance(cause, lib.RpcError)
+                        and cause.code == -32603
+                        and "lt not in db" in cause.message
+                    ):
+                        return {"transactions": txs, "pruned": True}
+                    raise
+                rows = answer.get("transactions")
+                if not isinstance(rows, list) or len(rows) != 1:
+                    raise Unknown("checkpoint history is empty or malformed before its boundary")
+                row = rows[0]
+                tx = verify_transaction(row.get("data"), cursor["hash"], wallet, int(cursor["lt"]))
+                txs.append(tx)
+                previous = tx["previous"]
+                if int(previous["lt"]) >= int(cursor["lt"]):
+                    raise Unknown("wallet transaction previous pointer does not descend")
+                cursor = previous
+            raise Unknown("checkpoint history request budget exhausted")
+
+        return self.both(read)
+
+    def bootstrap_receipts(self, wallet: str, extra: dict | None = None) -> dict:
+        """Terminal acknowledgements bind execution to one signed authorization per counter."""
+        records = {r["id"]: r for r in self.journal.for_wallet(wallet)}
+        if extra:
+            records[extra["id"]] = extra
+        receipts = {}
+        for record in records.values():
+            evidence = record.get("evidence") or {}
+            if record["state"] not in ("settled", "failed") or not evidence.get("wallet_tx"):
+                continue
+            if record["state"] == "failed" and evidence.get("form") not in ("a", "b"):
+                continue
+            try:
+                signed = [
+                    line for line in self.journal.lines(record["id"]) if line["state"] == "signed"
+                ]
+                if not signed or not isinstance(record.get("boc"), str):
+                    raise Unknown("terminal receipt has no durable signed record")
+                decoded = decode_external(base64.b64decode(record["boc"], validate=True))
+                seqno = record["seqno"]
+                if (
+                    type(seqno) is not int
+                    or not 0 <= seqno < 0xFFFFFFFF
+                    or decoded["seqno"] != seqno
+                    or decoded["destination"] != wallet
+                    or decoded["global_id"] != self.global_id
+                    or decoded["subwallet"] != 0
+                    or decoded["external_hash"] != record["external_hash"]
+                    or record.get("identity") != self.bootstrap_identity(wallet)[:2]
+                    or decoded["mode"] != WALLET_V3_MODE
+                    or decoded["init_hash"] is not None
+                    or decoded["internal"]
+                    != {
+                        "destination": record["destination"],
+                        "value": record["value"],
+                        "bounce": record["bounce"],
+                        "init_hash": record.get("state_init_hash"),
+                        "body_hash": record["body_hash"],
+                    }
+                    or not any(
+                        line.get("external_hash") == record["external_hash"]
+                        and line.get("seqno") == seqno
+                        for line in signed
+                    )
+                    or evidence["wallet_tx"] not in evidence.get("explains", [])
+                ):
+                    raise Unknown("terminal receipt has no verified signed-counter binding")
+                if seqno in receipts:
+                    raise Unknown(f"duplicate terminal receipts for seqno {seqno}")
+                receipts[seqno] = {
+                    "id": record["id"],
+                    "seqno": seqno,
+                    "wallet_tx": evidence["wallet_tx"],
+                    "external_hash": record["external_hash"],
+                }
+            except (KeyError, ValueError, lib.TestnetError) as exc:
+                raise Unknown(f"checkpoint receipt {record['id']} refused: {exc}") from exc
+        return receipts
+
+    def verify_bootstrap_prefix(self, wallet: str, extra: dict | None = None) -> dict:
+        """Certify a stable prefix using served transactions and previously verified receipts.
+
+        Counter closure of a pruned gap assumes an honest local terminal journal and
+        exclusive coordinator custody; it is not a proof against a compromised signer.
+        """
+        cp = self.bootstrap_certificate(wallet)
+        if self.journal.baseline(wallet) is not None:
+            raise Unknown("bootstrap checkpoint origin must be genesis, not a manual baseline")
+        start = cp["post_seqno"] if cp else 0
+        snapshot = self.bootstrap_snapshot(wallet)
+        if cp and (
+            not snapshot["head"]
+            or int(snapshot["head"]["lt"]) < int(cp["head"]["lt"])
+            or (snapshot["head"]["lt"] == cp["head"]["lt"] and snapshot["head"] != cp["head"])
+        ):
+            raise Unknown("checkpoint wallet transaction head regressed or diverged")
+        tail = self.bootstrap_tail(wallet, snapshot, cp["head"] if cp else None)
+        receipts = self.bootstrap_receipts(wallet, extra)
+        end = snapshot["seqno"]
+        if end < start:
+            raise Unknown("checkpoint wallet counter regressed")
+        if end - start > len(receipts):
+            raise Unknown("unexplained seqno interval: insufficient verified terminal receipts")
+        for seqno in range(start, end):
+            if seqno not in receipts:
+                raise Unknown(f"unexplained seqno {seqno}: no verified terminal receipt")
+        if any(q >= end for q in receipts):
+            raise Unknown("journaled consumer was not executed in the current wallet incarnation")
+        served = set()
+        expected_tail = end
+        for tx in tail["transactions"]:
+            if tx["in_kind"] == "external" and took_effect(tx):
+                seqno = external_seqno(tx)
+                receipt = receipts.get(seqno)
+                if (
+                    receipt is None
+                    or seqno != expected_tail - 1
+                    or seqno in served
+                    or not start <= seqno < end
+                    or receipt["wallet_tx"] != tx["hash"]
+                    or receipt["external_hash"] != tx["in_hash"]
+                ):
+                    raise Unknown(f"unexplained wallet transaction {tx['hash']} or counter")
+                served.add(seqno)
+                expected_tail -= 1
+            elif leaves(tx, wallet):
+                raise Unknown(f"unexplained outgoing transaction {tx['hash']}")
+        if not tail["pruned"] and served != set(range(start, end)):
+            raise Unknown("served wallet counter continuity disagrees with terminal receipts")
+        if self.bootstrap_snapshot(wallet) != snapshot:
+            raise Unknown("wallet snapshot moved during checkpoint verification")
+        return {
+            "wallet": wallet,
+            "global_id": self.global_id,
+            "zero_state": json.loads((self.ceremony / "genesis.json").read_text())["zero_state"],
+            "origin": cp["digest"] if cp else "genesis",
+            "head": snapshot["head"],
+            "post_seqno": end,
+            "identity": snapshot["identity"],
+            "counter_interval": [start, end],
+            "served_consumers": len(served),
+            "pruned_gap": tail["pruned"],
+            "transaction_receipts": tail["transactions"],
+            "receipts": [receipts[q] for q in range(start, end)],
+            "observations": [{"url": url, **snapshot} for url in self.read_both(lambda n: n.url)],
+            "assumption": CUSTODY_ASSUMPTION,
+            "legacy_receipt_trust": "Terminal wallet hashes were verified on both validators when recorded.",
+        }
+
+    def checkpoint_entry(self, record: dict, report: dict) -> dict | None:
+        old = self.bootstrap_certificate(record["wallet"])
+        if old and old["head"] == report["head"] and old["post_seqno"] == report["post_seqno"]:
+            return None
+        if not report["head"]:
+            raise Unknown("cannot checkpoint a wallet with no transaction")
+        genesis = json.loads((self.ceremony / "genesis.json").read_text())
+        cp = dict(
+            report,
+            version=1,
+            previous=old["digest"] if old else None,
+            zero_state=genesis["zero_state"],
+            global_id=self.global_id,
+            source_operation=record["id"],
+        )
+        cp["digest"] = certificate_digest(cp)
+        return cp
+
+    def record_checkpoint(self, op_id: str, dry_run: bool = False) -> dict:
+        with self.journal.lock():
+            record = self.journal.record(op_id)
+            if not record or record["state"] not in ("settled", "failed"):
+                raise OperationRefused("checkpoint requires an existing terminal operation")
+            wallet = record["wallet"]
+            if self.bootstrap_identity(wallet) is None:
+                raise OperationRefused("checkpoint supports only the pinned bootstrap wallet")
+            if any(
+                r["state"] in ("planned", "signed", "broadcast")
+                for r in self.journal.for_wallet(wallet)
+            ):
+                raise OperationRefused("checkpoint refuses an open bootstrap operation")
+            eligible = self.bootstrap_receipts(wallet)
+            if not any(r["id"] == op_id for r in eligible.values()):
+                raise OperationRefused("checkpoint needs a committed terminal wallet transaction")
+            report = self.verify_bootstrap_prefix(wallet)
+            cp = self.checkpoint_entry(record, report)
+            if not dry_run and cp:
+                self.journal.append(op_id, {"state": record["state"], "checkpoint": cp})
+            public_report = {k: v for k, v in report.items() if k != "transaction_receipts"}
+            return dict(
+                public_report, dry_run=dry_run, certificate=cp["digest"] if cp else report["origin"]
+            )
+
+    def append_terminal(self, record: dict, outcome: str, evidence: dict, **fields) -> None:
+        entry = dict(fields, state=outcome, evidence=evidence)
+        if self.bootstrap_identity(record["wallet"]) and evidence.get("wallet_tx"):
+            candidate = dict(record, state=outcome, evidence=evidence)
+            try:
+                report = self.verify_bootstrap_prefix(record["wallet"], candidate)
+                cp = self.checkpoint_entry(record, report)
+                if cp:
+                    entry["checkpoint"] = cp
+            except OperationRefused as exc:
+                entry["checkpoint_refusal"] = str(exc)
+        self.journal.append(record["id"], entry)
+
+    def gate(self, wallet: str, op_id: str) -> dict | None:
         """Refuse unless the wallet's history is complete, agreed and explained, and
         no other operation of the wallet is open. Called with the journal lock held."""
         self.check_network()
@@ -1122,6 +1435,8 @@ class Operations:
                     f"operation {record['id']} of {wallet} is open ({record['state']}, external "
                     f"{record.get('external_hash')}); run reconcile, then record or resubmit"
                 )
+        if self.bootstrap_identity(wallet):
+            return self.verify_bootstrap_prefix(wallet)
         boundary = self.journal.baseline(wallet)
         explained = self.journal.explained()
         for tx in self.history(wallet, boundary):
@@ -1194,9 +1509,10 @@ class Operations:
                 )
             if prerequisites:
                 prerequisites()
-            boundary = self.head(wallet)
-            seqno = self.seqno(wallet)
-            identity = self.identity(wallet)
+            witness = self.gate(wallet, op_id) if self.bootstrap_identity(wallet) else None
+            boundary = witness["head"] if witness else self.head(wallet)
+            seqno = witness["post_seqno"] if witness else self.seqno(wallet)
+            identity = tuple(witness["identity"][:2]) if witness else self.identity(wallet)
             boc = sign(seqno)
             decoded = decode_external(boc)
             self.check_message(decoded, record, seqno)
@@ -1211,6 +1527,7 @@ class Operations:
                     "valid_until": decoded["valid_until"],
                     "boundary": boundary,
                     "identity": list(identity) if identity else None,
+                    "gate_witness": witness,
                 },
             )
             crash_point(op_id, "signed")
@@ -1281,10 +1598,10 @@ class Operations:
                     outcome, evidence = "pending", {"reason": str(exc)}
                 if outcome == "settled":
                     crash_point(op_id, "delivered")
-                    self.journal.append(op_id, {"state": "settled", "evidence": evidence})
+                    self.append_terminal(record, "settled", evidence)
                     return self.journal.record(op_id)
                 if outcome == "failed":
-                    self.journal.append(op_id, {"state": "failed", "evidence": evidence})
+                    self.append_terminal(record, "failed", evidence)
                     raise OperationRefused(f"operation {op_id} failed: {evidence}")
             if self.clock() > deadline:
                 raise OperationRefused(
@@ -1335,6 +1652,9 @@ class Operations:
                     "resubmitted",
                     "open_params",
                     "predecessor",
+                    "checkpoint",
+                    "gate_witness",
+                    "checkpoint_refusal",
                     "reason",
                 }
                 and k not in open_keys
@@ -1356,9 +1676,18 @@ class Operations:
 
     def wallet_attempts(self, record: dict) -> list[dict]:
         """Every wallet transaction of the record's external message, newest first."""
+        wallet = record["wallet"]
+        if self.bootstrap_identity(wallet):
+            snapshot = self.bootstrap_snapshot(wallet)
+            tail = self.bootstrap_tail(wallet, snapshot, record.get("boundary"))
+            if tail["pruned"]:
+                raise Unknown("settlement transaction history pruned before its signed boundary")
+            history = tail["transactions"]
+        else:
+            history = self.history(wallet, record.get("boundary"))
         return [
             tx
-            for tx in self.history(record["wallet"], record.get("boundary"))
+            for tx in history
             if tx["in_kind"] == "external" and tx["in_hash"] == record["external_hash"]
         ]
 
@@ -1510,7 +1839,7 @@ class Operations:
                 raise OperationRefused(
                     f"{hint} is not this operation's transaction ({evidence.get('wallet_tx')})"
                 )
-            self.journal.append(op_id, {"state": "settled", "evidence": evidence, "by": "record"})
+            self.append_terminal(record, "settled", evidence, by="record")
             return self.journal.record(op_id)
 
     def record_abandoned(self, op_id: str, dry_run: bool = False) -> dict:
@@ -1547,7 +1876,7 @@ class Operations:
                 return {"id": op_id, "state": "planned", "dry_run": True, "evidence": evidence}
             # Recheck both validators immediately before the terminal append.
             evidence = self.fund_plan_absence(record, since)
-            self.journal.append(op_id, {"state": "failed", "evidence": evidence, "by": "record"})
+            self.append_terminal(record, "failed", evidence, by="record")
             return self.journal.record(op_id)
 
     def fund_plan_absence(self, record: dict, since: int) -> dict:
@@ -1638,7 +1967,7 @@ class Operations:
                 raise OperationRefused(
                     "the message took effect after all; settle it (record --settled)"
                 )
-            self.journal.append(op_id, {"state": "failed", "evidence": evidence, "by": "record"})
+            self.append_terminal(record, "failed", evidence, by="record")
             return self.journal.record(op_id)
 
     def prove_expired(self, record: dict) -> dict:
@@ -1750,6 +2079,8 @@ class Operations:
                     raise OperationRefused(f"{wallet} cannot pay the message and its fee any more")
             if prerequisites:
                 prerequisites()
+            if self.bootstrap_identity(wallet):
+                self.gate(wallet, op_id)
             self.nodes[0].call("sendBoc", boc=record["boc"])
             self.journal.append(op_id, {"state": "broadcast", "resubmitted": True})
         return self.watch(op_id, expect)
@@ -1773,6 +2104,12 @@ class Operations:
         explained = self.journal.explained()
         for wallet in wallets:
             try:
+                if self.bootstrap_identity(wallet):
+                    prefix = self.verify_bootstrap_prefix(wallet)
+                    report.setdefault("checkpoints", []).append(
+                        {k: v for k, v in prefix.items() if k != "transaction_receipts"}
+                    )
+                    continue
                 for tx in self.history(wallet, self.journal.baseline(wallet)):
                     if leaves(tx, wallet) and tx["hash"] not in explained:
                         relay = self.election_relay(wallet, tx)

@@ -31,6 +31,76 @@ CO = W / "scripts/testnet-coordinator.py"
 
 M = [
     (
+        "O56 checkpoint unexecuted receipt accepted",
+        OPS,
+        "if any(q >= end for q in receipts):",
+        "if False:",
+    ),
+    ("O55 checkpoint head regression ignored", OPS, "if cp and (", "if False and ("),
+    (
+        "O42 checkpoint gate falls back to baseline",
+        OPS,
+        "if self.bootstrap_identity(wallet):\n            return self.verify_bootstrap_prefix(wallet)",
+        "if False:\n            return self.verify_bootstrap_prefix(wallet)",
+    ),
+    (
+        "O43 checkpoint anchor fetched",
+        OPS,
+        'if cursor == boundary or cursor is None or int(cursor["lt"]) == 0:',
+        'if cursor is None or int(cursor["lt"]) == 0:',
+    ),
+    (
+        "O44 checkpoint counter evidence omitted",
+        OPS,
+        '        if end - start > len(receipts):\n            raise Unknown("unexplained seqno interval: insufficient verified terminal receipts")\n        for seqno in range(start, end):\n            if seqno not in receipts:\n                raise Unknown(f"unexplained seqno {seqno}: no verified terminal receipt")',
+        '        receipts = {q: receipts.get(q, {"id": "unverified", "seqno": q}) for q in range(end)}',
+    ),
+    ("O45 checkpoint duplicate receipts allowed", OPS, "if seqno in receipts:", "if False:"),
+    (
+        "O46 checkpoint timeouts treated as retention",
+        OPS,
+        'isinstance(cause, lib.RpcError)\n                        and cause.code == -32603\n                        and "lt not in db" in cause.message',
+        "isinstance(cause, lib.RpcError)",
+    ),
+    (
+        "O47 checkpoint pinned identity ignored",
+        OPS,
+        "if not data.end() or identity != expected or seqno == 0xFFFFFFFF:",
+        "if False:",
+    ),
+    (
+        "O48 checkpoint certificate digest ignored",
+        OPS,
+        'or cp.get("digest") != certificate_digest(body)',
+        "or False",
+    ),
+    (
+        "O49 checkpoint fork silently selected",
+        OPS,
+        '            if len(children) != 1:\n                raise Unknown("checkpoint certificates fork or have a missing parent")',
+        '            if not children:\n                raise Unknown("missing parent")\n            if len(children) > 1:\n                certificates = {children[0]["digest"]: children[0]}',
+    ),
+    (
+        "O50 checkpoint copied to retry",
+        OPS,
+        '                    "checkpoint",\n                    "gate_witness",\n                    "checkpoint_refusal",',
+        "",
+    ),
+    ("O51 checkpoint dry run writes", OPS, "if not dry_run and cp:", "if cp:"),
+    (
+        "O52 checkpoint open operations ignored",
+        OPS,
+        'raise OperationRefused("checkpoint refuses an open bootstrap operation")',
+        "pass",
+    ),
+    ("O53 checkpoint certificate terminal path omitted", OPS, 'entry["checkpoint"] = cp', "pass"),
+    (
+        "O54 checkpoint verification one node only",
+        OPS,
+        "return self.both(read)\n\n    def bootstrap_certificate",
+        "return self.read_both(read)[0]\n\n    def bootstrap_certificate",
+    ),
+    (
         "O32 gate precedes plan creation",
         OPS,
         'record = self.journal.record(op_id)\n            if state_of(record) in (None, "planned"):',
@@ -556,8 +626,8 @@ M += [
     (
         "N1 the record read before the lock (the original race)",
         OPS,
-        "        with self.journal.lock(wallet):\n            op_id = self.journal.newest(step)\n            record = self.begin(op_id, params)\n",
-        "        op_id = self.journal.newest(step)\n        record = self.journal.record(op_id) or self.begin(op_id, params)\n        with self.journal.lock(wallet):\n",
+        '        with self.journal.lock(wallet):\n            op_id = self.journal.newest(step)\n            record = self.journal.record(op_id)\n            if state_of(record) in (None, "planned"):\n                self.gate(wallet, op_id)\n            record = self.begin(op_id, params)\n',
+        '        op_id = self.journal.newest(step)\n        record = self.journal.record(op_id) or self.begin(op_id, params)\n        with self.journal.lock(wallet):\n            if state_of(record) in (None, "planned"):\n                self.gate(wallet, op_id)\n',
     ),
     (
         "N2 watch does not re-read a settled record",

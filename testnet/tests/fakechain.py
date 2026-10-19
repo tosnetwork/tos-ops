@@ -131,12 +131,27 @@ def hashmap(entries, n):
 
 
 def transaction_cell(
-    account, lt, in_cell, out_cells, success, aborted, credit, skipped=False, utime=0
+    account,
+    lt,
+    in_cell,
+    out_cells,
+    success,
+    aborted,
+    credit,
+    skipped=False,
+    utime=0,
+    previous_hash="0" * 64,
+    previous_lt=0,
 ):
     """A transaction of the block.tlb layout with the fields testnet_ops decodes."""
     bits = "0111" + format(int(account.split(":")[1], 16), "0256b") + format(lt, "064b")
     bits += (
-        "0" * 256 + "0" * 64 + format(utime, "032b") + format(len(out_cells), "015b") + "00" + "00"
+        format(int(previous_hash, 16), "0256b")
+        + format(previous_lt, "064b")
+        + format(utime, "032b")
+        + format(len(out_cells), "015b")
+        + "00"
+        + "00"
     )
     msgs_bits, msgs_refs = "", []
     if in_cell is not None:
@@ -254,6 +269,10 @@ class Chain:
             credit,
             skipped,
             utime=self.now,
+            previous_hash=ops.b64hash(account["txs"][-1]["transaction_id"]["hash"]).hex()
+            if account["txs"]
+            else "0" * 64,
+            previous_lt=int(account["txs"][-1]["transaction_id"]["lt"]) if account["txs"] else 0,
         )
         account["txs"].append(
             {
