@@ -329,6 +329,21 @@ ssh root@DHT-HOST python3 /opt/tos-testnet/scripts/alert-relay.py silence \
     --until 2027-01-15T10:00 --reason "coordinator reboot"
 ```
 
+For a planned outage of only one node, keep other failures visible:
+
+```bash
+testnet/scripts/alert-relay.py silence --state-dir ~/.local/state/tos-alert \
+    --host node-4 --until +90 --reason "planned node-4 outage"
+```
+
+Repeat `--host` or use repeatable `--key node-4:unit` for exact alert keys.
+Every scope requires an expiry. `unsilence --host node-4` ends that scope
+without changing other scopes or the global silence. Scoped entries live in
+`silence.scopes.json` beside the global file, with mode 0600. Invalid entries
+silence nothing. Mixed messages send only the unsilenced keys; recoveries use
+the same filtering. The next relay tick reports each ended scope and its
+suppressed alerts. The peer still reads only its own local files.
+
 Run as root, `silence` hands the file to the owner of the state directory, so
 the peer (user `tos-alert`) can read it.
 

@@ -810,3 +810,111 @@ def test_remote_beat_command_hands_the_coordinator_beat_to_the_directory_owner(t
     assert relay.parse_remote_beat(out.stdout) is not None
     beat = (tmp_path / "heartbeat-coordinator").stat()
     assert beat.st_uid == tmp_path.stat().st_uid
+
+
+def scoped(tmp_path, *selection, until="+10"):
+    assert (
+        relay.main(
+            [
+                "silence",
+                "--state-dir",
+                str(tmp_path),
+                *selection,
+                "--until",
+                until,
+                "--reason",
+                "planned outage",
+            ]
+        )
+        == 0
+    )
+
+
+def test_scoped_mixed_alert_and_recovery(tmp_path):
+    api, clock = FakeApi(), Clock(__import__("time").time())
+    scoped(tmp_path, "--host", "node-4")
+    n = notifier(tmp_path, api, clock)
+    tracker = relay.AnomalyTracker(n)
+    tracker.on_line("ANOMALY now node-4:unit=inactive node-2:unit=inactive", clock.t)
+    assert len(api.sent()) == 1
+    assert "node-2:unit=inactive" in api.sent()[0]
+    assert "node-4" not in api.sent()[0]
+    logged = records(tmp_path)
+    assert logged[0]["silenced"] is True and logged[0]["silence_scope"] == "host:node-4"
+    assert logged[0]["keys"] == ["node-4:unit"]
+    assert logged[1]["silenced"] is False and logged[1]["keys"] == ["node-2:unit"]
+    tracker.on_line("RECOVERED now", clock.t + 1)
+    assert "node-2:unit" in api.sent()[-1] and "node-4" not in api.sent()[-1]
+
+
+@pytest.mark.parametrize("end", ["expiry", "unsilence"])
+def test_scoped_end_summary_once_and_alert_again(tmp_path, end):
+    api, clock = FakeApi(), Clock(__import__("time").time())
+    scoped(tmp_path, "--host", "node-4")
+    n = notifier(tmp_path, api, clock)
+    n.alert("anomaly", ["node-4:unit"], "node-4:unit=inactive")
+    assert api.sent() == []
+    if end == "expiry":
+        clock.t += 601
+    else:
+        assert relay.main(["unsilence", "--state-dir", str(tmp_path), "--host", "node-4"]) == 0
+    n.tick()
+    assert len(api.sent()) == 1 and "host:node-4" in api.sent()[0]
+    assert "1 alert(s)" in api.sent()[0] and "anomaly node-4:unit" in api.sent()[0]
+    n.tick()
+    assert len(api.sent()) == 1
+    n.alert("reminder", ["node-4:unit"], "node-4:unit=inactive")
+    assert len(api.sent()) == 2 and records(tmp_path)[-1]["silenced"] is False
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        None,
+        {"until": "forever", "reason": "x"},
+        {"until": float("inf"), "reason": "x"},
+        {"until": T0 + 600},
+        [],
+    ],
+)
+def test_malformed_scoped_entry_silences_nothing(tmp_path, entry):
+    api, clock = FakeApi(), Clock()
+    relay.write_scopes(tmp_path / "silence", {"host:node-4": entry})
+    notifier(tmp_path, api, clock).alert("anomaly", ["node-4:unit"], "node-4")
+    assert len(api.sent()) == 1
+
+
+def test_scoped_exact_keys_repeatable_and_permissions(tmp_path):
+    api, clock = FakeApi(), Clock(__import__("time").time())
+    scoped(tmp_path, "--key", "node-4:unit", "--key", "node-3:unit")
+    n = notifier(tmp_path, api, clock)
+    for key in ["node-4:unit", "node-3:unit", "node-4:unreachable", "node-40:unit"]:
+        n.alert("anomaly", [key], key)
+    assert len(api.sent()) == 2 and "node-4:unreachable" in api.sent()[0]
+    relay.scope_path(tmp_path / "silence").chmod(0o644)
+    n.alert("anomaly", ["node-4:unit"], "node-4:unit")
+    assert len(api.sent()) == 3
+
+
+def test_scoped_existing_context_does_not_leak_into_new_alert(tmp_path):
+    api, clock = FakeApi(), Clock(__import__("time").time())
+    scoped(tmp_path, "--host", "node-4")
+    tracker = relay.AnomalyTracker(notifier(tmp_path, api, clock))
+    tracker.on_line("ANOMALY now node-4:unit=inactive", clock.t)
+    tracker.on_line("ANOMALY now node-4:unit=inactive node-2:unit=inactive", clock.t + 1)
+    assert len(api.sent()) == 1
+    assert "node-2:unit" in api.sent()[0] and "node-4" not in api.sent()[0]
+
+
+def test_scoped_and_global_silences_are_independent(tmp_path):
+    api, clock = FakeApi(), Clock(__import__("time").time())
+    scoped(tmp_path, "--host", "node-4")
+    relay.write_silence(tmp_path / "silence", clock.t + 600, "global")
+    n = notifier(tmp_path, api, clock)
+    n.alert("anomaly", ["node-2:unit"], "node-2")
+    assert api.sent() == []
+    assert relay.main(["unsilence", "--state-dir", str(tmp_path)]) == 0
+    n.tick()
+    n.alert("anomaly", ["node-4:unit"], "node-4")
+    n.alert("anomaly", ["node-2:unit"], "node-2")
+    assert len(api.sent()) == 2 and "node-2" in api.sent()[-1]

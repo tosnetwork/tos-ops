@@ -10,6 +10,7 @@
   alert-relay.py silence --until <ISO time | +MINUTES> --reason TEXT
                  [--state-dir DIR | --silence-file PATH]
   alert-relay.py unsilence [--state-dir DIR | --silence-file PATH]
+  silence / unsilence accept repeatable --host HOST or --key HOST:KIND scopes.
 
 coordinator runs on the coordinator. It keeps watch-testnet.py running as a
 child without a duration (restarting it 30 s after it exits) and reads its
@@ -76,8 +77,10 @@ from __future__ import annotations
 import argparse
 import http.client
 import json
+import math
 import os
 import queue
+import re
 import socket
 import ssl
 import stat
@@ -368,6 +371,54 @@ def write_silence(path: Path, until: float, reason: str) -> None:
     os.replace(tmp, path)
 
 
+def scope_path(path: Path) -> Path:
+    return path.with_name(path.name + ".scopes.json")
+
+
+def read_scopes(path: Path) -> dict:
+    try:
+        path = scope_path(path)
+        if path.stat().st_mode & 0o077:
+            log("scoped silence file permissions unsafe, alerts are sent")
+            return {}
+        entries = json.loads(path.read_text())
+        if not isinstance(entries, dict):
+            return {}
+    except (OSError, ValueError, UnicodeError):
+        return {}
+    valid = {}
+    for scope, entry in entries.items():
+        if not valid_scope(scope) or not isinstance(entry, dict):
+            continue
+        until = entry.get("until")
+        if (
+            isinstance(until, (int, float))
+            and not isinstance(until, bool)
+            and 0 < until < 253402300800
+            and isinstance(entry.get("reason"), str)
+        ):
+            valid[scope] = entry
+    return valid
+
+
+def valid_scope(scope: str) -> bool:
+    return bool(re.fullmatch(r"host:[A-Za-z0-9_.-]+|key:[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+", scope))
+
+
+def scope_matches(scope: str, key: str) -> bool:
+    kind, value = scope.split(":", 1)
+    return key.startswith(value + ":") if kind == "host" else key == value
+
+
+def write_scopes(path: Path, entries: dict) -> None:
+    path = scope_path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(entries, sort_keys=True) + "\n")
+    os.chmod(tmp, 0o600)
+    give_to_directory_owner(tmp)
+    os.replace(tmp, path)
+
+
 # ---------------------------------------------------------------- alert sink
 
 
@@ -381,6 +432,8 @@ class Notifier:
         self.outbox: list[dict] = []
         self.suppressed: list[dict] = []
         self.silence: tuple[float, str] | None = None
+        self.scopes: dict = {}
+        self.scope_suppressed: dict[str, list] = {}
         self.last_sent: dict | None = self._last_sent_from_file()
 
     def _last_sent_from_file(self) -> dict | None:
@@ -422,6 +475,45 @@ class Notifier:
                 },
             )
             return
+        if kind != "silence-summary":
+            scopes = {
+                k: v for k, v in read_scopes(self.silence_file).items() if v["until"] > raised
+            }
+            self.scopes.update(scopes)
+            remaining = list(keys)
+            for scope, entry in scopes.items():
+                matched = [key for key in keys if scope_matches(scope, key)]
+                if not matched:
+                    continue
+                suppressed = {**record, "keys": sorted(matched)}
+                self.scope_suppressed.setdefault(scope, []).append(suppressed)
+                append_jsonl(
+                    self.alerts,
+                    {
+                        "utc": utc(raised),
+                        "kind": kind,
+                        "keys": sorted(matched),
+                        "text": text,
+                        "silenced": True,
+                        "silence_scope": scope,
+                        "silence_reason": entry["reason"],
+                        "message_id": None,
+                        "latency_s": None,
+                    },
+                )
+                remaining = [key for key in remaining if key not in matched]
+            if keys and not remaining:
+                return
+            hidden_context = any(
+                scope_matches(scope, key)
+                for key in re.findall(r"[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+", text)
+                for scope in scopes
+            )
+            if remaining != keys or (remaining and hidden_context):
+                # Mixed messages must not leak suppressed tokens through their raw watch line.
+                tokens = anomaly_keys(text.split("\n")[-1].removeprefix("last: "))
+                text = f"{kind.upper()} " + " ".join(tokens.get(k, k) for k in remaining)
+                record = {**record, "keys": sorted(remaining), "text": text}
         self.outbox.append(record)
         if len(self.outbox) > OUTBOX_LIMIT:
             dropped = self.outbox.pop(0)
@@ -466,6 +558,21 @@ class Notifier:
 
     def tick(self, still_active: list[str] = ()) -> None:
         """End-of-silence summary, then a retry of anything unsent."""
+        current = {
+            k: v for k, v in read_scopes(self.silence_file).items() if v["until"] > self.now()
+        }
+        for scope in list(self.scopes):
+            if scope in current:
+                continue
+            entry = self.scopes.pop(scope)
+            suppressed = self.scope_suppressed.pop(scope, [])
+            lines = [
+                f"silence ended for {scope} ({entry['reason']}); "
+                f"{len(suppressed)} alert(s) were suppressed:"
+            ]
+            lines += [f"{utc(r['raised'])} {r['kind']} {' '.join(r['keys'])}" for r in suppressed]
+            self.alert("silence-summary", [], "\n".join(lines))
+        self.scopes.update(current)
         silence = self.silenced()
         if silence:
             self.silence = silence
@@ -934,6 +1041,8 @@ def build_parser() -> argparse.ArgumentParser:
         where = p.add_mutually_exclusive_group()
         where.add_argument("--state-dir", type=Path, default=Path(REMOTE_DIR))
         where.add_argument("--silence-file", type=Path)
+        p.add_argument("--host", action="append", default=[])
+        p.add_argument("--key", action="append", default=[])
         if name == "silence":
             p.add_argument("--until", required=True)
             p.add_argument("--reason", required=True)
@@ -946,15 +1055,36 @@ def main(argv: list[str] | None = None) -> int:
     if getattr(args, "silence_file", None) is None:
         args.silence_file = Path(args.state_dir) / SILENCE
     try:
+        scopes = (
+            ["host:" + h for h in args.host] + ["key:" + k for k in args.key]
+            if args.command in ("silence", "unsilence")
+            else []
+        )
+        if any(not valid_scope(scope) for scope in scopes):
+            raise lib.TestnetError("invalid silence host or key")
         if args.command == "silence":
             if not args.reason.strip():
                 parser.error("--reason must not be empty")
             until = parse_until(args.until, time.time())
-            write_silence(args.silence_file, until, args.reason)
+            if not math.isfinite(until):
+                raise lib.TestnetError("silence expiry must be finite")
+            if scopes:
+                entries = read_scopes(args.silence_file)
+                for scope in scopes:
+                    entries[scope] = {"until": until, "reason": args.reason}
+                write_scopes(args.silence_file, entries)
+            else:
+                write_silence(args.silence_file, until, args.reason)
             print(f"SILENCED until {utc(until)} in {args.silence_file}")
             return 0
         if args.command == "unsilence":
-            args.silence_file.unlink(missing_ok=True)
+            if scopes:
+                entries = read_scopes(args.silence_file)
+                for scope in scopes:
+                    entries.pop(scope, None)
+                write_scopes(args.silence_file, entries)
+            else:
+                args.silence_file.unlink(missing_ok=True)
             print(f"UNSILENCED {args.silence_file}")
             return 0
         if args.interval < 1 or args.dead_after <= args.interval:
