@@ -280,7 +280,8 @@ invalidates earlier signed requests. Do not treat it as an automated renewal.
 Builds containing the external-admission release port remove `-m` and
 `--mempool-num`. The supplied local and testnet unit templates do not pass
 these options. Before activating such a build, check site-specific service
-overrides and launch wrappers privately and remove either spelling if present.
+overrides and launch wrappers privately and remove either spelling from
+validator-engine arguments if present.
 Keep historical build receipts and approved bundles unchanged.
 
 Pool limits now use the persisted `extraconfig.ext_message_pool_config` settings
