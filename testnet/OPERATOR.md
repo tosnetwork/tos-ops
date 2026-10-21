@@ -275,6 +275,26 @@ Use the exact tos checkout's `doc/validator-operator-guide.md` §10 and
 rerun `activate` over a multi-key node. Root rotation changes epoch/nonce and
 invalidates earlier signed requests. Do not treat it as an automated renewal.
 
+### External-message pool option migration
+
+Builds containing the external-admission release port remove `-m` and
+`--mempool-num`. The supplied local and testnet unit templates do not pass
+these options. Before activating such a build, check site-specific service
+overrides and launch wrappers privately and remove either spelling if present.
+Keep historical build receipts and approved bundles unchanged.
+
+Pool limits now use the persisted `extraconfig.ext_message_pool_config` settings
+or the native console command `set-ext-message-pool-options-json <filename>`.
+The console command validates and persists the supplied configuration; use the
+reviewed operator access and change procedure. Do not replace the retired flag
+with a silently ignored argument.
+
+The release defaults remain 24 regular checkers, zero reserved priority checkers
+and local submission priority zero. This migration does not reserve a priority
+checker or change the deployed admission settings; those require a separate
+configuration decision. It also leaves HTTP and liteserver ingress limits in
+place.
+
 ## 9. Incidents, leaving and retirement
 
 | Symptom | Verify / response |
