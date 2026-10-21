@@ -1091,6 +1091,31 @@ def auth_policy(cell: Cell) -> dict[str, Any]:
     return {"network": network, "sequence": sequence, "retired": retired, "deadline": deadline}
 
 
+def zero_state_gas_credits(boc: bytes) -> dict[int, int]:
+    """Refuse a newly generated genesis with a different admission credit profile."""
+    params = zero_state_config(boc)[2]
+    credits = {}
+    for number, expected in ((20, 10000), (21, 20000)):
+        if number not in params:
+            raise TestnetError(f"the zero state has no ConfigParam {number}")
+        prices = Slice(params[number])
+        tag = prices.bits(8)
+        if tag == 0xD1:  # gas_flat_pfx
+            prices.bits(64)
+            prices.bits(64)
+            tag = prices.bits(8)
+        if tag not in (0xDD, 0xDE):
+            raise TestnetError(f"ConfigParam {number} has an unknown gas price tag")
+        for _ in range(3 if tag == 0xDE else 2):  # special_gas_limit exists only in #de
+            prices.bits(64)
+        credits[number] = prices.bits(64)
+        if credits[number] != expected:
+            raise TestnetError(
+                f"ConfigParam {number} gas_credit is {credits[number]}, expected {expected}"
+            )
+    return credits
+
+
 def zero_state_auth_policy(
     boc: bytes, root_hash: bytes, global_id: int, global_version: int, tag: bytes
 ) -> dict[str, Any]:

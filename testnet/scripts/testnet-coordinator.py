@@ -239,6 +239,7 @@ def cmd_genesis(args: argparse.Namespace) -> None:
     built = runs[0]
     rhash = (built / "zerostate.rhash").read_bytes()
     fhash = (built / "zerostate.fhash").read_bytes()
+    lib.zero_state_gas_credits((built / "zerostate.boc").read_bytes())
     auth = lib.zero_state_auth_policy(
         (built / "zerostate.boc").read_bytes(),
         rhash,

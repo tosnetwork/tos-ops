@@ -152,6 +152,14 @@ scripts refuse or flag it rather than choose silently.
 | D11 faucet funding | nothing in genesis; the faucet wallet is ordinary | decided 2026-10-12: validator-donated rewards, canonical genesis. The first rewards unfreeze about T + 63.7 h, so the faucet opens on day 3 at the earliest |
 | D13 release evidence | capacity and timing reports | decided 2026-10-12: not release evidence; labelled `NON-RELEASE` |
 
+Newly generated genesis must carry basechain CP21 `gas_credit=20000` and
+masterchain CP20 `gas_credit=10000`; the coordinator checks the generated BOC
+before publication. This does not update any running network. New public
+networks remain blocked until node admission work protections ship. The template
+still refuses an explicitly selected `quantum-admission-candidate`: that flag
+continues to enforce the frozen fixture namespace and is not a public ceremony
+profile, even though it no longer changes gas credit.
+
 Except for the reviewed schedule in ConfigParam 15, the remaining template
 constants, supply and bootstrap wallet are retained; the AUTH tag is inserted
 explicitly for version 16. A testnet that changes

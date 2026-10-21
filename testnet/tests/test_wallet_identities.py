@@ -248,6 +248,8 @@ def genesis_setup(tmp_path, monkeypatch, wallet_key: bytes):
         return {"network_tag_hex": tag.hex(), "config_param_48_hash_hex": "48" * 32}
 
     monkeypatch.setattr(lib, "zero_state_auth_policy", auth_policy)
+    # create_state above emits opaque stand-in bytes; real BOC checks have their own tests.
+    monkeypatch.setattr(lib, "zero_state_gas_credits", lambda boc: {20: 10000, 21: 20000})
     monkeypatch.setattr(
         lib,
         "wallet_public_key",
@@ -606,3 +608,16 @@ def test_genesis_interrupted_publication_never_overwrites_on_retry(
     assert coordinator.main(args) == 1
     assert "earlier genesis attempt published" in capsys.readouterr().err
     assert {name: (ceremony / name).read_bytes() for name in published(ceremony)} == retained
+
+
+def test_a_refused_gas_credit_publishes_nothing(tmp_path, monkeypatch, capsys):
+    ceremony, args, runs = genesis_setup(tmp_path, monkeypatch, b"\x07" * 32)
+
+    def refuse(boc):
+        raise lib.TestnetError("ConfigParam 21 gas_credit is 10000, expected 20000")
+
+    monkeypatch.setattr(lib, "zero_state_gas_credits", refuse)
+    assert coordinator.main(args) == 1
+    assert "ConfigParam 21 gas_credit" in capsys.readouterr().err
+    assert runs == ["run-a", "run-b"]
+    assert published(ceremony) == []
