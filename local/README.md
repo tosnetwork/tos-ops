@@ -69,6 +69,16 @@ including the previous keys, databases, wallets and pool state. Without
 `--clean`, an existing network is refused before stopping its services.
 The installer starts the services and verifies the actual deployment.
 
+The Genesis is version 16, which commits to an AUTH network tag (ConfigParam 48):
+the namespace that binds Quantum wallet authorization to this one network, so a
+signature made for an earlier local chain cannot be replayed on the next. tos
+assigns no tag. Each setup derives a new one as the SHA-256 of
+`TOS-AUTH-NETWORK-TAG-v1;network=tos-local-dev;global_id=3;epoch=<setup Unix time>`
+and records the value and its rule under `auth_network_tag` in
+`/data/network.json`. To fix the tag instead, pass `TOS_AUTH_NETWORK_TAG=<64 hex
+digits>` on the `sudo` command line; reserved values (one repeated byte, or bytes
+0 to 31) are refused.
+
 This is a local development chain with a funded development wallet and a
 **development pool verifying key**. It is not a release Genesis or a pool for
 real funds. The initial validator set lasts 30 days; reset the local chain

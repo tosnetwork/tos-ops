@@ -55,6 +55,32 @@ REPO = tos_root()
 
 VALIDATOR_COUNT = 4
 OBSERVER_COUNT = 2
+LOCAL_NETWORK = "tos-local-dev"
+LOCAL_GLOBAL_ID = 3
+
+
+def auth_network_tag_rule(epoch):
+    return f"TOS-AUTH-NETWORK-TAG-v1;network={LOCAL_NETWORK};global_id={LOCAL_GLOBAL_ID};epoch={epoch}"
+
+
+def local_auth_network_tag(environ, now):
+    """The AUTH network tag a version-16 local Genesis commits to, and the rule behind it.
+
+    tos assigns no tag. Each reset gets a new one, derived from the setup time, so a
+    signature made for an earlier local chain cannot be replayed on the next. An explicit
+    TOS_AUTH_NETWORK_TAG wins; its rule is then unknown.
+    """
+    given = environ.get("TOS_AUTH_NETWORK_TAG")
+    if given is not None:
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", given):
+            raise RuntimeError("TOS_AUTH_NETWORK_TAG must be exactly 64 hexadecimal digits")
+        tag, rule = bytes.fromhex(given), None
+    else:
+        rule = auth_network_tag_rule(int(now))
+        tag = hashlib.sha256(rule.encode("ascii")).digest()
+    if len(set(tag)) == 1 or tag == bytes(range(32)):
+        raise RuntimeError("the AUTH network tag must not be a reserved value")
+    return tag, rule
 
 
 def topology(data):
@@ -373,6 +399,9 @@ async def prepare(args):
         raise RuntimeError("existing network; use setup-testnet.sh --clean to reinitialize")
     async with Network(Install(args.build, REPO), data / "testnet", base_port=2000) as network:
         network.config.global_version = 16
+        network.config.global_id = LOCAL_GLOBAL_ID
+        auth_network_tag, auth_network_tag_rule_text = local_auth_network_tag(os.environ, time.time())
+        network.config.auth_network_tag = auth_network_tag
         network.config.deployment_fee_schedule = True
         network.config.shard_validators = 4
         rotating = args.rotate
@@ -516,8 +545,12 @@ async def prepare(args):
                 "mode": "pq",
                 "validators": VALIDATOR_COUNT,
                 "observers": OBSERVER_COUNT,
-                "global_id": 3,
+                "global_id": LOCAL_GLOBAL_ID,
                 "global_version": 16,
+                "auth_network_tag": {
+                    "value": auth_network_tag.hex(),
+                    "rule": auth_network_tag_rule_text,
+                },
                 "genesis_wallet_address": zs.main_wallet_address.to_str(is_user_friendly=False),
                 "zerostate_root": zs.masterchain.root_hash.hex(),
                 "zerostate_file": zs.masterchain.file_hash.hex(),

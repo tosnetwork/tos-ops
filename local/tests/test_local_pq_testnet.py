@@ -417,3 +417,31 @@ def test_patient_client_waits_out_a_lite_server_admission_refusal(monkeypatch):
     with pytest.raises(RuntimeError, match="NOTREADY"):
         asyncio.run(patient.query(1))  # gives up after its attempts
     assert len(calls) == 2
+
+
+def test_auth_network_tag_is_derived_per_reset():
+    tag, rule = local.local_auth_network_tag({}, 1792710000.7)
+    assert rule == "TOS-AUTH-NETWORK-TAG-v1;network=tos-local-dev;global_id=3;epoch=1792710000"
+    assert tag == __import__("hashlib").sha256(rule.encode("ascii")).digest()
+    assert local.local_auth_network_tag({}, 1792710000.2) == (tag, rule)
+    assert local.local_auth_network_tag({}, 1792710001)[0] != tag
+
+
+def test_explicit_auth_network_tag_wins():
+    given = "2326dc6b35a43f17e9659442b8d3230e31766c3a5119daae757da37ab73abbd0"
+    assert local.local_auth_network_tag({"TOS_AUTH_NETWORK_TAG": given}, 1) == (
+        bytes.fromhex(given),
+        None,
+    )
+
+
+@pytest.mark.parametrize("given", ["", "ab" * 31, "zz" * 32, "ab" * 33])
+def test_malformed_auth_network_tag_refused(given):
+    with pytest.raises(RuntimeError, match="64 hexadecimal digits"):
+        local.local_auth_network_tag({"TOS_AUTH_NETWORK_TAG": given}, 1)
+
+
+@pytest.mark.parametrize("given", ["00" * 32, "42" * 32, bytes(range(32)).hex()])
+def test_reserved_auth_network_tag_refused(given):
+    with pytest.raises(RuntimeError, match="reserved"):
+        local.local_auth_network_tag({"TOS_AUTH_NETWORK_TAG": given}, 1)
