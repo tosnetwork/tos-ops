@@ -925,6 +925,42 @@ def test_generated_genesis_has_the_adopted_gas_credits(tmp_path):
     }
 
 
+def gas_prices_cell(tag, credit, flat=False, damage=None):
+    fields = [32768000, 1000000] + ([1000000] if tag == 0xDE else [])
+    fields += [credit, 2500000, 100000000, 1000000000]
+    data = bytes([tag]) + b"".join(value.to_bytes(8, "big") for value in fields)
+    if flat:
+        data = bytes([0xD1]) + (100).to_bytes(8, "big") + (1000000).to_bytes(8, "big") + data
+    refs = []
+    if damage == "truncated":
+        data = data[:-8]
+    elif damage == "trailing-bits":
+        data += b"\x00"
+    elif damage == "trailing-ref":
+        refs = [lib.Cell(b"", 0, [])]
+    return lib.Cell(data, len(data) * 8, refs)
+
+
+@pytest.mark.parametrize("tag", [0xDD, 0xDE])
+@pytest.mark.parametrize("flat", [False, True])
+@pytest.mark.parametrize("damage", ["truncated", "trailing-bits", "trailing-ref"])
+def test_gas_credit_guard_refuses_malformed_prices(monkeypatch, tag, flat, damage):
+    # The credit itself is right; only the cell around it is damaged.
+    params = {20: gas_prices_cell(tag, 10000, flat), 21: gas_prices_cell(tag, 20000, flat, damage)}
+    monkeypatch.setattr(lib, "zero_state_config", lambda boc: (None, 2, params))
+    with pytest.raises(lib.TestnetError, match="ConfigParam 21 (is malformed|has data after)"):
+        lib.zero_state_gas_credits(b"")
+
+
+def test_gas_credit_guard_accepts_flat_prefixed_prices(monkeypatch):
+    params = {
+        20: gas_prices_cell(0xDE, 10000, flat=True),
+        21: gas_prices_cell(0xDD, 20000, flat=True),
+    }
+    monkeypatch.setattr(lib, "zero_state_config", lambda boc: (None, 2, params))
+    assert lib.zero_state_gas_credits(b"") == {20: 10000, 21: 20000}
+
+
 @pytest.mark.parametrize("tag", [0xDD, 0xDE])
 @pytest.mark.parametrize(
     "mc,wc,refused", [(10000, 20000, None), (20000, 20000, 20), (10000, 10000, 21)]

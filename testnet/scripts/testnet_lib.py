@@ -1099,16 +1099,25 @@ def zero_state_gas_credits(boc: bytes) -> dict[int, int]:
         if number not in params:
             raise TestnetError(f"the zero state has no ConfigParam {number}")
         prices = Slice(params[number])
-        tag = prices.bits(8)
-        if tag == 0xD1:  # gas_flat_pfx
-            prices.bits(64)
-            prices.bits(64)
+        try:
             tag = prices.bits(8)
-        if tag not in (0xDD, 0xDE):
-            raise TestnetError(f"ConfigParam {number} has an unknown gas price tag")
-        for _ in range(3 if tag == 0xDE else 2):  # special_gas_limit exists only in #de
-            prices.bits(64)
-        credits[number] = prices.bits(64)
+            if tag == 0xD1:  # gas_flat_pfx
+                prices.bits(64)
+                prices.bits(64)
+                tag = prices.bits(8)
+            if tag not in (0xDD, 0xDE):
+                raise TestnetError(f"ConfigParam {number} has an unknown gas price tag")
+            for _ in range(3 if tag == 0xDE else 2):  # special_gas_limit exists only in #de
+                prices.bits(64)
+            credits[number] = prices.bits(64)
+            for _ in range(3):  # block_gas_limit, freeze_due_limit, delete_due_limit
+                prices.bits(64)
+        except TestnetError as error:
+            if "unknown gas price tag" in str(error):
+                raise
+            raise TestnetError(f"ConfigParam {number} is malformed: {error}") from error
+        if not prices.end():
+            raise TestnetError(f"ConfigParam {number} has data after its gas prices")
         if credits[number] != expected:
             raise TestnetError(
                 f"ConfigParam {number} gas_credit is {credits[number]}, expected {expected}"
