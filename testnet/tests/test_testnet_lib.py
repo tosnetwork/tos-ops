@@ -876,3 +876,107 @@ def test_zero_state_auth_policy_refuses_a_policy_outside_the_lists(monkeypatch, 
 def test_serialized_boc_round_trips():
     for cell in (config_params()[48], config_params()[9], lib.parse_boc(ZERO_STATE)):
         assert lib.parse_boc(serialize_boc(cell)).hash() == cell.hash()
+
+
+def test_historical_genesis_is_not_the_new_admission_profile():
+    # This pinned historical fixture remains unchanged; it predates CP21=20,000.
+    with pytest.raises(lib.TestnetError, match="ConfigParam 21 gas_credit is 10000"):
+        lib.zero_state_gas_credits(ZERO_STATE)
+
+
+def test_generated_genesis_has_the_adopted_gas_credits(tmp_path):
+    import subprocess
+    from pathlib import Path
+
+    root = os.environ.get("TOS_ROOT")
+    if not root:
+        pytest.skip("TOS_ROOT not set")
+    root = Path(root)
+    binary = Path(os.environ.get("CREATE_STATE_PATH", root / "build/crypto/create-state"))
+    if not binary.is_file():
+        pytest.fail("build create-state before testing the generated genesis")
+    template = (root / "crypto/smartcont/gen-zerostate.fif").read_text()
+    epoch = 1800000000
+    patched = lib.patch_template(template, 2, epoch, SCHEDULE, TAG)
+    (tmp_path / "testnet.fif").write_text(patched)
+    (tmp_path / "validator-pq.pub").write_bytes(
+        lib.pack_manifest([public_record(i) for i in range(1, 5)])
+    )
+    # Deterministic disposable test key, never a network identity.
+    (tmp_path / "main-wallet.pk").write_bytes(bytes([0x53]) * 32)
+    subprocess.run(
+        [
+            str(binary),
+            "-I",
+            str(root / "crypto/fift/lib") + ":" + str(root / "crypto/smartcont"),
+            "-I",
+            str(binary.parent / "smartcont"),
+            "-s",
+            str(tmp_path / "testnet.fif"),
+        ],
+        cwd=tmp_path,
+        env=dict(os.environ, SOURCE_DATE_EPOCH=str(epoch)),
+        check=True,
+        capture_output=True,
+    )
+    assert lib.zero_state_gas_credits((tmp_path / "zerostate.boc").read_bytes()) == {
+        20: 10000,
+        21: 20000,
+    }
+
+
+def gas_prices_cell(tag, credit, flat=False, damage=None):
+    fields = [32768000, 1000000] + ([1000000] if tag == 0xDE else [])
+    fields += [credit, 2500000, 100000000, 1000000000]
+    data = bytes([tag]) + b"".join(value.to_bytes(8, "big") for value in fields)
+    if flat:
+        data = bytes([0xD1]) + (100).to_bytes(8, "big") + (1000000).to_bytes(8, "big") + data
+    refs = []
+    if damage == "truncated":
+        data = data[:-8]
+    elif damage == "trailing-bits":
+        data += b"\x00"
+    elif damage == "trailing-ref":
+        refs = [lib.Cell(b"", 0, [])]
+    return lib.Cell(data, len(data) * 8, refs)
+
+
+@pytest.mark.parametrize("tag", [0xDD, 0xDE])
+@pytest.mark.parametrize("flat", [False, True])
+@pytest.mark.parametrize("damage", ["truncated", "trailing-bits", "trailing-ref"])
+def test_gas_credit_guard_refuses_malformed_prices(monkeypatch, tag, flat, damage):
+    # The credit itself is right; only the cell around it is damaged.
+    params = {20: gas_prices_cell(tag, 10000, flat), 21: gas_prices_cell(tag, 20000, flat, damage)}
+    monkeypatch.setattr(lib, "zero_state_config", lambda boc: (None, 2, params))
+    with pytest.raises(lib.TestnetError, match="ConfigParam 21 (is malformed|has data after)"):
+        lib.zero_state_gas_credits(b"")
+
+
+def test_gas_credit_guard_accepts_flat_prefixed_prices(monkeypatch):
+    params = {
+        20: gas_prices_cell(0xDE, 10000, flat=True),
+        21: gas_prices_cell(0xDD, 20000, flat=True),
+    }
+    monkeypatch.setattr(lib, "zero_state_config", lambda boc: (None, 2, params))
+    assert lib.zero_state_gas_credits(b"") == {20: 10000, 21: 20000}
+
+
+@pytest.mark.parametrize("tag", [0xDD, 0xDE])
+@pytest.mark.parametrize(
+    "mc,wc,refused", [(10000, 20000, None), (20000, 20000, 20), (10000, 10000, 21)]
+)
+def test_gas_credit_guard_checks_both_workchains(monkeypatch, tag, mc, wc, refused):
+    def gas_cell(credit):
+        fields = [32768000, 1000000] + ([1000000] if tag == 0xDE else [])
+        fields += [credit, 2500000, 100000000, 1000000000]
+        data = bytes([tag]) + b"".join(value.to_bytes(8, "big") for value in fields)
+        return lib.Cell(data, len(data) * 8, [])
+
+    monkeypatch.setattr(
+        lib, "zero_state_config", lambda boc: (None, 2, {20: gas_cell(mc), 21: gas_cell(wc)})
+    )
+    if refused is None:
+        assert lib.zero_state_gas_credits(b"") == {20: mc, 21: wc}
+    else:
+        with pytest.raises(lib.TestnetError, match=f"ConfigParam {refused} gas_credit"):
+            lib.zero_state_gas_credits(b"")
