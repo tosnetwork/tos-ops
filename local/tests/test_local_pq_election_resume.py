@@ -103,7 +103,7 @@ def harness(tmp_path, monkeypatch):
 
     class Request:
         def __init__(self, **kwargs):
-            assert kwargs["stake_owner"] == WALLET.hash_part
+            assert kwargs["src_addr"] == WALLET.hash_part
             self.kwargs = kwargs
 
         def parse_result(self, response):
@@ -364,3 +364,23 @@ def test_a_returned_stake_is_requested_from_the_wallet(recovery):
     assert not fields.remaining_bits and not fields.remaining_refs
     assert result == dict(kind="recovered")
     assert events[0][0] == "stake_recovery" and events[0][1]["expected_nano"] == 11 * NANO
+
+
+def test_the_authorization_request_names_the_fields_the_node_schema_defines():
+    # The harness replaces the request class with a fake, so a field the generated
+    # schema does not have would pass there and fail on the first live round.
+    import ast
+    import inspect
+
+    tree = ast.parse(Path(SPEC.origin).read_text())
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "attr", None) == "Engine_validator_createPqStakeAuthorizationRequest"
+    ]
+    assert len(calls) == 1
+    sent = {keyword.arg for keyword in calls[0].keywords}
+    real = driver.tos_api.Engine_validator_createPqStakeAuthorizationRequest
+    defined = set(inspect.signature(real).parameters) - {"self"}
+    assert sent == defined
