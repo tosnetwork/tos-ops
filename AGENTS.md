@@ -12,7 +12,7 @@ directory name: compare its zero-state identity with the approved ceremony.
 | --- | --- |
 | Find tools, tests and environment boundaries | [README.md](README.md) |
 | Operate an independent testnet validator | [testnet/OPERATOR.md](testnet/OPERATOR.md) |
-| Genesis, coordinator signing, onboarding, renewal, recovery or reset | [testnet/CEREMONY.md](testnet/CEREMONY.md) |
+| Genesis, staking pools, coordinator signing, onboarding, fee top-ups, recovery or reset | [testnet/CEREMONY.md](testnet/CEREMONY.md) |
 | Cross-node checks, watching and alert relay | [testnet/README.md](testnet/README.md) |
 | Disposable local chain / health stack | [local/README.md](local/README.md), then [local/OPERATIONS.md](local/OPERATIONS.md) |
 | Production planning | [production/README.md](production/README.md); proposals, not a deployment approval |
@@ -27,7 +27,7 @@ directory name: compare its zero-state identity with the approved ceremony.
 - Get the human operator's **explicit go for the named network, hosts and action**
   before value movement or a destructive/live deployment operation. This includes
   `retire-host.sh`, local `--clean`, live `install-node.sh activate`, signing,
-  `fund`, `onboard`, `refund`, `withdraw`, `resubmit`, and a journal `record`,
+  `fund`, `onboard`, `withdraw`, `resubmit`, and a journal `record`,
   `baseline` or `retry` that permits later spending. An earlier diagnostic request
   is not permission to send. Run and review `--dry-run` first where supported. `fund --dry-run`
   still signs and stores a private BOC, so signing itself also needs permission.

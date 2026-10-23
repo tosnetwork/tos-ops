@@ -29,7 +29,7 @@ classical validator is installed.
 
 | Path | Contents |
 | --- | --- |
-| `scripts/` | Installer (`setup-testnet.sh`), control (`testnet-ctl.sh`), network library (`local_pq_testnet.py`), election, transfer, privacy and funding drivers, relay checker, root-service snapshot installer |
+| `scripts/` | Installer (`setup-testnet.sh`), control (`testnet-ctl.sh`), network library (`local_pq_testnet.py`), election, transfer and privacy drivers, two-step broadcast relay checker, root-service snapshot installer |
 | `systemd/` | Unit templates for the DHT, validators, observers and the lite-client |
 | `tests/` | Unit tests for the drivers and the snapshot installer |
 | `OPERATIONS.md` | Elections, random transfers and shielded-pool traffic |
@@ -89,8 +89,8 @@ before expiry or use the explicit election rehearsal described below.
 A full reset of the local development network, in order:
 
 1. `sudo TOS_ROOT="$TOS_ROOT" local/scripts/setup-testnet.sh --clean --rotate` (add `--build` after source
-   changes). With `--rotate` it deploys and authorizes the candidate
-   controllers and only then starts `tos-pq-elections`; see the next section.
+   changes). With `--rotate` it starts `tos-pq-elections`, which deploys and
+   funds each candidate's staking wallet itself; see the next section.
    Do not edit `local/scripts/setup-testnet.sh` while it runs: bash reads the script
    as it executes, and a changed file makes it run the wrong lines.
 2. `local/scripts/testnet-ctl.sh status` and `local/scripts/testnet-ctl.sh check`: every
@@ -163,7 +163,7 @@ key block read from a local node. A client started with an unmodified
 `/data/configs/node-*-lite.json` fails in the same way. A production client
 takes a recent `init_block` from its global config instead.
 
-## Controller funding and continuous elections
+## Staking wallets and continuous elections
 
 `--rotate` selects a ten-minute development election profile and adds candidate
 node 7. The election driver alternates the four-member sets 1/2/3/7 and 1/2/3/4.
@@ -174,66 +174,62 @@ blocks that garbage collection advances behind (see "Disk retention"). A
 bounded rehearsal's shutdown is not the default, and leaving validators running
 without elections lets `/data` grow without bound.
 
-A controller forwards a stake to the Elector only within an explicit,
-root-signed operating authorization (controller action kind 4). A new controller
-has zero allowance and expiry, so every relay is refused. A plain balance
-transfer does not authorize spending, and exit 180 is a shared guard code, not
-a unique diagnosis.
+Each of the five candidates (nodes 1, 2, 3, 4 and 7) stakes directly from its
+own masterchain wallet (WalletV1). Setup creates a disposable key for each in
+`/data/elections/keys/wallet-<i>.pk` and binds the node to that wallet: the
+wallet's account id is the node's validator id, recorded with the consensus key
+and ADNL id in `/data/elections/candidate-<i>.json`. The node signs stake
+authorizations only for that account, and the elector refuses a stake signed
+for any other.
 
-`setup-testnet.sh --rotate` runs `local/scripts/local-pq-fund-controllers.py`
-after deployment and before it starts the election service. Setup and the
-election driver share the helper in `local_pq_funding.py`; the driver rechecks
-the selected candidates before each new round. For each of the five candidate
-controllers it:
+`local/scripts/local-pq-elections.py` (the `tos-pq-elections` service) owns the
+Genesis wallet as its faucet. When an election opens it, for each member of the
+round:
 
-1. verifies the disposable network and the controller's birth, code and
-   authority identity, deploying the exact StateInit when needed;
-2. reads the current authority, `operating_state` and the Config20/24 fee
-   parameters;
-3. computes the automatic grant per relay and a 30-day target, and renews at
-   25 % remaining or when the policy is missing or differs;
-4. deposits only the deficit, signs with `/usr/local/bin/tos-pq-controller`
-   and the development root seed `/data/elections/keys/root-<i>.seed`, and
-   confirms the actual controller transaction and the exact state transition;
-5. separately tops up ordinary capital to funds plus floor plus margin.
+1. deploys the candidate's wallet from the faucet if it is not yet active, and
+   refuses a wallet whose code or key does not match the recorded StateInit;
+2. asks the node for an ML-DSA-44 stake authorization for the wallet and refuses
+   one made for another account, key or ADNL address;
+3. encodes the stake with tosctl's production builder, installed by setup as
+   `/usr/local/bin/tos-pq-pool-stake-order`, and sends the elector its body
+   without the amount;
+4. tops the wallet up from the faucet by only the deficit to 11,000 TOS stake +
+   1.2 TOS elector fees + 1 TOS reserve, then sends 11,001.2 TOS from the wallet
+   to the elector, bounceable;
+5. reads the elector's answer from the wallet's own transactions: acceptance,
+   a returned stake with the elector's reason, or a bounce.
 
-The contract **adds** a deposit to the recorded funds and **replaces** every
-other field, so a renewal may deposit zero. Defaults:
+About once a minute it also asks the elector (`compute_returned_stake`) whether a
+candidate has a stake to recover, sends `RECOVER_STAKE` with 0.2 TOS from that
+wallet when it has, and records the elector's answer as a `stake_recovery` event.
+It writes `/data/elections/wallet-<i>.json` (deployed, balance, returned stake,
+check time) on every such check.
 
-- funds and allowance target `4320 × current grant`, which is 30 days of one
-  relay per ten-minute round (about 27,800 TOS at about 6.44 TOS per relay);
-- 20 TOS per-request cap, 10 TOS floor, 20 TOS capital margin;
-- 30-day sponsorship.
-
-The authorization signature itself expires after 600 seconds, independently of
-the sponsorship. Unsupported prices or caps fail visibly. These are local
-development values, not production fee estimates.
-
-Read-only checks do not need the election service stopped:
+These are local development values, not production fee estimates. Read-only
+checks do not need the election service stopped:
 
 ```bash
-sudo env TOS_ROOT="$TOS_ROOT" "$TOS_ROOT/.venv/bin/python" \
-  local/scripts/local-pq-fund-controllers.py --check
 sudo env TOS_ROOT="$TOS_ROOT" "$TOS_ROOT/.venv/bin/python" \
   local/scripts/check-local-pq-elections.py
 ```
 
-`--check` reports a needed renewal without signing or writing. The election
-service normally renews automatically. A manual write needs exclusive use of
-the faucet (Genesis wallet), which a file lock enforces, so do not run setup or
-traffic bootstraps while the election service runs. Follow any maintenance stop
-with a checked restart.
+It reports the driver heartbeat, an expired ConfigParam 34 without a newer
+activation, and any candidate wallet that is undeployed or not observed for ten
+minutes. Spending from the faucet needs exclusive use of it, which a file lock
+enforces, so do not run setup or traffic bootstraps while the election service
+runs. Follow any maintenance stop with a checked restart.
 
-The sender records its exact signed request before broadcasting. A restart
-reuses the same wallet seqno and reconciles the destination transaction, and
-per-node intent records prevent funding a partly completed round twice. Do not
-delete `faucet-journal/`, `candidate-intent-*.json` or `submitted.json` to force
-a retry: reconcile the saved request against chain state first. Unknown
-outcomes and deterministic refusals need attention, not a new payment.
+Every sender (the faucet and each candidate wallet, journals in
+`faucet-journal/` and `wallet-journal-<i>/`) records its exact signed request
+before broadcasting. A restart reuses the same wallet seqno and reconciles the
+destination transaction, and per-node intent records prevent paying a partly
+completed round twice. Do not delete the journals, `candidate-intent-*.json` or
+`submitted.json` to force a retry: reconcile the saved request against chain
+state first. Unknown outcomes and deterministic refusals need attention, not a
+new payment.
 
-The development root seeds in `/data/elections/keys/` are deterministic
-fixtures and must never control real funds. This automation is not production
-root custody.
+The candidate wallet keys in `/data/elections/keys/` are disposable development
+keys and must never control real funds.
 
 ### Updating the drivers on a running network
 
@@ -266,10 +262,9 @@ not the checkout. To deploy changed driver code:
 
 | Observation | Check and response |
 | --- | --- |
-| Controller has balance but refuses forwarding | Read the explicit operating authorization, expiry, allowance and per-request limit; ordinary transfers do not authorize spending. |
-| `operating_state` reads all zero or expired | The controller has no operating authorization. Check with `local-pq-fund-controllers.py --check`; the election service renews it, or run the tool with the service stopped. |
-| Controller rejects with exit 180 | This is a shared relay guard code, not a unique diagnosis. Inspect the request and exact transaction; check balance against recorded funds plus floor, as well as the other relay preconditions. |
-| Pool receives a native bounce after forwarding | Decode the controller compute/action failure and pool bounce transaction. Confirm where principal returned before retrying. A bounce is not an elector acceptance. |
+| `node stake authorization differs from candidate` | The node signed for another account, key or ADNL address. Check its bound validator id (the post-quantum custody line in the node log) against the candidate's `wallet` in `candidate-<i>.json`. Nothing was sent. |
+| Elector returns the stake (`elector_refused`) | The reply carries the elector's reason; reason 0 with no open election means the election had closed. The stake is back in the wallet. |
+| The elector bounces the stake (`elector_bounced`) | The elector's transaction failed and the value came back with the bounce. Inspect that transaction before the next round. A bounce is not an acceptance. |
 | Election driver reports a confirmation timeout | The signed intent remains unresolved. Inspect the complete transaction path and the retained journal; do not infer acceptance or send a new payment. |
 | `LITE_SERVER_NOTREADY: liteserver admission limit exceeded` | A lite server allows at most 128 heavy proof queries per second (`validator/liteserver-admission.h`), and several drivers starting together exceed it. The drivers wait it out (`PatientClient`, up to seven attempts with backoff); a refused query was never executed. Persistent refusals mean something keeps querying one node too heavily. |
 | A restart appears to repeat funding | Check that the installed snapshot contains the journal, and preserve it. Reconcile exact transaction identities and balances; do not delete records to bypass duplicate protection. |
@@ -280,7 +275,7 @@ against the exact deployed code hash.
 
 ### Verify an actual election, not just submission
 
-- Match the deployed elector/controller/pool code identities to the intended
+- Match the deployed elector and candidate wallet code identities to the intended
   build and frozen artifacts.
 - Check successful elector receipts for all intended query IDs and the actual
   participant list/accepted amounts.
@@ -297,7 +292,8 @@ against the exact deployed code hash.
 
   This checks retained traces after the transition grace period, including the
   new member and exclusion of the retired member from current first-hop sets.
-- Inspect restarts, compute/action failures and balance/allowance consumption.
+- Inspect restarts, compute/action failures, wallet balances and `stake_recovery`
+  events for the recovered stakes.
   A reserved operating-budget debit is not necessarily the actual gas spent.
 - On a persistent network keep the election service and its health check
   active. `local/scripts/check-local-pq-elections.py` reports a stale heartbeat,

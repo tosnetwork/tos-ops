@@ -32,7 +32,7 @@
 # host, the alert peer and its user tos-alert: the watchdog is not part of an
 # epoch and must keep running across the reset.
 #
-# A consensus seed and a controller root key are never carried into a new
+# A consensus seed and an operator wallet key are never carried into a new
 # epoch (CEREMONY.md section 9), so no key is worth keeping; the coordinator
 # keeps the retired epoch's genesis-records.json for `manifest --previous`.
 # Afterwards run install-node.sh prepare again.

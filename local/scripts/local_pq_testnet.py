@@ -57,6 +57,8 @@ VALIDATOR_COUNT = 4
 OBSERVER_COUNT = 2
 LOCAL_NETWORK = "tos-local-dev"
 LOCAL_GLOBAL_ID = 3
+# The nodes that stand in local elections; 7 is the non-Genesis candidate.
+CANDIDATES = (1, 2, 3, 4, 7)
 
 
 def auth_network_tag_rule(epoch):
@@ -384,6 +386,7 @@ def block_id(value):
 
 def validate_pq_set(decoded, ports):
     expected = {(n["validator_id"], n["pq_key_id"]) for n in ports}
+    # The tos decoder names the validator id field controller_id_hex.
     actual = {(n["controller_id_hex"], n["consensus_key_id_hex"]) for n in decoded["validators"]}
     if len(expected) != 4 or decoded["total"] != 4 or decoded["main"] != 4 or actual != expected:
         raise RuntimeError("live ConfigParam34 does not contain the four provisioned PQ identities")
@@ -405,17 +408,16 @@ async def prepare(args):
         network.config.deployment_fee_schedule = True
         network.config.shard_validators = 4
         rotating = args.rotate
-        controllers = {}
+        wallets = {}
         if rotating:
-            from tostester.pq_election_fixture import (
-                compile_controller_code,
-                make_controller_fixture,
-            )
+            import nacl.signing
+            from contract import WalletV1Blueprint
             from tostester.pq_initial_validator import deterministic_pq_initial_validator_seed
 
             election_dir = data / "elections"
             election_dir.mkdir(mode=0o700)
-            code = compile_controller_code(network.install, election_dir / "controller")
+            key_dir = election_dir / "keys"
+            key_dir.mkdir(mode=0o700)
             network.config.validator_economics_profile = True
             network.config.validator_election_stage_a_profile = True
             network.config.validator_election_stage_a_elected_for = 600
@@ -423,11 +425,12 @@ async def prepare(args):
             network.config.validator_election_experiment_faucet_balance_nanotos = (
                 1_000_000_000 * 10**9
             )
-            network.config.validator_controller_code_hash = code.hash
-            for idx in (1, 2, 3, 4, 7):
-                controllers[idx] = make_controller_fixture(
-                    network.install, election_dir / "keys", code, idx
-                )
+            # Each candidate stakes directly from its own masterchain wallet, so
+            # that wallet's account id is the validator id its node is bound to.
+            for idx in CANDIDATES:
+                key = nacl.signing.SigningKey.generate()
+                write_bytes(key_dir / f"wallet-{idx}.pk", bytes(key), 0o600)
+                wallets[idx] = WalletV1Blueprint(workchain=-1, private_key=key)
         network.config.bootstrap_validator_set_valid_for = 600 if rotating else 30 * 86400
         dht = network.create_dht_node()
         nodes = []
@@ -435,7 +438,7 @@ async def prepare(args):
             node = network.create_full_node()
             if rotating:
                 node.make_initial_pq_validator(
-                    controllers[idx].address.hash_part, deterministic_pq_initial_validator_seed(idx)
+                    wallets[idx].address.hash_part, deterministic_pq_initial_validator_seed(idx)
                 )
             else:
                 node.make_initial_pq_validator(os.urandom(32), os.urandom(32))
@@ -450,23 +453,23 @@ async def prepare(args):
         if rotating:
             candidate = network.create_full_node()
             candidate.make_noninitial_pq_validator(
-                controllers[7].address.hash_part, deterministic_pq_initial_validator_seed(7)
+                wallets[7].address.hash_part, deterministic_pq_initial_validator_seed(7)
             )
             candidate.announce_to(dht)
             nodes.append(candidate)
-            for idx, controller in controllers.items():
+            for idx, wallet in wallets.items():
                 node = nodes[idx - 1]
+                held = node.pq_initial_validator
                 write_json(
                     election_dir / f"candidate-{idx}.json",
                     {
                         "node": idx,
-                        "controller": controller.address.to_str(is_user_friendly=False),
+                        "wallet": wallet.address.to_str(is_user_friendly=False),
                         "state_init_b64": base64.b64encode(
-                            controller.state_init.serialize().to_boc()
+                            wallet.state_init.serialize().to_boc()
                         ).decode(),
-                        "witness_b64": base64.b64encode(controller.birth_witness.to_boc()).decode(),
-                        "key_id": controller.consensus.key_id.hex(),
-                        "public_key": controller.consensus.public_key.hex(),
+                        "key_id": held.key_id.hex(),
+                        "public_key": held.public_key.hex(),
                         "adnl_id": node.validator_key.id.hex(),
                     },
                 )
@@ -665,6 +668,9 @@ async def wait_network(args):
 # execute this explicit path: they run from a snapshot that holds no build
 # tree, and a PATH search could reach a directory another user can write.
 INSTALLED_LITE_CLIENT = Path("/usr/local/bin/tos-lite-client")
+# The production stake-order builder (tosctl's pq_pool_stake_order example),
+# installed by setup-testnet.sh; the election driver encodes no stake itself.
+INSTALLED_STAKE_ORDER_BUILDER = Path("/usr/local/bin/tos-pq-pool-stake-order")
 
 
 def require_installed_executable(path):

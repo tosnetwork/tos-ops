@@ -67,8 +67,8 @@ ELECTION_PARAM_NAMES = (
     "elections_end_before",
     "stake_held_for",
 )
-# Operators deploy, fund and authorize their controllers after the chain is
-# live and before the first election opens; this is the least time they get.
+# Operators fund their staking accounts and deposit the stake after the chain
+# is live and before the first election opens; this is the least time they get.
 MIN_FIRST_ELECTION_LEAD_SECONDS = 3600
 
 
@@ -116,7 +116,7 @@ def validator_schedule(profile: dict[str, Any]) -> dict[str, int]:
     Elector would accept but that cannot work is refused here, before a zero
     state commits to it: an election window that is empty or does not end
     before the term starts, or a first election that opens before operators
-    can have their controllers ready.
+    can have their stakes ready.
     """
     genesis = profile.get("genesis", {})
     params = genesis.get("election_params", {})
@@ -139,7 +139,7 @@ def validator_schedule(profile: dict[str, Any]) -> dict[str, int]:
     if lead < MIN_FIRST_ELECTION_LEAD_SECONDS:
         raise TestnetError(
             f"the first election would open {lead} s after genesis; operators need at least "
-            f"{MIN_FIRST_ELECTION_LEAD_SECONDS} s to deploy and fund their controllers"
+            f"{MIN_FIRST_ELECTION_LEAD_SECONDS} s to fund and deposit their stakes"
         )
     return values
 
@@ -369,7 +369,7 @@ def validator_adnl_id(config: dict[str, Any]) -> bytes:
 # ---------------------------------------------------------------- operator records
 
 
-RECORD_FIELDS = ("operator", "controller_id", "adnl_id", "public_key", "key_id", "address")
+RECORD_FIELDS = ("operator", "validator_id", "adnl_id", "public_key", "key_id", "address")
 
 
 def check_operator_record(record: dict[str, Any]) -> dict[str, Any]:
@@ -385,7 +385,7 @@ def check_operator_record(record: dict[str, Any]) -> dict[str, Any]:
     operator = record["operator"]
     if not isinstance(operator, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,62}", operator):
         raise TestnetError("operator must be a short lower-case name (letters, digits, dashes)")
-    controller = parse_hex(record["controller_id"], HASH_BYTES, "controller_id")
+    validator = parse_hex(record["validator_id"], HASH_BYTES, "validator_id")
     adnl = parse_hex(record["adnl_id"], HASH_BYTES, "adnl_id")
     public = parse_hex(record["public_key"], PQ_PUBLIC_KEY_BYTES, "public_key")
     key_id = parse_hex(record["key_id"], HASH_BYTES, "key_id")
@@ -400,7 +400,7 @@ def check_operator_record(record: dict[str, Any]) -> dict[str, Any]:
         raise TestnetError(f"{operator}: bad port in address {address}")
     return {
         "operator": operator,
-        "controller_id": controller.hex(),
+        "validator_id": validator.hex(),
         "adnl_id": adnl.hex(),
         "public_key": public.hex(),
         "key_id": key_id.hex(),
@@ -412,7 +412,7 @@ def check_operator_set(records: list[Any]) -> list[dict[str, Any]]:
     if not isinstance(records, list) or len(records) != GENESIS_VALIDATORS:
         raise TestnetError("the genesis set is exactly four operator records")
     checked = [check_operator_record(r) for r in records]
-    for field in ("operator", "controller_id", "adnl_id", "key_id", "address"):
+    for field in ("operator", "validator_id", "adnl_id", "key_id", "address"):
         values = [r[field] for r in checked]
         if len(set(values)) != len(values):
             raise TestnetError(f"two genesis records share the same {field}")
@@ -424,16 +424,16 @@ def check_operator_set(records: list[Any]) -> list[dict[str, Any]]:
     return checked
 
 
-REUSE_FIELDS = ("controller_id", "key_id", "adnl_id")
+REUSE_FIELDS = ("validator_id", "key_id", "adnl_id")
 
 
 def check_fresh_identities(records: list[dict[str, Any]], previous: list[list[Any]]) -> None:
     """Refuse a genesis set that reuses any identity of an earlier testnet epoch.
 
     Every testnet epoch uses global id 2, so epochs share one replay domain. A
-    reused root and consensus key give the same controller address with its
-    nonce back at 0, and an authorization signed for the old epoch would verify
-    on the new one. `previous` is the record lists of earlier epochs (their
+    reused consensus key would make a stake authorization or vote signed for
+    the old epoch verify on the new one, and a reused staking account carries
+    the old epoch's wallet keys. `previous` is the record lists of earlier epochs (their
     genesis-records.json, plus records the coordinator kept for validators that
     joined later); only identities in them can be checked.
     """
@@ -453,7 +453,7 @@ def check_fresh_identities(records: list[dict[str, Any]], previous: list[list[An
             if record[field] in seen[field]:
                 raise TestnetError(
                     f"{record['operator']} reuses {field} {record[field]} from an earlier testnet "
-                    "epoch; a reset genesis needs fresh root and consensus keys"
+                    "epoch; a reset genesis needs fresh staking accounts and consensus keys"
                 )
 
 
@@ -672,7 +672,7 @@ def manifest_input(records: list[dict[str, Any]]) -> list[dict[str, str]]:
     """The exact input tos scripts/prepare-pq-genesis-manifest.py accepts (order = index)."""
     return [
         {
-            "controller_id": r["controller_id"],
+            "validator_id": r["validator_id"],
             "adnl_id": r["adnl_id"],
             "public_key": r["public_key"],
         }
@@ -683,7 +683,7 @@ def manifest_input(records: list[dict[str, Any]]) -> list[dict[str, str]]:
 def pack_manifest(records: list[dict[str, Any]]) -> bytes:
     """The 5,504-byte validator-pq.pub, computed independently of the tos packer."""
     out = b"".join(
-        bytes.fromhex(r["controller_id"])
+        bytes.fromhex(r["validator_id"])
         + bytes.fromhex(r["adnl_id"])
         + bytes.fromhex(r["public_key"])
         for r in records

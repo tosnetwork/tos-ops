@@ -11,30 +11,39 @@ and drive load through a post-quantum high-volume wallet.
       expiry. It is operation ID (default: the label; see onboard) and returns
       when both validators show it delivered.
 
+  pool    --name NAME --operator ADDRESS --ceremony DIR --tos-root DIR --fift PATH
+          [--previous-ceremony DIR]...
+      Before genesis, for one genesis validator: record ADDRESS, the operator
+      wallet `init-operator.sh --wallet-only` printed on the host, as op-NAME
+      in DIR/wallets.json; make the pool owner, a wallet v3 in the masterchain
+      (subwallet 0x504F4F4C) whose key is created here in
+      DIR/secret/pool-owner-NAME.pk and never leaves this machine (address and
+      self-deploy message in DIR/pool-owners/, label pool-owner-NAME in
+      wallets.json); and derive the single-nominator pool of that owner and
+      validator from the pinned code. The pool is the validator's staking
+      account: its address is the validator id the operator's genesis record
+      names and the node is bound to. Records pool, owner and operator in
+      DIR/pools.json and prints them. Refuses a wallet an earlier epoch's
+      ceremony recorded (see "Resets" below). Moves no value, reads no node.
+
   onboard --name NAME --host HOST --ssh-key FILE --ceremony DIR
-          --controller FILE --root-seed FILE --controller-tool PATH
           --tos-root DIR --fift PATH --rpc URL --confirm-rpc URL
           [--previous-ceremony DIR]...
-      For one genesis validator, in order, stopping at the first failure:
-      init-operator.sh on the host; record the operator wallet address as
-      op-NAME in DIR/wallets.json, refusing an address an earlier epoch's
-      ceremony recorded (see "Resets" below); fund it from the bootstrap
-      wallet (operator_funding_tos) and activate it; deploy the controller;
-      make the pool owner, a wallet v3 in the masterchain (subwallet
-      0x504F4F4C) whose key is created here in DIR/secret/pool-owner-NAME.pk
-      and never leaves this machine (address and self-deploy message in
-      DIR/pool-owners/, label pool-owner-NAME in wallets.json), fund it with
-      the stake money and activate it; deploy the pool (the StateInit derived
-      here from the pinned code and owner, operator wallet, controller) with
-      pool_deploy_tos from the operator wallet; configure pool, binding and
-      the controller's birth in tosctl on the host; have the owner send the
-      principal (pool_tos); plan the operating authorization on the host, sign
-      it here with the offline root seed and send it; check readiness
-      (tosctl's full assessment); enable-elections.sh.
+      For one genesis validator whose pool `pool` recorded and the genesis
+      records name as a validator id, in order, stopping at the first failure:
+      init-operator.sh on the host, refusing unless its operator wallet is the
+      recorded op-NAME; fund it from the bootstrap wallet with fee money only
+      (operator_funding_tos) and activate it; fund the pool owner with the
+      stake money and activate it; deploy the pool (the StateInit derived here
+      from the pinned code, the owner and the operator wallet) with
+      pool_deploy_tos from the operator wallet; configure the pool and the
+      binding in tosctl on the host; have the owner send the principal
+      (pool_tos); check that the pool holds two stakes and that the node
+      reports custody for the pool's id; enable-elections.sh.
 
       Every step that moves value is an operation (testnet_ops.py; ids
-      fund-op-, deploy-controller-, fund-owner-, activate-owner-, deploy-pool-,
-      principal-, authorize-operations-NAME) journaled in DIR/operations/.
+      fund-op-, fund-owner-, activate-owner-, deploy-pool-, principal-NAME)
+      journaled in DIR/operations/.
       The operator wallet's messages are built on the host by `tosctl wallet
       send --build-only` and checked, journaled and broadcast from here.
       Before each signature the signing wallet's whole history is read on
@@ -43,28 +52,6 @@ and drive load through a post-quantum high-volume wallet.
       Settlement is by hashes, on both. A rerun skips settled operations,
       resumes the configuration from the host's tosctl config, and refuses an
       open operation: a person resolves it with reconcile, record or resubmit.
-
-  refund  --name NAME --host HOST --ssh-key FILE --ceremony DIR
-          --controller FILE --root-seed FILE --controller-tool PATH
-          --tos-root DIR --fift PATH --rpc URL --confirm-rpc URL
-          --id ID [--new] [--target-nanotos N] [--dry-run]
-      Renew operating authorization as a new journaled operation, distinct from
-      onboarding. First top up the operator with `fund --id TOPUP-ID` (about
-      200 TOS); refund defaults to a 260 TOS target and ten-day expiry. --new
-      creates ID; omit it to report a settled renewal or resume a planned one.
-      Open or failed attempts refuse: reconcile / record / resubmit, or retry
-      a terminal failure. A settled authorization is never renewed by retry.
-      Both validators must agree on network, wallet history, controller root
-      epoch/nonce, funding and fees. The coordinator checks every plan field,
-      signs with the offline root seed, checks the host's build-only wallet
-      message, journals it before broadcast and settles by transaction hashes
-      on both validators. No live send is performed by the host.
-      It refuses during an election or within ten minutes of a rotation or
-      next election opening, and unless the operator retains its configured
-      reserve (30 TOS) after value and a 1 TOS wallet fee allowance. There is no
-      window override; resubmit checks the same conditions. The election
-      service is stopped around the operation and restarted even on failure.
-      --dry-run checks and plans only: no signature, journal, send or stop.
 
   withdraw --name NAME --id ID [--new] --ceremony DIR --tos-root DIR --fift PATH
           --rpc URL --confirm-rpc URL (--amount TOS | --all)
@@ -130,19 +117,19 @@ and drive load through a post-quantum high-volume wallet.
       --dry-run signs one batch into DIR/dry-run-<time>/ and broadcasts nothing.
 
 Resets. Every testnet epoch uses global id 2, so a wallet key that survives a
-reset accepts again whatever was signed for it on an earlier epoch. onboard and
-load take --previous-ceremony once for every earlier epoch's ceremony directory
+reset accepts again whatever was signed for it on an earlier epoch. pool, onboard
+and load take --previous-ceremony once for every earlier epoch's ceremony directory
 and refuse a wallet identity recorded there (its wallets.json, the bootstrap key
 in its genesis.json, or for a ceremony older than both its secret/main-wallet.pk,
 whose public key fift derives). A previous ceremony that records nothing is
 refused. An operator whose host kept /var/lib/tos-ctl over the reset still has
-the old wallet key; init-operator.sh then prints the old address and onboard
-stops before funding it.
+the old wallet key; init-operator.sh then prints the old address and pool
+refuses it before a pool is derived from it.
 
 URL is a JSON-RPC endpoint of a live node (for example a validator's loopback
 listener through an SSH tunnel, http://127.0.0.1:18081/jsonRPC). The amounts
-are network/profile.json `elections`. The root seed and the bootstrap key
-never leave this machine; the host only ever sees the signed messages.
+are network/profile.json `elections`. The pool owners' keys and the bootstrap
+key never leave this machine; the host only ever sees the signed messages.
 """
 
 from __future__ import annotations
@@ -207,38 +194,6 @@ def record_fresh_wallets(
     lib.record_wallets(ceremony, lib.check_fresh_wallets(wallets, previous))
 
 
-def parse_operations_plan(text: str, global_id: int, controller_hex: str) -> dict:
-    """The signing request and the message value from `tosctl controller operations plan`.
-
-    Refuses a plan that first needs a capital top-up (a "step 0"), and one that
-    names another global id or controller than the one being onboarded.
-    """
-    if "Capital required" not in text:
-        raise lib.TestnetError("the operations plan has no 'Capital required' section")
-    if re.search(r"step 0", text, re.IGNORECASE):
-        raise lib.TestnetError("the operations plan needs a capital top-up before it can be signed")
-    sign = re.search(
-        r"tos-pq-controller fund-operations ROOTSEED (\S+) (\S+) (\S+) (\S+) (\S+) (\S+)", text
-    )
-    value = re.search(r"--amount-nanotos (\d+)", text)
-    if not sign or not value:
-        raise lib.TestnetError(
-            "cannot find the signing command or the amount in the operations plan"
-        )
-    gid, controller, epoch, nonce, valid_until, payload = sign.groups()
-    if gid != str(global_id) or controller.lower() != controller_hex.lower():
-        raise lib.TestnetError(
-            f"the plan names global id {gid} and controller {controller}, not {global_id} and {controller_hex}"
-        )
-    return {
-        "epoch": epoch,
-        "nonce": nonce,
-        "valid_until": valid_until,
-        "payload": payload,
-        "value_nanotos": int(value.group(1)),
-    }
-
-
 def parse_pool_deploy(text: str) -> str:
     """The pool address from `tosctl deploy pool --verbose`, only when it reports deployed.
 
@@ -258,14 +213,6 @@ def parse_pool_deploy(text: str) -> str:
     if result.get("deployed") is not True or result.get("error"):
         raise lib.TestnetError(f"the pool was not deployed: {result.get('error')!r}")
     return check_raw_address(str(result.get("address", "")))
-
-
-def first_transaction_boc(transactions: list) -> bytes:
-    """The earliest transaction of an account: a controller's deployment, its birth."""
-    if not transactions:
-        raise lib.TestnetError("the account has no transactions")
-    first = min(transactions, key=lambda tx: int(tx["transaction_id"]["lt"]))
-    return base64.b64decode(first["data"])
 
 
 # ---------------------------------------------------------------- chain
@@ -292,14 +239,14 @@ class Chain:
         code = info.get("code") or ""
         return info["state"], lib.parse_boc(base64.b64decode(code)).hash() if code else None
 
-    def pool_roles(self, address: str) -> tuple[str, str, str]:
-        """A single-nominator pool's get_roles: (owner, validator, controller).
+    def pool_roles(self, address: str) -> tuple[str, str]:
+        """A single-nominator pool's get_roles: (owner, validator).
 
         The node lists a getter's results top of stack first, so the stack reads
-        controller, validator, owner."""
+        validator, owner."""
         result = self.rpc(self.url, "runGetMethod", address=address, method="get_roles", stack=[])
         stack = result.get("stack") or []
-        if result.get("exit_code") != 0 or len(stack) != 3:
+        if result.get("exit_code") != 0 or len(stack) != 2:
             raise lib.TestnetError(f"get_roles of {address} failed: {result}")
         roles = []
         for entry in stack:
@@ -312,19 +259,14 @@ class Chain:
             ):
                 raise lib.TestnetError(f"get_roles of {address}: not an address slice: {entry}")
             roles.append(std_address(lib.parse_boc(base64.b64decode(entry[1]["bytes"]))))
-        controller, validator, owner = roles
-        return owner, validator, controller
+        validator, owner = roles
+        return owner, validator
 
     def send_boc(self, boc: bytes) -> None:
         self.rpc(self.url, "sendBoc", boc=base64.b64encode(boc).decode())
 
     def transactions(self, address: str, limit: int = 50) -> list:
         return self.rpc(self.url, "getTransactions", address=address, limit=limit)
-
-    def validator_term(self) -> tuple[int, int]:
-        """utime_since and utime_until of the current validator set (ConfigParam 34)."""
-        param = self.rpc(self.url, "getConfigParam", param=34)
-        return validator_set_term(base64.b64decode(param["config"]["bytes"]))
 
     def active_election(self) -> int:
         """The Elector's open election id, 0 when none is open."""
@@ -538,46 +480,14 @@ class Host:
             )
 
 
-def genesis_controller(args: argparse.Namespace) -> dict:
-    """The controller document --controller names, refused unless the genesis records list it."""
-    controller_doc = json.loads(Path(args.controller).read_text())
-    controller_hex = controller_doc["controller_id"]
-    records = json.loads((Path(args.ceremony) / "genesis-records.json").read_text())
-    if controller_hex not in {r["controller_id"] for r in records}:
-        raise lib.TestnetError(f"controller {controller_hex} is not in the genesis records")
-    return controller_doc
-
-
-def sign_operations(
-    tool: str, root_seed: str, global_id: int, controller_hex: str, plan: dict, run=subprocess.run
-) -> str:
-    """The kind-4 request body, signed here with the offline controller root seed."""
-    return run(
-        [
-            tool,
-            "fund-operations",
-            root_seed,
-            str(global_id),
-            controller_hex,
-            plan["epoch"],
-            plan["nonce"],
-            plan["valid_until"],
-            plan["payload"],
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-
-
 # ---------------------------------------------------------------- the pool owner (offline)
 
-# The single-nominator pool has three roles (tos crypto/smartcont/single-nominator-pool):
-# the owner holds the funds and alone can withdraw them, the validator (the operator
-# wallet on the host) can only send them to the Elector through the controller and
-# recover them, and the controller stands in the election. The owner here is a
-# wallet v3 in the masterchain whose key is made on this machine, beside the root
-# seeds and the bootstrap key, and never copied to a host.
+# The single-nominator pool has two roles (tos crypto/smartcont/single-nominator-pool):
+# the owner holds the funds and alone can withdraw them, and the validator (the
+# operator wallet on the host) can only order a stake to the Elector and recover it.
+# The pool itself stands in the election: its address is the validator id. The
+# owner here is a wallet v3 in the masterchain whose key is made on this machine,
+# beside the bootstrap key, and never copied to a host.
 POOL_OWNER_SUBWALLET = 0x504F4F4C
 POOLS_FILE = "pools.json"
 WITHDRAWALS_FILE = "withdrawals.jsonl"
@@ -625,37 +535,35 @@ def single_nominator_code(tos_root: Path | str) -> lib.Cell:
     return lib.parse_boc(bytes.fromhex(text))
 
 
-def pool_address(code: lib.Cell, owner: str, validator: str, controller: str) -> str:
-    """The masterchain address of a single-nominator pool with these roles.
-
-    The same StateInit tosctl builds (NominatorWrapperImpl::build_state_init): the
-    pinned code and a data cell of the three addresses, owner first."""
-    data = lib.cell_from_bits(
-        address_bits(owner) + address_bits(validator) + address_bits(controller)
-    )
+def pool_state_init(code: lib.Cell, owner: str, validator: str) -> lib.Cell:
+    """A single-nominator pool's StateInit, as the pool's init.fif and tosctl build it:
+    the pinned code and a data cell of the two addresses, owner first."""
+    data = lib.cell_from_bits(address_bits(owner) + address_bits(validator))
     # StateInit: no split depth, not special, code and data present, no library.
-    state_init = lib.cell_from_bits("00110", [code, data])
-    return f"-1:{state_init.hash().hex()}"
+    return lib.cell_from_bits("00110", [code, data])
 
 
-def verify_pool(
-    chain: Chain, tos_root: Path | str, pool: str, owner: str, operator: str, controller: str
-) -> None:
+def pool_address(code: lib.Cell, owner: str, validator: str) -> str:
+    """The masterchain address of a single-nominator pool with these roles."""
+    return f"-1:{pool_state_init(code, owner, validator).hash().hex()}"
+
+
+def verify_pool(chain: Chain, tos_root: Path | str, pool: str, owner: str, operator: str) -> None:
     """Refuse unless `pool` is the single-nominator pool of exactly these roles.
 
     Three checks, all made from this machine: the address is the one the pinned
     code and the roles derive to; on chain the account is active and runs the
-    pinned code; and its get_roles answers this owner, this operator wallet as
-    validator and this controller. A host that prints another address, or a pool
-    it owns itself, is refused before any principal is sent to it.
+    pinned code; and its get_roles answers this owner and this operator wallet as
+    validator. A host that prints another address, or a pool it owns itself, is
+    refused before any principal is sent to it.
     """
     code = single_nominator_code(tos_root)
     pool = check_raw_address(pool)
-    expected = pool_address(code, owner, operator, controller)
+    expected = pool_address(code, owner, operator)
     if pool != expected:
         raise lib.TestnetError(
-            f"{pool} is not the pool of owner {owner}, validator {operator} and controller "
-            f"{controller}; that pool is {expected}"
+            f"{pool} is not the pool of owner {owner} and validator {operator}; "
+            f"that pool is {expected}"
         )
     state, code_hash = chain.code_hash(pool)
     if state != "active" or code_hash != code.hash():
@@ -664,8 +572,8 @@ def verify_pool(
             f"the pinned single-nominator code {code.hash().hex()}"
         )
     roles = chain.pool_roles(pool)
-    if roles != (owner, operator, controller):
-        raise lib.TestnetError(f"{pool} reports roles {roles}, not {(owner, operator, controller)}")
+    if roles != (owner, operator):
+        raise lib.TestnetError(f"{pool} reports roles {roles}, not {(owner, operator)}")
 
 
 def pool_owner_paths(ceremony: Path, name: str) -> dict[str, Path]:
@@ -759,12 +667,11 @@ def record_pool(
     pool=None,
     owner=None,
     operator=None,
-    controller=None,
     principal_sent=None,
 ) -> dict:
     """Add or complete a validator's pool record in the ceremony's public pools.json.
 
-    The pool, owner, operator and controller of a recorded pool never change.
+    The pool, owner and operator of a recorded pool never change.
     """
     with lib.wallet_records_lock(ceremony):
         pools = read_pools(ceremony)
@@ -773,7 +680,6 @@ def record_pool(
             ("pool", pool),
             ("owner", owner),
             ("operator", operator),
-            ("controller", controller),
         ):
             if value is None:
                 continue
@@ -943,9 +849,9 @@ def owner_role_check(operations: ops.Operations, tos_root, pool: str, owner: str
             raise lib.TestnetError(f"{pool}'s owner is {roles[0]}, not {owner}")
 
 
-def verify_pool_both(operations: ops.Operations, tos_root, pool, owner, operator, controller):
+def verify_pool_both(operations: ops.Operations, tos_root, pool, owner, operator):
     for node in operations.nodes:
-        verify_pool(Chain(node.url, node.rpc), tos_root, pool, owner, operator, controller)
+        verify_pool(Chain(node.url, node.rpc), tos_root, pool, owner, operator)
 
 
 def withdraw_id_record(operations: ops.Operations, args: argparse.Namespace) -> dict | None:
@@ -1163,394 +1069,94 @@ def host_operation(
     )
 
 
-def expect_code(code_hash: str):
-    """Settlement extra for a deployment: the account is active with this code on both."""
-
-    def check(operations, record, delivery, evidence):
-        def read(node):
-            info = node.account(record["destination"])
-            code = info.get("code") or ""
-            return info["state"], lib.parse_boc(
-                base64.b64decode(code)
-            ).hash().hex() if code else None
-
-        state = operations.both(read)
-        if state != ("active", code_hash):
-            return "failed", dict(evidence, form="b", reason=f"deployed account is {state}")
-        return "settled", evidence
-
-    return check
-
-
-def state_init_code_hash(state_init_b64: str) -> str:
-    cell = lib.parse_boc(base64.b64decode(state_init_b64))
-    s = lib.Slice(cell)
-    if s.bits(1) or s.bits(1) or not s.bits(1):
-        raise lib.TestnetError("a StateInit without code")
-    return s.take_ref().hash().hex()
-
-
-def read_stack(result: dict, count: int, what: str) -> list:
-    """A getter's stack in return order (the node lists it top first)."""
-    stack = result.get("stack") if isinstance(result, dict) else None
-    if result.get("exit_code") != 0 or not isinstance(stack, list) or len(stack) != count:
-        raise lib.TestnetError(f"{what} failed: {result}")
-    for entry in stack:
-        if not isinstance(entry, list) or len(entry) != 2:
-            raise lib.TestnetError(f"{what}: malformed stack entry {entry!r}")
-    return list(reversed(stack))
-
-
-def stack_int(entry) -> int:
-    if entry[0] != "num" or not isinstance(entry[1], str):
-        raise lib.TestnetError(f"not a number on the stack: {entry!r}")
-    return int(entry[1], 0)
-
-
-# The coordinator chooses the request lifetime and the payer's fee margin.
-PLAN_VALID_FOR_SECONDS = 1800
-PLAN_CLOCK_SKEW_SECONDS = 30
-PLAN_MARGIN_NANOTOS = NANO
-COINS_LIMIT = 1 << 120
-
-
-def plan_payload(plan: dict) -> tuple[str, list[int]]:
-    """Decode the complete kind-4 payload; trailing bits or refs are refused."""
-    payload = lib.Slice(lib.parse_boc(base64.b64decode(plan["payload"], validate=True)))
-    payer = ops.read_address(payload)
-    terms = [ops.read_coins(payload) for _ in range(4)] + [payload.bits(32)]
-    if not payload.end():
-        raise lib.TestnetError("the operations plan's payload has trailing data")
-    return payer, terms
-
-
-def relay_fees(gas: lib.Cell, forward: lib.Cell) -> tuple[int, int]:
-    """Price the automatic grant and funding processing from ConfigParams 20/24.
-
-    Gas and forwarding prices are 16.16 fixed point, rounded up, as the
-    controller's relay library computes them for the masterchain.
-    """
-    g = lib.Slice(gas)
-    tag = g.bits(8)
-    flat_limit, flat_price = 0, 0
-    if tag == 0xD1:
-        flat_limit, flat_price = g.bits(64), g.bits(64)
-        tag = g.bits(8)
-    if tag not in (0xDD, 0xDE):
-        raise lib.TestnetError("ConfigParam 20 is not a gas price record")
-    price = g.bits(64)
-    for _ in range(5 if tag == 0xDD else 6):
-        g.bits(64)
-    f = lib.Slice(forward)
-    if f.bits(8) != 0xEA:
-        raise lib.TestnetError("ConfigParam 24 is not a forwarding price record")
-    lump, bit_price, cell_price = f.bits(64), f.bits(64), f.bits(64)
-    f.bits(64)  # ihr_price_factor, first_frac, next_frac
-    if not g.end() or not f.end():
-        raise lib.TestnetError("fee configuration has trailing data")
-
-    def gas_fee(units: int) -> int:
-        return flat_price + (max(0, units - flat_limit) * price + 65535) // 65536
-
-    envelope = lump + (bit_price * 4096 + cell_price * 8 + 65535) // 65536
-    control = gas_fee(50_000) + envelope
-    callback = gas_fee(200_000) + envelope
-    grant = 4 * control + callback
-    processing = gas_fee(200_000) + control
-    if not 0 < grant < COINS_LIMIT or not 0 < processing < COINS_LIMIT:
-        raise lib.TestnetError("relay fees are outside the Coins range")
-    return grant, processing
-
-
-def controller_plan_context(node, controller: str) -> dict:
-    """Read authority, existing funding and fee prices independently of the host."""
-    state = read_stack(
-        node.call("runGetMethod", address=controller, method="controller_state", stack=[]),
-        5,
-        "controller_state",
-    )
-    operating = read_stack(
-        node.call("runGetMethod", address=controller, method="operating_state", stack=[]),
-        6,
-        "operating_state",
-    )
-    epoch, nonce = stack_int(state[0]), stack_int(state[1])
-    funds, _, limit, _, _ = [stack_int(e) for e in operating[:5]]
-    if not (0 <= epoch < 1 << 64 and 0 <= nonce < (1 << 64) - 1):
-        raise lib.TestnetError("controller authority is outside its usable uint64 range")
-    if not (0 <= funds < COINS_LIMIT and 0 <= limit < COINS_LIMIT):
-        raise lib.TestnetError("controller operating values are outside the Coins range")
-    if operating[5][0] != "slice" or not isinstance(operating[5][1], dict):
-        raise lib.TestnetError("operating_state payer is not an address slice")
-    sponsor = std_address(lib.parse_boc(base64.b64decode(operating[5][1]["bytes"], validate=True)))
-
-    def config(number):
-        result = node.call("getConfigParam", param=number)
-        return lib.parse_boc(base64.b64decode(result["config"]["bytes"], validate=True))
-
-    grant, processing = relay_fees(config(20), config(24))
-    return dict(
-        epoch=epoch,
-        nonce=nonce,
-        funds=funds,
-        limit=limit,
-        sponsor=sponsor,
-        grant=grant,
-        processing=processing,
-    )
-
-
-def check_operations_plan(
-    plan: dict,
-    operator: str,
-    authorization: dict,
-    target: int,
-    now: float,
-    expires_at: int,
-    context: dict,
-    controller: str,
-) -> None:
-    """Compare every signed field with coordinator inputs and two-node state."""
-    payer, (deposit, allowance, limit, floor, expires) = plan_payload(plan)
-    epoch, nonce = int(plan["epoch"]), int(plan["nonce"])
-    valid_until, value = int(plan["valid_until"]), int(plan["value_nanotos"])
-    expected_deposit = max(0, target - context["funds"])
-    expected_limit = (
-        context["limit"]
-        if context["sponsor"] != controller and context["limit"] >= context["grant"]
-        else 2 * context["grant"]
-    )
-    expected_value = expected_deposit + context["processing"] + PLAN_MARGIN_NANOTOS
-    problems = []
-    if payer != operator:
-        problems.append(f"payer {payer}, not the operator wallet {operator}")
-    if context["sponsor"] not in (controller, operator):
-        problems.append("the existing sponsor is not the operator wallet")
-    if floor != int(authorization["floor_nanotos"]):
-        problems.append(f"storage floor {floor}, not {authorization['floor_nanotos']}")
-    if allowance != target or not context["grant"] <= target < COINS_LIMIT:
-        problems.append(f"allowance {allowance}, not the usable funds target {target}")
-    if deposit != expected_deposit:
-        problems.append(f"deposit {deposit}, expected {expected_deposit}")
-    if limit != expected_limit or limit >= COINS_LIMIT:
-        problems.append(f"per-request limit {limit}, expected {expected_limit}")
-    if value != expected_value or not 0 < value < COINS_LIMIT:
-        problems.append(f"message value {value}, expected {expected_value}")
-    if (
-        not now < valid_until <= now + PLAN_VALID_FOR_SECONDS + PLAN_CLOCK_SKEW_SECONDS
-        or valid_until >= 1 << 32
-    ):
-        problems.append(f"valid until {valid_until} is not within the requested lifetime")
-    if expires != expires_at or not valid_until < expires < 1 << 32:
-        problems.append(f"expiry {expires}, expected {expires_at}")
-    if (epoch, nonce) != (context["epoch"], context["nonce"]):
-        problems.append(
-            f"root epoch/nonce {epoch}/{nonce}, the controller is at {(context['epoch'], context['nonce'])}"
-        )
-    if problems:
+def recorded_staking(ceremony: Path, name: str, tos_root) -> tuple[str, str, str]:
+    """The pool, owner and operator `pool` recorded for NAME, checked to derive."""
+    entry = read_pools(ceremony).get(name)
+    if not entry or not all(entry.get(k) for k in ("pool", "owner", "operator")):
         raise lib.TestnetError(
-            "the operations plan is not the one derived here, nothing was signed: "
-            + "; ".join(problems)
+            f"{Path(ceremony) / POOLS_FILE} records no staking pool for {name}; "
+            "run `pool` before genesis"
         )
+    pool, owner, operator = entry["pool"], entry["owner"], entry["operator"]
+    expected = pool_address(single_nominator_code(tos_root), owner, operator)
+    if pool != expected:
+        raise lib.TestnetError(
+            f"{POOLS_FILE} records {name}'s pool as {pool}, but its owner and operator derive {expected}"
+        )
+    return pool, owner, operator
 
 
-def expect_authorization(plan: dict, operator: str):
-    """Completion of the exact request: the controller ran it (its transaction for
-    our message succeeded), its root epoch is the planned one and its nonce moved
-    past the planned one, and while no later root action intervened (nonce =
-    planned + 1) the operating terms are the plan's payload, with the operator
-    wallet as the sponsor."""
-    payer, terms = plan_payload(plan)
-    if payer != operator:
-        raise lib.TestnetError(f"the plan's payer {payer} is not the operator wallet {operator}")
-    _deposit, permission, limit, floor, expires = terms
-
-    def check(operations, record, delivery, evidence):
-        def read(node):
-            state = read_stack(
-                node.call(
-                    "runGetMethod",
-                    address=record["destination"],
-                    method="controller_state",
-                    stack=[],
-                ),
-                5,
-                "controller_state",
-            )
-            operating = read_stack(
-                node.call(
-                    "runGetMethod",
-                    address=record["destination"],
-                    method="operating_state",
-                    stack=[],
-                ),
-                6,
-                "operating_state",
-            )
-            epoch, nonce = stack_int(state[0]), stack_int(state[1])
-            values = [stack_int(e) for e in operating[:5]]
-            if operating[5][0] != "slice" or not isinstance(operating[5][1], dict):
-                raise lib.TestnetError(f"operating_state payer: {operating[5]!r}")
-            sponsor = std_address(lib.parse_boc(base64.b64decode(operating[5][1]["bytes"])))
-            return epoch, nonce, values, sponsor
-
-        epoch, nonce, values, sponsor = operations.both(read)
-        planned_epoch, planned_nonce = int(plan["epoch"]), int(plan["nonce"])
-        if epoch != planned_epoch or nonce <= planned_nonce:
-            return "failed", dict(
-                evidence, form="b", reason=f"controller at epoch {epoch} nonce {nonce}"
-            )
-        if nonce == planned_nonce + 1 and (
-            values[1:] != [permission, limit, floor, expires] or sponsor != payer
-        ):
-            return "failed", dict(evidence, form="b", reason=f"operating terms {values} {sponsor}")
-        return "settled", dict(evidence, controller_nonce=nonce)
-
-    return check
+def genesis_staking_account(ceremony: Path, pool: str) -> None:
+    """Refuse a pool that is not a validator id of the genesis records."""
+    records = json.loads((Path(ceremony) / "genesis-records.json").read_text())
+    if pool.split(":")[1] not in {r.get("validator_id") for r in records}:
+        raise lib.TestnetError(f"the pool {pool} is not a validator id in the genesis records")
 
 
-def authorize_operations(
-    args,
-    operations,
-    global_id,
-    profile,
-    host,
-    operator,
-    controller,
-    op_id,
-    target,
-    *,
-    renewal=False,
-    dry_run=False,
-) -> dict:
-    """Plan and sign under the journal lock, then use the common wallet operation.
-
-    The planned request is durable before the host builds an external message.
-    Releasing this lock before run() is safe: the planned operation gates every
-    other operation on this wallet, and run() re-reads it under the same lock.
-    """
-    auth = profile["elections"]["authorization"]
-    request = dict(
-        name=args.name,
-        renewal=renewal,
-        funds_target_nanotos=target,
-        floor_nanotos=int(auth["floor_nanotos"]),
-        operator_reserve_nanotos=operator_reserve(auth) if renewal else 0,
+def stake_pool(args: argparse.Namespace, global_id: int) -> dict:
+    """Before genesis: the offline owner and the pool that will be NAME's validator id."""
+    name = args.name
+    if not SAFE_NAME.match(name):
+        raise lib.TestnetError(f"not a node name: {name!r}")
+    ceremony = lib.private_dir(Path(args.ceremony))
+    operator = (
+        check_raw_address(args.operator)
+        if ":" in args.operator
+        else raw_from_friendly(args.operator)
     )
-    with operations.journal.lock(operator):
-        actual_id = operations.journal.newest(op_id)
-        record = operations.journal.record(actual_id)
-        if record is not None:
-            expected = dict(
-                request, kind="authorize-operations", wallet=operator, destination=controller
-            )
-            if any(record.get(k) != v for k, v in expected.items() if renewal or k in record):
-                raise lib.TestnetError(f"operation {actual_id} exists with other parameters")
-            state = ops.state_of(record)
-            if state == "settled":
-                print(f"{actual_id}: already settled ({record['evidence']['destination_tx']})")
-                return record
-            if state != "planned":
-                raise lib.TestnetError(
-                    f"operation {actual_id} is open or failed ({state}); reconcile / record / resubmit it; "
-                    f"only a failed attempt may use retry --step {op_id}"
-                )
-        operations.gate(operator, actual_id)
-        if renewal:
-            renewal_window(operations, profile)
-        context = operations.both(lambda node: controller_plan_context(node, controller))
-        if record is not None and record.get("plan"):
-            plan, signed = record["plan"], record["body_b64"]
-            expires_at = record["expires_at"]
-            if renewal and operations.clock() >= int(plan["valid_until"]):
-                times = operations.utimes()
-                if all(t >= int(plan["valid_until"]) + ops.EXPIRY_MARGIN for t in times):
-                    # No wallet external was journaled or broadcast in this state.
-                    # The root request is now unusable on either validator, so a
-                    # person can safely request a fresh attempt, never silently.
-                    operations.journal.append(
-                        actual_id,
-                        {
-                            "state": "failed",
-                            "evidence": {
-                                "form": "unsigned-plan-expired",
-                                "explains": [],
-                                "reason": "root request expired before wallet signing",
-                                "utimes": times,
-                            },
-                        },
-                    )
-                    raise lib.TestnetError(
-                        f"operation {actual_id} failed: root request expired before wallet signing; retry --step {op_id}"
-                    )
-        else:
-            expires_at = int(operations.clock()) + int(auth["expires_in_days"]) * 86400
-            plan = parse_operations_plan(
-                host.tosctl(
-                    f"controller operations plan --controller {controller} --payer {operator} "
-                    f"--floor-nanotos {auth['floor_nanotos']} --funds-target-nanotos {target} "
-                    f"--expires-at {expires_at} --valid-for {PLAN_VALID_FOR_SECONDS} "
-                    f"--margin-nanotos {PLAN_MARGIN_NANOTOS}",
-                    90,
-                ),
-                global_id,
-                controller.split(":")[1],
-            )
-            signed = None
-        check_operations_plan(
-            plan,
-            operator,
-            auth,
-            target,
-            operations.clock(),
-            expires_at,
-            context,
-            controller,
-        )
-        authorization_balance(
-            operations, operator, plan["value_nanotos"], request["operator_reserve_nanotos"]
-        )
-        if dry_run:
-            result = dict(request, plan=plan, expires_at=expires_at, dry_run=True)
-            print(json.dumps(result, indent=2))
-            print("dry run: gates checked; nothing signed, journaled, sent or stopped")
-            return result
-        if signed is None:
-            signed = sign_operations(
-                args.controller_tool,
-                args.root_seed,
-                global_id,
-                controller.split(":")[1],
-                plan,
-            )
-        extra = dict(request, plan=plan, body_b64=signed, expires_at=expires_at)
-        params = host_operation_params(
-            operations,
-            args.name,
-            "authorize-operations",
-            operator,
-            controller,
-            plan["value_nanotos"],
-            body_b64=signed,
-            bounce=True,
-            extra=extra,
-        )
-        operations.begin(actual_id, params)
-    return host_operation(
-        operations,
-        host,
-        args.name,
-        op_id,
-        "authorize-operations",
-        operator,
-        controller,
-        plan["value_nanotos"],
-        body_b64=signed,
-        bounce=True,
-        expect=expect_authorization(plan, operator),
-        extra=extra,
-        prerequisites=lambda: authorization_preflight(operations, params, profile),
+    if not operator.startswith("-1:"):
+        raise lib.TestnetError(f"the operator wallet {operator} is not in the masterchain")
+    previous = previous_wallets(args)
+    record_fresh_wallets(ceremony, {f"op-{name}": operator}, previous)
+    owner = ensure_pool_owner(args, name, global_id, previous)
+    pool = pool_address(single_nominator_code(args.tos_root), owner, operator)
+    record_pool(ceremony, name, pool, owner, operator)
+    result = {
+        "name": name,
+        "validator_id": pool.split(":")[1],
+        "pool": pool,
+        "owner": owner,
+        "operator": operator,
+    }
+    print(json.dumps(result, indent=2))
+    return result
+
+
+# What the node logs at start-up for each consensus key it holds (tos
+# doc/validator-operator-guide.md, "Bind the node to the staking account").
+CUSTODY_LINE = re.compile(r"post-quantum consensus custody: validator_id ([0-9a-f]{64}) ")
+
+
+def node_staking_account(host) -> str:
+    """The validator id the node on the host last reported holding its key for."""
+    output = host.run(
+        "{ journalctl -u tos-testnet-validator -o cat --no-pager 2>/dev/null; "
+        "cat /var/log/tos/validator/node.log* 2>/dev/null; } "
+        "| grep -a 'post-quantum consensus custody' | tail -n 1 || true"
     )
+    found = CUSTODY_LINE.search(output)
+    if not found:
+        raise lib.TestnetError(
+            "the node reports no post-quantum consensus custody line; check that it is bound "
+            "(install-node.sh activate --validator-id) and running"
+        )
+    return found.group(1)
+
+
+def staking_readiness(operations, host, pool: str, stake_nanotos: int) -> None:
+    """Ready to stand: the pool holds two stakes and the node signs for the pool."""
+    available = operations.balance(pool) - POOL_STORAGE_NANOTOS
+    if available < 2 * stake_nanotos:
+        raise lib.TestnetError(
+            f"the pool holds {available / NANO:.9f} TOS above its reserve, less than two stakes "
+            f"of {stake_nanotos / NANO:.9f}"
+        )
+    bound = node_staking_account(host)
+    if bound != pool.split(":")[1]:
+        raise lib.TestnetError(
+            f"the node signs stake authorizations for {bound}, not the pool {pool}; the Elector "
+            "refuses a stake signed for another account"
+        )
 
 
 def onboard(
@@ -1562,9 +1168,8 @@ def onboard(
     ceremony = Path(args.ceremony)
     previous = previous_wallets(args)
     elections = profile["elections"]
-    controller_doc = genesis_controller(args)
-    controller_hex = controller_doc["controller_id"]
-    controller = f"-1:{controller_hex}"
+    pool, owner, operator = recorded_staking(ceremony, name, args.tos_root)
+    genesis_staking_account(ceremony, pool)
     host = Host(args.host, args.ssh_key)
     scripts = "/opt/tos-testnet/scripts"
 
@@ -1584,10 +1189,15 @@ def onboard(
     last = (
         host.run(f"{scripts}/init-operator.sh --name {shlex.quote(name)}").strip().splitlines()[-1]
     )
-    operator = raw_from_friendly(last.split()[1])
-    step(f"operator wallet {operator}")
-    # A host that kept its tosctl state over a reset still has the old key, and
-    # a wallet-v3 address is a function of key, subwallet and workchain.
+    on_host = raw_from_friendly(last.split()[1])
+    # The pool, and with it the genesis validator id, derives from the operator
+    # wallet recorded before genesis; a host with another wallet cannot stake for it.
+    if on_host != operator:
+        raise lib.TestnetError(
+            f"the host's op-{name} is {on_host}, not the recorded operator wallet {operator} "
+            "the pool was derived from"
+        )
+    step(f"operator wallet {operator}, staking pool {pool}")
     record_fresh_wallets(ceremony, {f"op-{name}": operator}, previous)
     operations.check_network()
 
@@ -1618,35 +1228,11 @@ def onboard(
         host.tosctl(f"wallet activate --name op-{name}", 150)
         operations.both(lambda node: Chain(node.url, node.rpc).wait_active(operator))
 
-    controller_init = controller_doc["state_init_boc_b64"]
-    if not settled(f"deploy-controller-{name}"):
-        step(f"deploy controller {controller}")
-    host_operation(
-        operations,
-        host,
-        name,
-        f"deploy-controller-{name}",
-        "deploy-controller",
-        operator,
-        controller,
-        int(elections["controller_deploy_tos"]) * NANO,
-        state_init_b64=controller_init,
-        expect=expect_code(state_init_code_hash(controller_init)),
-        extra={"code_hash": state_init_code_hash(controller_init)},
-    )
-    # The controller's first transaction, as both validators agree on it.
-    history = operations.history(controller, None)
-    if not history:
-        raise lib.TestnetError(f"{controller} has no transactions")
-    birth = base64.b64decode(history[-1]["data"])
-    with tempfile.NamedTemporaryFile(suffix=".boc") as tx:
-        Path(tx.name).write_bytes(birth)
-        host.put(Path(tx.name), f"{TOSCTL_DIR}/controller-{name}-deploy-tx.boc", TOSCTL_USER)
-
     # The pool's owner holds the stake principal and is the only role that can
-    # take it out. Its key is made here and never leaves this machine; the
-    # operator wallet on the host is only the pool's validator role.
-    owner = ensure_pool_owner(args, name, global_id, previous)
+    # take it out. Its key was made here before genesis and never leaves this
+    # machine; the operator wallet on the host is only the pool's validator role.
+    if ensure_pool_owner(args, name, global_id, previous) != owner:
+        raise lib.TestnetError(f"the pool owner key of {name} is not the recorded owner {owner}")
     step(f"pool owner {owner} (key offline in the ceremony's secret/)")
     principal = int(elections["pool_tos"]) * NANO
     fund_from_bootstrap(
@@ -1666,22 +1252,13 @@ def onboard(
         lambda: require(f"fund-owner-{name}"),
     )
 
-    code = single_nominator_code(args.tos_root)
-    pool = pool_address(code, owner, operator, controller)
-    pool_init = lib.cell_from_bits(
-        "00110",
-        [
-            code,
-            lib.cell_from_bits(
-                address_bits(owner) + address_bits(operator) + address_bits(controller)
-            ),
-        ],
-    )
-    pool_init_b64 = base64.b64encode(lib.serialize_boc(pool_init)).decode()
+    pool_init_b64 = base64.b64encode(
+        lib.serialize_boc(pool_state_init(single_nominator_code(args.tos_root), owner, operator))
+    ).decode()
 
     def pool_deployed(operations_, record, delivery, evidence):
         try:
-            verify_pool_both(operations_, args.tos_root, pool, owner, operator, controller)
+            verify_pool_both(operations_, args.tos_root, pool, owner, operator)
         except lib.TestnetError as exc:
             return "failed", dict(evidence, form="b", reason=str(exc))
         return "settled", evidence
@@ -1699,15 +1276,14 @@ def onboard(
         int(elections["pool_deploy_tos"]) * NANO,
         state_init_b64=pool_init_b64,
         expect=pool_deployed,
-        extra={"owner": owner, "controller": controller},
+        extra={"owner": owner},
     )
-    record_pool(ceremony, name, pool, owner, operator, controller)
-    configure_pool(host, name, pool, owner, operator, controller, controller_init, step)
+    configure_pool(host, name, pool, owner, step)
 
     def principal_prerequisites() -> None:
         require(f"fund-owner-{name}")
         require(f"activate-owner-{name}")
-        verify_pool_both(operations, args.tos_root, pool, owner, operator, controller)
+        verify_pool_both(operations, args.tos_root, pool, owner, operator)
         balance = operations.balance(owner)
         if balance < principal + ops.FEE_ALLOWANCE_NANOTOS // 10:
             raise lib.TestnetError(
@@ -1730,31 +1306,15 @@ def onboard(
     )
     record_pool(ceremony, name, principal_sent=True)
 
-    authorize_operations(
-        args,
-        operations,
-        global_id,
-        profile,
-        host,
-        operator,
-        controller,
-        f"authorize-operations-{name}",
-        int(elections["authorization"]["funds_target_nanotos"]),
-    )
-    # Readiness is tosctl's full assessment (capital reserve, a usable grant).
-    status = host.tosctl(f"controller operations status --controller {controller}", 90)
-    if "BLOCKING" in status or "kind 4 never accepted" in status:
-        raise lib.TestnetError(f"operating authorization is not ready:\n{status[-1200:]}")
-    for line in status.splitlines():
-        if re.search(r"Funds:|Expires:|Root authority|Stakes remaining", line):
-            print("   " + line.strip())
+    step("readiness: two stakes in the pool, the node bound to the pool")
+    staking_readiness(operations, host, pool, int(elections["stake_tos"]) * NANO)
 
     step("election task")
     print(host.run(f"{scripts}/enable-elections.sh --name {shlex.quote(name)}"), end="")
     step("done")
 
 
-def configure_pool(host, name, pool, owner, operator, controller, controller_init, step) -> None:
+def configure_pool(host, name, pool, owner, step) -> None:
     """The host's tosctl configuration: each step decided by what is there, never nested."""
 
     def config() -> dict:
@@ -1763,14 +1323,8 @@ def configure_pool(host, name, pool, owner, operator, controller, controller_ini
     entry = config().get("pools", {}).get(f"pool-{name}")
     if entry is None:
         step(f"config pool add pool-{name}")
-        host.tosctl(
-            f"config pool add --name pool-{name} --address {pool} --owner {owner} --controller {controller}"
-        )
-    elif (entry.get("address"), entry.get("owner"), entry.get("controller")) != (
-        pool,
-        owner,
-        controller,
-    ):
+        host.tosctl(f"config pool add --name pool-{name} --address {pool} --owner {owner}")
+    elif (entry.get("address"), entry.get("owner")) != (pool, owner):
         raise lib.TestnetError(f"pool-{name} is configured on the host as {entry}")
     binding = config().get("bindings", {}).get(name)
     if binding is None or not binding.get("pool"):
@@ -1779,324 +1333,12 @@ def configure_pool(host, name, pool, owner, operator, controller, controller_ini
         binding = config().get("bindings", {}).get(name) or {}
     if (binding.get("wallet"), binding.get("pool")) != (f"op-{name}", f"pool-{name}"):
         raise lib.TestnetError(f"node {name} is bound on the host as {binding}")
-    expected = lib.parse_boc(base64.b64decode(controller_init)).hash()
-
-    def birth_on_host(path: str) -> bool | None:
-        """True: this controller's birth; None: no such file; False: something else."""
-        if not re.fullmatch(r"/[A-Za-z0-9_./-]+", path):
-            return False
-        content = host.run(f"test -f {path} && base64 -w0 {path} || true").strip()
-        if not content:
-            return None
-        try:
-            return lib.parse_boc(base64.b64decode(content)).hash() == expected
-        except (lib.TestnetError, ValueError):
-            return False
-
-    bound = binding.get("controller_birth_state_init_boc")
-    if bound:
-        found = birth_on_host(bound)
-        if found:
-            return
-        if found is False:
-            raise lib.TestnetError(
-                f"the bound birth artifact {bound} is not this controller's birth"
-            )
-    # The birth import writes its artifact (never overwriting it) and then saves the
-    # binding; a crash between leaves the file without the binding. A retained file
-    # is imported again under a fresh path only if it is this controller's birth.
-    output = f"{TOSCTL_DIR}/controller-birth-{name}.boc"
-    retained = birth_on_host(output)
-    if retained is False:
-        raise lib.TestnetError(f"{output} on the host is not this controller's birth")
-    if retained or bound:
-        output = f"{TOSCTL_DIR}/controller-birth-{name}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.boc"
-    step(f"config bind import-birth {name}")
-    host.tosctl(
-        f"config bind import-birth --node {name} "
-        f"--transaction-boc {TOSCTL_DIR}/controller-{name}-deploy-tx.boc --output {output}",
-        90,
-    )
 
 
-# ---------------------------------------------------------------- refund
+# ---------------------------------------------------------------- withdraw
 
 ELECTOR = "-1:" + "3" * 64
-ELECTIONS_SERVICE = "tos-testnet-elections"
-# tosctl's election task (tos tosctl/src/node-control/elections/src/runner.rs, send_stake)
-# sends POOL_RELAY_BUDGET (20 TOS) from the operator wallet with every stake and refuses
-# to stake unless the wallet also holds WALLET_COMPUTE_FEE (0.2 TOS) on top: 20.2 TOS.
-# A refund that left less once kept all four validators out of an election.
-STAKE_WALLET_MINIMUM_NANOTOS = 20 * NANO + NANO // 5
-# Used when the profile names no reserve: the 20.2 TOS above plus a margin.
-DEFAULT_OPERATOR_RESERVE_NANOTOS = 30 * NANO
-# What the operator wallet's own external message may cost beyond the value it sends.
-# Generous on purpose; each refund record keeps what the wallet actually spent.
-WALLET_SEND_FEE_ALLOWANCE_NANOTOS = NANO
-# No refund this close to a rotation or to the opening of an election.
-WINDOW_MARGIN_SECONDS = 600
 SAFE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
-
-
-def parse_operations_status(text: str) -> dict:
-    """What a refund checks in `tosctl controller operations status`: the stakes the
-    funds still pay for, the root authority's epoch and nonce, and whether a
-    [BLOCKING] warning or a missing authorization stands. tosctl colours only
-    headings, markers and "none recorded", never the values read here."""
-    stakes = re.search(r"Stakes remaining:\s+(\d+)", text)
-    authority = re.search(r"Root authority:\s+epoch (\d+) nonce (\d+)", text)
-    if not stakes or not authority:
-        raise lib.TestnetError(
-            f"no 'Stakes remaining' or 'Root authority' line in the status:\n{text[-1200:]}"
-        )
-    return {
-        "stakes_remaining": int(stakes.group(1)),
-        "epoch": int(authority.group(1)),
-        "nonce": int(authority.group(2)),
-        "blocking": "BLOCKING" in text,
-        "unset": "kind 4 never accepted" in text or "none recorded" in text,
-    }
-
-
-def validator_set_term(boc: bytes) -> tuple[int, int]:
-    """utime_since and utime_until of a ConfigParam 34 cell, as getConfigParam returns it.
-
-    Reads only the root cell's first nine bytes: validators#11 or validators_ext#12,
-    then the two 32-bit times. The bag-of-cells header is walked to find the root.
-    """
-
-    def take(at: int, size: int) -> tuple[int, int]:
-        if at + size > len(boc):
-            raise lib.TestnetError("the validator set BOC is truncated")
-        return int.from_bytes(boc[at : at + size], "big"), at + size
-
-    if boc[:4] != bytes.fromhex("b5ee9c72") or len(boc) < 6:
-        raise lib.TestnetError("not a bag of cells")
-    flags, ref_size, off_size = boc[4], boc[4] & 7, boc[5]
-    if not 1 <= ref_size <= 4 or not 1 <= off_size <= 8:
-        raise lib.TestnetError("the validator set BOC has a malformed header")
-    at = 6
-    cells, at = take(at, ref_size)
-    roots, at = take(at, ref_size)
-    _absent, at = take(at, ref_size)
-    _total, at = take(at, off_size)
-    if roots != 1:
-        raise lib.TestnetError(f"the validator set BOC has {roots} roots")
-    root, at = take(at, ref_size)
-    if flags & 0x80:  # an index of cell offsets follows
-        at += cells * off_size
-    if root >= cells:
-        raise lib.TestnetError("the validator set BOC names a root it does not hold")
-    for index in range(cells):
-        d1, at = take(at, 1)
-        d2, at = take(at, 1)
-        if d1 & 16:  # stored hashes and depths, one pair per level present
-            at += (bin(d1 >> 5).count("1") + 1) * (32 + 2)
-        data_bytes = (d2 + 1) // 2
-        if index == root:
-            if d1 & 8 or data_bytes < 9 or at + 9 > len(boc):
-                raise lib.TestnetError("the validator set root is not an ordinary cell")
-            if boc[at] not in (0x11, 0x12):
-                raise lib.TestnetError(f"ConfigParam 34 has tag {boc[at]:#x}, not a validator set")
-            since, after = take(at + 1, 4)
-            until, _ = take(after, 4)
-            return since, until
-        at += data_bytes + (d1 & 7) * ref_size
-    raise lib.TestnetError("the validator set root was not found")
-
-
-def window_refusal(
-    since: int, until: int, active_election: int, schedule: dict, now: int
-) -> str | None:
-    """Why a refund must wait now, or None.
-
-    The election task relays stakes through the controller while an election is
-    open, and a refund both stops that task and moves the controller's nonce, which
-    invalidates a relay planned against the old one. So a refund runs only in the
-    quiet part of a term: at least WINDOW_MARGIN_SECONDS after the set took office
-    and before the next election opens, with no election open at the Elector. A
-    failed election leaves the Elector's election open and the set past its
-    utime_until, and both checks then refuse.
-    """
-    if active_election:
-        return f"election {active_election} is open at the Elector (or not yet installed)"
-    if now < since + WINDOW_MARGIN_SECONDS:
-        return (
-            f"the validator set took office {now - since} s ago; wait until "
-            f"{since + WINDOW_MARGIN_SECONDS}"
-        )
-    opens = until - int(schedule["elections_start_before"])
-    if now >= opens - WINDOW_MARGIN_SECONDS:
-        return (
-            f"the next election opens at {opens} ({opens - now} s from now) and the set "
-            f"rotates at {until}; wait until {until + WINDOW_MARGIN_SECONDS}"
-        )
-    return None
-
-
-def operator_reserve(authorization: dict) -> int:
-    """What the operator wallet must still hold after a refund, from the profile."""
-    reserve = authorization.get("operator_reserve_nanotos", DEFAULT_OPERATOR_RESERVE_NANOTOS)
-    if not isinstance(reserve, int) or isinstance(reserve, bool):
-        raise lib.TestnetError(f"operator_reserve_nanotos must be an integer: {reserve!r}")
-    if reserve < STAKE_WALLET_MINIMUM_NANOTOS:
-        raise lib.TestnetError(
-            f"operator_reserve_nanotos {reserve} is below the {STAKE_WALLET_MINIMUM_NANOTOS} "
-            "nanotos the election task needs in the operator wallet to stake"
-        )
-    return reserve
-
-
-def reserve_shortfall(
-    balance: int, value: int, reserve: int, fee: int = WALLET_SEND_FEE_ALLOWANCE_NANOTOS
-) -> int:
-    """Nanotos the operator wallet lacks to send `value`, pay `fee` and keep `reserve`."""
-    if min(balance, value, reserve, fee) < 0:
-        raise lib.TestnetError("a balance, value, reserve or fee cannot be negative")
-    return max(0, value + fee + reserve - balance)
-
-
-def recorded_operator(ceremony: Path, name: str) -> str:
-    """The operator wallet onboard recorded as op-NAME in the ceremony's wallets.json."""
-    path = ceremony / lib.WALLETS_FILE
-    wallets = (
-        lib.check_wallet_map(json.loads(path.read_text()), str(path)) if path.is_file() else {}
-    )
-    label = f"op-{name}"
-    if label not in wallets:
-        raise lib.TestnetError(f"{path} records no {label}; onboard {name} first")
-    return check_raw_address(wallets[label])
-
-
-def renewal_window(operations: ops.Operations, profile: dict) -> None:
-    """No renewal or resubmission may race an election on either validator."""
-    since, until, election = operations.both(
-        lambda node: (
-            *Chain(node.url, node.rpc).validator_term(),
-            Chain(node.url, node.rpc).active_election(),
-        )
-    )
-    for now in [int(operations.clock()), *operations.utimes()]:
-        reason = window_refusal(since, until, election, lib.validator_schedule(profile), now)
-        if reason:
-            raise lib.TestnetError(f"not now: {reason}")
-
-
-def authorization_balance(operations, operator: str, value: int, reserve: int) -> None:
-    balance = operations.balance(operator)
-    shortfall = reserve_shortfall(balance, value, reserve)
-    if shortfall:
-        top_up = -(-shortfall // NANO)
-        raise lib.TestnetError(
-            f"op wallet {operator} is short by {shortfall / NANO:.9f} TOS including "
-            f"its {reserve / NANO:.9f} TOS reserve; top up with a journaled fund operation "
-            f"of at least {top_up} TOS first"
-        )
-
-
-def authorization_preflight(operations, record: dict, profile: dict) -> None:
-    """Recheck the same signed request before initial broadcast or resubmission."""
-    if record.get("renewal"):
-        renewal_window(operations, profile)
-    context = operations.both(lambda node: controller_plan_context(node, record["destination"]))
-    check_operations_plan(
-        record["plan"],
-        record["wallet"],
-        {"floor_nanotos": record["floor_nanotos"]},
-        record["funds_target_nanotos"],
-        operations.clock(),
-        record["expires_at"],
-        context,
-        record["destination"],
-    )
-    authorization_balance(
-        operations,
-        record["wallet"],
-        record["value"],
-        record["operator_reserve_nanotos"],
-    )
-
-
-def refund(
-    args: argparse.Namespace, operations: ops.Operations, global_id: int, profile: dict
-) -> dict:
-    """A new authorization is its own operation, never a retry of a settled grant."""
-    if not SAFE_NAME.fullmatch(args.name):
-        raise lib.TestnetError(f"not a node name: {args.name!r}")
-    if not ops.SAFE_ID.fullmatch(args.id or ""):
-        raise lib.TestnetError(f"not an operation id: {args.id!r}")
-    target = args.target_nanotos
-    if target is None:
-        target = int(profile["elections"]["authorization"]["refund_target_nanotos"])
-    if isinstance(target, bool) or not isinstance(target, int) or not 0 < target < COINS_LIMIT:
-        raise lib.TestnetError("the funds target must be positive and within the Coins range")
-    operator = recorded_operator(Path(args.ceremony), args.name)
-    controller = f"-1:{genesis_controller(args)['controller_id']}"
-    with operations.journal.lock(operator):
-        actual_id = operations.journal.newest(args.id)
-        record = operations.journal.record(actual_id)
-        if record is None and not args.new:
-            raise lib.TestnetError(f"no operation {args.id}; use --new for a new renewal")
-        if record is not None and args.new and ops.state_of(record) != "settled":
-            raise lib.TestnetError(f"operation {args.id} already exists; omit --new to inspect it")
-        first = operations.journal.record(
-            operations.journal.newest(f"authorize-operations-{args.name}")
-        )
-        if ops.state_of(first) != "settled":
-            raise lib.TestnetError("the onboarding operating authorization is not settled")
-        # A settled operation is reported without touching the service. Parameters
-        # are still compared by authorize_operations before it returns the record.
-        if ops.state_of(record) != "settled":
-            if ops.state_of(record) not in (None, "planned"):
-                raise lib.TestnetError(
-                    f"operation {actual_id} is {ops.state_of(record)}; reconcile / record / resubmit; retry only failed attempts"
-                )
-            operations.gate(operator, actual_id)
-            renewal_window(operations, profile)
-    host = Host(args.host, args.ssh_key)
-    if args.dry_run or ops.state_of(record) == "settled":
-        return authorize_operations(
-            args,
-            operations,
-            global_id,
-            profile,
-            host,
-            operator,
-            controller,
-            args.id,
-            target,
-            renewal=True,
-            dry_run=args.dry_run,
-        )
-    try:
-        host.run(f"systemctl stop {ELECTIONS_SERVICE}")
-        record = authorize_operations(
-            args,
-            operations,
-            global_id,
-            profile,
-            host,
-            operator,
-            controller,
-            args.id,
-            target,
-            renewal=True,
-        )
-    finally:
-        try:
-            host.run(f"systemctl start {ELECTIONS_SERVICE}")
-        except lib.TestnetError as exc:
-            raise lib.TestnetError(
-                f"{ELECTIONS_SERVICE} did not start again: {exc}; start it by hand; "
-                f"reconcile operation {args.id} before any further send"
-            ) from exc
-    status = host.tosctl(f"controller operations status --controller {controller}", 90)
-    if "BLOCKING" in status or "kind 4 never accepted" in status:
-        raise lib.TestnetError(
-            f"renewal {record['id']} settled but operating readiness needs attention:\n{status[-1200:]}"
-        )
-    print(f"{record['id']}: renewal settled ({record['evidence']['destination_tx']})")
-    return record
 
 
 # ---------------------------------------------------------------- load
@@ -3173,33 +2415,14 @@ def main(argv: list[str] | None = None) -> int:
     p_fund.add_argument("--amount", required=True)
     p_fund.add_argument("--label", required=True)
     p_fund.add_argument("--dry-run", action="store_true")
+    p_pool = sub.add_parser("pool")
+    for flag in ("--name", "--operator", "--ceremony", "--tos-root", "--fift"):
+        p_pool.add_argument(flag, required=True)
+    p_pool.add_argument("--previous-ceremony", action="append", default=[])
     p_onboard = sub.add_parser("onboard", parents=[common])
-    for flag in (
-        "--name",
-        "--host",
-        "--ssh-key",
-        "--controller",
-        "--root-seed",
-        "--controller-tool",
-    ):
+    for flag in ("--name", "--host", "--ssh-key"):
         p_onboard.add_argument(flag, required=True)
     p_onboard.add_argument("--previous-ceremony", action="append", default=[])
-    p_refund = sub.add_parser("refund", parents=[common])
-    for flag in (
-        "--name",
-        "--host",
-        "--ssh-key",
-        "--controller",
-        "--root-seed",
-        "--controller-tool",
-    ):
-        p_refund.add_argument(flag, required=True)
-    p_refund.add_argument(
-        "--id", required=True, help="a unique renewal step id, distinct from onboarding"
-    )
-    p_refund.add_argument("--new", action="store_true", help="create the renewal --id")
-    p_refund.add_argument("--target-nanotos", type=int)
-    p_refund.add_argument("--dry-run", action="store_true")
     p_withdraw = sub.add_parser("withdraw", parents=[common])
     p_withdraw.add_argument("--name", required=True)
     p_withdraw.add_argument("--id", required=True, help="the withdrawal's operation id")
@@ -3262,6 +2485,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         profile = lib.load_profile(args.profile)
         global_id = lib.confirmed_global_id(profile)
+        if args.command == "pool":
+            stake_pool(args, global_id)
+            return 0
         chain = Chain(args.rpc)
         if args.command == "load" and args.dry_run:
             check_load_args(args)
@@ -3269,9 +2495,7 @@ def main(argv: list[str] | None = None) -> int:
             LoadDriver(args, chain, global_id).run()
         else:
             operations = operations_for(args, global_id)
-            if args.command == "refund":
-                refund(args, operations, global_id, profile)
-            elif args.command == "fund":
+            if args.command == "fund":
                 fund(args, operations, global_id)
             elif args.command == "load":
                 check_load_args(args)
@@ -3280,7 +2504,7 @@ def main(argv: list[str] | None = None) -> int:
             elif args.command == "withdraw":
                 withdraw(args, operations, global_id)
             elif args.command in ("reconcile", "record", "resubmit", "baseline", "retry"):
-                manual(args, operations, profile)
+                manual(args, operations)
             else:
                 onboard(args, operations, global_id, profile)
     except (lib.TestnetError, OSError, KeyError, ValueError, subprocess.SubprocessError) as exc:
@@ -3292,8 +2516,6 @@ def main(argv: list[str] | None = None) -> int:
 def expect_for(args: argparse.Namespace, record: dict):
     """The kind-specific settlement extra for a record, as onboard would pass it."""
     kind = record["kind"]
-    if kind == "deploy-controller":
-        return expect_code(record["code_hash"])
     if kind == "deploy-pool":
 
         def deployed(operations, rec, delivery, evidence):
@@ -3304,19 +2526,16 @@ def expect_for(args: argparse.Namespace, record: dict):
                     rec["destination"],
                     rec["owner"],
                     rec["wallet"],
-                    rec["controller"],
                 )
             except lib.TestnetError as exc:
                 return "failed", dict(evidence, form="b", reason=str(exc))
             return "settled", evidence
 
         return deployed
-    if kind == "authorize-operations":
-        return expect_authorization(record["plan"], record["wallet"])
     return None
 
 
-def manual(args: argparse.Namespace, operations: ops.Operations, profile: dict) -> None:
+def manual(args: argparse.Namespace, operations: ops.Operations) -> None:
     """reconcile (read only), record, resubmit and baseline: a person resolves open operations."""
     journal = operations.journal
     if args.command == "reconcile":
@@ -3363,7 +2582,6 @@ def manual(args: argparse.Namespace, operations: ops.Operations, profile: dict) 
                         record["destination"],
                         entry.get("owner"),
                         entry.get("operator"),
-                        entry.get("controller"),
                     )
                     if (
                         operations.balance(record["wallet"])
@@ -3378,11 +2596,6 @@ def manual(args: argparse.Namespace, operations: ops.Operations, profile: dict) 
                         record["wallet"],
                         record["requested_nanotos"],
                     )
-
-        if record.get("renewal"):
-
-            def prerequisites():
-                authorization_preflight(operations, record, profile)
 
         result = operations.resubmit(args.id, prerequisites, expect)
     elif args.settled:

@@ -49,17 +49,46 @@ def test_validator_adnl_id_is_the_single_category_zero_key():
         lib.validator_adnl_id(config)
 
 
-def test_controller_refuses_root_equal_to_consensus_key():
-    public = bytes(range(256)) * 5 + bytes(32)
-    args = operator.argparse.Namespace(
-        root_public=public.hex(),
-        key_id=lib.pq_key_id(public).hex(),
-        tos_root=Path("/nonexistent"),
-        tos_build=Path("/nonexistent"),
-        out=None,
+def record_args(tmp_path, monkeypatch, validator_id):
+    """A first-start config.json announcing 1.2.3.4:30001 and the real key report."""
+    db = tmp_path / "db"
+    db.mkdir()
+    (db / "config.json").write_text(
+        json.dumps(
+            {
+                "adnl": [{"id": lib.b64(b"\x05" * 32), "category": 0}],
+                "addrs": [{"ip": int.from_bytes(bytes([1, 2, 3, 4]), "big"), "port": 30001}],
+            }
+        )
     )
-    with pytest.raises(lib.TestnetError, match="two different keys"):
-        operator.cmd_controller(args)
+    report = (Path(__file__).parent / "data" / "consensus-key-report.txt").read_text()
+    monkeypatch.setattr(operator, "tool", lambda name: name)
+    monkeypatch.setattr(
+        operator.lib, "run", lambda argv, **kw: subprocess.CompletedProcess(argv, 0, report, "")
+    )
+    return operator.argparse.Namespace(
+        db=db,
+        seed=db / "keys" / "pq-consensus.seed",
+        validator_id=validator_id,
+        operator="operator-1",
+        address="1.2.3.4:30001",
+        out=tmp_path / "record.json",
+    )
+
+
+def test_record_names_the_staking_account_as_the_validator_id(tmp_path, monkeypatch):
+    pool = "ab" * 32
+    operator.cmd_record(record_args(tmp_path, monkeypatch, f"-1:{pool}"))
+    record = json.loads((tmp_path / "record.json").read_text())
+    assert record["validator_id"] == pool and record["adnl_id"] == "05" * 32
+    assert lib.check_operator_record(record) == record
+
+
+@pytest.mark.parametrize("bad", ["ab" * 31, "00" * 32, "0:" + "ab" * 32])
+def test_record_refuses_a_malformed_validator_id(tmp_path, monkeypatch, bad):
+    with pytest.raises(lib.TestnetError, match="validator_id"):
+        operator.cmd_record(record_args(tmp_path, monkeypatch, bad))
+    assert not (tmp_path / "record.json").exists()
 
 
 def test_configure_adds_a_console_and_keys(tmp_path, monkeypatch):

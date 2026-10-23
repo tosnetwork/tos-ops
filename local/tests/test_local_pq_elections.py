@@ -47,7 +47,7 @@ def trace_fixture(directory):
     checker = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(checker)
     candidates = {
-        i: {"controller": f"-1:{i:064x}", "adnl_id": f"{i + 100:064x}"} for i in (1, 2, 3, 4, 7)
+        i: {"wallet": f"-1:{i:064x}", "adnl_id": f"{i + 100:064x}"} for i in (1, 2, 3, 4, 7)
     }
     for i, c in candidates.items():
         (directory / f"candidate-{i}.json").write_text(json.dumps(c))
@@ -193,3 +193,110 @@ def test_lite_queries_run_the_installed_lite_client(monkeypatch, tmp_path):
     with pytest.raises(OSError, match="stop"):
         asyncio.run(elections.lite_int("active_election_id"))
     assert seen == [str(tmp_path / "tos-lite-client")]
+
+
+def staking_wallet(directory, index=1):
+    import base64
+    import json
+
+    import nacl.signing
+    from contract import WalletV1Blueprint
+
+    keys = directory / "keys"
+    keys.mkdir(mode=0o700, exist_ok=True)
+    key = nacl.signing.SigningKey.generate()
+    (keys / f"wallet-{index}.pk").write_bytes(bytes(key))
+    (keys / f"wallet-{index}.pk").chmod(0o600)
+    blueprint = WalletV1Blueprint(workchain=-1, private_key=key)
+    candidate = {
+        "node": index,
+        "wallet": blueprint.address.to_str(is_user_friendly=False),
+        "state_init_b64": base64.b64encode(blueprint.state_init.serialize().to_boc()).decode(),
+    }
+    json.dumps(candidate)
+    return candidate, blueprint
+
+
+def test_the_staking_wallet_is_derived_from_its_disposable_key(tmp_path, monkeypatch):
+    monkeypatch.setattr(elections, "OUT", tmp_path)
+    candidate, blueprint = staking_wallet(tmp_path)
+    wallet = elections.candidate_wallet(None, candidate, 1)
+    assert wallet.address == blueprint.address and wallet.address.wc == -1
+
+
+@pytest.mark.parametrize("mutation", ["other_key", "basechain", "foreign_init"])
+def test_a_wallet_record_its_key_does_not_derive_is_refused(tmp_path, monkeypatch, mutation):
+    import base64
+
+    from contract import WalletV1Blueprint
+    from pytosiq_core import Address
+
+    monkeypatch.setattr(elections, "OUT", tmp_path)
+    candidate, _ = staking_wallet(tmp_path)
+    other = WalletV1Blueprint(workchain=-1)
+    if mutation == "other_key":
+        candidate["wallet"] = other.address.to_str(is_user_friendly=False)
+        candidate["state_init_b64"] = base64.b64encode(
+            other.state_init.serialize().to_boc()
+        ).decode()
+    elif mutation == "basechain":
+        candidate["wallet"] = Address((0, Address(candidate["wallet"]).hash_part)).to_str(
+            is_user_friendly=False
+        )
+    else:
+        candidate["state_init_b64"] = base64.b64encode(
+            other.state_init.serialize().to_boc()
+        ).decode()
+    with pytest.raises(ValueError):
+        elections.candidate_wallet(None, candidate, 1)
+
+
+class NetworkClient:
+    def __init__(self, root="aa" * 32, periods=(600, 300, 60, 180)):
+        self.root, self.periods = root, periods
+
+    async def get_masterchain_info(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(init=SimpleNamespace(root_hash=bytes.fromhex(self.root)))
+
+    async def get_config_param(self, number):
+        from pytosiq_core import Builder
+
+        assert number == 15
+        value = Builder()
+        for period in self.periods:
+            value.store_uint(period, 32)
+        return value.end_cell()
+
+
+LOCAL_NETWORK = dict(
+    scope="local-development",
+    mode="pq",
+    global_id=3,
+    election_period_seconds=600,
+    zerostate_root="aa" * 32,
+)
+LOCAL_PLAN = dict(scope="local-development-only", rosters=[[1, 2, 3, 7], [1, 2, 3, 4]])
+
+
+def test_the_disposable_network_is_accepted():
+    asyncio.run(elections.verify_local_network(NetworkClient(), LOCAL_NETWORK, LOCAL_PLAN))
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        dict(network=dict(global_id=2)),
+        dict(network=dict(scope="public")),
+        dict(plan=dict(rosters=[[1, 2, 3, 4]])),
+        dict(client=dict(root="bb" * 32)),
+        dict(client=dict(periods=(14400, 7200, 1800, 7200))),
+    ],
+)
+def test_any_other_network_is_refused(change):
+    network = dict(LOCAL_NETWORK, **change.get("network", {}))
+    plan = dict(LOCAL_PLAN, **change.get("plan", {}))
+    client = NetworkClient(**change.get("client", {}))
+    with pytest.raises(ValueError):
+        asyncio.run(elections.verify_local_network(client, network, plan))

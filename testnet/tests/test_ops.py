@@ -195,6 +195,13 @@ def test_a_baseline_accounts_for_history_before_the_journal(world):
     assert run(operations, chain=chain)["state"] == "settled"
 
 
+def test_a_baseline_is_refused_over_a_planned_operation(world):
+    chain, operations, _ = world
+    operations.begin("planned-a", params())
+    with pytest.raises(ops.OperationRefused, match="operation planned-a is open"):
+        operations.set_baseline(BOOT, "would hide the planned payment's history")
+
+
 def test_an_unexplained_transaction_after_the_baseline_refuses(world):
     chain, operations, _ = world
     operations.set_baseline(BOOT, "x") if chain.account(BOOT)["txs"] else None
@@ -1604,7 +1611,7 @@ def test_a_capped_withdrawal_is_failed_unless_all_was_requested(world, all_amoun
 
 
 @pytest.fixture
-def relay_world(world):
+def election_world(world):
     chain, operations, ceremony = world
     (ceremony / "pools.json").write_text(json.dumps({"node-1": {"operator": BOOT, "pool": DEST}}))
     election = chain.now + 3600
@@ -1625,16 +1632,32 @@ def relay_world(world):
             return _original(url, method, **kw)
 
         node.rpc = rpc
-    body = lib.cell_from_bits(
-        format(0x4E73744B, "032b")
-        + "0" * 64
-        + fakechain.coins_bits(10002 * NANO)
-        + format(election, "032b")
-    )
+    body = stake_order(election)
     return chain, operations, ceremony, body, calls
 
 
-def send_relay(chain, body, destination=DEST, value=20 * NANO):
+# The value tosctl's election task attaches to a pool order: ELECTOR_STAKE_FEE + NPOOL_COMPUTE_FEE.
+STAKE_ORDER = NANO + NANO // 5
+
+
+def stake_order(election, *, algorithm=1, suffix="", refs=None):
+    """A pool NEW_STAKE order in tosctl's nominator::new_stake layout: op, query id, stake,
+    ML-DSA-44 algorithm, public key ref, election id, max factor, ADNL, signature ref."""
+    key, signature = lib.cell_from_bits("1" * 8), lib.cell_from_bits("0" * 8)
+    return lib.cell_from_bits(
+        format(0x4E73744B, "032b")
+        + "0" * 64
+        + fakechain.coins_bits(10002 * NANO)
+        + format(algorithm, "016b")
+        + format(election, "032b")
+        + format(1 << 16, "032b")
+        + "1" * 256
+        + suffix,
+        [key, signature] if refs is None else refs,
+    )
+
+
+def send_election_message(chain, body, destination=DEST, value=STAKE_ORDER):
     chain.send(
         build_external(
             BOOT, 2, 1, chain.now + 300, internal_message(destination, value, False, body=body)
@@ -1643,10 +1666,10 @@ def send_relay(chain, body, destination=DEST, value=20 * NANO):
     chain.settle_all()
 
 
-def test_election_relay_explains_history_and_is_visible_in_reconcile(relay_world):
-    chain, operations, _, body, calls = relay_world
-    send_relay(chain, body)
-    chain.now += 18000  # renewal is now quiet; the relay's historical window is what matters
+def test_election_message_explains_history_and_is_visible_in_reconcile(election_world):
+    chain, operations, _, body, calls = election_world
+    send_election_message(chain, body)
+    chain.now += 18000  # long after: the message's historical window is what matters
     report = operations.reconcile([BOOT])
     assert report["unexplained"] == []
     assert len(report["explained"]) == 1
@@ -1679,10 +1702,13 @@ def test_election_relay_explains_history_and_is_visible_in_reconcile(relay_world
         "after-window",
         "stake-id",
         "malformed-config",
+        "algorithm",
+        "trailing",
+        "no-signature",
     ],
 )
-def test_non_election_activity_stays_unexplained(relay_world, bad):
-    chain, operations, ceremony, body, _ = relay_world
+def test_non_election_activity_stays_unexplained(election_world, bad):
+    chain, operations, ceremony, body, _ = election_world
     if bad == "no-pool":
         (ceremony / "pools.json").unlink()
     if bad == "two":
@@ -1692,12 +1718,7 @@ def test_non_election_activity_stays_unexplained(relay_world, bad):
     if bad == "after-window":
         chain.now += 2000
     if bad == "stake-id":
-        body = lib.cell_from_bits(
-            format(0x4E73744B, "032b")
-            + "0" * 64
-            + fakechain.coins_bits(10002 * NANO)
-            + format(chain.now + 36000, "032b")
-        )
+        body = stake_order(chain.now + 36000)
     if bad == "body":
         body = lib.cell_from_bits(
             format(0x47657424, "032b")
@@ -1705,6 +1726,12 @@ def test_non_election_activity_stays_unexplained(relay_world, bad):
             + fakechain.coins_bits(10002 * NANO)
             + format(chain.now + 3600, "032b")
         )
+    if bad == "algorithm":
+        body = stake_order(chain.now + 3600, algorithm=0)
+    if bad == "trailing":
+        body = stake_order(chain.now + 3600, suffix="0")
+    if bad == "no-signature":
+        body = stake_order(chain.now + 3600, refs=[lib.cell_from_bits("")])
     if bad == "outside":
         chain.now += 20000
     if bad in ("changed-config", "disagreement", "malformed-config"):
@@ -1725,11 +1752,11 @@ def test_non_election_activity_stays_unexplained(relay_world, bad):
                 return _original(url, method, **kw)
 
             node.rpc = rpc
-    send_relay(
+    send_election_message(
         chain,
         body,
         OTHER if bad == "pool" else DEST,
-        20 * NANO + NANO // 5 + 1 if bad == "budget" else 20 * NANO,
+        STAKE_ORDER + 1 if bad == "budget" else STAKE_ORDER,
     )
     with pytest.raises(ops.OperationRefused):
         run(operations, chain=chain)
@@ -1737,20 +1764,20 @@ def test_non_election_activity_stays_unexplained(relay_world, bad):
     assert operations.reconcile([BOOT])["unexplained"]
 
 
-def test_relay_budget_inclusive_boundary(relay_world):
-    chain, operations, _, body, _ = relay_world
-    send_relay(chain, body, value=20 * NANO + NANO // 5)
+def test_stake_order_value_inclusive_boundary(election_world):
+    chain, operations, _, body, _ = election_world
+    send_election_message(chain, body, value=STAKE_ORDER)
     assert run(operations, chain=chain)["state"] == "settled"
 
 
-def test_relay_budget_uses_profile_allowance(relay_world, monkeypatch):
-    chain, operations, _, body, _ = relay_world
+def test_stake_order_value_comes_from_the_profile(election_world, monkeypatch):
+    chain, operations, _, body, _ = election_world
     profile = lib.load_profile()
-    profile["elections"]["pool_relay_fee_allowance_nanotos"] = 0
+    profile["elections"]["stake_order_nanotos"] = NANO
     profile_path = operations.ceremony / "custom-profile.json"
     profile_path.write_text(json.dumps(profile))
     operations.profile_path = profile_path
-    send_relay(chain, body, value=20 * NANO + 1)
+    send_election_message(chain, body, value=NANO + 1)
     with pytest.raises(ops.OperationRefused):
         run(operations, chain=chain)
 
@@ -1828,9 +1855,9 @@ def test_delivery_search_has_an_explicit_block_budget(world, monkeypatch):
         operations.settle(dict(record, state="broadcast"))
 
 
-def test_relay_reads_no_expired_state(relay_world):
-    chain, operations, _, body, calls = relay_world
-    send_relay(chain, body)
+def test_election_message_reads_no_expired_state(election_world):
+    chain, operations, _, body, calls = election_world
+    send_election_message(chain, body)
     chain.now += 10 * 86400
     for node in operations.nodes:
         original = node.rpc
@@ -1850,9 +1877,9 @@ def test_relay_reads_no_expired_state(relay_world):
     assert not any(method == "lookupBlock" for _, method, _ in calls)
 
 
-def test_relay_current_config_is_compared_to_genesis_not_profile(relay_world):
-    chain, operations, ceremony, body, _ = relay_world
-    send_relay(chain, body)
+def test_election_message_current_config_is_compared_to_genesis_not_profile(election_world):
+    chain, operations, ceremony, body, _ = election_world
+    send_election_message(chain, body)
     p = ceremony / "genesis.json"
     genesis = json.loads(p.read_text())
     genesis["election_params"]["stake_held_for"] += 1
@@ -1948,7 +1975,7 @@ def test_masterchain_delivery_uses_the_full_masterchain_shard(world):
 
 
 ELECTION_TASK_MESSAGES = [
-    ("new-stake", 0x4E73744B, 20 * NANO + NANO // 5),
+    ("new-stake", 0x4E73744B, NANO + NANO // 5),
     ("recover-stake", 0x47657424, NANO // 5),
     ("update-validator-set", 0x06, NANO // 5),
     ("validator-deposit", 0x04, 10 * NANO),
@@ -1966,10 +1993,10 @@ def election_task_body(opcode, stake_body, *, query_id=1800000000, limit=8, suff
 
 
 @pytest.mark.parametrize("kind,opcode,ceiling", ELECTION_TASK_MESSAGES)
-def test_each_election_task_message_is_explained(relay_world, kind, opcode, ceiling):
-    chain, operations, _, stake_body, calls = relay_world
+def test_each_election_task_message_is_explained(election_world, kind, opcode, ceiling):
+    chain, operations, _, stake_body, calls = election_world
     body = election_task_body(opcode, stake_body)
-    send_relay(chain, body, value=ceiling)
+    send_election_message(chain, body, value=ceiling)
     chain.now += 10 * 86400
     report = operations.reconcile([BOOT])
     assert not report["unexplained"]
@@ -1985,8 +2012,10 @@ def test_each_election_task_message_is_explained(relay_world, kind, opcode, ceil
 
 @pytest.mark.parametrize("kind,opcode,ceiling", ELECTION_TASK_MESSAGES)
 @pytest.mark.parametrize("bad", ["pool", "budget", "opcode", "two", "zero"])
-def test_each_election_task_message_keeps_shared_refusals(relay_world, kind, opcode, ceiling, bad):
-    chain, operations, _, stake_body, _ = relay_world
+def test_each_election_task_message_keeps_shared_refusals(
+    election_world, kind, opcode, ceiling, bad
+):
+    chain, operations, _, stake_body, _ = election_world
     body = election_task_body(opcode, stake_body)
     if bad == "opcode":
         # Keep the expected fields, changing only the opcode to an unrecognized one.
@@ -1997,7 +2026,7 @@ def test_each_election_task_message_keeps_shared_refusals(relay_world, kind, opc
         body = lib.cell_from_bits(bits, list(body.refs))
     if bad == "two":
         chain.extra_out[BOOT] = (OTHER, NANO)
-    send_relay(
+    send_election_message(
         chain,
         body,
         destination=OTHER if bad == "pool" else DEST,
@@ -2012,8 +2041,8 @@ def test_each_election_task_message_keeps_shared_refusals(relay_world, kind, opc
 
 @pytest.mark.parametrize("opcode", [0x47657424, 0x06, 0x04, 0x02])
 @pytest.mark.parametrize("bad", ["truncated", "bits", "refs", "init"])
-def test_recovery_and_maintenance_require_exact_bodies(relay_world, opcode, bad):
-    chain, operations, _, stake_body, _ = relay_world
+def test_recovery_and_maintenance_require_exact_bodies(election_world, opcode, bad):
+    chain, operations, _, stake_body, _ = election_world
     body = election_task_body(
         opcode,
         stake_body,
@@ -2038,9 +2067,9 @@ def test_recovery_and_maintenance_require_exact_bodies(relay_world, opcode, bad)
 
 
 @pytest.mark.parametrize("limit", [0, 7, 9, 255])
-def test_withdrawal_queue_processing_uses_the_runner_batch_size(relay_world, limit):
-    chain, operations, _, stake_body, _ = relay_world
-    send_relay(chain, election_task_body(0x02, stake_body, limit=limit), value=NANO // 5)
+def test_withdrawal_queue_processing_uses_the_runner_batch_size(election_world, limit):
+    chain, operations, _, stake_body, _ = election_world
+    send_election_message(chain, election_task_body(0x02, stake_body, limit=limit), value=NANO // 5)
     report = operations.reconcile([BOOT])
     assert report["unexplained"] and not report["explained"]
 

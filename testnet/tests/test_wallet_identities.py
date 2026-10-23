@@ -311,73 +311,55 @@ def test_genesis_refuses_an_empty_previous_ceremony(tmp_path, monkeypatch, capsy
     assert runs == []
 
 
-# ---------------------------------------------------------------- onboard
+# ---------------------------------------------------------------- pool
 
 
 class Stop(Exception):
     pass
 
 
-def onboard_setup(tmp_path, monkeypatch, account: bytes):
+def pool_setup(tmp_path, monkeypatch, account: bytes):
+    """`pool` before genesis, for the operator wallet init-operator.sh printed."""
     ceremony = tmp_path / "ceremony"
-    ceremony.mkdir()
-    controller = "77" * 32
-    (ceremony / "genesis-records.json").write_text(json.dumps([{"controller_id": controller}]))
-    (ceremony / "genesis.json").write_text(
-        json.dumps({"zero_state": {"root_hash": "r", "file_hash": "f"}})
-    )
-    (tmp_path / "controller.json").write_text(json.dumps({"controller_id": controller}))
     body = bytes([0x11, 0xFF]) + account
     friendly = base64.urlsafe_b64encode(body + b"\x00\x00").decode()
 
-    class FakeHost:
-        def __init__(self, host, ssh_key):
-            pass
+    def owner(args, name, global_id, previous, run=None):
+        raise Stop("pool owner")
 
-        def run(self, command, timeout=300):
-            assert "init-operator.sh" in command
-            return f"operator ready\nop-a {friendly}\n"
-
-    def rpc(url, method, /, **params):
-        raise Stop(method)
-
-    monkeypatch.setattr(elections, "Host", FakeHost)
+    monkeypatch.setattr(elections, "ensure_pool_owner", owner)
     args = elections.argparse.Namespace(
         name="a",
-        host="h",
-        ssh_key="k",
+        operator=friendly,
         ceremony=str(ceremony),
-        controller=str(tmp_path / "controller.json"),
         tos_root=str(tmp_path / "tos"),
         fift="fift",
         previous_ceremony=[],
     )
-    nodes = [elections.ops.Node("http://fake-a", rpc), elections.ops.Node("http://fake-b", rpc)]
-    return ceremony, args, elections.ops.Operations(ceremony, nodes, 2)
+    return ceremony, args
 
 
-def test_onboard_records_the_operator_wallet(tmp_path, monkeypatch):
-    ceremony, args, chain = onboard_setup(tmp_path, monkeypatch, bytes.fromhex("d4" * 32))
+def test_pool_records_the_operator_wallet(tmp_path, monkeypatch):
+    ceremony, args = pool_setup(tmp_path, monkeypatch, bytes.fromhex("d4" * 32))
     previous = tmp_path / "epoch-1"
     previous.mkdir()
     (previous / "wallets.json").write_text(json.dumps(earlier_epoch()))
     args.previous_ceremony = [str(previous)]
-    profile = lib.load_profile()
-    # Recorded before the chain is asked anything; the network check comes next.
-    with pytest.raises(Stop, match="getMasterchainInfo"):
-        elections.onboard(args, chain, 2, profile)
+    # Recorded before the pool owner is made; the owner key comes next.
+    with pytest.raises(Stop, match="pool owner"):
+        elections.stake_pool(args, 2)
     assert json.loads((ceremony / "wallets.json").read_text()) == {"op-a": OP_B}
 
 
-def test_onboard_refuses_an_operator_wallet_an_earlier_epoch_used(tmp_path, monkeypatch):
-    ceremony, args, chain = onboard_setup(tmp_path, monkeypatch, bytes.fromhex("c3" * 32))
+def test_pool_refuses_an_operator_wallet_an_earlier_epoch_used(tmp_path, monkeypatch):
+    ceremony, args = pool_setup(tmp_path, monkeypatch, bytes.fromhex("c3" * 32))
     previous = tmp_path / "epoch-1"
     previous.mkdir()
     (previous / "wallets.json").write_text(json.dumps({"op-z": OP_A.upper()}))
     args.previous_ceremony = [str(previous)]
-    # refused before the chain is asked anything, so before any funding
+    # refused before an owner key is made or a pool derived from the wallet
     with pytest.raises(lib.TestnetError, match="wallet op-a reuses"):
-        elections.onboard(args, chain, 2, lib.load_profile())
+        elections.stake_pool(args, 2)
     assert not (ceremony / "wallets.json").exists()
 
 
@@ -621,3 +603,78 @@ def test_a_refused_gas_credit_publishes_nothing(tmp_path, monkeypatch, capsys):
     assert "ConfigParam 21 gas_credit" in capsys.readouterr().err
     assert runs == ["run-a", "run-b"]
     assert published(ceremony) == []
+
+
+# ---------------------------------------------------------------- manifest after pool
+
+
+def manifest_records(tmp_path) -> list[Path]:
+    paths = []
+    for n in range(1, 5):
+        public = hashlib.shake_256(b"public-%d" % n).digest(lib.PQ_PUBLIC_KEY_BYTES)
+        record = {
+            "operator": f"operator-{n}",
+            "validator_id": hashlib.sha256(b"pool-%d" % n).hexdigest(),
+            "adnl_id": hashlib.sha256(b"adnl-%d" % n).hexdigest(),
+            "public_key": public.hex(),
+            "key_id": lib.pq_key_id(public).hex(),
+            "address": f"44.0.0.{n}:30001",
+        }
+        path = tmp_path / f"record-{n}.json"
+        path.write_text(json.dumps(record))
+        paths.append(path)
+    return paths
+
+
+def pool_ceremony(tmp_path, count=4) -> Path:
+    """What `pool` leaves: pools.json, wallets.json, public owner files and owner keys."""
+    ceremony = lib.private_dir(tmp_path / "ceremony")
+    pools = {
+        f"node-{n}": {
+            "pool": "-1:" + hashlib.sha256(b"pool-%d" % n).hexdigest(),
+            "owner": "-1:" + "0e" * 32,
+            "operator": "-1:" + "0b" * 32,
+        }
+        for n in range(1, count + 1)
+    }
+    (ceremony / "pools.json").write_text(json.dumps(pools))
+    (ceremony / "wallets.json").write_text(json.dumps({"op-node-1": "-1:" + "0b" * 32}))
+    (ceremony / "pool-owners").mkdir()
+    lib.private_dir(ceremony / "secret")
+    (ceremony / "secret" / "pool-owner-node-1.pk").write_bytes(b"\x02" * 32)
+    return ceremony
+
+
+def manifest(tmp_path, ceremony):
+    root = Path(os.environ.get("TOS_ROOT", Path.home() / "tos"))
+    if not (root / "scripts/prepare-pq-genesis-manifest.py").is_file():
+        pytest.skip("TOS_ROOT has no genesis manifest packer")
+    args = coordinator.argparse.Namespace(
+        ceremony=ceremony, tos_root=root, previous=[], records=manifest_records(tmp_path)
+    )
+    coordinator.cmd_manifest(args)
+
+
+def test_manifest_follows_the_pool_step_and_names_its_pools(tmp_path):
+    ceremony = pool_ceremony(tmp_path)
+    manifest(tmp_path, ceremony)
+    records = json.loads((ceremony / "genesis-records.json").read_text())
+    pools = json.loads((ceremony / "pools.json").read_text())
+    assert [r["validator_id"] for r in records] == [
+        pools[f"node-{n}"]["pool"].split(":")[1] for n in range(1, 5)
+    ]
+
+
+def test_manifest_refuses_a_validator_id_no_pool_recorded(tmp_path):
+    ceremony = pool_ceremony(tmp_path, count=3)
+    with pytest.raises(lib.TestnetError, match="operator-4 names validator id"):
+        manifest(tmp_path, ceremony)
+    assert not (ceremony / "genesis-records.json").exists()
+
+
+@pytest.mark.parametrize("extra", ["genesis.json", "secret/main-wallet.pk"])
+def test_manifest_refuses_a_ceremony_with_more_than_the_pool_outputs(tmp_path, extra):
+    ceremony = pool_ceremony(tmp_path)
+    (ceremony / extra).write_bytes(b"x")
+    with pytest.raises(lib.TestnetError, match="only the outputs of"):
+        manifest(tmp_path, ceremony)

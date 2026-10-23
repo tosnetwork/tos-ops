@@ -59,7 +59,7 @@ tos `validator/liteserver-admission.h`; this repository does not configure them.
 
 | Domain | Material |
 | --- | --- |
-| Offline signing domain | Controller root and next-root seeds; incoming consensus key during a kind-3 cosigning ceremony |
+| Offline signing domain | Pool-owner wallet key; incoming consensus key while it is moved for a rotation |
 | Node account | Consensus seeds, transport keyring and console server key |
 | Operator-tool account | Encrypted stake-ordering wallet vault and console client credential |
 | Principal owner | Separate offline pool-owner wallet, as implemented by the testnet coordinator |
@@ -78,18 +78,23 @@ socket; `import` receives them. Agents must not invoke plaintext export, capture
 it, display it or copy it to another host. The repository provides no encryption
 or backup-verification program. Never run a restored copy alongside the old node.
 
-### 3.2 Controller root key
+### 3.2 Staking account
 
-`tos-pq-key` is a separate CMake project in tos `crypto/pq/tools`, not a node
-component. It creates the offline root and prints its public key. The node
-installer does not build or copy a root seed. Birth binds a public consensus key
-id; a later kind-3 bind also needs the incoming key's cosignature. The human
-signer controls that transfer ceremony.
+The validator is named by its staking account, the masterchain account that
+sends its stake to the Elector: the operator wallet when it stakes directly, or
+a single-nominator pool when the pool sends the stake. The testnet uses a pool
+whose owner is the offline principal owner and whose validator role is the
+operator wallet; the pool's address is the validator id genesis records. The
+node is bound to that account (`bind-node`, section 5.1) and signs stake
+authorizations only for it; the Elector refuses a stake signed for another
+account, and refuses a stake whose consensus key another member already uses.
 
-Root actions bind the global id, controller, root epoch, nonce and expiry.
-Read current authority and fees independently before signing. Root rotation
-changes the epoch and invalidates earlier requests. A stored balance does not
-itself authorize relaying stakes.
+The operator wallet only orders stakes and recoveries and pays their fees; it
+cannot withdraw the principal. The owner alone withdraws, and can replace the
+pool's validator role without changing the pool. A compromised host can
+therefore stake and recover but not take the principal. Choose the staking
+account before genesis or before binding the node: changing it means a new
+binding and a new account, not an in-place edit.
 
 ## 4. Host layout and service account
 
@@ -289,15 +294,19 @@ coordinator-built/validated StateInit, separate offline principal owner, exact
 message/transaction evidence on two validators, shared journal lock, original
 message resubmission only and explicit retry after terminal failure.
 
-Operating-authorization status/plan are available in tosctl. The service reports
-runway and stakes remaining; it cannot root-sign a renewal. Controller capital,
-allowance, per-request cap, expiry and live fee parameters must all satisfy the
-next relay. A pool balance or ordinary top-up alone is not authorization.
+tosctl's election task asks the node for a stake authorization for the binding's
+staking account and refuses, before any wallet message, one the node made for
+another account. Without a pool it sends the stake plus 1.2 TOS of fees from the
+wallet to the Elector; with a pool it sends the pool the order with the fees
+only, and the pool forwards the stake. Recovered stakes are credited to the
+staking account. Keep the pool funded for the stakes and the operator wallet
+funded for the fees; neither replaces the node's binding to the account.
 
 Multi-key consensus custody **is available** in the reference build: up to eight
 held keys, election-date scheduling, group-specific key selection and hard expiry.
 The offline tool lists/adds/removes keys; the running console can change them
-without restart. A human must coordinate the root bind and preserve old keys for
+without restart; the staking account stays the same. A human must coordinate the
+schedule and preserve old keys for
 current/previous/next duties. Offline removal cannot see those sets. Never set a
 hard expiry before all signing obligations finish. This repository supplies no
 journaled rotation driver; consult the exact native guide and obtain review.

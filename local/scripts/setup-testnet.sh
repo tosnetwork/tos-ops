@@ -56,19 +56,26 @@ CHECK
         -DCMAKE_CXX_COMPILER=clang++-21 -DCMAKE_BUILD_TYPE=Release -DTOS_ARCH=x86-64 \
         -DTOS_USE_JEMALLOC=ON -DTOS_PRODUCTION_BUILD=ON
     sudo -u "$CALLER" cmake --build build --parallel 32 --target gen_fif create-state \
-        fift func toslibjson generate-random-id tos-pq-consensus-key tos-pq-controller dht-server \
+        fift func toslibjson generate-random-id tos-pq-consensus-key dht-server \
         validator-engine-console validator-engine lite-client
     (cd tools/shielded-pool-circuit/crosscheck && sudo -u "$CALLER" "$CARGO" build \
         --release --locked -j2 --bin local_pool --bin local_pool_traffic)
+    # The election driver encodes every stake with tosctl's production builder.
+    (cd tosctl/src && sudo -u "$CALLER" "$CARGO" build --release --locked -j2 \
+        -p contracts --example pq_pool_stake_order)
 fi
 for binary in validator-engine/validator-engine dht-server/dht-server \
     validator-engine-console/validator-engine-console lite-client/lite-client \
-    utils/generate-random-id crypto/pq/tos-pq-consensus-key crypto/tos-pq-controller crypto/create-state \
+    utils/generate-random-id crypto/pq/tos-pq-consensus-key crypto/create-state \
     crypto/fift crypto/func toslib/libtoslibjson.so; do
     [[ -f "$BUILD/$binary" ]] || { echo "Missing $BUILD/$binary; run --build"; exit 1; }
 done
 POOL_GENERATOR="$REPO/tools/shielded-pool-circuit/crosscheck/target/release/local_pool"
 [[ -x "$POOL_GENERATOR" ]] || { echo 'Missing local_pool generator; run --build'; exit 1; }
+STAKE_ORDER_BUILDER="$REPO/tosctl/src/target/release/examples/pq_pool_stake_order"
+if [[ $ROTATE == 1 ]]; then
+    [[ -x "$STAKE_ORDER_BUILDER" ]] || { echo 'Missing pq_pool_stake_order builder; run --build'; exit 1; }
+fi
 # Finish preparation before touching the old data or services.
 "$UV" run python test/tostester/generate_tl.py
 STAGING="$(mktemp -d /var/tmp/tos-pq-pool.XXXXXX)"
@@ -114,10 +121,10 @@ mkdir -p /usr/local/share/tos/fift/lib /usr/local/share/tos/smartcont
 for pair in 'validator-engine/validator-engine:validator-engine' 'dht-server/dht-server:dht-server' \
     'validator-engine-console/validator-engine-console:validator-console' 'lite-client/lite-client:lite-client' \
     'utils/generate-random-id:genkey' 'crypto/pq/tos-pq-consensus-key:pq-consensus-key' \
-    'crypto/tos-pq-controller:pq-controller' \
     'crypto/create-state:create-state' 'crypto/fift:fift' 'crypto/func:func'; do
     install -m755 "$BUILD/${pair%%:*}" "/usr/local/bin/tos-${pair##*:}"
 done
+[[ $ROTATE == 0 ]] || install -m755 "$STAKE_ORDER_BUILDER" /usr/local/bin/tos-pq-pool-stake-order
 cp -a crypto/fift/lib/. /usr/local/share/tos/fift/lib/
 cp -a crypto/smartcont/. /usr/local/share/tos/smartcont/
 cp -a "$BUILD/crypto/smartcont/auto" /usr/local/share/tos/smartcont/
@@ -248,10 +255,8 @@ fi
 "$UV" run python "$HERE/local_pq_testnet.py" deploy
 systemctl enable --now tos-pq-lite-client
 if [[ $ROTATE == 1 ]]; then
-    # A controller relays a stake only within an explicit root-signed operating
-    # authorization. Deploy and authorize every candidate controller before the
-    # election service, which then owns the Genesis wallet, is started.
-    "$UV" run python "$HERE/local-pq-fund-controllers.py"
+    # The election service owns the Genesis wallet from here on: it deploys and
+    # funds each candidate's staking wallet itself before that candidate stakes.
     systemctl enable --now tos-pq-elections
 fi
 printf '\nFour PQ validators, two observers, lite-client and the local development pool are running.\n'

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Read-only liveness/operating-budget check for persistent local PQ elections."""
+"""Read-only liveness check for persistent local PQ elections and their candidate wallets."""
 
 import argparse
 import json
 import subprocess
 import time
 from pathlib import Path
+
+WALLET_OBSERVATION_MAX_AGE = 600
 
 
 def check(directory, now=None):
@@ -25,18 +27,13 @@ def check(directory, now=None):
                     "Config34 expired without a new observed activation; key-block/GC risk"
                 )
         for index in (1, 2, 3, 4, 7):
-            row = json.loads((directory / f"operations-{index}.json").read_text())
-            if not row.get("ready"):
-                errors.append(f"controller {index} is not ready")
-            if now - row["checked_at"] > 1800:
-                errors.append(f"controller {index} operating observation is stale")
-            op = row["operating_state"]
-            # The driver refreshes this observation before that candidate stakes.
-            # Expiry is absolute; the recorded runway is an estimate, not a balance proof.
-            if op["expires"] - now <= 30 * 86400 / 4 or row["runway_seconds"] <= 30 * 86400 / 4:
-                warnings.append(f"controller {index} is at/below the 25% renewal threshold")
-            if op["expires"] <= now:
-                errors.append(f"controller {index} authorization has expired")
+            # The driver observes each candidate's staking wallet about once a
+            # minute while it asks the elector for returned stakes.
+            row = json.loads((directory / f"wallet-{index}.json").read_text())
+            if not row.get("deployed"):
+                errors.append(f"candidate {index} staking wallet is not deployed")
+            if not 0 <= now - row["checked_at"] <= WALLET_OBSERVATION_MAX_AGE:
+                errors.append(f"candidate {index} staking wallet observation is stale")
     except (OSError, ValueError, KeyError, TypeError) as error:
         errors.append(f"missing or invalid election evidence: {error}")
     return dict(

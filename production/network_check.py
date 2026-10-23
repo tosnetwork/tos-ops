@@ -36,7 +36,7 @@ def decode_config34(boc_b64: str) -> dict:
         "total": value["total"],
         "main": value["main"],
         "validators": [
-            {"controller_id_hex": row["id"], "consensus_key_id_hex": row["key_id"]}
+            {"validator_id_hex": row["id"], "consensus_key_id_hex": row["key_id"]}
             for row in value["validators"]
         ],
     }

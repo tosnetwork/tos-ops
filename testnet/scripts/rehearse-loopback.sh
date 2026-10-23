@@ -15,8 +15,10 @@
 # network/profile.json:
 #
 #   operators   first start on a placeholder config, consensus seed generated
-#               in the node directory, controller id derived from a root key
-#               kept apart from the node, public record
+#               in the node directory
+#   coordinator pool: the offline owner and the staking pool of each operator
+#               wallet, whose id the operator's record names
+#   operators   public record
 #   coordinator manifest, genesis (run twice and compared, ConfigParam 48 read
 #               back) with the profile's AUTH network tag in
 #               TOS_AUTH_NETWORK_TAG, global config
@@ -28,8 +30,10 @@
 #
 # Differences from a real ceremony, all forced by running on one host: the
 # addresses are 127.0.0.1 (TESTNET_REHEARSAL_ALLOW_PRIVATE=1), each node gets
-# its own port block through a per-node copy of the profile, and the root keys
-# are generated here instead of on an offline machine. WORKDIR must not exist.
+# its own port block through a per-node copy of the profile, and each
+# operator wallet is a fixed placeholder address instead of the one
+# init-operator.sh --wallet-only creates on a host (nothing is staked here).
+# WORKDIR must not exist.
 # Every process it starts is stopped on exit.
 set -euo pipefail
 
@@ -70,7 +74,6 @@ ln -s "$TOS_BUILD/validator-engine/validator-engine" "$TOS_BIN/validator-engine"
 ln -s "$TOS_BUILD/dht-server/dht-server" "$TOS_BIN/dht-server"
 ln -s "$TOS_BUILD/utils/generate-random-id" "$TOS_BIN/generate-random-id"
 ln -s "$TOS_BUILD/crypto/pq/tos-pq-consensus-key" "$TOS_BIN/tos-pq-consensus-key"
-ln -s "$TOS_BUILD/crypto/tos-pq-controller" "$TOS_BIN/tos-pq-controller"
 for tool in "$TOS_BIN"/*; do [ -x "$tool" ] || { echo "missing build output $(readlink "$tool")" >&2; exit 1; }; done
 
 port() { echo $((BASE_PORT + 10 * $1 + $2)); }   # node, slot
@@ -91,8 +94,8 @@ OP="$HERE/testnet-operator.py"
 CO="$HERE/testnet-coordinator.py"
 python3 "$OP" pregenesis-config "$WORK/pregenesis.json"
 
-log "operators: first start, consensus key, controller id, record"
-mkdir -m 0700 "$WORK/offline"
+log "operators: first start, consensus key; coordinator: pool; operators: record"
+EL="$HERE/testnet-elections.py"
 for i in 1 2 3 4; do
   db="$WORK/node$i"
   node_profile "$i"
@@ -102,17 +105,15 @@ for i in 1 2 3 4; do
   mkdir -m 0700 "$db/keys"
   (umask 077; "$TOS_BIN/tos-pq-consensus-key" generate "$db/keys/pq-consensus.seed" >"$WORK/consensus-$i.txt")
   key_id=$(awk '$1 == "key_id" {print $2}' "$WORK/consensus-$i.txt")
-  (umask 077; "$TOS_BIN/tos-pq-consensus-key" generate "$WORK/offline/root-$i.seed" >/dev/null)
-  root_public=$("$TOS_BIN/tos-pq-controller" show "$WORK/offline/root-$i.seed" \
-    | awk '$1 == "public_key" {print $2}' | base64 -d | od -An -tx1 -v | tr -d ' \n')
-  python3 "$OP" controller --tos-root "$TOS_ROOT" --tos-build "$TOS_BUILD" \
-    --root-public "$root_public" --key-id "$key_id" --out "$WORK/controller-$i.json" >/dev/null
-  controller_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["controller_id"])' \
-    "$WORK/controller-$i.json")
+  operator_wallet="-1:$(printf 'rehearsal-operator-%s' "$i" | sha256sum | cut -d' ' -f1)"
+  python3 "$EL" pool --name "operator-$i" --operator "$operator_wallet" --ceremony "$WORK/ceremony" \
+    --tos-root "$TOS_ROOT" --fift "$TOS_BUILD/crypto/fift" >"$WORK/pool-$i.json"
+  validator_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["validator_id"])' \
+    "$WORK/pool-$i.json")
   python3 "$OP" --profile "$WORK/profile-$i.json" record --db "$db" --seed "$db/keys/pq-consensus.seed" \
-    --controller-id "$controller_id" --operator "operator-$i" --address "127.0.0.1:$(port "$i" 0)" \
+    --validator-id "$validator_id" --operator "operator-$i" --address "127.0.0.1:$(port "$i" 0)" \
     --out "$WORK/record-$i.json" >/dev/null
-  echo "operator-$i key_id $key_id controller $controller_id"
+  echo "operator-$i key_id $key_id validator id $validator_id"
 done
 
 log "DHT bootstrap nodes"
@@ -149,9 +150,9 @@ for i in 1 2 3 4; do
     hash=$(od -An -tx1 -v "$WORK/ceremony/$name.fhash" | tr -d ' \n' | tr 'a-f' 'A-F')
     cp "$WORK/ceremony/$name.boc" "$db/static/$hash"
   done
-  controller_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["controller_id"])' \
+  validator_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["validator_id"])' \
     "$WORK/record-$i.json")
-  "$TOS_BIN/tos-pq-consensus-key" bind-node "$db" "$db/keys/pq-consensus.seed" "$controller_id" >/dev/null
+  "$TOS_BIN/tos-pq-consensus-key" bind-node "$db" "$db/keys/pq-consensus.seed" "$validator_id" >/dev/null
   python3 "$OP" --profile "$WORK/profile-$i.json" configure --db "$db" --role validator \
     --client-dir "$WORK/console-$i" >/dev/null
   mkdir -m 0700 "$WORK/log$i"

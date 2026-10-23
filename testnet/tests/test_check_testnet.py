@@ -134,15 +134,15 @@ def records(n=4):
     return [public_record(i + 1) for i in range(n)]
 
 
-def decoded_set(controllers, main=None, since=1_800_000_000, until=1_800_014_400):
+def decoded_set(validator_ids, main=None, since=1_800_000_000, until=1_800_014_400):
     return {
         "utime_since": since,
         "utime_until": until,
-        "total": len(controllers),
-        "main": len(controllers) if main is None else main,
+        "total": len(validator_ids),
+        "main": len(validator_ids) if main is None else main,
         "validators": [
-            {"controller_id_hex": c, "consensus_key_id_hex": f"{i:064x}"}
-            for i, c in enumerate(controllers)
+            {"validator_id_hex": c, "consensus_key_id_hex": f"{i:064x}"}
+            for i, c in enumerate(validator_ids)
         ],
     }
 
@@ -166,31 +166,31 @@ def run_elected(tmp_path, decoded, recs=None):
     )
 
 
-def test_elected_set_with_the_records_controllers_passes_and_reports_its_term(tmp_path):
+def test_elected_set_with_the_records_validator_ids_passes_and_reports_its_term(tmp_path):
     recs = records()
-    summary = run_elected(tmp_path, decoded_set([r["controller_id"] for r in recs]), recs)
+    summary = run_elected(tmp_path, decoded_set([r["validator_id"] for r in recs]), recs)
     assert summary["config34"]["utime_since"] == 1_800_000_000
     assert summary["config34"]["utime_until"] == 1_800_014_400
     assert summary["config34"]["total"] == 4
 
 
-def test_elected_set_missing_a_controller_is_refused(tmp_path):
+def test_elected_set_missing_a_validator_is_refused(tmp_path):
     recs = records()
-    controllers = [r["controller_id"] for r in recs[:3]] + ["ab" * 32]
-    with pytest.raises(lib.TestnetError, match="controllers differ"):
-        run_elected(tmp_path, decoded_set(controllers), recs)
+    validator_ids = [r["validator_id"] for r in recs[:3]] + ["ab" * 32]
+    with pytest.raises(lib.TestnetError, match="validator ids differ"):
+        run_elected(tmp_path, decoded_set(validator_ids), recs)
 
 
 def test_elected_set_of_three_is_refused(tmp_path):
     recs = records()
     with pytest.raises(lib.TestnetError, match="has 3 members"):
-        run_elected(tmp_path, decoded_set([r["controller_id"] for r in recs[:3]]), recs)
+        run_elected(tmp_path, decoded_set([r["validator_id"] for r in recs[:3]]), recs)
 
 
 def test_elected_set_with_a_non_main_member_is_refused(tmp_path):
     recs = records()
     with pytest.raises(lib.TestnetError, match="3 main"):
-        run_elected(tmp_path, decoded_set([r["controller_id"] for r in recs], main=3), recs)
+        run_elected(tmp_path, decoded_set([r["validator_id"] for r in recs], main=3), recs)
 
 
 def test_genesis_and_elected_set_are_exclusive(capsys):

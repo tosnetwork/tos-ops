@@ -29,7 +29,8 @@
 #   8 start it
 #   9 check: active with a stable MainPID whose user is the new one, no
 #     permission error in its journal since the start, and
-#       validator: `tosctl controller operations status` as tos-ctl answers
+#       validator: `tosctl wallet ls` as tos-ctl opens the vault and lists the
+#                  bound operator wallet
 #       dht:       heartbeat-peer was rewritten by tos-alert after the start
 #
 # On any failure from step 4 on it stops the unit, restores the old unit and
@@ -39,8 +40,8 @@
 # already migrated is only checked.
 #
 # It cannot see the chain. The caller checks the election window first
-# (testnet-elections.py status, or the window rule of the refund) and does not
-# run the validator role while an election is open; the stop lasts seconds.
+# (the Elector's active_election_id) and does not run the validator role while
+# an election is open; the stop lasts seconds.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -106,11 +107,11 @@ as_svc() {
   fi
 }
 
-controller_of_config() {
+bound_wallet_of_config() {
   python3 -c '
 import json, sys
-pools = json.load(open(sys.argv[1])).get("pools", {})
-found = [p["controller"] for p in pools.values() if isinstance(p, dict) and p.get("controller")]
+bindings = json.load(open(sys.argv[1])).get("bindings", {})
+found = [b["wallet"] for b in bindings.values() if isinstance(b, dict) and b.get("wallet")]
 print(found[0] if found else "")
 ' "$STATE/tosctl-config.json"
 }
@@ -141,9 +142,11 @@ check_running() {
     return 1
   fi
   if [ "$ROLE" = validator ]; then
-    status=$(as_svc timeout 90 tosctl controller operations status --controller "$controller" 2>&1) \
+    status=$(as_svc timeout 90 tosctl wallet ls 2>&1) \
       || { echo "tosctl as $SVC_USER: $status" | tail -5 >&2; return 1; }
-    echo "tosctl as $SVC_USER, controller operations status --controller $controller:"
+    printf '%s\n' "$status" | awk -v w="$wallet" '$1 == w {f=1} END {exit !f}' \
+      || { echo "tosctl as $SVC_USER does not list the bound wallet $wallet" >&2; return 1; }
+    echo "tosctl as $SVC_USER, wallet ls:"
     printf '%s\n' "$status" | sed 's/\x1b\[[0-9;]*m//g' | head -8
   else
     # The peer touches its beat as soon as it starts, then every 60 s.
@@ -159,11 +162,11 @@ check_running() {
   fi
 }
 
-# Read before the stop: the post-start check asks tosctl about this controller.
-controller=""
+# Read before the stop: the post-start check asks tosctl for this wallet.
+wallet=""
 if [ "$ROLE" = validator ]; then
-  controller=$(controller_of_config) || die "cannot read $STATE/tosctl-config.json"
-  [ -n "$controller" ] || die "no pool controller in $STATE/tosctl-config.json; onboard the validator first"
+  wallet=$(bound_wallet_of_config) || die "cannot read $STATE/tosctl-config.json"
+  [ -n "$wallet" ] || die "no election binding in $STATE/tosctl-config.json; onboard the validator first"
 fi
 
 if cmp -s "$NEW" "$INSTALLED" && [ "$(main_user || true)" = "$SVC_USER" ]; then

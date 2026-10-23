@@ -17,7 +17,6 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import local_pq_testnet as local
-from local_pq_funding_policy import coins
 from pytosiq_core import (
     Address,
     Cell,
@@ -28,6 +27,16 @@ from pytosiq_core import (
     Transaction,
     WalletMessage,
 )
+
+NANO = 10**9
+COINS_LIMIT = 1 << 120
+
+
+def coins(value, name="amount", *, zero=False):
+    """An integer nano-TOS amount the Coins encoding can carry; positive unless `zero`."""
+    if type(value) is not int or not (0 if zero else 1) <= value < COINS_LIMIT:
+        raise ValueError(f"{name} must be an integer in the supported nano-TOS range")
+    return value
 
 
 def atomic_json(path, value):

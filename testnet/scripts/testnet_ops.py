@@ -81,13 +81,15 @@ def certificate_digest(value: dict) -> str:
 
 
 COORDINATOR_KINDS = ("fund", "activate-owner", "principal", "withdraw")
-HOST_KINDS = ("deploy-controller", "deploy-pool", "authorize-operations")
+HOST_KINDS = ("deploy-pool",)
 KINDS = COORDINATOR_KINDS + HOST_KINDS
 STATES = ("planned", "signed", "broadcast", "settled", "failed")
 # Test hook: TESTNET_OPS_CRASH_AT=<id>:<point> makes the process exit at that
 # point, as a crash would, so the rehearsal can kill a run at each boundary.
 CRASH_ENV = "TESTNET_OPS_CRASH_AT"
 CRASH_POINTS = ("planned", "signed", "broadcast", "delivered")
+# The stake authorization algorithm a pool order carries (ML-DSA-44).
+MLDSA44_ALGORITHM_ID = 1
 
 
 class OperationRefused(lib.TestnetError):
@@ -724,9 +726,6 @@ def publish_new(path: Path, entry: dict) -> None:
     fsync_dir(path.parent)
 
 
-# Parameters an attempt after a failure fixes anew (the failed one's are stale):
-# an operating authorization is a new root-signed request with its own value.
-ATTEMPT_PARAMS = {"authorize-operations": ("value", "body_hash", "plan", "body_b64", "expires_at")}
 ATTEMPT = re.compile(
     r"^(?P<step>[a-z0-9][a-z0-9_-]*(?:\.[a-z0-9_-]+)*?)(?:\.attempt-(?P<n>[2-9]|[1-9][0-9]+))?$"
 )
@@ -987,8 +986,8 @@ class Operations:
     def utimes(self) -> list[int]:
         return self.read_both(lambda node: node.utime())
 
-    def election_relay(self, wallet: str, tx: dict) -> dict | None:
-        """Recognize the runner's bounded pool messages from their verified transaction.
+    def election_message(self, wallet: str, tx: dict) -> dict | None:
+        """Recognize the election task's bounded pool messages from their verified transaction.
 
         Only new-stake carries an election id and needs a genesis-configured window.
         Recovery and maintenance bodies have exact layouts and native value ceilings.
@@ -1051,10 +1050,18 @@ class Operations:
                 return None
             kind, ceiling = kinds[opcode]
             if kind == "new-stake":
+                # The pool order layout (tosctl nominator::new_stake): the stake the
+                # pool forwards, then the ML-DSA-44 authorization fields the Elector
+                # reads, and nothing after them.
                 stake = read_coins(b)
-                if stake <= 0:
+                if stake <= 0 or b.bits(16) != MLDSA44_ALGORITHM_ID:
                     return None
+                b.take_ref()  # public key
                 stake_at = b.bits(32)
+                b.bits(32 + 256)  # max factor, ADNL address
+                b.take_ref()  # signature
+                if not b.end():
+                    return None
             else:
                 if kind == "process-withdraw-requests" and b.bits(8) != 8:
                     return None
@@ -1075,18 +1082,10 @@ class Operations:
         if kind != "new-stake":
             return explanation
 
-        limits = lib.load_profile(self.profile_path)["elections"]
-        budget = limits.get("pool_relay_budget_nanotos")
-        allowance = limits.get("pool_relay_fee_allowance_nanotos")
-        if (
-            type(budget) is not int
-            or type(allowance) is not int
-            or budget <= 0
-            or allowance < 0
-            or budget + allowance >= 2**120
-        ):
-            raise Unknown("invalid profile stake relay budget")
-        if not 0 < message["value"] <= budget + allowance:
+        ceiling = lib.load_profile(self.profile_path)["elections"].get("stake_order_nanotos")
+        if type(ceiling) is not int or not 0 < ceiling < 2**120:
+            raise Unknown("invalid profile stake order value")
+        if not 0 < message["value"] <= ceiling:
             return None
 
         genesis = json.loads((self.ceremony / "genesis.json").read_text())
@@ -1105,7 +1104,9 @@ class Operations:
                 )
                 values = tuple(c.bits(32) for _ in range(4))
                 if not c.end() or values != expected:
-                    raise Unknown("ConfigParam 15 changed since genesis; relay window is unknown")
+                    raise Unknown(
+                        "ConfigParam 15 changed since genesis; election window is unknown"
+                    )
                 return values
             except (KeyError, TypeError, ValueError, lib.TestnetError) as exc:
                 raise Unknown(f"unknown current election parameters: {exc}") from exc
@@ -1443,7 +1444,7 @@ class Operations:
             if (
                 leaves(tx, wallet)
                 and tx["hash"] not in explained
-                and self.election_relay(wallet, tx) is None
+                and self.election_message(wallet, tx) is None
             ):
                 described = ", ".join(f"{m['value']} to {m['destination']}" for m in tx["out"])
                 raise OperationRefused(
@@ -1456,27 +1457,17 @@ class Operations:
 
     def begin(self, op_id: str, params: dict) -> dict:
         """The operation's record, created as planned if new, with the journal lock held.
-        Recorded parameters never change; a new attempt fixes its open ones once."""
+        Recorded parameters never change."""
         record = self.journal.record(op_id)
         if record is None:
             self.journal.append(op_id, dict(params, state="planned"))
             crash_point(op_id, "planned")
             return self.journal.record(op_id)
-        open_keys = set(record.get("open_params") or []) if state_of(record) == "planned" else set()
         mismatch = {
-            k: (record.get(k), v)
-            for k, v in params.items()
-            if k in record and record.get(k) != v and k not in open_keys
+            k: (record.get(k), v) for k, v in params.items() if k not in record or record[k] != v
         }
-        mismatch.update(
-            {k: (None, v) for k, v in params.items() if k not in record and k not in open_keys}
-        )
         if mismatch:
             raise OperationRefused(f"operation {op_id} exists with other parameters: {mismatch}")
-        fill = {k: params[k] for k in open_keys if k in params}
-        if fill:
-            self.journal.append(op_id, dict(fill, state="planned", open_params=[]))
-            record = self.journal.record(op_id)
         return record
 
     def run(self, step: str, params: dict, sign, validate, prerequisites=None, expect=None) -> dict:
@@ -1617,8 +1608,7 @@ class Operations:
 
         Under the journal lock: refused unless the newest attempt is failed (an open,
         planned or settled one is never succeeded). The successor keeps the step's
-        parameters (only the kind's ATTEMPT_PARAMS are fixed anew, once), names its
-        predecessor, and is created by one complete append, so a crash leaves either
+        parameters, names its predecessor, and is created by one complete append, so a crash leaves either
         no successor or one planned successor, never two."""
         if not reason.strip():
             raise OperationRefused("a retry needs a reason")
@@ -1632,7 +1622,6 @@ class Operations:
                 raise OperationRefused(
                     f"the newest attempt {newest} is {state_of(record)}; only a failed one is retried"
                 )
-            open_keys = ATTEMPT_PARAMS.get(record["kind"], ())
             keep = {
                 k: v
                 for k, v in record.items()
@@ -1650,14 +1639,12 @@ class Operations:
                     "evidence",
                     "by",
                     "resubmitted",
-                    "open_params",
                     "predecessor",
                     "checkpoint",
                     "gate_witness",
                     "checkpoint_refusal",
                     "reason",
                 }
-                and k not in open_keys
             }
             successor = attempt_id(step, n + 1)
             self.journal.append(
@@ -1667,7 +1654,6 @@ class Operations:
                     state="planned",
                     predecessor=newest,
                     reason=reason,
-                    open_params=list(open_keys),
                 ),
             )
             return self.journal.record(successor)
@@ -2112,9 +2098,9 @@ class Operations:
                     continue
                 for tx in self.history(wallet, self.journal.baseline(wallet)):
                     if leaves(tx, wallet) and tx["hash"] not in explained:
-                        relay = self.election_relay(wallet, tx)
-                        if relay is not None:
-                            report["explained"].append(relay)
+                        election = self.election_message(wallet, tx)
+                        if election is not None:
+                            report["explained"].append(election)
                         else:
                             report["unexplained"].append(
                                 {

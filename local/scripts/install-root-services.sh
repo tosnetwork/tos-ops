@@ -10,7 +10,6 @@
 # Writes BASE/<stamp>/ with
 #   src/scripts, src/test/tostester/src     the Python sources, copied
 #   src/build/toslib/libtoslibjson.so       the native client library
-#   src/crypto/smartcont/.../*.hex          contract code the drivers read
 #   src/tools/.../local_pool_traffic        the private-traffic generator
 #   python/, venv/                          a managed interpreter and the locked
 #                                           third-party dependencies, copied in
@@ -36,8 +35,7 @@ UV="${UV:-$(command -v uv || true)}"
 [[ -n "$UV" ]] || { echo 'uv is required' >&2; exit 1; }
 CHECK=(/usr/bin/python3 -I -S "$HERE/install-root-services-check.py")
 MARKER=.tos-dev-services-snapshot
-for required in "$DRIVERS" "$REPO/scripts" "$REPO/test/tostester/src" "$BUILD/toslib/libtoslibjson.so" "$GENERATOR" \
-    "$REPO/crypto/smartcont/single-nominator-pool/single-nominator-code.hex"; do
+for required in "$DRIVERS" "$REPO/scripts" "$REPO/test/tostester/src" "$BUILD/toslib/libtoslibjson.so" "$GENERATOR"; do
     [[ -e "$required" ]] || { echo "missing $required" >&2; exit 1; }
 done
 if [[ $EUID -eq 0 ]] && command -v systemctl >/dev/null; then
@@ -59,14 +57,12 @@ PUBLISHED=0
 # leave it for the next successful install to sweep up.
 trap 'rm -rf "$WORK"; [[ $PUBLISHED == 1 ]] || rm -rf -- "$DEST"' EXIT
 SRC="$DEST/src"
-mkdir -p "$SRC/test/tostester" "$SRC/build/toslib" "$SRC/crypto/smartcont/single-nominator-pool" \
+mkdir -p "$SRC/test/tostester" "$SRC/build/toslib" \
     "$SRC/tools/shielded-pool-circuit/crosscheck/target/release"
 cp -R "$REPO/scripts" "$SRC/scripts"
 cp -R "$DRIVERS/." "$SRC/scripts/"
 cp -R "$REPO/test/tostester/src" "$SRC/test/tostester/src"
 cp -L "$BUILD/toslib/libtoslibjson.so" "$SRC/build/toslib/libtoslibjson.so"
-cp "$REPO/crypto/smartcont/single-nominator-pool/single-nominator-code.hex" \
-    "$SRC/crypto/smartcont/single-nominator-pool/"
 cp -L "$GENERATOR" "$SRC/tools/shielded-pool-circuit/crosscheck/target/release/local_pool_traffic"
 find "$SRC" -name __pycache__ -type d -prune -exec rm -rf {} +
 # The interpreter and dependencies come from the checkout's lock, installed into the

@@ -1,8 +1,8 @@
 # tos-ops
 
 Operations tools and runbooks for TOS networks: host preparation, installation,
-activation and retirement; the genesis ceremony; journaled funding, validator
-onboarding, authorization renewal and withdrawals; monitoring, alerting and
+activation and retirement; the genesis ceremony; staking pools, journaled
+funding, validator onboarding and withdrawals; monitoring, alerting and
 cross-node checks.
 
 This repository holds no node source code or operational keys. Scripts that need
@@ -15,7 +15,7 @@ belong outside the repository.
 
 **Start here:** [network bring-up](testnet/CEREMONY.md) ·
 [onboarding](testnet/CEREMONY.md#81-onboarding-a-genesis-validator-for-elections) ·
-[renewal](testnet/CEREMONY.md#renewing-operating-authorization) ·
+[fee top-ups](testnet/CEREMONY.md#topping-up-an-operator-wallet) ·
 [reset](testnet/CEREMONY.md#9-resetting-the-testnet) ·
 [alerts](testnet/README.md#alerts).
 
@@ -65,7 +65,7 @@ Real inventories and ceremony directories stay outside the tree.
 | [install-node.sh](testnet/scripts/install-node.sh) | Prepare, install binaries and activate validator, full-node or DHT roles. |
 | [testnet-operator.py](testnet/scripts/testnet-operator.py) / [testnet-dht.py](testnet/scripts/testnet-dht.py) | Produce operator and signed DHT public records. |
 | [testnet-coordinator.py](testnet/scripts/testnet-coordinator.py) | Validate records and generate the manifest, genesis and global config. |
-| [testnet-elections.py](testnet/scripts/testnet-elections.py) / [testnet_ops.py](testnet/scripts/testnet_ops.py) | `fund`, `onboard`, `refund` (renewal), `withdraw`, and manual `reconcile`, `record`, `resubmit`, `baseline`, `retry`; durable journals and two-validator settlement. |
+| [testnet-elections.py](testnet/scripts/testnet-elections.py) / [testnet_ops.py](testnet/scripts/testnet_ops.py) | `pool` (staking pool before genesis), `fund`, `onboard`, `withdraw`, and manual `reconcile`, `record`, `resubmit`, `baseline`, `retry`; durable journals and two-validator settlement. |
 | [check-testnet.py](testnet/scripts/check-testnet.py) | Compare independent nodes' network identity, fresh full block IDs and selected configuration. |
 | [watch-testnet.py](testnet/scripts/watch-testnet.py) / [check-host-disk.py](testnet/scripts/check-host-disk.py) | Retain host/node samples and report anomalies. |
 | [alert-relay.py](testnet/scripts/alert-relay.py) | Telegram alerts, acknowledgements, silence windows and coordinator/peer heartbeats. |
@@ -106,14 +106,14 @@ Root files: [AGENTS.md](AGENTS.md) (`CLAUDE.md` links to it) and
 
 ### Bring up a network
 
-1. Follow [CEREMONY.md steps 0–4](testnet/CEREMONY.md#0-before-anything-coordinator): pin the tos revision, preflight hosts, prepare validators/DHT and exchange public records.
+1. Follow [CEREMONY.md steps 0–4](testnet/CEREMONY.md#0-before-anything-coordinator): pin the tos revision, preflight hosts, prepare validators/DHT, derive each validator's staking pool from its operator wallet and exchange public records.
 2. Follow [steps 5–7](testnet/CEREMONY.md#5-coordinator-manifest-genesis-global-config): generate and publish genesis/config, activate, then compare nodes.
 3. For a disposable local chain instead, use [local initialization](local/README.md#initialize).
 
-### Onboard, renew or withdraw
+### Onboard, top up or withdraw
 
 1. Follow [onboarding §8.1](testnet/CEREMONY.md#81-onboarding-a-genesis-validator-for-elections), including both-validator checks and readiness before enabling elections.
-2. For later operating funds, follow [renewal](testnet/CEREMONY.md#renewing-operating-authorization): journal a `fund` top-up, then a separate `refund` authorization in a quiet election window.
+2. For later fee money, follow [fee top-ups](testnet/CEREMONY.md#topping-up-an-operator-wallet): a journaled `fund` operation to the recorded operator wallet; the stake principal stays in the pool.
 3. Use the same [§8.1 operation procedures](testnet/CEREMONY.md#81-onboarding-a-genesis-validator-for-elections) for withdrawal or interrupted operations. Inspect `reconcile`; verify evidence with `record`, resubmit only the original message, or explicitly `retry` a terminal failure. A baseline is a deliberate history acknowledgement, not an automatic recovery.
 
 ### Retire and reset

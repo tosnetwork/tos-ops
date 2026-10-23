@@ -29,7 +29,7 @@ def public_record(n: int) -> dict:
     public = hashlib.shake_256(b"public-%d" % n).digest(lib.PQ_PUBLIC_KEY_BYTES)
     return {
         "operator": f"operator-{n}",
-        "controller_id": hashlib.sha256(b"controller-%d" % n).hexdigest(),
+        "validator_id": hashlib.sha256(b"staking-account-%d" % n).hexdigest(),
         "adnl_id": hashlib.sha256(b"adnl-%d" % n).hexdigest(),
         "public_key": public.hex(),
         "key_id": lib.pq_key_id(public).hex(),
@@ -135,7 +135,7 @@ def test_loopback_record_is_refused_outside_rehearsal(monkeypatch):
 @pytest.mark.parametrize(
     "field,value,match",
     [
-        ("controller_id", "00" * 32, "must not be zero"),
+        ("validator_id", "00" * 32, "must not be zero"),
         ("adnl_id", "ab" * 31, "32 bytes"),
         ("key_id", "12" * 32, "does not match"),
         ("operator", "Operator One", "short lower-case"),
@@ -166,7 +166,7 @@ def test_operator_set_must_have_four():
         lib.check_operator_set([public_record(n) for n in range(1, 6)])
 
 
-@pytest.mark.parametrize("field", ["controller_id", "adnl_id", "operator", "address"])
+@pytest.mark.parametrize("field", ["validator_id", "adnl_id", "operator", "address"])
 def test_operator_set_refuses_shared_identities(field):
     records = [public_record(n) for n in range(1, 5)]
     records[3][field] = records[0][field]
@@ -189,7 +189,7 @@ def test_operator_set_refuses_two_validators_on_one_host(monkeypatch):
         lib.check_operator_set(records)
 
 
-@pytest.mark.parametrize("field", ["controller_id", "key_id", "adnl_id"])
+@pytest.mark.parametrize("field", ["validator_id", "key_id", "adnl_id"])
 def test_reset_refuses_an_identity_from_an_earlier_epoch(field):
     earlier = [public_record(n) for n in range(1, 5)]
     fresh = lib.check_operator_set([public_record(n) for n in range(5, 9)])
@@ -213,15 +213,15 @@ def test_reset_checks_every_earlier_epoch():
     first = [public_record(n) for n in range(1, 5)]
     second = [public_record(n) for n in range(5, 9)]
     fresh = lib.check_operator_set([public_record(n) for n in range(9, 13)])
-    fresh[1]["controller_id"] = first[2]["controller_id"]
-    with pytest.raises(lib.TestnetError, match="reuses controller_id"):
+    fresh[1]["validator_id"] = first[2]["validator_id"]
+    with pytest.raises(lib.TestnetError, match="reuses validator_id"):
         lib.check_fresh_identities(fresh, [second, first])
 
 
 def test_reset_refuses_a_malformed_previous_file():
     fresh = lib.check_operator_set([public_record(n) for n in range(1, 5)])
     with pytest.raises(lib.TestnetError, match="JSON list"):
-        lib.check_fresh_identities(fresh, [{"controller_id": "x"}])
+        lib.check_fresh_identities(fresh, [{"validator_id": "x"}])
 
 
 def test_manifest_packs_index_order_and_size():
@@ -231,11 +231,11 @@ def test_manifest_packs_index_order_and_size():
     record_size = 32 + 32 + 1312
     for index, record in enumerate(records):
         chunk = packed[index * record_size : (index + 1) * record_size]
-        assert chunk[:32].hex() == record["controller_id"]
+        assert chunk[:32].hex() == record["validator_id"]
         assert chunk[32:64].hex() == record["adnl_id"]
         assert chunk[64:].hex() == record["public_key"]
     assert lib.manifest_input(records)[2] == {
-        "controller_id": records[2]["controller_id"],
+        "validator_id": records[2]["validator_id"],
         "adnl_id": records[2]["adnl_id"],
         "public_key": records[2]["public_key"],
     }

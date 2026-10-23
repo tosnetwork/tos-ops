@@ -15,7 +15,6 @@ import pytest
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 INSTALLER = SCRIPTS / "install-root-services.sh"
 GENERATOR = "tools/shielded-pool-circuit/crosscheck/target/release/local_pool_traffic"
-HEX = "crypto/smartcont/single-nominator-pool/single-nominator-code.hex"
 MARKER = ".tos-dev-services-snapshot"
 
 # What the stand-in for uv does, selected per test through a file it reads.
@@ -59,7 +58,6 @@ def setup(tmp_path):
     write(repo / "scripts/local-pq-elections.py", "print('driver')\n")
     write(repo / "scripts/__pycache__/stale.pyc")
     write(repo / "test/tostester/src/toslib/__init__.py")
-    write(repo / HEX, "b5ee9c72\n")
     write(repo / GENERATOR, "#!/bin/sh\n", 0o755)
     library = write(repo / "build/toslib/libtoslibjson.so.0.5", "elf\n", 0o755)
     (repo / "build/toslib/libtoslibjson.so").symlink_to(library.name)
@@ -137,7 +135,7 @@ def test_the_snapshot_holds_the_services_code_in_the_checkout_layout(setup):
     dest = Path(result.stdout.strip())
     assert (base / "current").resolve() == dest.resolve()
     src = dest / "src"
-    for relative in ("scripts/local-pq-elections.py", "test/tostester/src/toslib/__init__.py", HEX):
+    for relative in ("scripts/local-pq-elections.py", "test/tostester/src/toslib/__init__.py"):
         assert (src / relative).read_bytes() == (repo / relative).read_bytes()
     library = src / "build/toslib/libtoslibjson.so"
     assert not library.is_symlink() and library.read_text() == "elf\n"
@@ -188,7 +186,7 @@ def test_a_new_install_replaces_only_marked_snapshots(setup):
 
 
 @pytest.mark.parametrize(
-    "missing", [GENERATOR, HEX, "build/toslib/libtoslibjson.so", "test/tostester/src"]
+    "missing", [GENERATOR, "build/toslib/libtoslibjson.so", "test/tostester/src"]
 )
 def test_a_missing_input_installs_nothing(setup, missing):
     repo, tools, base = setup
@@ -596,7 +594,7 @@ def test_the_root_drivers_and_their_paths_are_found():
     privacy = resolved_checkout_paths("local-pq-privacy.py")
     assert "build/toslib/libtoslibjson.so" in privacy, "argument-default joins are resolved"
     assert GENERATOR in privacy
-    assert HEX in resolved_checkout_paths("local-pq-elections.py")
+    assert "build/toslib/libtoslibjson.so" in resolved_checkout_paths("local-pq-elections.py")
 
 
 def test_a_default_passed_to_a_joining_helper_is_resolved(tmp_path):
