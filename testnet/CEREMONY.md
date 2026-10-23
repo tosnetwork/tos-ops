@@ -224,7 +224,11 @@ changed. It generates the zero state twice and compares the outputs. Then it
 reads the zero state back (its cell parser checked against create-state's root
 hash first) and refuses unless ConfigParam 8 is version 16, ConfigParam 48 is
 the initial policy for this tag (sequence 0, nothing retired, no deadline, the
-v1 policy identity `5e4380ae…`) and 48 is in both ConfigParam 9 and 10.
+v1 policy identity `5e4380ae…`) and 48 is in both ConfigParam 9 and 10. It
+also refuses a zero state that still defines ConfigParam 47, or lists it in
+ConfigParam 9 or 10: that parameter named the validator controller codes and
+left tos with the controller, so its presence means the tos tree predates
+staking from the operator's own account.
 create-state itself runs the node's configuration check (`valid_config_data`,
 which includes `validate_auth_policy_config`) before it writes a zero state,
 and every node checks it again when it starts. `genesis.json` records the

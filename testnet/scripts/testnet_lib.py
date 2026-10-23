@@ -1125,6 +1125,31 @@ def zero_state_gas_credits(boc: bytes) -> dict[int, int]:
     return credits
 
 
+# ConfigParam 47 listed the validator controller codes. tos removed it with the
+# controller when a validator came to be staked by its sending account; a tree
+# from before that still defines it and makes it mandatory and critical.
+RETIRED_CONFIG_PARAMS = (47,)
+
+
+def zero_state_retired_params(boc: bytes) -> None:
+    """Refuse a newly generated genesis that still defines or requires a retired ConfigParam."""
+    params = zero_state_config(boc)[2]
+    for number in (9, 10):
+        if number not in params:
+            raise TestnetError(f"the zero state has no ConfigParam {number}")
+    for retired in RETIRED_CONFIG_PARAMS:
+        if retired in params:
+            raise TestnetError(
+                f"the zero state still defines retired ConfigParam {retired}; "
+                "build it from a tos tree that no longer has it"
+            )
+        for number, name in ((9, "mandatory"), (10, "critical")):
+            if retired in hashmap_items(params[number], 32):
+                raise TestnetError(
+                    f"retired ConfigParam {retired} is still {name} (ConfigParam {number})"
+                )
+
+
 def zero_state_auth_policy(
     boc: bytes, root_hash: bytes, global_id: int, global_version: int, tag: bytes
 ) -> dict[str, Any]:

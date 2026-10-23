@@ -884,6 +884,35 @@ def test_historical_genesis_is_not_the_new_admission_profile():
         lib.zero_state_gas_credits(ZERO_STATE)
 
 
+def test_historical_genesis_still_carries_the_controller_policy():
+    # The same pinned fixture predates the removal of ConfigParam 47.
+    with pytest.raises(lib.TestnetError, match="still defines retired ConfigParam 47"):
+        lib.zero_state_retired_params(ZERO_STATE)
+
+
+@pytest.mark.parametrize(
+    "mandatory,critical,refused",
+    [(48, 48, None), (47, 48, "still mandatory"), (48, 47, "still critical")],
+)
+def test_retired_param_guard_reads_both_lists(monkeypatch, mandatory, critical, refused):
+    params = {9: one_key_list(mandatory), 10: one_key_list(critical)}
+    monkeypatch.setattr(lib, "zero_state_config", lambda boc: (None, 2, params))
+    if refused is None:
+        lib.zero_state_retired_params(b"")
+    else:
+        with pytest.raises(lib.TestnetError, match=f"ConfigParam 47 is {refused}"):
+            lib.zero_state_retired_params(b"")
+
+
+@pytest.mark.parametrize("missing", [9, 10])
+def test_retired_param_guard_needs_both_lists(monkeypatch, missing):
+    params = {9: one_key_list(48), 10: one_key_list(48)}
+    del params[missing]
+    monkeypatch.setattr(lib, "zero_state_config", lambda boc: (None, 2, params))
+    with pytest.raises(lib.TestnetError, match=f"no ConfigParam {missing}"):
+        lib.zero_state_retired_params(b"")
+
+
 def test_generated_genesis_has_the_adopted_gas_credits(tmp_path):
     import subprocess
     from pathlib import Path
@@ -923,6 +952,7 @@ def test_generated_genesis_has_the_adopted_gas_credits(tmp_path):
         20: 10000,
         21: 20000,
     }
+    lib.zero_state_retired_params((tmp_path / "zerostate.boc").read_bytes())
 
 
 def gas_prices_cell(tag, credit, flat=False, damage=None):

@@ -250,6 +250,7 @@ def genesis_setup(tmp_path, monkeypatch, wallet_key: bytes):
     monkeypatch.setattr(lib, "zero_state_auth_policy", auth_policy)
     # create_state above emits opaque stand-in bytes; real BOC checks have their own tests.
     monkeypatch.setattr(lib, "zero_state_gas_credits", lambda boc: {20: 10000, 21: 20000})
+    monkeypatch.setattr(lib, "zero_state_retired_params", lambda boc: None)
     monkeypatch.setattr(
         lib,
         "wallet_public_key",
@@ -601,6 +602,19 @@ def test_a_refused_gas_credit_publishes_nothing(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(lib, "zero_state_gas_credits", refuse)
     assert coordinator.main(args) == 1
     assert "ConfigParam 21 gas_credit" in capsys.readouterr().err
+    assert runs == ["run-a", "run-b"]
+    assert published(ceremony) == []
+
+
+def test_a_retired_config_param_publishes_nothing(tmp_path, monkeypatch, capsys):
+    ceremony, args, runs = genesis_setup(tmp_path, monkeypatch, b"\x07" * 32)
+
+    def refuse(boc):
+        raise lib.TestnetError("the zero state still defines retired ConfigParam 47")
+
+    monkeypatch.setattr(lib, "zero_state_retired_params", refuse)
+    assert coordinator.main(args) == 1
+    assert "retired ConfigParam 47" in capsys.readouterr().err
     assert runs == ["run-a", "run-b"]
     assert published(ceremony) == []
 
