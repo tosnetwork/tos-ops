@@ -598,7 +598,7 @@ def roles_stack(data):
     """get_roles of a single-nominator pool's data, top of stack first, as the node lists it."""
     s = lib.Slice(data)
     roles = []
-    for _ in range(3):
+    for _ in range(2):
         bits = "".join(str(s.bits(1)) for _ in range(267))
         roles.append(lib.cell_from_bits(bits))
     return {

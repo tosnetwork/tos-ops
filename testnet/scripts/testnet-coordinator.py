@@ -10,10 +10,13 @@ later reset reads it through --previous-ceremony to refuse reused wallet keys.
   manifest --ceremony DIR --tos-root DIR [--previous FILE ...] RECORD RECORD RECORD RECORD
       Check the four operator records (testnet-operator.py record) and pack
       validator-pq.pub with tos scripts/prepare-pq-genesis-manifest.py. The
-      record order is the validator index order. The packed bytes are checked
+      record order is the validator index order. DIR holds only what
+      `testnet-elections.py pool` wrote before it (pools.json, wallets.json,
+      the pool owners' public files and keys), and every record's validator
+      id must be one of the staking pools recorded there. The packed bytes are checked
       against an independent packing of the same records. After a reset, pass
       every earlier epoch's genesis-records.json with --previous: all epochs
-      share global id 2, so no controller id, consensus key id or ADNL id may
+      share global id 2, so no validator id, consensus key id or ADNL id may
       be reused. Wallet keys are checked by genesis, onboard and load
       (--previous-ceremony).
 
@@ -59,6 +62,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -91,9 +95,51 @@ MAX_EPOCH_AHEAD = 14 * 86400
 MAX_EPOCH_BEHIND = 3600
 
 
+# What `testnet-elections.py pool` writes into the ceremony before the manifest.
+STAKING_ENTRIES = {"pools.json", "wallets.json", ".wallets.json.lock", "pool-owners", "secret"}
+STAKING_SECRET = re.compile(r"^pool-owner-[A-Za-z0-9_-]+\.pk$")
+
+
+def staking_ceremony(path: Path) -> Path:
+    """The ceremony directory holding only the staking-account outputs, if any."""
+    path = Path(path)
+    if not path.exists():
+        return lib.empty_dir(path)
+    extra = sorted(e.name for e in path.iterdir() if e.name not in STAKING_ENTRIES)
+    secret = path / "secret"
+    if secret.is_dir():
+        extra += sorted(
+            f"secret/{e.name}" for e in secret.iterdir() if not STAKING_SECRET.match(e.name)
+        )
+    if extra:
+        raise lib.TestnetError(
+            f"{path} holds {extra}; only the outputs of `testnet-elections.py pool` may "
+            "precede the manifest, so use a new directory"
+        )
+    return lib.private_dir(path)
+
+
+def recorded_staking_accounts(ceremony: Path) -> set[str]:
+    """The validator ids (account hex) of the pools `testnet-elections.py pool` recorded."""
+    path = Path(ceremony) / "pools.json"
+    pools = json.loads(path.read_text()) if path.is_file() else {}
+    return {
+        str(entry["pool"]).split(":")[1].lower()
+        for entry in pools.values()
+        if isinstance(entry, dict) and str(entry.get("pool", "")).startswith("-1:")
+    }
+
+
 def cmd_manifest(args: argparse.Namespace) -> None:
-    ceremony = lib.empty_dir(args.ceremony)
+    ceremony = staking_ceremony(args.ceremony)
     records = lib.check_operator_set([json.loads(Path(p).read_text()) for p in args.records])
+    staking = recorded_staking_accounts(ceremony)
+    for record in records:
+        if record["validator_id"] not in staking:
+            raise lib.TestnetError(
+                f"{record['operator']} names validator id {record['validator_id']}, which is "
+                "no staking pool `testnet-elections.py pool` recorded in this ceremony"
+            )
     previous = [json.loads(Path(p).read_text()) for p in args.previous]
     lib.check_fresh_identities(records, previous)
     lib.write_new_json(ceremony / "operators.json", lib.manifest_input(records))
@@ -240,6 +286,7 @@ def cmd_genesis(args: argparse.Namespace) -> None:
     rhash = (built / "zerostate.rhash").read_bytes()
     fhash = (built / "zerostate.fhash").read_bytes()
     lib.zero_state_gas_credits((built / "zerostate.boc").read_bytes())
+    lib.zero_state_retired_params((built / "zerostate.boc").read_bytes())
     auth = lib.zero_state_auth_policy(
         (built / "zerostate.boc").read_bytes(),
         rhash,

@@ -7,17 +7,13 @@ Subcommands, in ceremony order:
       Write the placeholder global config the engine's first start needs
       before the real one exists (see testnet_lib.pregenesis_config).
 
-  controller --tos-root DIR --tos-build DIR --root-public HEX --key-id HEX
-      Derive the controller account id from the offline root public key and
-      the consensus key id, with the exact controller code genesis admits in
-      ConfigParam 47. Prints JSON with controller_id, code_hash and the code
-      and data BOCs the operator later deploys with. Runs anywhere a tos build
-      exists; the root seed is never needed here.
-
-  record --db DIR --seed FILE --controller-id HEX --operator NAME --address IP:PORT
+  record --db DIR --seed FILE --validator-id ID --operator NAME --address IP:PORT
       Build the operator's public genesis record from the node database the
-      first start created and the consensus seed beside it. The output holds
-      public values only and is what the operator sends to the coordinator.
+      first start created and the consensus seed beside it. ID is the staking
+      account, the pool `testnet-elections.py pool` derived for this
+      validator (64 hex digits or -1:<64 hex digits>); it is the validator id
+      genesis records and the node is bound to. The output holds public
+      values only and is what the operator sends to the coordinator.
 
   configure --db DIR --role validator|fullnode --client-dir DIR
       Phase 2 of the first start, with the node stopped: add a loopback-only
@@ -25,7 +21,7 @@ Subcommands, in ceremony order:
       client key is written to --client-dir for the operator; the server keys
       go into the node keyring.
 
-Nothing here generates or reads a controller root seed or a wallet key.
+Nothing here generates or reads a wallet key.
 """
 
 from __future__ import annotations
@@ -61,69 +57,6 @@ def cmd_pregenesis_config(args: argparse.Namespace) -> None:
     )
 
 
-def controller_code_boc(tos_root: Path, tos_build: Path, workdir: Path) -> bytes:
-    """Compile-free: the controller code genesis admits, read from the build's generated Fift."""
-    auto = tos_build / "crypto/smartcont/auto/validator-controller-v1-code.fif"
-    if not auto.is_file():
-        raise lib.TestnetError(f"{auto} is missing; build the gen_fif target first")
-    script = workdir / "controller-code.fif"
-    script.write_text(
-        '"PQ.fif" include\n'
-        '"auto/validator-controller-v1-code.fif" include\n'
-        'boc>B "controller-code.boc" B>file\n'
-    )
-    fift = tos_build / "crypto/fift"
-    lib.run(
-        [
-            str(fift),
-            "-I",
-            f"{tos_root / 'crypto/fift/lib'}:{tos_build / 'crypto/smartcont'}:{tos_root / 'crypto/smartcont'}",
-            "-s",
-            str(script),
-        ],
-        cwd=workdir,
-    )
-    return (workdir / "controller-code.boc").read_bytes()
-
-
-def stderr_field(text: str, name: str) -> str:
-    for line in text.splitlines():
-        parts = line.split()
-        if len(parts) == 2 and parts[0] == name:
-            return parts[1]
-    raise lib.TestnetError(f"tos-pq-controller did not print {name}")
-
-
-def cmd_controller(args: argparse.Namespace) -> None:
-    root_public = lib.parse_hex(args.root_public, lib.PQ_PUBLIC_KEY_BYTES, "root public key")
-    key_id = lib.parse_hex(args.key_id, lib.HASH_BYTES, "consensus key id")
-    if lib.pq_key_id(root_public) == key_id:
-        raise lib.TestnetError("the root key and the consensus key must be two different keys")
-    controller = str(args.tos_build / "crypto/tos-pq-controller")
-    with tempfile.TemporaryDirectory(prefix="tos-controller-") as tmp:
-        code = controller_code_boc(args.tos_root, args.tos_build, Path(tmp))
-    code_b64 = lib.b64(code)
-    data = lib.run([controller, "init-data", root_public.hex(), key_id.hex()])
-    data_b64 = data.stdout.strip()
-    if stderr_field(data.stderr, "consensus_key_id") != key_id.hex():
-        raise lib.TestnetError("init-data bound a different consensus key id")
-    state = lib.run([controller, "state-init", code_b64, data_b64])
-    address = stderr_field(state.stderr, "address")
-    if not address.startswith("-1:"):
-        raise lib.TestnetError(f"controller address is not on the masterchain: {address}")
-    result = {
-        "controller_id": lib.parse_hex(address[3:], lib.HASH_BYTES, "controller address").hex(),
-        "code_hash": stderr_field(state.stderr, "code_hash"),
-        "consensus_key_id": key_id.hex(),
-        "code_boc_b64": code_b64,
-        "data_boc_b64": data_b64,
-        "state_init_boc_b64": state.stdout.strip(),
-    }
-    if args.out:
-        lib.write_new_json(args.out, result)
-    print(json.dumps(result, indent=2))
-
-
 def cmd_record(args: argparse.Namespace) -> None:
     config_path = args.db / "config.json"
     config = json.loads(config_path.read_text())
@@ -133,7 +66,7 @@ def cmd_record(args: argparse.Namespace) -> None:
     record = lib.check_operator_record(
         {
             "operator": args.operator,
-            "controller_id": args.controller_id.removeprefix("-1:"),
+            "validator_id": args.validator_id.removeprefix("-1:"),
             "adnl_id": adnl.hex(),
             "public_key": public.hex(),
             "key_id": key_id.hex(),
@@ -264,18 +197,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("out", type=Path)
     p.set_defaults(func=cmd_pregenesis_config)
 
-    p = sub.add_parser("controller")
-    p.add_argument("--tos-root", type=Path, required=True)
-    p.add_argument("--tos-build", type=Path, required=True)
-    p.add_argument("--root-public", required=True, help="hex from `tos-pq-key public ROOTSEED`")
-    p.add_argument("--key-id", required=True, help="key_id from `tos-pq-consensus-key show`")
-    p.add_argument("--out", type=Path)
-    p.set_defaults(func=cmd_controller)
-
     p = sub.add_parser("record")
     p.add_argument("--db", type=Path, required=True)
     p.add_argument("--seed", type=Path, required=True)
-    p.add_argument("--controller-id", required=True)
+    p.add_argument("--validator-id", required=True, help="the staking account (pool) id")
     p.add_argument("--operator", required=True)
     p.add_argument("--address", required=True, help="<public-ipv4>:<adnl-udp-port>")
     p.add_argument("--out", type=Path)

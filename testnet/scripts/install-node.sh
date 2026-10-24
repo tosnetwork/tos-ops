@@ -20,11 +20,12 @@
 # activate (after the coordinator publishes the global config):
 #   installs the global config only if its SHA-256 matches the published one,
 #   places the zero state and base state where the engine finds them (genesis
-#   validators and early full nodes), binds the consensus key on a validator,
+#   validators and early full nodes), binds the consensus key on a validator
+#   to its staking account (--validator-id: the pool genesis names),
 #   adds a loopback console (and a lite server on a full node), installs the
 #   unit and starts it.
 #
-# Nothing here touches a controller root seed or a wallet key.
+# Nothing here touches a wallet key.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -143,7 +144,7 @@ prepare() {
     as_tos sh -c "umask 077; '$BIN/tos-pq-consensus-key' generate '$DB/keys/pq-consensus.seed'"
     echo "consensus key (public; the seed stays in $DB/keys):"
     as_tos "$BIN/tos-pq-consensus-key" show "$DB/keys/pq-consensus.seed"
-    echo "next: derive the controller id offline, then run testnet-operator.py record"
+    echo "next: init-operator.sh --wallet-only, the coordinator's pool step, then testnet-operator.py record"
   fi
 }
 
@@ -181,7 +182,7 @@ activate() {
   if [ "$ROLE" != dht ]; then
     if [ -n "$GENESIS" ]; then place_static "$GENESIS"; fi
     if [ "$ROLE" = validator ]; then
-      [ -n "$VALIDATOR_ID" ] || die "--validator-id (the controller id) is required for a validator"
+      [ -n "$VALIDATOR_ID" ] || die "--validator-id (the staking pool's id) is required for a validator"
       as_tos "$BIN/tos-pq-consensus-key" bind-node "$DB" "$DB/keys/pq-consensus.seed" "$VALIDATOR_ID"
     fi
     if ! has_console; then

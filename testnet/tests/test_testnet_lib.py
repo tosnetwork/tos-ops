@@ -29,7 +29,7 @@ def public_record(n: int) -> dict:
     public = hashlib.shake_256(b"public-%d" % n).digest(lib.PQ_PUBLIC_KEY_BYTES)
     return {
         "operator": f"operator-{n}",
-        "controller_id": hashlib.sha256(b"controller-%d" % n).hexdigest(),
+        "validator_id": hashlib.sha256(b"staking-account-%d" % n).hexdigest(),
         "adnl_id": hashlib.sha256(b"adnl-%d" % n).hexdigest(),
         "public_key": public.hex(),
         "key_id": lib.pq_key_id(public).hex(),
@@ -135,7 +135,7 @@ def test_loopback_record_is_refused_outside_rehearsal(monkeypatch):
 @pytest.mark.parametrize(
     "field,value,match",
     [
-        ("controller_id", "00" * 32, "must not be zero"),
+        ("validator_id", "00" * 32, "must not be zero"),
         ("adnl_id", "ab" * 31, "32 bytes"),
         ("key_id", "12" * 32, "does not match"),
         ("operator", "Operator One", "short lower-case"),
@@ -166,7 +166,7 @@ def test_operator_set_must_have_four():
         lib.check_operator_set([public_record(n) for n in range(1, 6)])
 
 
-@pytest.mark.parametrize("field", ["controller_id", "adnl_id", "operator", "address"])
+@pytest.mark.parametrize("field", ["validator_id", "adnl_id", "operator", "address"])
 def test_operator_set_refuses_shared_identities(field):
     records = [public_record(n) for n in range(1, 5)]
     records[3][field] = records[0][field]
@@ -189,7 +189,7 @@ def test_operator_set_refuses_two_validators_on_one_host(monkeypatch):
         lib.check_operator_set(records)
 
 
-@pytest.mark.parametrize("field", ["controller_id", "key_id", "adnl_id"])
+@pytest.mark.parametrize("field", ["validator_id", "key_id", "adnl_id"])
 def test_reset_refuses_an_identity_from_an_earlier_epoch(field):
     earlier = [public_record(n) for n in range(1, 5)]
     fresh = lib.check_operator_set([public_record(n) for n in range(5, 9)])
@@ -213,15 +213,15 @@ def test_reset_checks_every_earlier_epoch():
     first = [public_record(n) for n in range(1, 5)]
     second = [public_record(n) for n in range(5, 9)]
     fresh = lib.check_operator_set([public_record(n) for n in range(9, 13)])
-    fresh[1]["controller_id"] = first[2]["controller_id"]
-    with pytest.raises(lib.TestnetError, match="reuses controller_id"):
+    fresh[1]["validator_id"] = first[2]["validator_id"]
+    with pytest.raises(lib.TestnetError, match="reuses validator_id"):
         lib.check_fresh_identities(fresh, [second, first])
 
 
 def test_reset_refuses_a_malformed_previous_file():
     fresh = lib.check_operator_set([public_record(n) for n in range(1, 5)])
     with pytest.raises(lib.TestnetError, match="JSON list"):
-        lib.check_fresh_identities(fresh, [{"controller_id": "x"}])
+        lib.check_fresh_identities(fresh, [{"validator_id": "x"}])
 
 
 def test_manifest_packs_index_order_and_size():
@@ -231,11 +231,11 @@ def test_manifest_packs_index_order_and_size():
     record_size = 32 + 32 + 1312
     for index, record in enumerate(records):
         chunk = packed[index * record_size : (index + 1) * record_size]
-        assert chunk[:32].hex() == record["controller_id"]
+        assert chunk[:32].hex() == record["validator_id"]
         assert chunk[32:64].hex() == record["adnl_id"]
         assert chunk[64:].hex() == record["public_key"]
     assert lib.manifest_input(records)[2] == {
-        "controller_id": records[2]["controller_id"],
+        "validator_id": records[2]["validator_id"],
         "adnl_id": records[2]["adnl_id"],
         "public_key": records[2]["public_key"],
     }
@@ -884,6 +884,35 @@ def test_historical_genesis_is_not_the_new_admission_profile():
         lib.zero_state_gas_credits(ZERO_STATE)
 
 
+def test_historical_genesis_still_carries_the_controller_policy():
+    # The same pinned fixture predates the removal of ConfigParam 47.
+    with pytest.raises(lib.TestnetError, match="still defines retired ConfigParam 47"):
+        lib.zero_state_retired_params(ZERO_STATE)
+
+
+@pytest.mark.parametrize(
+    "mandatory,critical,refused",
+    [(48, 48, None), (47, 48, "still mandatory"), (48, 47, "still critical")],
+)
+def test_retired_param_guard_reads_both_lists(monkeypatch, mandatory, critical, refused):
+    params = {9: one_key_list(mandatory), 10: one_key_list(critical)}
+    monkeypatch.setattr(lib, "zero_state_config", lambda boc: (None, 2, params))
+    if refused is None:
+        lib.zero_state_retired_params(b"")
+    else:
+        with pytest.raises(lib.TestnetError, match=f"ConfigParam 47 is {refused}"):
+            lib.zero_state_retired_params(b"")
+
+
+@pytest.mark.parametrize("missing", [9, 10])
+def test_retired_param_guard_needs_both_lists(monkeypatch, missing):
+    params = {9: one_key_list(48), 10: one_key_list(48)}
+    del params[missing]
+    monkeypatch.setattr(lib, "zero_state_config", lambda boc: (None, 2, params))
+    with pytest.raises(lib.TestnetError, match=f"no ConfigParam {missing}"):
+        lib.zero_state_retired_params(b"")
+
+
 def test_generated_genesis_has_the_adopted_gas_credits(tmp_path):
     import subprocess
     from pathlib import Path
@@ -923,6 +952,7 @@ def test_generated_genesis_has_the_adopted_gas_credits(tmp_path):
         20: 10000,
         21: 20000,
     }
+    lib.zero_state_retired_params((tmp_path / "zerostate.boc").read_bytes())
 
 
 def gas_prices_cell(tag, credit, flat=False, damage=None):

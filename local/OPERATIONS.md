@@ -15,24 +15,27 @@ lite-client and the development shielded pool. `--build` rebuilds its binaries.
 Add `--rotate` to enable real Elector elections with Config15
 `600 / 300 / 60 / 180` (elected period / election lead / election close lead /
 stake holding period, in seconds). The initial set also expires after 600
-seconds. This mode admits the production PQ controller code in Genesis and
-uses disposable deterministic development controller/consensus keys.
+seconds. This mode uses deterministic development consensus keys and a
+disposable staking wallet key per candidate.
 It must never initialize a production chain.
 
 The initial active set is nodes `1,2,3,4`. Node `7` is a fifth candidate process,
 not an additional Genesis validator. The `tos-pq-elections` service submits
-node-authorized pool stakes for `1,2,3,7`, then `1,2,3,4`, alternating each
+node-authorized stakes for `1,2,3,7`, then `1,2,3,4`, alternating each
 round. Exactly four candidates enter each election. Nodes `5,6` remain ordinary
 observers. All five candidate processes stay online, including the retired
 member, so absence of its first-hop traffic is evidence of relay selection
 rather than a disconnected destination.
 
-The operator wallet, controller and pool transactions use local test funds.
-The service checks each Elector acceptance and retains the submitted roster;
-acceptance is not an activation verdict. The chain itself selects and activates
-the next set. The development faucet supplies fresh pool capital each round;
-this service is not a production staking/recovery manager. It deliberately does
-not automatically restart after an ambiguous transaction failure.
+Each candidate stakes directly from its own masterchain wallet, which is also
+its validator id; all wallet transactions use local test funds. The service
+checks each Elector acceptance and retains the submitted roster; acceptance is
+not an activation verdict. The chain itself selects and activates the next set.
+The development faucet tops each wallet up to the next stake, and the service
+recovers returned stakes into the same wallet; it is not a production
+staking/recovery manager. An ambiguous transaction outcome is kept in its
+journal for reconciliation and is never paid again
+([README.md](README.md#staking-wallets-and-continuous-elections)).
 
 ## Inspect and verify
 
@@ -45,10 +48,11 @@ sudo env TOS_ROOT="$TOS_ROOT" "$TOS_ROOT/.venv/bin/python" \
 ```
 
 Evidence lives under `/data/elections`: Config15 bytes, candidate public
-identities, actual node authorizations, Elector acceptance events, agreed
+identities, actual node authorizations, Elector acceptance and recovery events,
+per-candidate wallet observations (`wallet-<i>.json`), agreed
 Config34 bytes at one common height on seven full nodes, and raw two-step
-broadcast trace lines. Console credential files and fixture key seeds are
-private; do not publish them.
+broadcast trace lines. Console credential files and the staking wallet keys
+are private; do not publish them.
 
 The relay checker requires a real one-member replacement, a 600-second elected
 interval, and every current validator's broadcast to target exactly the other

@@ -20,13 +20,15 @@ def check(directory):
     candidates = {
         i: json.loads((directory / f"candidate-{i}.json").read_text()) for i in (1, 2, 3, 4, 7)
     }
-    by_controller = {c["controller"].split(":")[1]: i for i, c in candidates.items()}
+    # A validator id is its candidate's staking wallet; the tos decoder names
+    # that field controller_id_hex.
+    by_validator = {c["wallet"].split(":")[1]: i for i, c in candidates.items()}
     activations = [json.loads(p.read_text()) for p in sorted(directory.glob("activation-*.json"))]
     if len(activations) < 2:
         raise ValueError("no real elected-set transition has been retained yet")
     before, after = activations[-2:]
-    old = {by_controller[v["controller_id_hex"]] for v in before["config34"]["validators"]}
-    current = {by_controller[v["controller_id_hex"]] for v in after["config34"]["validators"]}
+    old = {by_validator[v["controller_id_hex"]] for v in before["config34"]["validators"]}
+    current = {by_validator[v["controller_id_hex"]] for v in after["config34"]["validators"]}
     if len(current) != 4 or len(old - current) != 1 or len(current - old) != 1:
         raise ValueError("expected one real replacement in a four-validator set")
     if after["config34"]["utime_until"] - after["config34"]["utime_since"] != 600:

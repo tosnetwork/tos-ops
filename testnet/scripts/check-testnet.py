@@ -22,8 +22,9 @@ itself proves nothing. The check refuses unless:
     before the first ordinary election replaces the genesis set;
   * with --elected-set (same records file), after a rotation:
     live ConfigParam 34 has as many members as the records, all of them main
-    validators, and its controllers are exactly the records' controllers. The
-    consensus keys are not compared: an election may register new ones. The
+    validators, and its validator ids (staking accounts) are exactly the
+    records'. The consensus keys are not compared: an election may register
+    new ones. The
     summary reports the set's term (utime_since, utime_until) so a run record
     can tie it to an election;
   * when genesis.json records an auth_policy (version-16 genesis), live
@@ -79,10 +80,8 @@ def check(args: argparse.Namespace, rpc=lib.rpc, now=time.time, decode=decode_co
         records = lib.check_operator_set(json.loads(Path(args.genesis_set).read_text()))
         param = rpc(args.rpc[0], "getConfigParam", param=34, seqno=height)
         decoded = decode(param["config"]["bytes"])
-        actual = {
-            (v["controller_id_hex"], v["consensus_key_id_hex"]) for v in decoded["validators"]
-        }
-        expected = {(r["controller_id"], r["key_id"]) for r in records}
+        actual = {(v["validator_id_hex"], v["consensus_key_id_hex"]) for v in decoded["validators"]}
+        expected = {(r["validator_id"], r["key_id"]) for r in records}
         if decoded["total"] != lib.GENESIS_VALIDATORS or actual != expected:
             raise lib.TestnetError("live ConfigParam 34 is not the four genesis identities")
         summary["config34"] = "the four genesis identities"
@@ -90,8 +89,8 @@ def check(args: argparse.Namespace, rpc=lib.rpc, now=time.time, decode=decode_co
         records = lib.check_operator_set(json.loads(Path(args.elected_set).read_text()))
         param = rpc(args.rpc[0], "getConfigParam", param=34, seqno=height)
         decoded = decode(param["config"]["bytes"])
-        actual = {v["controller_id_hex"] for v in decoded["validators"]}
-        expected = {r["controller_id"] for r in records}
+        actual = {v["validator_id_hex"] for v in decoded["validators"]}
+        expected = {r["validator_id"] for r in records}
         if decoded["total"] != len(records) or decoded["main"] != decoded["total"]:
             raise lib.TestnetError(
                 f"live ConfigParam 34 has {decoded['total']} members ({decoded['main']} main), "
@@ -101,14 +100,14 @@ def check(args: argparse.Namespace, rpc=lib.rpc, now=time.time, decode=decode_co
             missing = sorted(c[:16] for c in expected - actual)
             foreign = sorted(c[:16] for c in actual - expected)
             raise lib.TestnetError(
-                f"live ConfigParam 34 controllers differ: missing {missing}, unexpected {foreign}"
+                f"live ConfigParam 34 validator ids differ: missing {missing}, unexpected {foreign}"
             )
         summary["config34"] = {
             "utime_since": decoded["utime_since"],
             "utime_until": decoded["utime_until"],
             "total": decoded["total"],
             "main": decoded["main"],
-            "controllers": "exactly the records' controllers",
+            "validator_ids": "exactly the records' staking accounts",
         }
     return summary
 

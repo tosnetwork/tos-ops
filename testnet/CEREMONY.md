@@ -5,12 +5,18 @@ the coordinator (C). Every artifact that crosses between parties is public;
 each party keeps its own secrets on its own machines.
 
 ```
-O: prepare host  ->  O: record  ----\
-D: prepare DHT   ->  D: dht-node ----+->  C: manifest -> genesis -> global-config -> publish
-                                                                                  |
-O, D: activate (verify SHA-256, start before the epoch)  <-------------------------/
+O: prepare host -> O: operator wallet -> C: pool -> O: record --\
+D: prepare DHT  -> D: dht-node -----------------------------------+-> C: manifest -> genesis -> global-config -> publish
+                                                                                                                 |
+O, D: activate (verify SHA-256, start before the epoch)  <-------------------------------------------------------/
 C: check-testnet.py across independent nodes
 ```
+
+Each validator is named by its staking account: a single-nominator pool whose
+owner is an offline wallet the coordinator keeps and whose validator role is the
+operator's wallet on the host. The pool's address is the validator id genesis
+records, the node is bound to it, and the node signs stake authorizations only
+for it. The pool derives from the two wallets, so both exist before genesis.
 
 For host tasks and failure handling, use [OPERATOR.md](OPERATOR.md). All live
 changes and signing require explicit human approval under [AGENTS.md](../AGENTS.md).
@@ -28,7 +34,7 @@ world-readable) and release binaries in `/usr/local/bin`.
 - Name the tos commit (full 40-character id). Every host compiles its own
   binaries from that commit (step 1). The coordinator builds `create-state`,
   `fift` and `gen_fif` from the same commit
-  (`cmake --build build --target create-state gen_fif fift tos-pq-controller`).
+  (`cmake --build build --target create-state gen_fif fift`).
 - Confirm the four operators' identities out of band. The ceremony checks that
   each record is self-consistent; it cannot prove who sent it.
 
@@ -82,10 +88,12 @@ still stops SSH, and must be checked against the provider console first.
 
 ## 1. Operator: build and prepare the validator host
 
-Compile the binaries on this host from the ceremony commit, then prepare:
+Compile the binaries and the operator tool on this host from the ceremony
+commit, then prepare:
 
 ```bash
 sudo /opt/tos-testnet/scripts/build-node-binaries.sh --rev <COMMIT> --role validator
+sudo /opt/tos-testnet/scripts/build-tosctl.sh --rev <COMMIT>
 sudo /opt/tos-testnet/scripts/install-node.sh prepare --role validator \
   --public-ip <PUBLIC_IPV4> --release /var/lib/tos-build/release-<COMMIT>
 ```
@@ -114,41 +122,52 @@ approved backup procedure; see [consensus custody](../production/Production-Node
 The agent must not read, copy or display its plaintext. Do not use an unencrypted
 file or log as an intermediate backup.
 
-## 2. Operator: controller id (offline root key)
+## 2. Coordinator: staking pools
 
-On the offline machine, create the controller root key and print its public
-key (`tos-pq-key` is built from `crypto/pq/tools` in tos and installed only
-offline):
+On each validator host the operator first makes the operator wallet:
 
 ```bash
-tos-pq-key keygen ROOTSEED
-tos-pq-key public ROOTSEED            # 1312-byte public key, hex
+sudo /opt/tos-testnet/scripts/init-operator.sh --name <node-name> --wallet-only
 ```
 
-On any machine with the tos checkout and build of the ceremony commit:
+It creates the user `tos-ctl`, its vault (`/etc/tos/tosctl.env`, 0600) and the
+masterchain operator wallet `op-<node-name>`, and prints `op-<node-name>
+<ADDRESS>` on its last line. It needs no running node. The operator sends the
+address to the coordinator by a channel that authenticates them.
+
+The coordinator then derives that validator's pool, once per validator, in the
+directory that becomes the ceremony directory:
 
 ```bash
-python3 /opt/tos-testnet/scripts/testnet-operator.py controller \
-  --tos-root "$TOS_ROOT" --tos-build "$TOS_ROOT/build" \
-  --root-public <ROOT_PUBLIC_HEX> --key-id <CONSENSUS_KEY_ID> --out controller.json
+python3 /opt/tos-testnet/scripts/testnet-elections.py pool --name <node-name> \
+  --operator <ADDRESS> --ceremony ./ceremony --tos-root "$TOS_ROOT" \
+  --fift "$TOS_ROOT/build/crypto/fift" \
+  --previous-ceremony ../epoch-1/ceremony   # after a reset: once per earlier epoch
 ```
 
-`controller.json` holds the controller id, the code hash genesis admits in
-ConfigParam 47, and the code, data and StateInit BOCs you will deploy with
-after genesis. Keep it; it is public.
+It records the operator wallet as `op-<node-name>` in `ceremony/wallets.json`
+and refuses one an earlier epoch recorded. It makes the pool's **owner**, a
+wallet v3 in the masterchain (subwallet `0x504F4F4C`), with `new-wallet-v3.fif`
+on the coordinator: its key is `ceremony/secret/pool-owner-<node-name>.pk`
+(0600) and never leaves the coordinator; its address and self-deploy message are
+in `ceremony/pool-owners/` and `wallets.json`. It derives the pool from the
+pinned `single-nominator-code.hex`, the owner and the operator wallet (the same
+StateInit as the pool's `init.fif`), records pool, owner and operator in
+`ceremony/pools.json`, and prints the pool's `validator_id`. Nothing moves value
+and no node is asked. Return the validator id to the operator.
 
 ## 3. Operator: the public record
 
 ```bash
 sudo -u tos python3 /opt/tos-testnet/scripts/testnet-operator.py record \
   --db /var/lib/tos/validator --seed /var/lib/tos/validator/keys/pq-consensus.seed \
-  --controller-id <CONTROLLER_ID> --operator <short-name> \
+  --validator-id <VALIDATOR_ID> --operator <short-name> \
   --address <PUBLIC_IPV4>:30001 --out /tmp/record.json
 ```
 
-It refuses an address the node does not announce, and a key id that does not
-match the public key. Send `record.json` to the coordinator by a channel that
-authenticates you.
+`<VALIDATOR_ID>` is the pool's id from step 2. It refuses an address the node
+does not announce, and a key id that does not match the public key. Send
+`record.json` to the coordinator by a channel that authenticates you.
 
 ## 4. DHT host (at least two, run by the team)
 
@@ -166,7 +185,10 @@ coordinator.
 
 ## 5. Coordinator: manifest, genesis, global config
 
-The record order is the validator index order; fix it before you start.
+The record order is the validator index order; fix it before you start. The
+ceremony directory holds only what step 2 wrote; `manifest` refuses anything
+else in it, and a record whose validator id is not one of the pools recorded in
+`ceremony/pools.json`.
 
 ```bash
 S=/opt/tos-testnet/scripts
@@ -202,7 +224,11 @@ changed. It generates the zero state twice and compares the outputs. Then it
 reads the zero state back (its cell parser checked against create-state's root
 hash first) and refuses unless ConfigParam 8 is version 16, ConfigParam 48 is
 the initial policy for this tag (sequence 0, nothing retired, no deadline, the
-v1 policy identity `5e4380ae…`) and 48 is in both ConfigParam 9 and 10.
+v1 policy identity `5e4380ae…`) and 48 is in both ConfigParam 9 and 10. It
+also refuses a zero state that still defines ConfigParam 47, or lists it in
+ConfigParam 9 or 10: that parameter named the validator controller codes and
+left tos with the controller, so its presence means the tos tree predates
+staking from the operator's own account.
 create-state itself runs the node's configuration check (`valid_config_data`,
 which includes `validate_auth_policy_config`) before it writes a zero state,
 and every node checks it again when it starts. `genesis.json` records the
@@ -213,8 +239,9 @@ the two runs it derives the bootstrap wallet's public key from the new
 `--previous-ceremony` used. It records the key as `main_wallet_public_key` in
 `genesis.json`, in `main-wallet.pub` and as `bootstrap` in `wallets.json`. It
 moves `main-wallet.pk`, the only secret output, to `ceremony/secret/`. Take that key
-offline: it funds the four controllers for the first elections (genesis
-bootstrap document, "First ordinary elections") and nothing else.
+offline: it funds the four operator wallets and pool owners for the first
+elections (tos `doc/validator-genesis-bootstrap.md`, "First ordinary elections")
+and nothing else.
 
 AUTH validation and the complete summary are checked in `run-a` before any
 key or output is published. Existing outputs are never overwritten. If genesis
@@ -227,9 +254,9 @@ Publish, together and signed or attested by the release process:
 
 - `global-config.json` and `global-config.json.sha256`
 - `genesis.json`, `genesis-records.json`, `validator-pq.pub`
-- `main-wallet.pub` and `wallets.json` (public keys and addresses only;
-  `wallets.json` grows as `onboard` and `load` add their wallets, and the next
-  reset reads it)
+- `main-wallet.pub`, `wallets.json` and `pools.json` (public keys and addresses
+  only; `wallets.json` grows as `load` adds its wallets, and the next reset
+  reads it)
 - `zerostate.boc`, `basestate0.boc` and their `.fhash`/`.rhash`
 - `gen-zerostate-testnet.fif`, the exact template that ran
 
@@ -243,19 +270,20 @@ this step, so that every node is activated before it. See
 
 ## 6. Everyone: activate before the epoch
 
-Validator (operator), with the controller id from step 2:
+Validator (operator), with the pool's validator id from step 2:
 
 ```bash
 sudo /opt/tos-testnet/scripts/install-node.sh activate --role validator \
   --global-config global-config.json --sha256 <PUBLISHED_SHA256> \
-  --genesis ./published --validator-id <CONTROLLER_ID>
+  --genesis ./published --validator-id <VALIDATOR_ID>
 ```
 
 This installs `/etc/tos/global-config.json` only on a matching digest. It
 places the zero state in `/var/lib/tos/validator/static/` and runs
 `tos-pq-consensus-key bind-node` with the node stopped. It adds a console on
 30002/tcp, with its client keys in `/var/lib/tos/validator/console-client/`,
-and then starts `tos-testnet-validator`. Check the custody line:
+and then starts `tos-testnet-validator`. Check the custody line; its
+`validator_id` must be the pool's:
 
 ```bash
 sudo journalctl -u tos-testnet-validator | grep 'post-quantum consensus custody'
@@ -303,13 +331,12 @@ After the first ordinary election, drop `--genesis-set`.
 
 The schedule is `genesis` in `network/profile.json`, and `genesis.json` prints
 its times. The bootstrap set is valid for 21,600 s after the epoch T, and each
-elected set for 14,400 s. The four operators must deploy their controllers,
-authorize operations and stake through two overlapping elections
-(Production-Node.md section 9). The first election opens at T + 4 h and closes
+elected set for 14,400 s. The four validators must be onboarded (operator
+wallets and pool owners funded, pools deployed and holding the principal) and
+stake through two overlapping elections (Production-Node.md section 9). The first election opens at T + 4 h and closes
 at T + 5.5 h; the elected set takes office at T + 6 h. The next election opens
 at T + 8 h, and the set rotates every 4 h after that, each rotation a key
-block. Everything has to be ready before the first window opens: the first
-epoch's controllers were ready about 1.75 h after T.
+block. Everything has to be ready before the first window opens.
 
 The first epoch used the canonical template's schedule unchanged: a 131,072 s
 bootstrap set and 65,536 s terms. Its first key block after genesis would have
@@ -320,70 +347,52 @@ schedule and a 3,600 s validator `state_ttl`.
 
 ### 8.1 Onboarding a genesis validator for elections
 
-On each validator host, once (after `build-node-binaries.sh`, same commit):
-
-```bash
-sudo /opt/tos-testnet/scripts/build-tosctl.sh --rev <TOS_COMMIT>
-```
-
-Then, from the coordinator's machine, with SSH tunnels to **two** validators'
+From the coordinator's machine, with SSH tunnels to **two** validators'
 loopback JSON-RPC (`ssh -L 18081:127.0.0.1:8081 root@<validator>` and another
-on 28081 to a second validator), once per validator:
+on 28081 to a second validator), once per validator whose pool step 2 recorded:
 
 ```bash
 python3 /opt/tos-testnet/scripts/testnet-elections.py onboard \
-  --name node-1 --host <HOST> --ssh-key <KEY> \
-  --ceremony ./ceremony --controller controllers/node-1.json \
-  --root-seed offline/root-node-1.seed --controller-tool "$TOS_ROOT/build/crypto/tos-pq-controller" \
+  --name node-1 --host <HOST> --ssh-key <KEY> --ceremony ./ceremony \
   --tos-root "$TOS_ROOT" --fift "$TOS_ROOT/build/crypto/fift" \
   --rpc http://127.0.0.1:18081/jsonRPC --confirm-rpc http://127.0.0.1:28081/jsonRPC \
   --previous-ceremony ../epoch-1/ceremony   # after a reset: once per earlier epoch
 ```
 
-It runs `init-operator.sh` on the host (vault, console key, operator wallet),
-records the operator wallet's address as `op-<name>` in
-`ceremony/wallets.json` and refuses an address an earlier epoch recorded (a
-host that kept `/var/lib/tos-ctl` over a reset still has the old wallet key).
-Then it runs these steps, in order:
+It refuses unless `ceremony/pools.json` records the validator's pool, the pool
+derives from its recorded owner and operator wallet, and the genesis records
+name it as a validator id. It runs `init-operator.sh` on the host (vault,
+console key, node registration, operator wallet) and refuses unless the host's
+operator wallet is the one the pool was derived from (a host that kept
+`/var/lib/tos-ctl` over a reset still has the old wallet key). Then it runs these
+steps, in order:
 
-1. it funds the wallet from the bootstrap wallet with fee and operating money
-   only (`operator_funding_tos`, 150) and activates it;
-2. it deploys the controller;
-3. it creates the pool's **owner** on the coordinator (below), funds it and
-   activates it;
-4. it deploys the pool with 2 TOS from the operator wallet;
-5. it configures the pool, the binding and the controller's birth in tosctl on
-   the host;
-6. the owner sends the stake principal (`pool_tos`) to the pool;
-7. it plans the operating authorization on the host, signs it here with the root
-   seed and sends it. Before signing, it compares the decoded payer with the
-   operator, the global id and controller with the ceremony, and the root epoch
-   and nonce with both validators. It independently derives the deposit from
-   recorded funds, allowance and floor from the profile, the per-request limit
-   from the current limit and live automatic grant, and the exact message value
-   from the deposit, live processing fee and a 1 TOS margin. It chooses the
-   absolute expiry from the profile and permits only the requested 1,800-second
-   signing lifetime plus 30 seconds of clock skew. Both validators must agree
-   on the controller state and fees from ConfigParams 20 and 24. Trailing payload
-   data or any mismatch refuses before the root key signs;
-8. it checks readiness, which is tosctl's full assessment: no `[BLOCKING]` (capital
-   reserve, a usable grant);
-9. it runs `enable-elections.sh`, which installs
+1. it funds the operator wallet from the bootstrap wallet with fee money only
+   (`operator_funding_tos`, 150) and activates it;
+2. it funds the pool's **owner** with the principal and a reserve (`pool_tos` +
+   `pool_owner_reserve_tos`) and activates it; the owner's key stays on the
+   coordinator (below);
+3. it deploys the pool with 2 TOS from the operator wallet;
+4. it configures the pool and the binding in tosctl on the host
+   (`config pool add --address --owner`, `config bind add --pool`);
+5. the owner sends the stake principal (`pool_tos`) to the pool;
+6. it checks readiness: the pool holds at least two stakes (`stake_tos`) above
+   its storage reserve, and the node's latest `post-quantum consensus custody`
+   line names the pool as its validator id (the Elector refuses a stake signed
+   for another account);
+7. it runs `enable-elections.sh`, which installs
    `systemd/tos-testnet-elections.service` (`Restart=always`).
 
-The amounts are `elections` in the profile. The root seed,
-`ceremony/secret/main-wallet.pk` and the pool owners' keys never leave the
-coordinator.
+The amounts are `elections` in the profile. `ceremony/secret/main-wallet.pk`
+and the pool owners' keys never leave the coordinator.
 
 **Every step that moves value is an operation** (`testnet_ops.py`):
 
 - `fund-op-<name>`
-- `deploy-controller-<name>`
 - `fund-owner-<name>`
 - `activate-owner-<name>`
 - `deploy-pool-<name>`
 - `principal-<name>`
-- `authorize-operations-<name>`
 
 Each has a record in `ceremony/operations/<id>.jsonl`. The lines are append-only
 and each is fsynced with its directory. The signed message is durable there
@@ -404,7 +413,7 @@ one, checking:
 
 Only then is the message journaled and broadcast from the coordinator. The pool is
 deployed with the StateInit derived on the coordinator from the pinned
-`single-nominator-code.hex` and the three roles.
+`single-nominator-code.hex` and its two roles.
 
 Before signing anything, the coordinator reads the signing wallet's complete
 history on both validators. It refuses when:
@@ -418,7 +427,7 @@ history on both validators. It refuses when:
 An operation settles only from the chain, matched by hashes: the wallet's
 transaction for the exact external message, the one message it emitted, and the
 destination's transaction for that message, on both validators. Configuration
-steps (pool, binding, birth import) resume from what the host's tosctl
+steps (pool, binding) resume from what the host's tosctl
 configuration already holds.
 
 **A rerun never resends value.** When an operation is open, because a run was
@@ -470,31 +479,32 @@ What each command does:
 A failed operation is final under its id. It does not block its wallet: its
 evidence accounts for its own outgoing messages.
 
-The single-nominator pool keeps three roles apart:
+The single-nominator pool keeps two roles apart, and is itself the staking
+account the Elector names:
 
 - the **owner** holds the principal and is the only role that can withdraw it;
 - the **validator** is the operator wallet on the host, `op-<name>`. It can only
-  send the principal to the Elector through the controller and recover it;
-- the **controller** stands in the election.
+  order the pool to stake with the Elector (sending the fees, 1.2 TOS) and to
+  recover the stake back into the pool.
 
-Since epoch 4 the owner is not the operator wallet. `onboard` creates
-`pool-owner-<name>`, a wallet v3 in the masterchain (subwallet `0x504F4F4C`), with
-`new-wallet-v3.fif` on the coordinator:
+The owner is not the operator wallet. Step 2 created `pool-owner-<name>` on the
+coordinator:
 
 - its key is `ceremony/secret/pool-owner-<name>.pk` (0600);
 - its address and self-deploy message are in `ceremony/pool-owners/`;
 - its address is in `wallets.json`;
-- the pool, owner, operator and controller are in `ceremony/pools.json`.
+- the pool, owner and operator are in `ceremony/pools.json`.
 
 The bootstrap wallet funds the owner with `pool_tos` + 5 TOS. Before the
 principal is signed, the coordinator checks four things: the owner's funding and
 activation are settled operations; the pool is the derived address; the pool runs
-the pinned code; and its `get_roles` is exactly the offline owner, the operator
-wallet and the controller.
+the pinned code; and its `get_roles` is exactly the offline owner and the
+operator wallet.
 
 A compromised validator host can therefore stake and recover, but it can neither
 take the principal nor have it sent elsewhere. The owner can also replace the
-validator address (`CHANGE_VALIDATOR_ADDRESS`).
+validator address (`CHANGE_VALIDATOR_ADDRESS`); the pool, and with it the
+validator id, stays the same.
 
 To take principal out, between elections (a stake at the Elector comes back
 to the pool only when the election task recovers it, `stake_held_for` after
@@ -532,9 +542,8 @@ artifacts or ask the coordinator to resolve the identity mismatch.
 The election task runs as the non-login system user `tos-ctl`, never root.
 Every `tosctl` call on the host, from these scripts and from
 `testnet-elections.py` over SSH, runs as `tos-ctl` too (`runuser -u tos-ctl`,
-with root only reading `/etc/tos/tosctl.env`, root-owned 0600), and the
-controller's birth transaction is written into `/var/lib/tos-ctl` as `tos-ctl`:
-tosctl refuses a vault, lock or key file its caller does not own, so one
+with root only reading `/etc/tos/tosctl.env`, root-owned 0600): tosctl refuses
+a vault, lock or key file its caller does not own, so one
 root-owned file there stops the task. A host onboarded while the task ran as
 root moves over once with `migrate-nonroot-services.sh --role validator`
 (testnet/README.md), outside an open election.
@@ -546,86 +555,30 @@ bootstrap transfer its own operation.
 
 A step whose operation failed terminally is never retried under its id and never
 reset. A person starts another attempt, `ID.attempt-N`, which names the failed
-one and keeps the step's parameters (an operating authorization is planned
-anew); all checks run again:
+one and keeps the step's parameters; all checks run again:
 
 ```bash
 python3 "$S" retry "${C[@]}" --step ID --reason TEXT
 ```
 
-#### Renewing operating authorization
+#### Topping up an operator wallet
 
-The profile initially funds 20 TOS and renews toward 260 TOS over ten days.
-Use live stakes-remaining, expiry and ConfigParam 15 rather than a wall-clock
-launch date to schedule renewal. The historical epoch-4 target was before T+19 h
-(2026-10-19 04:30 UTC), ahead of its fifth election. Use a quiet window,
-**dry run → node-1 → rest**, after owner review. These commands move value;
-do not run them as part of deployment verification.
-
-First `reconcile` the operator wallet on both validators. The election task's
-stake relay transactions are not coordinator operations: inspect and account
-for them before using `baseline --wallet OPERATOR --reason TEXT` if required.
-Never baseline an unresolved operation. An unknown or disagreeing history,
-unexplained outgoing transfer, or another open operation refuses a new signature.
-
-Top up the recorded operator wallet from the bootstrap wallet, typically about
-200 TOS. This is an ordinary `fund` operation with its own fixed id; it is
-settled by message and transaction hashes on both validators. Repeating the
-same id reports it and does not fund twice. The reserve check may require a
-larger top-up depending on current funds and fees; use its reported amount.
+The operator wallet pays only fees: tosctl's election task attaches 1.2 TOS
+(`ELECTOR_STAKE_FEE` + `NPOOL_COMPUTE_FEE`) to every stake order and 0.2 TOS to
+every recovery, and pays its own gas; the stake itself comes from the pool. The
+150 TOS of onboarding last for many elections. Top it up before it runs low,
+from the bootstrap wallet, as an ordinary `fund` operation with its own fixed
+id; it is settled by message and transaction hashes on both validators, and
+repeating the same id reports it and does not fund twice. These commands move
+value; do not run them as part of deployment verification.
 
 ```bash
 # C is the common ceremony / tools / --rpc / --confirm-rpc arguments above.
-python3 "$S" fund "${C[@]}" --id renewal-top-up-node-1 --label renewal-top-up-node-1 \
-  --to <RECORDED_OPERATOR_WALLET> --amount 200 --dry-run
-python3 "$S" fund "${C[@]}" --id renewal-top-up-node-1 --label renewal-top-up-node-1 \
-  --to <RECORDED_OPERATOR_WALLET> --amount 200
-
-python3 "$S" refund "${C[@]}" --id renewal-node-1-ten-days --new \
-  --name node-1 --host <HOST> --ssh-key <KEY> \
-  --controller controllers/node-1.json --root-seed offline/root-node-1.seed \
-  --controller-tool "$TOS_ROOT/build/crypto/tos-pq-controller" --dry-run
-# After review, repeat without --dry-run (keep --new: dry-run creates no record).
+python3 "$S" fund "${C[@]}" --id top-up-node-1-1 --label top-up-node-1-1 \
+  --to <RECORDED_OPERATOR_WALLET> --amount 50 --dry-run
+python3 "$S" fund "${C[@]}" --id top-up-node-1-1 --label top-up-node-1-1 \
+  --to <RECORDED_OPERATOR_WALLET> --amount 50
 ```
-
-`refund` targets `elections.authorization.refund_target_nanotos` (260 TOS;
-`--target-nanotos` overrides it) with a ten-day expiry. It reuses onboard's
-independent decoded-payer, global-id, controller, root epoch/nonce, terms and fee
-checks. The root seed stays on the coordinator. The host only builds the wallet
-message; the coordinator validates it, journals it durably, broadcasts it and
-confirms the exact transaction and authorization on both validators. The election
-service is restarted even if signing, building, broadcasting or settlement fails.
-The final status uses tosctl's full operating-readiness assessment. A forced
-termination (for example SIGKILL or coordinator power loss) cannot run the
-restart cleanup: reconcile the operation first, then explicitly start
-`tos-testnet-elections` on that validator and verify it is active before moving
-to the next node. Reporting an already-settled id does not change service state.
-
-`refund --dry-run` performs the gates and unsigned plan checks without signing,
-journaling, broadcasting or stopping the service. For an existing operation,
-omit `--new`. A settled id is reported without another signature or send
-(even if `--new` was left on the repeated command);
-changed parameters refuse. A later renewal needs a new deliberate id, never
-`retry` of a settled grant. A failed attempt alone permits
-`retry --step renewal-node-1-ten-days --reason TEXT`; then rerun `refund` with
-the original step id and without `--new` to prepare the new attempt.
-
-An interrupted signed/broadcast operation must be resolved with `reconcile`,
-`record` or `resubmit`. These use the same per-kind, two-validator hash evidence
-as onboarding. If an interruption left only a planned root request and it expires
-before any wallet external is signed, a rerun waits until both validator clocks
-prove it expired plus the 120-second margin, records a terminal
-`unsigned-plan-expired` failure, and requires explicit `retry` for a fresh plan. Before both an initial renewal and a resubmission:
-
-- Both validators must agree that no election is open and on the current term.
-  Each node's time must be at least ten minutes after the set took office and
-  ten minutes before the next election opens. Failed elections keep refusing.
-  There is no manual window override.
-- The operator must retain the configured 30 TOS reserve after the message value
-  plus a 1 TOS wallet fee allowance. The election task needs at least 20.2 TOS.
-- The plan must still match controller authority, funds and fee prices. An open
-  message that can no longer execute follows the normal failure-evidence and
-  retry procedure; it is never silently re-signed.
 
 If the first election cannot be conducted, the Elector cancels it at
 `elect_at` and refunds the stakes. The chain does not stop: the genesis set
@@ -636,10 +589,11 @@ Treat it as an incident.
 ## 9. Resetting the testnet
 
 A reset is a new genesis with the same global id 2, so it shares the old
-epoch's replay domain. Every operator generates a new controller root key and
-a new consensus seed; never carry them over. The coordinator passes every
+epoch's replay domain. Every operator generates a new operator wallet and a new
+consensus seed, and the coordinator a new pool owner, so every pool and validator
+id is new; never carry them over. The coordinator passes every
 earlier epoch's `genesis-records.json` to `manifest --previous`, which refuses
-any reused controller id, consensus key id or ADNL id. Validators that joined
+any reused validator id, consensus key id or ADNL id. Validators that joined
 an earlier epoch after genesis are not in those files. Keep their records and
 pass them too.
 
@@ -647,8 +601,8 @@ Wallet keys are checked the same way. Keep every epoch's ceremony directory
 (its `wallets.json`, `genesis.json` and `secret/`), and pass each one with
 `--previous-ceremony` to `testnet-coordinator.py genesis` (the bootstrap
 wallet: always at -1:111...1, so only its key differs between epochs),
-`testnet-elections.py onboard` (operator wallets) and `testnet-elections.py
-load` (the high-volume wallet and its relayers; start every epoch with a new
+`testnet-elections.py pool` and `onboard` (operator wallets and pool owners)
+and `testnet-elections.py load` (the high-volume wallet and its relayers; start every epoch with a new
 `--state` directory). Each refuses a wallet key or address the earlier epoch
 recorded. A ceremony from before `wallets.json` existed gives its bootstrap
 key through `secret/main-wallet.pk`, whose public key fift derives in place; a
@@ -680,17 +634,20 @@ not yet analysed must not lose its logs to a reset; the first reset did
 exactly that (memo `public-testnet/EPOCH-1-FINDINGS.md`, E1-10).
 
 
-### Election relay history
+### Election task history
 
 The gate recognizes election-task pool messages only from their verified
 transaction BOC: one outbound internal message to the recorded operator's own
 pool, no StateInit or extra currencies, and no other outbound effect. Each body
-must carry the expected opcode and query id. Recovery and maintenance bodies
+must carry the expected opcode and query id. A new-stake order must have the
+pool order layout tosctl builds (`nominator::new_stake`): stake, ML-DSA-44
+algorithm 1, public-key reference, election id, max factor, ADNL address and
+signature reference, and nothing after them. Recovery and maintenance bodies
 must end after their documented fields.
 
 | Kind (`explained_by: election-<kind>`) | Opcode | Maximum attached value | Other fields |
 | --- | --- | --- | --- |
-| `new-stake` | `0x4e73744b` | `pool_relay_budget_nanotos` + `pool_relay_fee_allowance_nanotos` | Positive stake, election id |
+| `new-stake` | `0x4e73744b` | `stake_order_nanotos` (1.2 TOS) | Positive stake, algorithm 1, election id |
 | `recover-stake` | `0x47657424` | 0.2 TOS recovery fee allowance | None |
 | `update-validator-set` | `0x06` | 0.2 TOS maintenance gas | None |
 | `validator-deposit` | `0x04` | 10 TOS per-tick rent top-up ceiling | None |
@@ -760,8 +717,9 @@ change any journal state automatically.
 The coordinator bootstrap wallet has a pinned wallet-v3 code hash, genesis public
 key and subwallet zero. Its gate audits from the latest verified checkpoint,
 not from an increasingly old baseline. Other signing wallets retain the existing
-full-history gate; election-runner relay checkpointing is a separate follow-up,
-required before the next operator renewal that gates an operator wallet.
+full-history gate; checkpointing the election task's messages is a separate
+follow-up, required before an operator wallet's history grows past what the
+gate can read in full.
 
 **Trust assumption:** the bootstrap signing key is custodied only by the
 coordinator, and the local append-only journal is honest. The dry-run prints

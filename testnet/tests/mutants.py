@@ -230,32 +230,32 @@ M = [
     (
         "ER10 custom profile ignored",
         OPS,
-        'limits = lib.load_profile(self.profile_path)["elections"]',
-        'limits = lib.load_profile()["elections"]',
+        'ceiling = lib.load_profile(self.profile_path)["elections"].get("stake_order_nanotos")',
+        'ceiling = lib.load_profile()["elections"].get("stake_order_nanotos")',
     ),
     (
-        "ER11 current time substituted for relay time",
+        "ER11 current time substituted for the message time",
         OPS,
         'or not active - start_before <= tx["utime"] < active - end_before',
         "or not active - start_before <= int(self.clock()) < active - end_before",
     ),
     (
-        "ER1 election relay classification disabled",
+        "ER1 election message classification disabled",
         OPS,
         '        path = self.ceremony / "pools.json"',
         '        return None\n        path = self.ceremony / "pools.json"',
     ),
     (
-        "ER2 relay to a different pool accepted",
+        "ER2 a message to a different pool accepted",
         OPS,
         'or message["destination"] != matches[0]',
         "or False",
     ),
     (
-        "ER3 relay budget ignored",
+        "ER3 stake order value ignored",
         OPS,
-        'if not 0 < message["value"] <= budget + allowance:',
-        "if False:",
+        '        if not 0 < message["value"] <= ceiling:\n            return None\n\n        genesis',
+        "        if False:\n            return None\n\n        genesis",
     ),
     (
         "ER4 additional outbound message ignored",
@@ -264,7 +264,7 @@ M = [
         'if not tx["out"]:',
     ),
     (
-        "ER5 relay outside election window accepted",
+        "ER5 a stake order outside the election window accepted",
         OPS,
         'or not active - start_before <= tx["utime"] < active - end_before',
         "or False",
@@ -398,7 +398,7 @@ M = [
     (
         "O1 gate ignores unexplained activity",
         OPS,
-        '            if (\n                leaves(tx, wallet)\n                and tx["hash"] not in explained\n                and self.election_relay(wallet, tx) is None\n            ):\n                described',
+        '            if (\n                leaves(tx, wallet)\n                and tx["hash"] not in explained\n                and self.election_message(wallet, tx) is None\n            ):\n                described',
         "            if False:\n                described",
     ),
     (
@@ -549,8 +549,8 @@ M = [
     (
         "E1 pool owned by the operator",
         EL,
-        "    pool = pool_address(code, owner, operator, controller)",
-        "    pool = pool_address(code, operator, operator, controller)",
+        "    pool = pool_address(single_nominator_code(args.tos_root), owner, operator)",
+        "    pool = pool_address(single_nominator_code(args.tos_root), operator, operator)",
     ),
     (
         "E2 principal one TOS short",
@@ -561,7 +561,7 @@ M = [
     (
         "E3 principal without the pool check",
         EL,
-        '        require(f"activate-owner-{name}")\n        verify_pool_both(operations, args.tos_root, pool, owner, operator, controller)\n',
+        '        require(f"activate-owner-{name}")\n        verify_pool_both(operations, args.tos_root, pool, owner, operator)\n',
         '        require(f"activate-owner-{name}")\n',
     ),
     (
@@ -584,40 +584,64 @@ M = [
     ),
     ("E7 --new on an existing id", EL, "if args.new and record is not None:", "if False:"),
     (
-        "E8 authorization epoch ignored",
-        EL,
-        "if epoch != planned_epoch or nonce <= planned_nonce:",
-        "if nonce <= planned_nonce:",
-    ),
-    (
-        "E9 authorization terms ignored",
-        EL,
-        "values[1:] != [permission, limit, floor, expires] or sponsor != payer",
-        "False",
-    ),
-    (
         "E10 readiness not checked",
         EL,
-        '    # Readiness is tosctl\'s full assessment (capital reserve, a usable grant).\n    status = host.tosctl(f"controller operations status --controller {controller}", 90)\n    if "BLOCKING" in status or "kind 4 never accepted" in status:',
-        '    # Readiness is tosctl\'s full assessment (capital reserve, a usable grant).\n    status = host.tosctl(f"controller operations status --controller {controller}", 90)\n    if False:',
-    ),
-    (
-        "E11 a foreign retained birth accepted",
-        EL,
-        "            return lib.parse_boc(base64.b64decode(content)).hash() == expected\n",
-        "            return True\n",
-    ),
-    (
-        "E12 retained birth overwritten",
-        EL,
-        "    if retained or bound:\n",
-        "    if bound:\n",
+        '    staking_readiness(operations, host, pool, int(elections["stake_tos"]) * NANO)',
+        "    pass",
     ),
     (
         "E13 host pool configuration not compared",
         EL,
-        '    elif (entry.get("address"), entry.get("owner"), entry.get("controller")) != (',
-        '    elif False and (entry.get("address"), entry.get("owner"), entry.get("controller")) != (',
+        '    elif (entry.get("address"), entry.get("owner")) != (pool, owner):',
+        "    elif False:",
+    ),
+    (
+        "E15 the node's staking account not compared",
+        EL,
+        '    if bound != pool.split(":")[1]:',
+        "    if False:",
+    ),
+    (
+        "E21 a pool short of two stakes is ready",
+        EL,
+        "    if available < 2 * stake_nanotos:",
+        "    if False:",
+    ),
+    (
+        "E17 the host's operator wallet not compared with the recorded one",
+        EL,
+        "    if on_host != operator:",
+        "    if False:",
+    ),
+    (
+        "E18 a pool genesis does not name is onboarded",
+        EL,
+        '    if pool.split(":")[1] not in {r.get("validator_id") for r in records}:',
+        "    if False:",
+    ),
+    (
+        "E19 a recorded pool that does not derive is trusted",
+        EL,
+        '    if pool != expected:\n        raise lib.TestnetError(\n            f"{POOLS_FILE} records',
+        '    if False:\n        raise lib.TestnetError(\n            f"{POOLS_FILE} records',
+    ),
+    (
+        "E20 a basechain operator wallet accepted for a pool",
+        EL,
+        '    if not operator.startswith("-1:"):\n        raise lib.TestnetError(f"the operator wallet',
+        '    if False:\n        raise lib.TestnetError(f"the operator wallet',
+    ),
+    (
+        "ER12 stake order algorithm not checked",
+        OPS,
+        "if stake <= 0 or b.bits(16) != MLDSA44_ALGORITHM_ID:",
+        "if stake <= 0 or b.bits(16) < 0:",
+    ),
+    (
+        "ER13 stake order trailing data accepted",
+        OPS,
+        "                b.take_ref()  # signature\n                if not b.end():\n                    return None",
+        "                b.take_ref()  # signature",
     ),
 ]
 
@@ -719,12 +743,6 @@ M += [
         '            if state_of(record) != "failed":',
         "            if False:",
     ),
-    (
-        "E14 a bound birth trusted by its name",
-        EL,
-        "        if found:\n            return\n",
-        "        if bound:\n            return\n",
-    ),
     ("E16 operator subwallet guessed", EL, "    return data[2]", "    return 0"),
 ]
 
@@ -736,7 +754,6 @@ M += [
         "    fsync_dir(path.parent)\n\n\ndef publish_new",
         "\n\ndef publish_new",
     ),
-    ("R11b a foreign retained birth accepted", EL, "    if retained is False:", "    if False:"),
 ]
 
 
@@ -863,99 +880,21 @@ M += [
         "        shutil.copyfile(runs[0] / name, ceremony / name)\n",
     ),
     (
-        "P1 the plan's payer not compared with the operator",
-        EL,
-        "    if payer != operator:\n        problems.append(",
-        "    if False:\n        problems.append(",
+        "H3 a record naming no recorded pool accepted",
+        CO,
+        '        if record["validator_id"] not in staking:',
+        "        if False:",
     ),
     (
-        "P2 storage floor not compared",
-        EL,
-        '    if floor != int(authorization["floor_nanotos"]):',
-        "    if False:",
-    ),
-    (
-        "P3 allowance not compared",
-        EL,
-        '    if allowance != target or not context["grant"] <= target < COINS_LIMIT:',
-        "    if False:",
-    ),
-    ("P4 deposit not bounded", EL, "    if deposit != expected_deposit:", "    if False:"),
-    (
-        "P5 per-request limit not bounded",
-        EL,
-        "    if limit != expected_limit or limit >= COINS_LIMIT:",
-        "    if False:",
-    ),
-    (
-        "P6 message value not bounded",
-        EL,
-        "    if value != expected_value or not 0 < value < COINS_LIMIT:",
-        "    if False:",
-    ),
-    (
-        "P7 validity not bounded",
-        EL,
-        "    if (\n        not now < valid_until <= now + PLAN_VALID_FOR_SECONDS + PLAN_CLOCK_SKEW_SECONDS\n        or valid_until >= 1 << 32\n    ):",
-        "    if False:",
-    ),
-    (
-        "P8 expiry not bounded",
-        EL,
-        "    if expires != expires_at or not valid_until < expires < 1 << 32:",
-        "    if False:",
-    ),
-    (
-        "P9 epoch and nonce not compared with the controller",
-        EL,
-        '    if (epoch, nonce) != (context["epoch"], context["nonce"]):',
-        "    if False:",
-    ),
-    (
-        "P10 onboarding signs an unchecked plan",
-        EL,
-        "        check_operations_plan(\n            plan,\n",
-        "        (lambda *a: None)(\n            plan,\n",
-    ),
-    (
-        "P12 settlement trusts the plan's payer",
-        EL,
-        "    if payer != operator:\n        raise lib.TestnetError(f\"the plan's payer",
-        "    if False:\n        raise lib.TestnetError(f\"the plan's payer",
+        "H4 a used ceremony directory accepted",
+        CO,
+        "    if extra:\n        raise",
+        "    if False:\n        raise",
     ),
 ]
 
 
 M += [
-    ("P13 trailing payload ignored", EL, "    if not payload.end():", "    if False:"),
-    (
-        "P14 relay fee calculation changed",
-        EL,
-        "    grant = 4 * control + callback",
-        "    grant = 3 * control + callback",
-    ),
-    (
-        "P15 validators not compared before root signing",
-        EL,
-        "        context = operations.both(lambda node: controller_plan_context(node, controller))",
-        "        context = controller_plan_context(operations.nodes[0], controller)",
-    ),
-]
-
-
-M += [
-    (
-        "U1 renewal disabled again",
-        EL,
-        '    """A new authorization is its own operation, never a retry of a settled grant."""',
-        '    """A new authorization is its own operation, never a retry of a settled grant."""\n    raise lib.TestnetError("refund disabled")',
-    ),
-    (
-        "U2 root signing without the journal lock",
-        EL,
-        "    with operations.journal.lock(operator):\n        actual_id = operations.journal.newest(op_id)",
-        '    with __import__("contextlib").nullcontext():\n        actual_id = operations.journal.newest(op_id)',
-    ),
     (
         "U3 other planned operations ignored",
         OPS,
@@ -967,76 +906,6 @@ M += [
         OPS,
         '                if state_of(record) in ("planned", "signed", "broadcast"):',
         '                if state_of(record) in ("signed", "broadcast"):',
-    ),
-    (
-        "U5 window read on only one validator",
-        EL,
-        "    since, until, election = operations.both(",
-        "    since, until, election = (lambda read: read(operations.nodes[0]))(",
-    ),
-    (
-        "U6 window guard removed",
-        EL,
-        "        reason = window_refusal(since, until, election, lib.validator_schedule(profile), now)",
-        "        reason = None",
-    ),
-    (
-        "U7 reserve shortfall ignored",
-        EL,
-        "    shortfall = reserve_shortfall(balance, value, reserve)",
-        "    shortfall = 0",
-    ),
-    (
-        "U8 renewal resubmit bypasses preflight",
-        EL,
-        '        if record.get("renewal"):\n\n            def prerequisites():\n                authorization_preflight(operations, record, profile)',
-        '        if record.get("renewal"):\n            prerequisites = None',
-    ),
-    (
-        "U9 initial authorization bypasses preflight",
-        EL,
-        "        prerequisites=lambda: authorization_preflight(operations, params, profile),",
-        "        prerequisites=lambda: None,",
-    ),
-    (
-        "U10 retry keeps the old expiry",
-        OPS,
-        '("value", "body_hash", "plan", "body_b64", "expires_at")',
-        '("value", "body_hash", "plan", "body_b64")',
-    ),
-    (
-        "U11 election service not restarted",
-        EL,
-        '            host.run(f"systemctl start {ELECTIONS_SERVICE}")',
-        "            pass",
-    ),
-    (
-        "U12 renewal id may change its parameters",
-        EL,
-        "            if any(record.get(k) != v for k, v in expected.items() if renewal or k in record):",
-        "            if False:",
-    ),
-    (
-        "U13 planned expiry trusts either clock",
-        EL,
-        '                if all(t >= int(plan["valid_until"]) + ops.EXPIRY_MARGIN for t in times):',
-        '                if any(t >= int(plan["valid_until"]) + ops.EXPIRY_MARGIN for t in times):',
-    ),
-    (
-        "U14 a settled renewal is not reported",
-        EL,
-        '            if state == "settled":\n                print(f"{actual_id}: already settled',
-        '            if False:\n                print(f"{actual_id}: already settled',
-    ),
-]
-
-
-M += [
-    (
-        "U15 renewal readiness assessment ignored",
-        EL,
-        '    if "BLOCKING" in status or "kind 4 never accepted" in status:\n        raise lib.TestnetError(\n            f"renewal',
-        '    if False:\n        raise lib.TestnetError(\n            f"renewal',
     ),
 ]
 

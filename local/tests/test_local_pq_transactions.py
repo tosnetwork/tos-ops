@@ -8,8 +8,10 @@ import pytest
 from contract import WalletV1
 from local_pq_test_wire import address, message, transaction
 from local_pq_transactions import (
+    COINS_LIMIT,
     Faucet,
     atomic_json,
+    coins,
     cursor,
     decoded,
     faucet_lock,
@@ -334,3 +336,13 @@ def test_a_payment_whose_history_lags_its_seqno_is_never_abandoned(tmp_path):
     receipt = asyncio.run(sender.recover())[0]
     assert receipt["ok"] and len(net.broadcasts) == 1
     assert len(net.history[address(2).to_str(False)]) == 1
+
+
+def test_message_values_are_positive_integers_the_coins_encoding_carries():
+    assert coins(0, zero=True) == 0
+    assert coins(COINS_LIMIT - 1) == COINS_LIMIT - 1
+    for value in (0, -1, COINS_LIMIT, 1.0, True, "1"):
+        with pytest.raises(ValueError):
+            coins(value)
+    with pytest.raises(ValueError):
+        coins(-1, zero=True)

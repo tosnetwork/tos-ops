@@ -22,10 +22,10 @@ the ceremony's approved revision takes precedence and must match on every host.
 
 - **Operator:** provides host and SSH public access details, prepares it, retains
   the consensus seed, supplies the authenticated public record, and keeps it live.
-- **Coordinator / authorized offline signer:** generates/publishes genesis,
-  retains bootstrap and offline pool-owner wallets, obtains root signatures,
-  journals payments, onboards and renews. The controller root seed stays in the
-  approved offline/coordinator signing domain, never on the validator host.
+- **Coordinator / authorized offline signer:** derives each validator's staking
+  pool, generates/publishes genesis, retains the bootstrap and offline pool-owner
+  wallets, journals payments and onboards. The pool owner keys stay in the
+  coordinator's signing domain, never on the validator host.
 - Only public records cross to the coordinator. A request for a seed, vault key
   or mnemonic is not part of onboarding.
 
@@ -39,7 +39,7 @@ python3 /opt/tos-testnet/scripts/testnet-elections.py --help
 
 The shell installers have no `--help` handler; their usage is in their opening
 comments. `onboard`, `activate` and retirement have no dry run. Obtain explicit
-human approval after read-only checks; `fund`, `refund` and `withdraw` support
+human approval after read-only checks; `fund` and `withdraw` support
 `--dry-run` and need its review before the live command. `fund --dry-run` signs and saves a private BOC;
 it is not a no-signing check and requires signing permission.
 
@@ -105,48 +105,50 @@ sudo -u tos tos-pq-consensus-key show /var/lib/tos/validator/keys/pq-consensus.s
 ```
 
 The node runs as `tos`, database/keys under `/var/lib/tos/validator` (0700),
-seed owner-only (0600), logs `/var/log/tos/validator` (0750). No root seed or
-operator-wallet secret belongs there. Confirm seed identity without displaying
+seed owner-only (0600), logs `/var/log/tos/validator` (0750). No pool-owner key
+or operator-wallet secret belongs there. Confirm seed identity without displaying
 its contents. Arrange the human-only encrypted offline backup; see
 [custody](../production/Production-Node.md#31-consensus-key). Never run a second
 node from a backup while the first can still sign.
 
-## 4. Offline controller root and public record
+## 4. Staking account and public record
 
-**Human offline signer:** use the separately built `tos-pq-key` from the same tos
-source (`crypto/pq/tools`, not linked into the node). Generate `ROOTSEED` under
-umask 077 in a private offline directory, encrypt its backup using the approved
-backup procedure, and verify recovery offline. The repository supplies no backup
-encryption tool. Agents must not read/copy plaintext or log the signing session.
-Only the public key and controller artifacts are shared. On the offline build
-machine, the separate tool is built without installing anything on a validator:
+The validator is named by its **staking account**: a single-nominator pool whose
+owner is an offline wallet the coordinator keeps and whose validator role is
+your operator wallet on this host. Genesis records the pool's address as the
+validator id, the node is bound to it, and it signs stake authorizations only
+for it. The pool is derived from the two wallets, so the operator wallet is made
+before genesis.
+
+**Operator on host**, after `build-tosctl.sh`, with approval:
 
 ```bash
-cmake -S "$TOS_ROOT/crypto/pq/tools" -B <OFFLINE_BUILD_DIRECTORY>
-cmake --build <OFFLINE_BUILD_DIRECTORY> --target tos-pq-key
+sudo /opt/tos-testnet/scripts/init-operator.sh --name <NODE_NAME> --wallet-only
 ```
 
-Use that build's `tos-pq-key` for ceremony step 2. The human chooses encryption
-and backup verification; no agent-visible plaintext command is needed.
+Expected: the last line is `op-<NODE_NAME> <ADDRESS>`. It creates `tos-ctl`, its
+vault and the masterchain operator wallet and needs no running node; the wallet
+key stays in the host's vault. Send the address to the coordinator through an
+authenticated channel.
 
-[Step 2](CEREMONY.md#2-operator-controller-id-offline-root-key) gives key generation
-and the controller derivation command. Confirm the controller's code hash and
-consensus key id in `controller.json`; send that public file through an
-authenticated channel. Retain it for later deployment/renewal.
+**Coordinator** runs [step 2](CEREMONY.md#2-coordinator-staking-pools) for it and
+returns the pool's validator id. Confirm out of band that the operator wallet it
+names is yours.
 
-**Operator on host**, using that controller id:
+**Operator on host**, using that validator id:
 
 ```bash
 sudo -u tos python3 /opt/tos-testnet/scripts/testnet-operator.py record \
   --db /var/lib/tos/validator --seed /var/lib/tos/validator/keys/pq-consensus.seed \
-  --controller-id <CONTROLLER_ID> --operator <OPERATOR_LABEL> \
+  --validator-id <VALIDATOR_ID> --operator <OPERATOR_LABEL> \
   --address <PUBLIC_IPV4>:30001 --out /tmp/record.json
 ```
 
 Expected: a public JSON record matching the prepared config's transport address
 and consensus identity. Send only this file to the coordinator and verify receipt
 out of band. A mismatch is a preparation/identity incident; never edit the record
-by hand. The coordinator validates it in the manifest.
+by hand. The coordinator validates it in the manifest, which refuses a validator
+id that is not a recorded pool.
 
 ## 5. Activate and verify custody and synchronization
 
@@ -156,13 +158,14 @@ global-config SHA-256 and epoch, and verified your record. With explicit approva
 ```bash
 sudo /opt/tos-testnet/scripts/install-node.sh activate --role validator \
   --global-config <GLOBAL_CONFIG_JSON> --sha256 <PUBLISHED_SHA256> \
-  --genesis <PUBLISHED_GENESIS_DIRECTORY> --validator-id <CONTROLLER_ID>
+  --genesis <PUBLISHED_GENESIS_DIRECTORY> --validator-id <VALIDATOR_ID>
 systemctl is-active tos-testnet-validator
 sudo journalctl -u tos-testnet-validator -n 100 --no-pager
 sudo sh -c 'grep "post-quantum consensus custody" /var/log/tos/validator/node.log*'
 ```
 
-Expected: active unit; custody line names your controller and exact key id/window.
+Expected: active unit; the custody line names your pool's validator id and the
+exact key id/window.
 The installer binds the seed while stopped, configures a loopback console, installs
 and verifies the template, and starts the node. It refuses different installed
 config content or a mismatched digest. Investigate rather than replace it silently.
@@ -172,15 +175,18 @@ An active unit alone does not prove sync or correct custody.
 
 ## 6. Onboard for elections
 
-**Operator supplies:** label, host/approved SSH access, public controller artifact,
-matching node/tosctl revision, live synced console and RPC, and offline root-signing
-availability. Never send the root or consensus seed to the host/coordinator agent.
+**Operator supplies:** label, host/approved SSH access, the operator wallet made
+in §4, matching node/tosctl revision and a live synced console and RPC. Never
+send the consensus seed or the vault key to the host/coordinator agent.
 
 **Coordinator**, with human approval, follows [§8.1](CEREMONY.md#81-onboarding-a-genesis-validator-for-elections).
 There is no `onboard --dry-run`. Review the two-validator `reconcile` report,
 funding amounts/profile, identities and public artifacts before authorizing it.
-It initializes `tos-ctl`, funds/deploys/configures, signs the authorization offline,
-checks readiness and enables elections. Keep the ceremony journal and secret
+It completes `tos-ctl` (console key, node), refuses an operator wallet other than
+the one the pool was derived from, funds the operator wallet with fee money, funds
+the offline owner, deploys the pool, configures pool and binding, sends the
+principal from the owner, checks that the pool holds two stakes and that the node
+reports custody for the pool, and enables elections. Keep the ceremony journal and secret
 backups; do not restart onboarding with a different ceremony after a timeout.
 
 **Operator verifies** the host task:
@@ -190,21 +196,24 @@ systemctl is-active tos-testnet-elections
 sudo journalctl -u tos-testnet-elections -n 60 --no-pager
 ```
 
-Expected: task opens its wallet/pool and reports an election or no active election,
-with no blocking readiness failure. The task runs as `tos-ctl`, owns only
-`/var/lib/tos-ctl`, and cannot renew root authorization itself. Root reads
-`/etc/tos/tosctl.env` (0600) for it; never display that file. Every manual host
-`tosctl` read uses the same identity and working directory, for example:
+Expected: the task opens its wallet and pool and reports an election or no active
+election. In an election it asks the node for a stake authorization for the pool,
+refuses one signed for another account, and sends the pool the order with the
+fees only (1.2 TOS); the pool forwards the stake. After the term it recovers the
+stake to the pool. The task runs as `tos-ctl` and owns only `/var/lib/tos-ctl`.
+Root reads `/etc/tos/tosctl.env` (0600) for it; never display that file. Every
+manual host `tosctl` read uses the same identity and working directory, for
+example:
 
 ```bash
-sudo bash -c 'set -a; . /etc/tos/tosctl.env; set +a; cd /var/lib/tos-ctl; runuser -u tos-ctl -- tosctl controller operations status --controller=-1:CONTROLLER_HEX --strict'
+sudo bash -c 'set -a; . /etc/tos/tosctl.env; set +a; cd /var/lib/tos-ctl; runuser -u tos-ctl -- tosctl wallet ls'
 ```
 
-Expected: pinned block, funds/allowance, limit/floor, stakes remaining and expiry;
-`--strict` returns nonzero for warnings. A successful stake submission still needs
-Elector acceptance **and** the next Config34 activation, checked by the coordinator.
+Expected: `op-<NODE_NAME>` with its balance. A successful stake submission still
+needs Elector acceptance **and** the next Config34 activation, checked by the
+coordinator.
 
-## 7. Daily checks and renewal
+## 7. Daily checks and fee top-ups
 
 **Operator daily and after every restart/rotation:**
 
@@ -217,26 +226,23 @@ df -h /var/lib/tos
 ```
 
 Check head and head age, process memory/restarts, disk and growth, net failures,
-peer/transport timeout logs, accepted stakes and operating status from §6.
+peer/transport timeout logs, accepted stakes and the operator wallet balance from §6.
 The disk checker prints JSON with null for unavailable observations and exits 1
 below a floor. It is not a full peer-count or transaction audit. Persistent peer
 timeouts need coordinator cross-node/UDP checks; this bundle has no dedicated
 peer-health command. Coordinator watching/alerts: [testnet README](README.md#watching-the-network).
 
-Run the strict operating-status read before remaining stakes run out or the
-expiry window approaches. A balance alone does not authorize stakes.
-**Coordinator renewal:** [renewal runbook](CEREMONY.md#renewing-operating-authorization),
-first a journaled bootstrap `fund` top-up, then a separate `refund` root grant;
-review dry runs, do one node, verify, then the rest. Both validators must agree
-on the quiet election window and funds/fees. Operator confirms the election
-service is active afterward and the exact new authorization is visible.
+The operator wallet pays only fees: 1.2 TOS with every stake order and 0.2 TOS
+with every recovery, plus its own gas. Ask the coordinator for a journaled
+bootstrap [`fund` top-up](CEREMONY.md#topping-up-an-operator-wallet) well before
+it runs low; the principal stays in the pool.
 
 The gate explains only fully matched election-task pool messages from their
 transaction BOCs. New-stake also requires a genesis-unchanged ConfigParam 15 on
 both validators; recovery and maintenance have their own body/value limits. See
-[relay history](CEREMONY.md#election-relay-history). Other unexplained transfers
-still require human reconciliation. Never automatically baseline or assume every
-20 TOS transfer is a relay.
+[election task history](CEREMONY.md#election-task-history). Other unexplained
+transfers still require human reconciliation. Never automatically baseline or
+assume every small transfer to the pool is the election task's.
 
 ## 8. Upgrade, rollback and key rotation
 
@@ -268,12 +274,12 @@ previous verified release. Never restore an older DB or truncate it under the
 same signing identity as a routine rollback; retain forensic evidence first.
 
 **Rotation:** the pinned node supports multiple consensus keys, but this bundle
-has no journaled rotation command. A human coordinates the offline kind-3 bind,
-key schedule, retained current/previous/next signing duties and election proof.
-Use the exact tos checkout's `doc/validator-operator-guide.md` §10 and
+has no journaled rotation command. A human coordinates the key schedule, the
+retained current/previous/next signing duties and the election proof; the staking
+account does not change. Use the exact tos checkout's
+`doc/validator-operator-guide.md` ("Rotate the consensus key") and
 `tos-pq-consensus-key` usage, with an independently reviewed command plan; never
-rerun `activate` over a multi-key node. Root rotation changes epoch/nonce and
-invalidates earlier signed requests. Do not treat it as an automated renewal.
+rerun `activate` over a multi-key node.
 
 ### External-message pool option migration
 
@@ -304,7 +310,7 @@ place.
 | Head stuck / peers timing out | Compare fresh full block IDs on two validators; check UDP mesh, head versus shard-client lag and memory. Keep logs. Do not reset to cure lag. |
 | Disk filling | Inspect GC progress, key-block/election progress, consensus deletion logs and growth. Escalate before exhaustion; never delete live DB/consensus directories. |
 | Wrong network / zero state | Stop and ask; preserve DB/config. Never overwrite config and reuse keys as a shortcut to another genesis. |
-| Stake refused or not confirmed | Retain the query/transaction evidence; inspect Elector result and controller readiness, pool balance and authorization expiry. Do not resend or clear journals to force acceptance. |
+| Stake refused or not confirmed | Retain the query/transaction evidence; inspect the Elector result, the pool balance, the operator wallet's fee balance and the node's custody line (validator id = the pool). Do not resend or clear journals to force acceptance. |
 | Open operation | Coordinator runs read-only `reconcile`; human chooses verified `record`, original-message `resubmit`, or terminal-failure `retry`. See [recovery](CEREMONY.md#81-onboarding-a-genesis-validator-for-elections). |
 
 **Leaving:** coordinate disabling new stakes, keep the node signing through all
