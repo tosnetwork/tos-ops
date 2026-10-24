@@ -165,6 +165,13 @@ if busy+32 > os.cpu_count()*2/3 or total-available+31*1024**2 > total*2/3:
 for port in [*range(2001,2023), *range(8011,8018)]:
     for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
         with socket.socket(socket.AF_INET, kind) as s:
+            # The engine's TCP listeners set SO_REUSEADDR, so a TIME-WAIT left on a
+            # JSON-RPC or console port by the previous network's clients does not stop
+            # them, while a live listener still does. Probe TCP the same way. UDP stays
+            # plain: the engine's UDP sockets also set it, and a reusing probe would
+            # bind beside a running node.
+            if kind == socket.SOCK_STREAM:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind(('127.0.0.1',port))
 CHECK
 systemctl enable --now tos-pq-dht tos-pq-validator@{1,2,3,4} tos-pq-observer@{5,6}
