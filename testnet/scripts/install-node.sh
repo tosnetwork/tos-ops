@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 # Install and bring up one public testnet node on this host. Run as root.
 #
-#   install-node.sh prepare  --role validator|fullnode|dht --public-ip IP [--release DIR]
+#   install-node.sh prepare  --role validator|fullnode|dht --public-ip IP [--release DIR --rev COMMIT]
 #   install-node.sh activate --role validator|fullnode|dht --global-config FILE --sha256 HEX
 #                            [--genesis DIR] [--validator-id HEX]
-#   install-node.sh binaries --role validator|fullnode|dht --release DIR
+#   install-node.sh binaries --role validator|fullnode|dht --release DIR --rev COMMIT
 #
 # The release DIR is what build-node-binaries.sh wrote on this host: each host
-# compiles its own binaries from the pinned tos commit.
+# compiles its own binaries from the pinned tos commit. --rev is that pinned
+# commit; check-release.sh refuses a release built from any other.
 #
 # prepare (before genesis for a genesis validator; any time for other roles):
-#   installs release binaries verified against the release's SHA256SUMS,
+#   installs release binaries verified against --rev and the release's SHA256SUMS,
 #   creates the tos service account and the production layout
 #   (/var/lib/tos/<role>, /var/log/tos/<role>), runs the engine's first start
 #   with -I <public-ip>:<port> on a placeholder global config, and on a
@@ -42,12 +43,13 @@ profile() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); [d:=d[k
 [ "$(id -u)" = 0 ] || die "run as root"
 [ $# -ge 1 ] || die "usage: install-node.sh prepare|activate|binaries --role ROLE ..."
 STEP=$1; shift
-ROLE="" PUBLIC_IP="" RELEASE="" GLOBAL_CONFIG="" SHA256="" GENESIS="" VALIDATOR_ID=""
+ROLE="" PUBLIC_IP="" RELEASE="" REV="" GLOBAL_CONFIG="" SHA256="" GENESIS="" VALIDATOR_ID=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --role) ROLE=$2; shift 2 ;;
     --public-ip) PUBLIC_IP=$2; shift 2 ;;
     --release) RELEASE=$2; shift 2 ;;
+    --rev) REV=$2; shift 2 ;;
     --global-config) GLOBAL_CONFIG=$2; shift 2 ;;
     --sha256) SHA256=$2; shift 2 ;;
     --genesis) GENESIS=$2; shift 2 ;;
@@ -74,16 +76,13 @@ role_binaries() {
 
 install_release() {
   local dir=$1 name
-  [ -f "$dir/SHA256SUMS" ] || die "$dir/SHA256SUMS is missing; install only a verified release"
-  (cd "$dir" && sha256sum --check --strict SHA256SUMS) || die "release digest check failed"
-  for name in $(role_binaries); do
-    [ -f "$dir/$name" ] || die "release lacks $name, which a $ROLE node needs"
-  done
+  [ -n "$REV" ] || die "--rev COMMIT is required with --release"
+  # shellcheck disable=SC2046 # one word per binary
+  bash "$HERE/check-release.sh" "$dir" "$REV" $(role_binaries) || die "release $dir refused"
   # Install every binary the release carries, so a host running two roles
   # (a validator and a DHT node) keeps them from one build.
   for name in "${ALL_BINARIES[@]}"; do
     if [ -f "$dir/$name" ]; then
-      grep -q " $name\$" "$dir/SHA256SUMS" || die "$name is not covered by SHA256SUMS"
       install -m 0755 -o root -g root "$dir/$name" "$BIN/$name"
     fi
   done
