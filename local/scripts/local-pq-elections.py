@@ -371,7 +371,7 @@ async def submit_candidate(client, faucet, sender, console, candidate, election,
             election_date=election,
             max_factor=1 << 16,
             adnl_addr=bytes.fromhex(candidate["adnl_id"]),
-            src_addr=wallet.hash_part,
+            stake_owner=wallet.hash_part,
         )
         response, _, authorization = await console.request_with_raw(request)
         auth = request.parse_result(response)
