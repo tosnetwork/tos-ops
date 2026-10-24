@@ -88,8 +88,12 @@ TOS_COMMIT=<FULL_40_CHARACTER_COMMIT>
 sudo /opt/tos-testnet/scripts/build-node-binaries.sh --rev "$TOS_COMMIT" --role validator
 sudo /opt/tos-testnet/scripts/build-tosctl.sh --rev "$TOS_COMMIT"
 sudo /opt/tos-testnet/scripts/install-node.sh prepare --role validator \
-  --public-ip <PUBLIC_IPV4> --release "/var/lib/tos-build/release-$TOS_COMMIT"
+  --public-ip <PUBLIC_IPV4> --release "/var/lib/tos-build/release-$TOS_COMMIT" --rev "$TOS_COMMIT"
 ```
+
+`--rev` is refused unless the release's `BUILD-INFO` names that commit. The
+build is reproducible for one commit and toolchain: compare the release's
+`SHA256SUMS` with another host's built from the same commit.
 
 Build outputs: `/var/lib/tos-build/release-<COMMIT>/{SHA256SUMS,BUILD-INFO}`,
 `/etc/tos/TOSCTL-BUILD-INFO`, and build logs in `/var/lib/tos-build`.
@@ -254,7 +258,7 @@ Build new binaries before stopping anything. Upgrade one validator at a time:
 sudo /opt/tos-testnet/scripts/build-node-binaries.sh --rev <NEW_COMMIT> --role validator
 sudo systemctl stop tos-testnet-elections tos-testnet-validator
 sudo /opt/tos-testnet/scripts/install-node.sh binaries --role validator \
-  --release /var/lib/tos-build/release-<NEW_COMMIT>
+  --release /var/lib/tos-build/release-<NEW_COMMIT> --rev <NEW_COMMIT>
 sudo /opt/tos-testnet/scripts/build-tosctl.sh --rev <NEW_COMMIT>
 sudo systemctl start tos-testnet-validator
 # Verify custody, sync and two-node identity before starting elections.

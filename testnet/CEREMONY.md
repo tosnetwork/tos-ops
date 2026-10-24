@@ -95,7 +95,7 @@ commit, then prepare:
 sudo /opt/tos-testnet/scripts/build-node-binaries.sh --rev <COMMIT> --role validator
 sudo /opt/tos-testnet/scripts/build-tosctl.sh --rev <COMMIT>
 sudo /opt/tos-testnet/scripts/install-node.sh prepare --role validator \
-  --public-ip <PUBLIC_IPV4> --release /var/lib/tos-build/release-<COMMIT>
+  --public-ip <PUBLIC_IPV4> --release /var/lib/tos-build/release-<COMMIT> --rev <COMMIT>
 ```
 
 Never copy binaries from another machine. RocksDB compiles for the build
@@ -105,7 +105,10 @@ stopped with SIGILL (illegal instruction) on these hosts.
 migrated to an older CPU keeps working. It needs about 2.5 GiB of memory per
 compile job and takes tens of minutes on a 6-core VM. To replace the binaries
 of a prepared node later, stop it and run
-`install-node.sh binaries --role <role> --release <dir>`.
+`install-node.sh binaries --role <role> --release <dir> --rev <COMMIT>`.
+`--rev` refuses a release whose `BUILD-INFO` names another commit. The four
+validators' `SHA256SUMS` for one commit are identical (build timestamps take
+the commit time); compare them after building, before installing.
 
 This creates `/var/lib/tos/validator` and `/var/log/tos/validator` owned by
 `tos`. It runs the first start with `-I <PUBLIC_IPV4>:30001` on a placeholder
@@ -174,7 +177,7 @@ does not announce, and a key id that does not match the public key. Send
 ```bash
 sudo /opt/tos-testnet/scripts/build-node-binaries.sh --rev <COMMIT> --role dht --jobs 2
 sudo /opt/tos-testnet/scripts/install-node.sh prepare --role dht \
-  --public-ip <PUBLIC_IPV4> --release /var/lib/tos-build/release-<COMMIT>
+  --public-ip <PUBLIC_IPV4> --release /var/lib/tos-build/release-<COMMIT> --rev <COMMIT>
 ```
 
 A validator host that also serves DHT builds both with

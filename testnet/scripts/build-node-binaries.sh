@@ -15,7 +15,7 @@
 # committed in tos; clone tos at --rev with its submodules; configure a
 # production Release build; build the role's targets; write
 # /var/lib/tos-build/release-<rev>/ with the binaries, SHA256SUMS and
-# BUILD-INFO. Install them with `install-node.sh binaries --release <dir>`.
+# BUILD-INFO. Install them with `install-node.sh binaries --release <dir> --rev <commit>`.
 #
 # The source checkout is reused on a rerun only if it is at --rev with no
 # local changes; otherwise the script refuses.
@@ -73,6 +73,12 @@ git -C "$SRC" -c advice.detachedHead=false checkout -q "$REV"
 [ "$(git -C "$SRC" rev-parse HEAD)" = "$REV" ] || die "checkout is not at $REV"
 git -C "$SRC" submodule sync -q --recursive
 git -C "$SRC" submodule update -q --init --recursive
+# Build timestamps embedded in third-party code (OpenSSL's "built on", which
+# its configure step writes while cmake configures) take the commit time, so
+# every host builds the same bytes from one commit and toolchain and the
+# hosts' SHA256SUMS can be compared.
+SOURCE_DATE_EPOCH=$(git -C "$SRC" log -1 --format=%ct "$REV")
+export SOURCE_DATE_EPOCH
 
 command -v clang++-21 >/dev/null || bash "$SRC/scripts/install-llvm-toolchain.sh" 21
 
