@@ -750,10 +750,10 @@ def test_rpc_never_branches_on_an_ok_field():
 def test_profile_tag_is_sha256_of_its_rule():
     profile = lib.load_profile()
     entry = lib.profile_auth_network_tag(profile)
-    rule = "TOS-AUTH-NETWORK-TAG-v1;network=tos-public-testnet;global_id=2;epoch=4"
+    rule = "TOS-AUTH-NETWORK-TAG-v1;network=tos-public-testnet;global_id=2;epoch=5"
     assert entry["rule"] == rule
     assert entry["tag"] == hashlib.sha256(rule.encode()).digest()
-    assert entry["tag"].hex() == "e36440a2e7704d9e26c79c5d9ba462507783b18404e876da9a232d38722e28fd"
+    assert entry["tag"].hex() == "3edc0460815cddd18f2b878004f50d7191d0dbd34d772d298b281e0767d7fd2c"
 
 
 @pytest.mark.parametrize(
@@ -761,7 +761,7 @@ def test_profile_tag_is_sha256_of_its_rule():
     [
         ({"value": "00" * 32}, "reserved"),
         ({"value": "e3" * 31}, "64 hexadecimal"),
-        ({"campaign_epoch": 5}, "not SHA-256"),
+        ({"campaign_epoch": 6}, "not SHA-256"),
         ({"rule": "something else"}, "not SHA-256"),
         ({"status": "PROPOSED"}, "status"),
         ({"campaign_epoch": True}, "campaign_epoch"),
@@ -795,11 +795,11 @@ def test_supplied_tag_must_be_the_announced_one():
 
 # ---------------------------------------------------------------- zero state AUTH policy
 
-# A real version-16 zero state: create-state at tos d7ef85b4c with this profile's
+# A real version-16 zero state: create-state at tos d7ef85b4c with the epoch-4 AUTH
 # tag, from a loopback rehearsal (global id 2), and create-state's own root hash.
 ZERO_STATE = (DATA / "zerostate-v16-auth.boc").read_bytes()
 ZERO_STATE_RHASH = (DATA / "zerostate-v16-auth.rhash").read_bytes()
-PROFILE_TAG = bytes.fromhex("e36440a2e7704d9e26c79c5d9ba462507783b18404e876da9a232d38722e28fd")
+FIXTURE_TAG = bytes.fromhex("e36440a2e7704d9e26c79c5d9ba462507783b18404e876da9a232d38722e28fd")
 CONFIG48_HASH = "900a85305f8ad2f6bea6b0f51955659a5298bf41ae59cea44f5edaeeddb55d68"
 
 
@@ -808,8 +808,8 @@ def test_cell_hash_matches_create_state():
 
 
 def test_real_zero_state_auth_policy():
-    auth = lib.zero_state_auth_policy(ZERO_STATE, ZERO_STATE_RHASH, 2, 16, PROFILE_TAG)
-    assert auth["network_tag_hex"] == PROFILE_TAG.hex()
+    auth = lib.zero_state_auth_policy(ZERO_STATE, ZERO_STATE_RHASH, 2, 16, FIXTURE_TAG)
+    assert auth["network_tag_hex"] == FIXTURE_TAG.hex()
     assert auth["config_param_48_hash_hex"] == CONFIG48_HASH
     assert auth["policy_identity_sha256"] == (
         "5e4380aedc95f8cb72de55f7506de0269b47c03ad1d1ed0e5184c332544262c0"
@@ -821,9 +821,9 @@ def test_real_zero_state_auth_policy():
 @pytest.mark.parametrize(
     "rhash,global_id,version,tag,message",
     [
-        (b"\x00" * 32, 2, 16, PROFILE_TAG, "root hash"),
-        (ZERO_STATE_RHASH, 3, 16, PROFILE_TAG, "global id 2"),
-        (ZERO_STATE_RHASH, 2, 17, PROFILE_TAG, "version 16, expected 17"),
+        (b"\x00" * 32, 2, 16, FIXTURE_TAG, "root hash"),
+        (ZERO_STATE_RHASH, 3, 16, FIXTURE_TAG, "global id 2"),
+        (ZERO_STATE_RHASH, 2, 17, FIXTURE_TAG, "version 16, expected 17"),
         (ZERO_STATE_RHASH, 2, 16, b"\x01" * 32, "carries tag"),
     ],
 )
@@ -891,7 +891,7 @@ def test_zero_state_auth_policy_refuses_a_policy_outside_the_lists(monkeypatch, 
 
     monkeypatch.setattr(lib, "zero_state_config", without_48)
     with pytest.raises(lib.TestnetError, match=f"not {name}"):
-        lib.zero_state_auth_policy(ZERO_STATE, ZERO_STATE_RHASH, 2, 16, PROFILE_TAG)
+        lib.zero_state_auth_policy(ZERO_STATE, ZERO_STATE_RHASH, 2, 16, FIXTURE_TAG)
 
 
 def test_serialized_boc_round_trips():
