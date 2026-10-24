@@ -188,6 +188,12 @@ def tos_revision(tos_root: Path) -> str:
 
 def create_state(run_dir: Path, args: argparse.Namespace, script: Path) -> str:
     env = dict(os.environ, SOURCE_DATE_EPOCH=str(args.epoch))
+    # create-state runs inside run_dir, so a path relative to the caller's
+    # directory (`--ceremony ./ceremony`) would name nothing there.
+    run_dir, script = run_dir.resolve(), script.resolve()
+    args = argparse.Namespace(
+        **{**vars(args), "tos_build": args.tos_build.resolve(), "tos_root": args.tos_root.resolve()}
+    )
     result = subprocess.run(
         [
             str(args.tos_build / "crypto/create-state"),
