@@ -216,7 +216,7 @@ ExecStart=/usr/local/bin/validator-engine \
   --state-ttl 86400 --archive-ttl 86400 \
   --celldb-cache-size 1073741824 --celldb-cache-min-size 1073741824 \
   --exporter-address 127.0.0.1:9100 \
-  --json-rpc-address 127.0.0.1:8081
+  --json-rpc-address 127.0.0.1:8081 --json-rpc-without-wallet-index
 Restart=on-failure
 RestartSec=10
 KillMode=control-group

@@ -30,6 +30,8 @@ WorkingDirectory=/var/lib/tos/validator
 # block cache of the other databases defaults to 1 GiB; it is set here so the
 # cap does not depend on an engine default.
 Environment=TOS_ROCKSDB_BLOCK_CACHE_SIZE=1073741824
+# JSON-RPC serves only the operator tool on loopback; the wallet index belongs
+# to RPC nodes, so a validator never opens it.
 ExecStart=/usr/local/bin/validator-engine \
   -C /etc/tos/global-config.json \
   -D /var/lib/tos/validator \
@@ -39,7 +41,7 @@ ExecStart=/usr/local/bin/validator-engine \
   -t 16 \
   --state-ttl 3600 --archive-ttl 86400 \
   --celldb-cache-size 1073741824 --celldb-cache-min-size 1073741824 \
-  --json-rpc-address 127.0.0.1:8081 \
+  --json-rpc-address 127.0.0.1:8081 --json-rpc-without-wallet-index \
   --exporter-address 127.0.0.1:9100
 Restart=on-failure
 RestartSec=10

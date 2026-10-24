@@ -472,6 +472,27 @@ def test_engine_units_cap_rocksdb_caches_at_one_gib():
     assert units[2].read_text() in doc
 
 
+def test_validators_serve_json_rpc_without_the_wallet_index():
+    # The validator's own loopback JSON-RPC serves its operator tool; the wallet index
+    # belongs to RPC nodes. A full node is an RPC node and keeps it.
+    import re
+    from pathlib import Path
+
+    root = Path(lib.HERE).parent.parent
+    validators = [
+        root / "testnet" / "systemd" / "tos-testnet-validator.service",
+        root / "production" / "systemd" / "tos-validator.service",
+    ]
+    for path in validators:
+        unit = path.read_text()
+        assert re.findall(r"--json-rpc-address 127\.0\.0\.1:8081\b", unit), path
+        assert unit.count("--json-rpc-without-wallet-index") == 1, path
+    fullnode = (root / "testnet" / "systemd" / "tos-testnet-fullnode.service").read_text()
+    assert "--json-rpc-without-wallet-index" not in fullnode
+    rehearsal = (root / "testnet" / "scripts" / "rehearse-loopback.sh").read_text()
+    assert "--json-rpc-without-wallet-index" in rehearsal
+
+
 # ---------------------------------------------------------------- global config
 
 
