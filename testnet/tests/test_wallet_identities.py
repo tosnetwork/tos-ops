@@ -6,6 +6,7 @@ compared by public key (its address is fixed), operator and load-test wallets
 by address (a wallet-v3 address is a function of its key).
 """
 
+import argparse
 import base64
 import hashlib
 import importlib.util
@@ -692,3 +693,33 @@ def test_manifest_refuses_a_ceremony_with_more_than_the_pool_outputs(tmp_path, e
     (ceremony / extra).write_bytes(b"x")
     with pytest.raises(lib.TestnetError, match="only the outputs of"):
         manifest(tmp_path, ceremony)
+
+
+def test_create_state_finds_its_inputs_from_relative_paths(tmp_path, monkeypatch):
+    # create-state runs inside the run directory, so every path it is handed must
+    # still name the same file from there. CEREMONY.md passes `--ceremony ./ceremony`.
+    fake = tmp_path / "build/crypto/create-state"
+    fake.parent.mkdir(parents=True)
+    fake.write_text(
+        "#!/bin/sh\n"
+        'while [ $# -gt 0 ]; do case "$1" in\n'
+        '  -I) [ -d "$2" ] || { echo "no include dir $2"; exit 3; }; shift 2 ;;\n'
+        '  -s) [ -f "$2" ] || { echo "cannot locate file $2"; exit 2; }; shift 2 ;;\n'
+        "  *) shift ;;\n"
+        "esac; done\n"
+        "echo created\n"
+    )
+    fake.chmod(0o755)
+    for include in ("root/crypto/fift/lib", "root/crypto/smartcont", "build/crypto/smartcont"):
+        (tmp_path / include).mkdir(parents=True)
+    run_dir = tmp_path / "ceremony/run-a"
+    run_dir.mkdir(parents=True)
+    (run_dir / "gen-zerostate-testnet.fif").write_text("")
+    monkeypatch.chdir(tmp_path)
+    args = argparse.Namespace(epoch=1, tos_build=Path("build"), tos_root=Path("root"))
+    relative = Path("ceremony/run-a")
+    assert (
+        coordinator.create_state(relative, args, relative / "gen-zerostate-testnet.fif")
+        == "created\n"
+    )
+    assert (run_dir / "create-state.log").read_text() == "created\n"
