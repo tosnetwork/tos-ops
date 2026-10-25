@@ -1,0 +1,122 @@
+{
+ "@type": "smc.runResult",
+ "gas_used": 0,
+ "stack": [
+  [
+   "tuple",
+   {
+    "elements": [
+     [
+      "num",
+      "1797901109"
+     ],
+     [
+      "num",
+      "-1"
+     ],
+     [
+      "tuple",
+      {
+       "elements": [
+        [
+         "num",
+         "15"
+        ],
+        [
+         "cell",
+         {
+          "bytes": "te6ccgEBAQEAEgAAIAAAHCAAAA4QAAADhAAADhA="
+         }
+        ],
+        [
+         "num",
+         "83575817683240749323990612622265991483105117507496836174901311457356335305804"
+        ]
+       ]
+      }
+     ],
+     [
+      "num",
+      "55945723254585867116863836600548040758647410433934572791770354415021786154923"
+     ],
+     [
+      "tuple",
+      {
+       "elements": [
+        [
+         "num",
+         "0"
+        ],
+        [
+         "tuple",
+         {
+          "elements": [
+           [
+            "num",
+            "1"
+           ],
+           [
+            "tuple",
+            {
+             "elements": [
+              [
+               "num",
+               "2"
+              ],
+              [
+               "tuple",
+               {
+                "elements": [
+                 [
+                  "num",
+                  "3"
+                 ],
+                 [
+                  "list",
+                  {
+                   "elements": []
+                  }
+                 ]
+                ]
+               }
+              ]
+             ]
+            }
+           ]
+          ]
+         }
+        ]
+       ]
+      }
+     ],
+     [
+      "num",
+      "-288230376151711744"
+     ],
+     [
+      "num",
+      "6"
+     ],
+     [
+      "num",
+      "0"
+     ],
+     [
+      "num",
+      "2"
+     ]
+    ]
+   }
+  ]
+ ],
+ "exit_code": 0,
+ "last_transaction_id": null,
+ "block_id": {
+  "@type": "tos.blockIdExt",
+  "workchain": -1,
+  "shard": "-9223372036854775808",
+  "seqno": 164160,
+  "root_hash": "AuFDuPk7StTtYfvJZ8nmo0Wqo2mqJoOuolxtWdbiFbg=",
+  "file_hash": "HzIumLpk0KlO4B8NEZYUQyKTYuuZWIrw89qF+iZHjwk="
+ }
+}

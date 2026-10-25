@@ -80,7 +80,16 @@ def certificate_digest(value: dict) -> str:
     ).hexdigest()
 
 
-COORDINATOR_KINDS = ("fund", "activate-owner", "principal", "withdraw")
+# config-propose and config-vote (testnet-governance.py) send to the Config contract;
+# they settle only when its getter shows the effect (the caller's expect check).
+COORDINATOR_KINDS = (
+    "fund",
+    "activate-owner",
+    "principal",
+    "withdraw",
+    "config-propose",
+    "config-vote",
+)
 HOST_KINDS = ("deploy-pool",)
 KINDS = COORDINATOR_KINDS + HOST_KINDS
 STATES = ("planned", "signed", "broadcast", "settled", "failed")

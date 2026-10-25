@@ -62,6 +62,7 @@ testnet/
 │   │                             withdraw: principal back to the offline pool owner;
 │   │                             reconcile | record | resubmit | baseline | retry: manual operation recovery;
 │   │                             load: load test through a post-quantum high-volume wallet (coordinator)
+│   ├── testnet-governance.py     propose | sign | vote | status | adopted: change a ConfigParam by a validator vote (coordinator)
 │   ├── testnet_ops.py            value-moving operations: journal, two-validator gate, settlement by hashes
 │   ├── retire-host.sh            archive a host's evidence, then retire it from an ended epoch (root)
 │   ├── migrate-nonroot-services.sh  once per host: move the election task / alert peer off root (root)

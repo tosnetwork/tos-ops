@@ -589,6 +589,53 @@ keeps validating past its `utime_until`. But no key block is produced and state
 GC stops behind the last one, so disks grow until a later election succeeds.
 Treat it as an incident.
 
+### 8.2 Changing a configuration parameter by a validator vote
+
+`testnet-governance.py` changes a ConfigParam on the live chain through the Config
+contract (`-1:55…55`). The steps, and why each is shaped as it is:
+
+1. **Value.** Write the new parameter cell to a BOC file and reproduce its hash
+   independently (for example in Fift) before anything is sent.
+2. **Propose** (`propose ... --dry-run` first). The proposal binds the current
+   value's hash, so it can only replace the value it was made against. A
+   parameter that ConfigParam 10 lists is registered as critical (the contract
+   refuses it otherwise). The price follows ConfigParam 11: at least
+   `min_store_sec` of storage (5,000,000 s for a critical parameter on the
+   testnet, about 21.5 TOS for a 128-bit cell), and the contract wants 2^30
+   nanotos beyond it, which it returns. The payer is a wallet v3 in the
+   masterchain (the contract ignores other senders); the transfer is a journaled
+   operation and settles only when `get_proposal` lists the proposal. The payer's
+   earlier outgoing activity must be explained (journal or `baseline`).
+3. **Sign** under the current validator set. Each validator's console signs
+   `create-proposal-vote` on its host; only the vote body leaves the host. A
+   vote commits to the set's hash, so votes are signed again after every
+   rotation.
+4. **Vote.** The votes go to the Config contract one at a time, each a journaled
+   operation with 0.6 TOS attached (the verification is paid from it and the
+   rest returned). The command refuses votes signed under another set and skips
+   a validator that already voted in the round.
+5. **Rounds.** A round is won when votes of more than 3/4 of the set's weight
+   arrive; the proposal is adopted after ConfigParam 11's `min_wins` won rounds
+   (2 ordinary, 3 critical), each under a different set. With four equal
+   validators every round needs all four votes.
+6. **Adopted.** `adopted` exits 0 only when both validators serve the new cell.
+
+```bash
+G=/opt/tos-testnet/scripts/testnet-governance.py
+P=(--ceremony "$CEREMONY" --tos-root "$TOS_ROOT" --fift "$FIFT" --rpc "$RPC1" --confirm-rpc "$RPC2"
+   --payer-key PAYER.pk --payer-addr PAYER.addr --payer-subwallet PAYER_SUBWALLET)
+python3 "$G" propose "${P[@]}" --param 15 --value-boc new-cp15.boc --dry-run
+python3 "$G" propose "${P[@]}" --param 15 --value-boc new-cp15.boc
+# every round, after the rotation:
+python3 "$G" sign --ceremony "$CEREMONY" --inventory inventory.json --rpc "$RPC1" --proposal HASH
+python3 "$G" vote "${P[@]}" --proposal HASH
+python3 "$G" status --rpc "$RPC1" --proposal HASH
+python3 "$G" adopted --rpc "$RPC1" --confirm-rpc "$RPC2" --param 15 --value-boc new-cp15.boc
+```
+
+An exception after a broadcast is an unknown outcome: read the chain (`status`,
+the journal) before running anything again.
+
 ## 9. Resetting the testnet
 
 A reset is a new genesis with the same global id 2, so it shares the old
