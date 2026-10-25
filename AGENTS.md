@@ -63,8 +63,10 @@ assume that is a supported ARM build procedure.
 | `/usr/local/bin` | Installed binaries; `/var/lib/tos-build` holds pinned builds and receipts |
 
 Profile defaults: validator/full-node ADNL **30001/udp**, QUIC **31001/udp**;
-DHT **30300/udp**. Console **30002/tcp**, JSON-RPC **8081/tcp**, exporter
-**9100/tcp** stay on loopback. Full-node lite server is **30003/tcp**; a validator
+DHT **30300/udp**. JSON-RPC **8081/tcp** and exporter **9100/tcp** stay on
+loopback. The console **30002/tcp** listens on every address (the engine binds its
+control port by number only, as upstream does); the host firewall must not admit it,
+and it needs its client key. Full-node lite server is **30003/tcp**; a validator
 has no public lite server. Check [profile.json](testnet/network/profile.json)
 and installed unit, rather than opening a port from memory.
 

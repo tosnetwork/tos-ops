@@ -23,7 +23,8 @@
 #   places the zero state and base state where the engine finds them (genesis
 #   validators and early full nodes), binds the consensus key on a validator
 #   to its staking account (--validator-id: the pool genesis names),
-#   adds a loopback console (and a lite server on a full node), installs the
+#   adds the console on 30002/tcp (on every address; the host firewall keeps it
+#   closed) and a lite server on a full node, installs the
 #   unit and starts it.
 #
 # Nothing here touches a wallet key.
