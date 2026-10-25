@@ -507,7 +507,21 @@ operator wallet.
 A compromised validator host can therefore stake and recover, but it can neither
 take the principal nor have it sent elsewhere. The owner can also replace the
 validator address (`CHANGE_VALIDATOR_ADDRESS`); the pool, and with it the
-validator id, stays the same.
+validator id, stays the same:
+
+```bash
+python3 "$S" change-validator "${C[@]}" --name node-1 --id change-node-1-1 --new --to "$NEW" --dry-run
+# After approval, repeat without --dry-run. Restoring the operator wallet is
+# another id with --to set to it.
+```
+
+The command builds op `0x1001` with the pool's own `change-validator.fif` and
+signs a bounceable 0.1 TOS transfer from the owner wallet, which the pool keeps.
+It refuses while an election is open, when `--to` is not a masterchain wallet
+or already holds the role, and unless the pool's address, code and owner role
+are the recorded ones. It settles when `get_roles` on both validators shows the
+new validator. While another wallet holds the role, the host's election task
+cannot stake or recover through the pool: restore it before the next election.
 
 To take principal out, between elections (a stake at the Elector comes back
 to the pool only when the election task recovers it, `stake_held_for` after

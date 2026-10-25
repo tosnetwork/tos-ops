@@ -70,6 +70,18 @@ and drive load through a post-quantum high-volume wallet.
       result is appended to DIR/withdrawals.jsonl. Only liquid balance can leave:
       a stake returns to the pool after stake_held_for.
 
+  change-validator --name NAME --id ID [--new] --to ADDR --ceremony DIR
+          --tos-root DIR --fift PATH --rpc URL --confirm-rpc URL [--dry-run]
+      Give NAME's pool a new validator wallet ADDR (masterchain), as operation
+      ID. The pool's CHANGE_VALIDATOR_ADDRESS (op 0x1001, the pool's own
+      change-validator.fif) is signed here with the owner's offline key as a
+      bounceable 0.1 TOS transfer from the owner wallet; the pool keeps the
+      value. Refused while an election is open, when ADDR already holds the
+      role, and unless the pool is the recorded address with the pinned code and
+      the owner role. It settles when get_roles on both validators shows
+      (owner, ADDR); a settled result is appended to DIR/validator-changes.jsonl.
+      Restoring the operator wallet is the same command with --to set to it.
+
   reconcile | record --id ID (--settled | --failed a|b|c|d | --abandoned | --checkpoint) [--hint TX]
           | resubmit --id ID | baseline --wallet ADDR --reason TEXT
           (with --ceremony DIR --tos-root DIR --fift PATH --rpc URL --confirm-rpc URL)
@@ -494,6 +506,9 @@ WITHDRAWALS_FILE = "withdrawals.jsonl"
 # The value an owner message carries; the pool sends what it does not spend back
 # with the withdrawal (mode 64), so this is only an upper bound on the fee.
 OWNER_MESSAGE_NANOTOS = NANO
+VALIDATOR_CHANGES_FILE = "validator-changes.jsonl"
+# CHANGE_VALIDATOR_ADDRESS sends nothing back: the pool keeps the message value.
+CHANGE_MESSAGE_NANOTOS = NANO // 10
 # What the pool keeps for storage (MIN_TOS_FOR_STORAGE in single-nominator-code.fc).
 POOL_STORAGE_NANOTOS = NANO
 # --all asks for more than any pool holds; the pool caps a withdrawal at its
@@ -792,6 +807,7 @@ def owner_transfer(
     body: Path | None,
     prerequisites,
     extra: dict | None = None,
+    expect=None,
 ) -> dict:
     """A bounceable transfer from the pool owner, signed here with its offline key."""
     ceremony = Path(args.ceremony)
@@ -831,7 +847,7 @@ def owner_transfer(
         "subwallet": POOL_OWNER_SUBWALLET,
     }
     params.update(extra or {})
-    return operations.run(op_id, params, sign, lambda decoded: None, prerequisites)
+    return operations.run(op_id, params, sign, lambda decoded: None, prerequisites, expect)
 
 
 def owner_role_check(operations: ops.Operations, tos_root, pool: str, owner: str) -> None:
@@ -948,6 +964,136 @@ def withdraw(args: argparse.Namespace, operations: ops.Operations, global_id: in
         else set()
     )
     if args.id not in recorded:  # asking for a settled id again reports it, once recorded
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+        with os.fdopen(fd, "a") as out:
+            out.write(json.dumps(result, sort_keys=True) + "\n")
+    print(json.dumps(result, indent=2))
+    return result
+
+
+def change_validator_body(
+    args: argparse.Namespace, validator: str, work: Path, run=subprocess.run
+) -> Path:
+    """The owner's CHANGE_VALIDATOR_ADDRESS body (op 0x1001), from the pool's own
+    change-validator.fif."""
+    smartcont = Path(args.tos_root) / "crypto" / "smartcont"
+    result = run(
+        [
+            args.fift,
+            "-I",
+            f"{Path(args.tos_root) / 'crypto' / 'fift' / 'lib'}:{smartcont}",
+            "-s",
+            str(smartcont / "single-nominator-pool" / "change-validator.fif"),
+            validator,
+        ],
+        cwd=work,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    body = work / "change-validator.boc"
+    if result.returncode != 0 or not body.is_file():
+        raise lib.TestnetError(f"change-validator body: {(result.stdout + result.stderr)[-400:]}")
+    return body
+
+
+def pool_roles_both(operations: ops.Operations, pool: str) -> tuple[str, str]:
+    """(owner, validator) of a pool; both validators must agree."""
+    return tuple(operations.both(lambda node: Chain(node.url, node.rpc).pool_roles(pool)))
+
+
+def validator_changed(operations: ops.Operations, rec: dict, delivery, evidence: dict):
+    """A change settles when get_roles on both validators shows (owner, new validator)."""
+    roles = [Chain(node.url, node.rpc).pool_roles(rec["destination"]) for node in operations.nodes]
+    if all(r == (rec["wallet"], rec["validator"]) for r in roles):
+        return "settled", dict(evidence, roles=[rec["wallet"], rec["validator"]])
+    if any(r[0] != rec["wallet"] for r in roles):
+        return "failed", dict(evidence, form="b", reason=f"the pool's owner changed: {roles}")
+    return "pending", dict(evidence, reason=f"get_roles does not show the change yet: {roles}")
+
+
+def change_validator(args: argparse.Namespace, operations: ops.Operations, global_id: int) -> dict:
+    """Give a pool a new validator wallet, signed by its offline owner, as operation --id."""
+    name = args.name
+    ceremony = Path(args.ceremony)
+    pool_record = read_pools(ceremony).get(name)
+    if not pool_record or "pool" not in pool_record:
+        raise lib.TestnetError(f"{ceremony / POOLS_FILE} records no pool for {name}")
+    owner = address_from_file(pool_owner_paths(ceremony, name)["addr"])
+    if pool_record["owner"] != owner:
+        raise lib.TestnetError(f"the pool's recorded owner {pool_record['owner']} is not {owner}")
+    pool = pool_record["pool"]
+    if not ops.SAFE_ID.match(args.id or ""):
+        raise lib.TestnetError(f"not an operation id: {args.id!r}")
+    validator = check_raw_address(args.to)
+    if not validator.startswith("-1:"):
+        raise lib.TestnetError(
+            f"{validator} is not a masterchain wallet; the pool stakes only from one"
+        )
+    if validator in (pool, owner):
+        raise lib.TestnetError(f"{validator} is the pool or its owner, not a validator wallet")
+    record = operations.journal.record(args.id)
+    if args.new and record is not None:
+        raise lib.TestnetError(f"operation {args.id} exists; --new needs a new id")
+    if not args.new and record is None:
+        raise lib.TestnetError(f"no operation {args.id}; create a change with --new")
+    if record is not None and record.get("validator") != validator:
+        raise lib.TestnetError(
+            f"operation {args.id} names {record.get('validator')}, not {validator}"
+        )
+
+    def prerequisites() -> None:
+        operations.check_network()
+        owner_role_check(operations, args.tos_root, pool, owner)
+        election = operations.both(lambda node: Chain(node.url, node.rpc).active_election())
+        if election:
+            raise lib.TestnetError(
+                f"election {election} is open: the election task stakes through this pool; "
+                "change the validator between elections"
+            )
+        if pool_roles_both(operations, pool)[1] == validator:
+            raise lib.TestnetError(f"{validator} already holds {name}'s validator role")
+        if operations.balance(owner) < CHANGE_MESSAGE_NANOTOS + ops.FEE_ALLOWANCE_NANOTOS // 10:
+            raise lib.TestnetError("the owner wallet cannot pay for the change message")
+
+    with tempfile.TemporaryDirectory(prefix="change-validator-") as work:
+        body = change_validator_body(args, validator, Path(work))
+        if args.dry_run:
+            print(f"dry run: {args.id}: {pool}'s validator role to {validator}; nothing signed")
+            prerequisites()
+            return {"dry_run": True}
+        previous = record["previous"] if record else pool_roles_both(operations, pool)[1]
+        record = owner_transfer(
+            args,
+            operations,
+            global_id,
+            name,
+            args.id,
+            "change-validator",
+            pool,
+            CHANGE_MESSAGE_NANOTOS,
+            body,
+            prerequisites,
+            {"validator": validator, "previous": previous},
+            validator_changed,
+        )
+    result = {
+        "id": args.id,
+        "name": name,
+        "pool": pool,
+        "owner": owner,
+        "previous": record["previous"],
+        "validator": validator,
+        "owner_tx": record["evidence"]["wallet_tx"],
+        "pool_tx": record["evidence"]["destination_tx"],
+    }
+    path = ceremony / VALIDATOR_CHANGES_FILE
+    recorded = (
+        {json.loads(line).get("id") for line in path.read_text().splitlines() if line}
+        if path.is_file()
+        else set()
+    )
+    if args.id not in recorded:
         fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o644)
         with os.fdopen(fd, "a") as out:
             out.write(json.dumps(result, sort_keys=True) + "\n")
@@ -2431,6 +2577,12 @@ def main(argv: list[str] | None = None) -> int:
     how_much.add_argument("--amount")
     how_much.add_argument("--all", action="store_true")
     p_withdraw.add_argument("--dry-run", action="store_true")
+    p_change = sub.add_parser("change-validator", parents=[common])
+    p_change.add_argument("--name", required=True)
+    p_change.add_argument("--id", required=True, help="the change's operation id")
+    p_change.add_argument("--new", action="store_true", help="create the operation --id")
+    p_change.add_argument("--to", required=True, help="the new validator wallet (masterchain)")
+    p_change.add_argument("--dry-run", action="store_true")
     p_reconcile = sub.add_parser("reconcile", parents=[common])
     p_reconcile.add_argument("--wallet", action="append", default=[])
     p_record = sub.add_parser("record", parents=[common])
@@ -2503,6 +2655,8 @@ def main(argv: list[str] | None = None) -> int:
                 LoadDriver(args, chain, global_id, operations).run()
             elif args.command == "withdraw":
                 withdraw(args, operations, global_id)
+            elif args.command == "change-validator":
+                change_validator(args, operations, global_id)
             elif args.command in ("reconcile", "record", "resubmit", "baseline", "retry"):
                 manual(args, operations)
             else:
@@ -2532,6 +2686,8 @@ def expect_for(args: argparse.Namespace, record: dict):
             return "settled", evidence
 
         return deployed
+    if kind == "change-validator":
+        return validator_changed
     return None
 
 
