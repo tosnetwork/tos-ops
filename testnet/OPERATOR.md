@@ -67,8 +67,9 @@ production capacity guarantee. See [profile](network/profile.json) and
 3. The **coordinator** runs [preflight §0.5](CEREMONY.md#05-coordinator-preflight-every-host)
    over all hosts. It must report no FAIL. `--install-tools` changes packages;
    first-seen SSH keys require independent confirmation. A changed key is refused.
-4. Open provider **and host** ingress UDP 30001/31001 for a validator. Keep console
-   30002, RPC 8081 and exporter 9100 on loopback. DHT uses 30300/udp; lite 30003/tcp
+4. Open provider **and host** ingress UDP 30001/31001 for a validator. RPC 8081 and
+   exporter 9100 listen on loopback; the console 30002 listens on every address, so
+   the host firewall must not admit it (preflight's `ufw` check refuses an allow rule). DHT uses 30300/udp; lite 30003/tcp
    belongs to a separate full node, not this validator. Verify the actual bindings:
 
    ```bash
@@ -170,7 +171,7 @@ sudo sh -c 'grep "post-quantum consensus custody" /var/log/tos/validator/node.lo
 
 Expected: active unit; the custody line names your pool's validator id and the
 exact key id/window.
-The installer binds the seed while stopped, configures a loopback console, installs
+The installer binds the seed while stopped, configures the console (30002/tcp, closed by the host firewall), installs
 and verifies the template, and starts the node. It refuses different installed
 config content or a mismatched digest. Investigate rather than replace it silently.
 Before the announced epoch, height zero can be expected; afterward ask the

@@ -122,8 +122,10 @@ provides held-anchor proof and Elector-result checks over HTTP; its
 historical-proof availability limit. The supplied alert peer has no independent
 chain view.
 
-Validators serve no public clients. A validator's console (30002/tcp) and its
-JSON-RPC (8081) and exporter (9100) stay on loopback; reach them over SSH.
+Validators serve no public clients. A validator's JSON-RPC (8081) and exporter (9100)
+stay on loopback; its console (30002/tcp) listens on every address, as the engine binds
+control ports by number, so the host firewall keeps it closed and it needs its client
+key. Reach all three over SSH.
 QUIC always uses the ADNL port plus 1000; open both.
 
 The validator preflight floors are 4 CPUs, 11 GiB MemTotal and 60 GiB free;
