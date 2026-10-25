@@ -67,6 +67,7 @@ Real inventories and ceremony directories stay outside the tree.
 | [install-node.sh](testnet/scripts/install-node.sh) | Prepare, install binaries and activate validator, full-node or DHT roles. |
 | [testnet-operator.py](testnet/scripts/testnet-operator.py) / [testnet-dht.py](testnet/scripts/testnet-dht.py) | Produce operator and signed DHT public records. |
 | [testnet-coordinator.py](testnet/scripts/testnet-coordinator.py) | Validate records and generate the manifest, genesis and global config. |
+| [testnet-governance.py](testnet/scripts/testnet-governance.py) | Change a ConfigParam by a validator vote: `propose`, `sign` (node consoles), `vote`, `status`, `adopted`; each send a journaled operation. |
 | [testnet-elections.py](testnet/scripts/testnet-elections.py) / [testnet_ops.py](testnet/scripts/testnet_ops.py) | `pool` (staking pool before genesis), `fund`, `onboard`, `withdraw`, and manual `reconcile`, `record`, `resubmit`, `baseline`, `retry`; durable journals and two-validator settlement. |
 | [check-testnet.py](testnet/scripts/check-testnet.py) | Compare independent nodes' network identity, fresh full block IDs and selected configuration. |
 | [watch-testnet.py](testnet/scripts/watch-testnet.py) / [check-host-disk.py](testnet/scripts/check-host-disk.py) | Retain host/node samples and report anomalies. |
