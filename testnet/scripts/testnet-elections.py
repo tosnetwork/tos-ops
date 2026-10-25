@@ -46,8 +46,9 @@ and drive load through a post-quantum high-volume wallet.
       journaled in DIR/operations/.
       The operator wallet's messages are built on the host by `tosctl wallet
       send --build-only` and checked, journaled and broadcast from here.
-      Before each signature the signing wallet's whole history is read on
-      both --rpc and --confirm-rpc; unexplained transfers, another open
+      Before each signature the signing wallet's history since its newest
+      settled operation (or its baseline, or all of it when it has neither) is
+      read on both --rpc and --confirm-rpc; unexplained transfers, another open
       operation of the wallet or history the two do not agree on refuse.
       Settlement is by hashes, on both. A rerun skips settled operations,
       resumes the configuration from the host's tosctl config, and refuses an

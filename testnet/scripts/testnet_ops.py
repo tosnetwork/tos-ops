@@ -16,8 +16,10 @@ The rules (memo: epoch-4-fixplan-2.md, revision 4, agreed with the reviewer):
 * Every fact settlement uses is decoded from the transaction's own BOC, checked
   against the reported transaction hash, account and lt, on both validators.
 * Nothing is ever resumed automatically. Before signing, the *gate* reads the
-  signing wallet's complete history on two validators of the intended network
-  and refuses when any transaction emitting a message is not explained by a
+  signing wallet's history on two validators of the intended network, complete
+  from the newer of its manual baseline and its newest settled operation's own
+  transaction (validators prune older history after about a day; see
+  history_start), and refuses when any transaction emitting a message is not explained by a
   settled or failed operation, when any operation of that wallet is open, or
   when the history is unknown (unavailable, incomplete, or the two disagree).
 * An operation settles only from the chain, matched by hashes: the wallet's
@@ -365,6 +367,9 @@ class Node:
             if boundary:
                 raise Unknown(f"{self.url}: {address} has no transactions, boundary {boundary}")
             return []
+        if boundary and hash_b64 and b64hash(hash_b64).hex() == boundary["hash"]:
+            # Nothing after the boundary; its block may already be pruned.
+            return []
         out, seen = [], set()
         for _ in range(HISTORY_PAGES):
             page = self.call(
@@ -399,6 +404,8 @@ class Node:
                 if since is not None and out[-1]["utime"] < since:
                     return out
             prev = page.get("previous_transaction_id") or {}
+            if boundary and prev.get("hash") and b64hash(prev["hash"]).hex() == boundary["hash"]:
+                return out  # the next one is the boundary; it may already be pruned
             if str(prev.get("lt", "")) == "0":
                 if boundary:
                     raise Unknown(f"{self.url}: {address} boundary {boundary} not in its history")
@@ -856,11 +863,40 @@ class Journal:
             os.close(fd)
 
     def baseline(self, wallet: str) -> dict | None:
+        entry = self.baseline_entry(wallet)
+        return entry["boundary"] if entry else None
+
+    def baseline_entry(self, wallet: str) -> dict | None:
         path = self.dir / f"baseline-{wallet.replace(':', '_')}.jsonl"
         if not path.is_file():
             return None
         lines = [json.loads(line) for line in path.read_text().splitlines() if line]
-        return lines[-1]["boundary"] if lines else None
+        return lines[-1] if lines else None
+
+    def settled_boundary(self, wallet: str) -> tuple[dict, str] | None:
+        """The wallet transaction of the wallet's newest settled operation, as a
+        history boundary, with the record's last journal time.
+
+        The operation's gate read the wallet's complete history before it signed,
+        and its settlement proved that this transaction consumed exactly its
+        message's seqno. A wallet v3 runs its externals in seqno order, so nothing
+        else the wallet sent can lie between that check and this transaction. Its
+        lt is the recorded one; a record from before lts were recorded gives "0",
+        and the boundary is then reached by hash alone."""
+        newest = None
+        for record in self.for_wallet(wallet):
+            evidence = record.get("evidence") or {}
+            if state_of(record) != "settled" or not evidence.get("wallet_tx"):
+                continue
+            if not isinstance(record.get("seqno"), int):
+                continue
+            if newest is None or record["seqno"] > newest["seqno"]:
+                newest = record
+        if newest is None:
+            return None
+        evidence = newest["evidence"]
+        boundary = {"hash": evidence["wallet_tx"], "lt": evidence.get("wallet_tx_lt", "0")}
+        return boundary, newest.get("utc", "")
 
     def set_baseline(self, wallet: str, boundary: dict, reason: str) -> None:
         self.ensure()
@@ -1437,6 +1473,24 @@ class Operations:
                 entry["checkpoint_refusal"] = str(exc)
         self.journal.append(record["id"], entry)
 
+    def history_start(self, wallet: str) -> dict | None:
+        """Where a wallet's history must be complete and explained from: the newer of
+        its manual baseline and its newest settled operation's transaction (None:
+        the whole account). Validators prune history after about a day, so a wallet
+        that signed before then can only be checked from a verified point."""
+        entry = self.journal.baseline_entry(wallet)
+        settled = self.journal.settled_boundary(wallet)
+        if settled is None:
+            return entry["boundary"] if entry else None
+        boundary, settled_utc = settled
+        if entry is None:
+            return boundary
+        if boundary["lt"] != "0":
+            newer = int(boundary["lt"]) > int(entry["boundary"]["lt"])
+        else:
+            newer = settled_utc >= entry.get("utc", "")
+        return boundary if newer else entry["boundary"]
+
     def gate(self, wallet: str, op_id: str) -> dict | None:
         """Refuse unless the wallet's history is complete, agreed and explained, and
         no other operation of the wallet is open. Called with the journal lock held."""
@@ -1449,7 +1503,7 @@ class Operations:
                 )
         if self.bootstrap_identity(wallet):
             return self.verify_bootstrap_prefix(wallet)
-        boundary = self.journal.baseline(wallet)
+        boundary = self.history_start(wallet)
         explained = self.journal.explained()
         for tx in self.history(wallet, boundary):
             if (
@@ -1721,7 +1775,11 @@ class Operations:
                     "aborted_attempts": aborted,
                 }
             return "pending", {"reason": "no transaction for the external message yet"}
-        evidence = {"wallet_tx": tx["hash"], "explains": [tx["hash"]]}
+        evidence = {
+            "wallet_tx": tx["hash"],
+            "wallet_tx_lt": str(tx["lt"]),
+            "explains": [tx["hash"]],
+        }
         if record["kind"] == "activate-owner":
             if tx["out"]:
                 return "failed", dict(evidence, form="a", reason="a self-deployment that sent")
@@ -2107,7 +2165,7 @@ class Operations:
                         {k: v for k, v in prefix.items() if k != "transaction_receipts"}
                     )
                     continue
-                for tx in self.history(wallet, self.journal.baseline(wallet)):
+                for tx in self.history(wallet, self.history_start(wallet)):
                     if leaves(tx, wallet) and tx["hash"] not in explained:
                         election = self.election_message(wallet, tx)
                         if election is not None:
@@ -2131,7 +2189,7 @@ class Operations:
             for record in self.journal.for_wallet(wallet):
                 if state_of(record) in ("planned", "signed", "broadcast"):
                     raise OperationRefused(f"operation {record['id']} is open")
-            history = self.history(wallet, self.journal.baseline(wallet))
+            history = self.history(wallet, self.history_start(wallet))
             head = self.head(wallet)
             if head is None:
                 raise OperationRefused(f"{wallet} has no transactions; no baseline is needed")

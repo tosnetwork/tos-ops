@@ -212,6 +212,101 @@ def test_an_unexplained_transaction_after_the_baseline_refuses(world):
         run(operations, "fund-b", chain=chain)
 
 
+def settled_lt(operations, op_id):
+    return int(operations.journal.record(op_id)["evidence"]["wallet_tx_lt"])
+
+
+def prune_history(operations, monkeypatch, before):
+    """Validators that have collected every transaction at or below lt `before`, as
+    a node answers: a page stops before a collected transaction (and names it as
+    the previous one); a request that starts at one fails."""
+    for node in operations.nodes:
+
+        def rpc(url, rpc_method, /, _original=node.rpc, **kw):
+            if rpc_method != "getTransactionsStd":
+                return _original(url, rpc_method, **kw)
+            if int(kw["lt"]) <= before:
+                raise lib.RpcError(url, rpc_method, -32603, "INTERNAL_ERROR", "lt not in db", False)
+            answer = _original(url, rpc_method, **kw)
+            txs = answer["transactions"]
+            for i, tx in enumerate(txs):
+                if int(tx["transaction_id"]["lt"]) <= before:
+                    return dict(
+                        answer, transactions=txs[:i], previous_transaction_id=tx["transaction_id"]
+                    )
+            return answer
+
+        monkeypatch.setattr(node, "rpc", rpc)
+
+
+def credit(chain, wallet):
+    """An incoming transfer: a transaction of `wallet` that sends nothing."""
+    if OTHER not in chain.accounts:
+        chain.wallet(OTHER, 100 * NANO, public_key="0f" * 32)
+    seqno = chain.account(OTHER)["seqno"]
+    chain.send(
+        build_external(OTHER, 2, seqno, chain.now + 300, internal_message(wallet, NANO, False))
+    )
+    chain.settle_all()
+
+
+def test_a_settled_operation_starts_the_history_once_older_history_is_pruned(world, monkeypatch):
+    chain, operations, _ = world
+    run(operations, chain=chain)
+    run(operations, "fund-b", chain=chain)
+    credit(chain, BOOT)
+    # Everything before fund-b's own transaction is collected; a credit follows it.
+    prune_history(operations, monkeypatch, settled_lt(operations, "fund-b") - 1)
+    assert (
+        operations.history_start(BOOT)["hash"]
+        == operations.journal.record("fund-b")["evidence"]["wallet_tx"]
+    )
+    assert run(operations, "fund-c", chain=chain)["state"] == "settled"
+
+
+def test_an_idle_wallet_needs_no_pruned_transaction(world, monkeypatch):
+    chain, operations, _ = world
+    run(operations, chain=chain)
+    # fund-a's transaction is the head and is itself collected.
+    prune_history(operations, monkeypatch, settled_lt(operations, "fund-a"))
+    assert run(operations, "fund-b", chain=chain)["state"] == "settled"
+
+
+def test_unexplained_activity_after_the_settled_operation_still_refuses(world, monkeypatch):
+    chain, operations, _ = world
+    run(operations, chain=chain)
+    chain.send(build_external(BOOT, 2, 2, chain.now + 300, internal_message(OTHER, NANO, False)))
+    chain.settle_all()
+    prune_history(operations, monkeypatch, settled_lt(operations, "fund-a") - 1)
+    with pytest.raises(ops.OperationRefused, match="no settled or failed operation explains"):
+        run(operations, "fund-b", chain=chain)
+
+
+def test_a_record_without_a_recorded_lt_is_reached_by_hash(world, monkeypatch):
+    chain, operations, _ = world
+    run(operations, chain=chain)
+    run(operations, "fund-b", chain=chain)
+    credit(chain, BOOT)
+    prune_history(operations, monkeypatch, settled_lt(operations, "fund-b") - 1)
+    path = operations.journal.path("fund-b")
+    lines = [dict(line) for line in operations.journal.lines("fund-b")]
+    for line in lines:
+        (line.get("evidence") or {}).pop("wallet_tx_lt", None)
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines))
+    assert operations.history_start(BOOT)["lt"] == "0"
+    assert run(operations, "fund-c", chain=chain)["state"] == "settled"
+
+
+def test_a_later_baseline_wins_over_an_older_settled_operation(world):
+    chain, operations, _ = world
+    run(operations, chain=chain)
+    chain.send(build_external(BOOT, 2, 2, chain.now + 300, internal_message(OTHER, NANO, False)))
+    chain.settle_all()
+    operations.set_baseline(BOOT, "a transfer a person accounted for")
+    assert operations.history_start(BOOT) == operations.journal.baseline(BOOT)
+    assert run(operations, "fund-b", chain=chain)["state"] == "settled"
+
+
 @pytest.mark.parametrize("which", ["lag", "broken"])
 def test_history_the_validators_do_not_agree_on_refuses(tmp_path, which):
     chain = fakechain.Chain()
