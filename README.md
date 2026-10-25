@@ -62,6 +62,8 @@ Real inventories and ceremony directories stay outside the tree.
 | [README.md](testnet/README.md) | Roles, monitoring, alert setup and verification guidance. |
 | [preflight.py](testnet/scripts/preflight.py) / [setup-time.sh](testnet/scripts/setup-time.sh) | Check host resources, UDP reachability and time synchronization. |
 | [build-node-binaries.sh](testnet/scripts/build-node-binaries.sh) / [build-tosctl.sh](testnet/scripts/build-tosctl.sh) | Build pinned node/operator binaries on their destination hosts. |
+| [remove-old-builds.sh](testnet/scripts/remove-old-builds.sh) | After an upgrade: remove other revisions' build trees and releases and `/opt/tos-testnet.old`, keeping the running revision and every log. |
+| [tok01-signer.py](testnet/scripts/tok01-signer.py) | Signer adapter for tos `scripts/tok01-lifecycle.py --sender-command`: wallet v1 senders, keys 0600, returns only after the sender's seqno moved. |
 | [install-node.sh](testnet/scripts/install-node.sh) | Prepare, install binaries and activate validator, full-node or DHT roles. |
 | [testnet-operator.py](testnet/scripts/testnet-operator.py) / [testnet-dht.py](testnet/scripts/testnet-dht.py) | Produce operator and signed DHT public records. |
 | [testnet-coordinator.py](testnet/scripts/testnet-coordinator.py) | Validate records and generate the manifest, genesis and global config. |
