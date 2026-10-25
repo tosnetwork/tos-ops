@@ -80,13 +80,15 @@ def certificate_digest(value: dict) -> str:
     ).hexdigest()
 
 
-# config-propose and config-vote (testnet-governance.py) send to the Config contract;
-# they settle only when its getter shows the effect (the caller's expect check).
+# config-propose and config-vote (testnet-governance.py) send to the Config contract,
+# change-validator to a pool; they settle only when a getter shows the effect (the
+# caller's expect check).
 COORDINATOR_KINDS = (
     "fund",
     "activate-owner",
     "principal",
     "withdraw",
+    "change-validator",
     "config-propose",
     "config-vote",
 )

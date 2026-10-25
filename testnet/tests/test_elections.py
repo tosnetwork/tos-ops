@@ -1215,6 +1215,161 @@ def test_withdraw_refuses_while_an_election_is_open(boarding, withdraw_body_stub
         elections.withdraw(withdraw_args(boarding), boarding["ops"], 2)
 
 
+# -- change-validator (VAL-03 P1)
+
+PROBE_WALLET = "-1:" + "9c" * 32
+
+
+def change_pool_behaviour(owner):
+    """CHANGE_VALIDATOR_ADDRESS as single-nominator-code.fc: from the stored owner the
+    pool replaces its validator; from anyone else it does nothing."""
+
+    def behave(chain, address, account, message, in_msg):
+        value = int(message["value"])
+        account["balance"] += value
+        body = message.get("_body")
+        if (
+            body is not None
+            and body.bits >= 32
+            and lib.Slice(body).bits(32) == 0x1001
+            and message["source"] == owner
+        ):
+            s = lib.Slice(body)
+            s.bits(96)
+            new = elections.ops.read_address(s)
+            account["data"] = lib.cell_from_bits(
+                elections.address_bits(owner) + elections.address_bits(new)
+            )
+        chain.record_tx(address, in_msg, [], credit=value)
+
+    return behave
+
+
+def change_args(b, **extra):
+    args = dict(vars(b["args"]), id="p1-to-probe", new=True, to=PROBE_WALLET, dry_run=False)
+    args.update(extra)
+    return elections.argparse.Namespace(**args)
+
+
+@pytest.fixture
+def change_body_stub(monkeypatch):
+    def body(args, validator, work, run=None):
+        path = work / "change-validator.boc"
+        path.write_bytes(
+            lib.serialize_boc(
+                lib.cell_from_bits(
+                    format(0x1001, "032b") + format(1, "064b") + elections.address_bits(validator)
+                )
+            )
+        )
+        return path
+
+    monkeypatch.setattr(elections, "change_validator_body", body)
+
+
+def changeable(boarding):
+    onboard(boarding)
+    pool = elections.read_pools(boarding["ceremony"])["node-1"]["pool"]
+    boarding["chain"].behaviour[pool] = change_pool_behaviour(boarding["owner"])
+    elector_idle(boarding["chain"])
+    return pool
+
+
+def test_change_validator_and_restore(boarding, change_body_stub):
+    pool = changeable(boarding)
+    chain, owner = boarding["chain"], boarding["owner"]
+    operator = elections.pool_roles_both(boarding["ops"], pool)[1]
+    result = elections.change_validator(change_args(boarding), boarding["ops"], 2)
+    assert (result["previous"], result["validator"]) == (operator, PROBE_WALLET)
+    assert elections.pool_roles_both(boarding["ops"], pool) == (owner, PROBE_WALLET)
+    # The same id again reports the settled change and sends nothing.
+    sent = list(chain.sent)
+    elections.change_validator(change_args(boarding, new=False), boarding["ops"], 2)
+    assert chain.sent == sent
+    back = elections.change_validator(
+        change_args(boarding, id="p1-restore", to=operator), boarding["ops"], 2
+    )
+    assert (back["previous"], back["validator"]) == (PROBE_WALLET, operator)
+    assert elections.pool_roles_both(boarding["ops"], pool) == (owner, operator)
+    lines = (boarding["ceremony"] / "validator-changes.jsonl").read_text().splitlines()
+    assert [json.loads(line)["id"] for line in lines] == ["p1-to-probe", "p1-restore"]
+
+
+@pytest.mark.parametrize(
+    "extra,message",
+    [
+        ({"to": "0:" + "9c" * 32}, "not a masterchain wallet"),
+        ({"to": "not an address"}, "address"),
+        ({"new": False, "id": "p1-unknown"}, "create a change with --new"),
+        ({"id": "Bad Id"}, "not an operation id"),
+    ],
+)
+def test_change_validator_refuses_bad_requests(boarding, change_body_stub, extra, message):
+    changeable(boarding)
+    sent = list(boarding["chain"].sent)
+    with pytest.raises(lib.TestnetError, match=message):
+        elections.change_validator(change_args(boarding, **extra), boarding["ops"], 2)
+    assert boarding["chain"].sent == sent
+
+
+def test_change_validator_refuses_the_pool_its_owner_and_the_current_validator(
+    boarding, change_body_stub
+):
+    pool = changeable(boarding)
+    operator = elections.pool_roles_both(boarding["ops"], pool)[1]
+    sent = list(boarding["chain"].sent)
+    for to in (pool, boarding["owner"]):
+        with pytest.raises(lib.TestnetError, match="not a validator wallet"):
+            elections.change_validator(change_args(boarding, to=to), boarding["ops"], 2)
+    with pytest.raises(lib.TestnetError, match="already holds"):
+        elections.change_validator(change_args(boarding, to=operator), boarding["ops"], 2)
+    assert boarding["chain"].sent == sent
+
+
+def test_change_validator_id_keeps_its_target(boarding, change_body_stub):
+    changeable(boarding)
+    elections.change_validator(change_args(boarding), boarding["ops"], 2)
+    with pytest.raises(lib.TestnetError, match="exists"):
+        elections.change_validator(change_args(boarding), boarding["ops"], 2)
+    with pytest.raises(lib.TestnetError, match="names"):
+        elections.change_validator(
+            change_args(boarding, new=False, to="-1:" + "9d" * 32), boarding["ops"], 2
+        )
+
+
+def test_change_validator_refuses_while_an_election_is_open(boarding, change_body_stub):
+    changeable(boarding)
+    elector = boarding["chain"].account(elections.ELECTOR)
+    elector["getters"] = {"active_election_id": lambda: {"exit_code": 0, "stack": [num(7)]}}
+    sent = list(boarding["chain"].sent)
+    with pytest.raises(lib.TestnetError, match="election 7 is open"):
+        elections.change_validator(change_args(boarding), boarding["ops"], 2)
+    assert boarding["chain"].sent == sent
+
+
+def test_change_validator_dry_run_signs_nothing(boarding, change_body_stub):
+    changeable(boarding)
+    sent = list(boarding["chain"].sent)
+    assert elections.change_validator(change_args(boarding, dry_run=True), boarding["ops"], 2) == {
+        "dry_run": True
+    }
+    assert boarding["chain"].sent == sent
+    assert boarding["ops"].journal.record("p1-to-probe") is None
+
+
+def test_a_change_settles_only_on_the_new_roles(boarding):
+    pool = changeable(boarding)
+    owner = boarding["owner"]
+    operator = elections.pool_roles_both(boarding["ops"], pool)[1]
+    rec = {"destination": pool, "wallet": owner, "validator": PROBE_WALLET}
+    state, evidence = elections.validator_changed(boarding["ops"], rec, None, {})
+    assert state == "pending" and "does not show" in evidence["reason"]
+    rec["validator"] = operator
+    assert elections.validator_changed(boarding["ops"], rec, None, {})[0] == "settled"
+    rec["wallet"] = PROBE_WALLET
+    assert elections.validator_changed(boarding["ops"], rec, None, {})[0] == "failed"
+
+
 def test_a_principal_resubmit_after_the_pool_roles_changed_is_refused(boarding, monkeypatch):
     b = boarding
     crash(monkeypatch, "principal-node-1", "signed")
@@ -1353,6 +1508,18 @@ def test_real_withdraw_body_is_the_pools_withdraw_op(tmp_path):
     body.bits(64)
     length = body.bits(4)
     assert body.bits(8 * length) == 12_500_000_000
+
+
+def test_real_change_validator_body_is_the_pools_change_op(tmp_path):
+    root, fift = real_fift()
+    args = elections.argparse.Namespace(tos_root=str(root), fift=str(fift))
+    target = "-1:" + "9c" * 32
+    body = lib.Slice(
+        lib.parse_boc(elections.change_validator_body(args, target, tmp_path).read_bytes())
+    )
+    assert body.bits(32) == 0x1001
+    body.bits(64)
+    assert elections.ops.read_address(body) == target
 
 
 def read_coins(s):
