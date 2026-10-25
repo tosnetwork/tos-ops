@@ -780,10 +780,16 @@ change any journal state automatically.
 
 The coordinator bootstrap wallet has a pinned wallet-v3 code hash, genesis public
 key and subwallet zero. Its gate audits from the latest verified checkpoint,
-not from an increasingly old baseline. Other signing wallets retain the existing
-full-history gate; checkpointing the election task's messages is a separate
-follow-up, required before an operator wallet's history grows past what the
-gate can read in full.
+not from an increasingly old baseline. Other signing wallets are audited from
+the newer of their manual baseline and their newest settled operation's own
+transaction. That operation's gate read the wallet's history complete before it
+signed, its settlement proved the transaction consumed exactly its seqno, and a
+wallet v3 runs its externals in seqno order, so nothing the wallet sent can lie
+between them. Validators prune transactions after about a day; without this an
+owner wallet could not sign again a day after its last operation. A wallet with
+no settled operation is still read in full. Checkpointing the election task's
+messages is a separate follow-up, required before an operator wallet's history
+grows past what the gate can read in full.
 
 **Trust assumption:** the bootstrap signing key is custodied only by the
 coordinator, and the local append-only journal is honest. The dry-run prints
