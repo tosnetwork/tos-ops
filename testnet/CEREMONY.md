@@ -760,6 +760,14 @@ path. Signed/broadcast records still require the existing reconciliation rules.
 A refused gate is checked before a new funding plan is created, so repeatedly
 starting the load cannot accumulate new plans behind an existing open one.
 
+A node a block or two behind the network answers a read at a block it has not
+applied with `UPSTREAM_UNAVAILABLE` (retryable) and error 651 "... is not
+applied". Every read made by the operations and by `load` (refill and top-up
+preflight, balances, seqnos) waits for that node, backing off from 0.5 s up to
+4 s, for at most 30 s; it then fails with the node's answer and the same safety
+stop as before. No other error is retried, `sendBoc` is never repeated, and the
+two validators' answers must still agree.
+
 ### Destination settlement on busy accounts
 
 Delivery is located by the outgoing message's hash and decoded `created_lt`,

@@ -318,6 +318,17 @@ class Node:
     def __init__(self, url: str, rpc=lib.rpc):
         self.url, self.rpc = url, rpc
 
+    @property
+    def rpc(self):
+        return self._rpc
+
+    @rpc.setter
+    def rpc(self, rpc) -> None:
+        # One node a block or two behind the others answers a read with "not
+        # applied" for a few seconds; every read waits for it (lib.retrying_reads),
+        # sendBoc never repeats. Agreement between nodes is checked on the answers.
+        self._rpc = lib.retrying_reads(rpc)
+
     def call(self, rpc_method: str, /, **params: Any) -> Any:
         try:
             return self.rpc(self.url, rpc_method, **params)
