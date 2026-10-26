@@ -367,9 +367,14 @@ index as wanted by the node and `tos-rpc` as wanted by the index, so starting th
 node starts the index and then `tos-rpc` (`After=` orders them). These
 directives do not propagate a crash, and `After=` does not require a backend to
 have started successfully: after a node crash the index pauses at its cursor and
-`tos-rpc` reports backend errors per request. A manual start of the index while
-the node is not active is refused by its `ExecStartPre=` check; nothing in these
-units starts a node stopped for maintenance.
+`tos-rpc` reports backend errors per request. A start of the index while the
+node is not active, or of `tos-rpc` while the index is not active, is skipped
+(`ExecCondition=`): the unit stays inactive, not failed, and is not retried;
+nothing in these units starts a node stopped for maintenance. The lifecycle was
+checked with a real systemd 249 user manager
+([check-rpc-units-lifecycle.sh](tests/check-rpc-units-lifecycle.sh));
+**outstanding:** repeat that check on a systemd 255 / Ubuntu 24.04 host before
+rollout.
 
 **Prerequisites:** a tos commit that has the `services/` targets (`tos-rpc` and
 `tos-wallet-index`); full-node preflight floors plus the index's memory and disk

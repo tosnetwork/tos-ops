@@ -7,7 +7,8 @@ Documentation=file:///opt/tos-testnet/OPERATOR.md
 # install-node.sh activate --role rpc) starts this after each start of the
 # index, and After= orders it behind the node and the index. A crash of either
 # is not propagated, and After= does not require a backend to have started
-# successfully: tos-rpc then reports backend errors per request.
+# successfully: tos-rpc then reports backend errors per request. A start while
+# the index is not active is skipped (ExecCondition= below).
 After=network-online.target tos-testnet-fullnode.service tos-testnet-wallet-index.service
 Wants=network-online.target
 PartOf=tos-testnet-wallet-index.service
@@ -20,6 +21,9 @@ User=tos-rpc
 Group=tos-rpc
 UMask=0077
 WorkingDirectory=/
+# Start-only condition: skipped (inactive, not failed, no restart) unless the
+# wallet index is active, for example when the index's own start was skipped.
+ExecCondition=/bin/systemctl is-active --quiet tos-testnet-wallet-index.service
 # Read-only unless a submission backend is configured explicitly. To enable
 # writes, put in the root-owned /etc/tos/tos-rpc.env
 #   TOS_RPC_MODE=--submission-address 127.0.0.1:8081

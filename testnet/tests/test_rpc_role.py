@@ -444,10 +444,17 @@ def test_services_follow_maintenance_of_the_node_and_the_index():
     # A start of the node starts the index, a start of the index starts the RPC.
     assert index["WantedBy"] == ["tos-testnet-fullnode.service"]
     assert rpc["WantedBy"] == ["tos-testnet-wallet-index.service"]
-    # A manual start of the index while the node is down is refused.
-    assert index["ExecStartPre"] == [
+    # A start of the index while the node is down, or of the RPC while the
+    # index is down, is skipped: a condition, not a failing ExecStartPre= that
+    # Restart= would retry.
+    assert index["ExecCondition"] == [
         "/bin/systemctl is-active --quiet tos-testnet-fullnode.service"
     ]
+    assert rpc["ExecCondition"] == [
+        "/bin/systemctl is-active --quiet tos-testnet-wallet-index.service"
+    ]
+    for d in (index, rpc):
+        assert "ExecStartPre" not in d
     # Neither pulls a stopped full node back up, and Requisite= (which left the
     # index stopped for good after a node restart) is gone.
     for d in (index, rpc):

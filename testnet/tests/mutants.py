@@ -1587,10 +1587,28 @@ M += [
         "",
     ),
     (
-        "RR25 index start guard removed",
+        "RR25 index start condition removed",
         INDEX_UNIT,
-        "ExecStartPre=/bin/systemctl is-active --quiet tos-testnet-fullnode.service\n",
+        "ExecCondition=/bin/systemctl is-active --quiet tos-testnet-fullnode.service\n",
         "",
+    ),
+    (
+        "RR26 public RPC start condition removed",
+        RPC_UNIT,
+        "ExecCondition=/bin/systemctl is-active --quiet tos-testnet-wallet-index.service\n",
+        "",
+    ),
+    (
+        "RR27 index start condition back to ExecStartPre",
+        INDEX_UNIT,
+        "ExecCondition=/bin/systemctl is-active --quiet tos-testnet-fullnode.service\n",
+        "ExecStartPre=/bin/systemctl is-active --quiet tos-testnet-fullnode.service\n",
+    ),
+    (
+        "RR28 public RPC start condition as ExecStartPre",
+        RPC_UNIT,
+        "ExecCondition=/bin/systemctl is-active --quiet tos-testnet-wallet-index.service\n",
+        "ExecStartPre=/bin/systemctl is-active --quiet tos-testnet-wallet-index.service\n",
     ),
 ]
 

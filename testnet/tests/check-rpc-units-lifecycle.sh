@@ -9,17 +9,18 @@
 #   - every tos-testnet- unit name renamed to tosrpctest-;
 #   - [Unit] and [Install] otherwise byte-identical (checked below);
 #   - [Service] reduced to ExecStart=/bin/sleep infinity plus the directives
-#     that shape the lifecycle (ExecStartPre, Restart, RestartSec,
-#     RestartPreventExitStatus, KillMode, TimeoutStopSec). Accounts and
-#     sandboxing need the system manager and are dropped; the ExecStartPre
-#     guard asks the user manager (systemctl --user) about the renamed node.
+#     that shape the lifecycle (ExecCondition, ExecStartPre, Restart,
+#     RestartSec, RestartPreventExitStatus, KillMode, TimeoutStopSec).
+#     Accounts and sandboxing need the system manager and are dropped; the
+#     ExecCondition checks ask the user manager (systemctl --user) about the
+#     renamed units.
 # It enables the index and RPC copies with --runtime, as activate does on a
 # host, and checks: node stop stops index and RPC; node start starts index,
 # then RPC; node restart restarts both; an index restart restarts the RPC and
-# not the node; a manual index start with the node inactive is refused by
-# ExecStartPre and does not start the node. It also prints, as NOTE lines,
-# what such a refused start does to the RPC and to the index's restart policy.
-# States come from systemctl --user, start
+# not the node; a manual index start with the node inactive is skipped
+# (inactive, not failed, no restart over a 30 s window, RPC not started, node
+# untouched); a manual RPC start with the index inactive is skipped the same
+# way. States come from systemctl --user, start
 # order from the units' monotonic activation timestamps and the user journal.
 # The copies are removed on exit. The real units, the system manager and every
 # host are untouched.
@@ -36,6 +37,7 @@ FAILED=0
 
 die() { echo "lifecycle: $*" >&2; exit 2; }
 sc() { systemctl --user "$@"; }
+echo "== $(systemctl --version | head -1)"
 
 state=$(sc is-system-running 2>/dev/null || true)
 case "$state" in running|degraded) ;; *) die "the user manager is not usable (state '$state')" ;; esac
@@ -57,7 +59,7 @@ trap cleanup EXIT
 
 copy_unit() {
   awk -v p="$P" '
-    BEGIN { keep["ExecStartPre"]; keep["Restart"]; keep["RestartSec"]
+    BEGIN { keep["ExecCondition"]; keep["ExecStartPre"]; keep["Restart"]; keep["RestartSec"]
             keep["RestartPreventExitStatus"]; keep["KillMode"]; keep["TimeoutStopSec"] }
     { gsub(/tos-testnet-/, p "-") }
     /^\[/ { section = $0; print; if (section == "[Service]") print "ExecStart=/bin/sleep infinity"; skip = 0; next }
@@ -67,6 +69,7 @@ copy_unit() {
     {
       key = $0; sub(/=.*/, "", key)
       if (!(key in keep)) { skip = ($0 ~ /\\$/); next }
+      sub(/^ExecCondition=\/bin\/systemctl is-active/, "ExecCondition=/bin/systemctl --user is-active")
       sub(/^ExecStartPre=\/bin\/systemctl is-active/, "ExecStartPre=/bin/systemctl --user is-active")
       print
     }' "$1"
@@ -84,7 +87,7 @@ for name in fullnode wallet-index rpc; do
 done
 echo "== test units (dependency directives identical to the real units, renamed)"
 for unit in "$NODE" "$INDEX" "$RPC"; do
-  echo "-- $unit"; grep -E "$DEPS|^ExecStart" "$DIR/$unit"
+  echo "-- $unit"; grep -E "$DEPS|^Exec" "$DIR/$unit"
 done
 
 sc daemon-reload
@@ -139,24 +142,66 @@ check "index restart leaves the node alone" test "$n3" -eq "$n2"
 check "index restart restarted the index" test "$i3" -gt "$i2"
 check "index restart: index active" active "$INDEX"
 
+WINDOW=32  # >= 30 s, three times RestartSec=10: a retry of the start would show here
+state_of() { sc is-active "$1" 2>/dev/null || true; }
+restarts() { sc show -p NRestarts --value "$1"; }
+# shellcheck disable=SC2329 # run through check
+not_failed() { ! sc is-failed --quiet "$1"; }
+
+# start_skipped UNIT WHAT: start UNIT by hand while its condition is false and
+# check it is skipped, not failed, and never retried over WINDOW. The skip is
+# read from systemd's own journal record ("Skipped due to 'exec-condition'"):
+# systemd may unload an inactive unit nothing references (here the index, whose
+# node is inactive too), which resets Result= and NRestarts= and clears
+# InvocationID=, so those properties are printed but not relied on alone.
+start_skipped() {
+  local unit=$1 what=$2 mark before now_state now_result now_invocation after attempts skips description
+  description=$(sc show -p Description --value "$unit")
+  before=$(restarts "$unit")
+  mark=$(date +%s)
+  sc start "$unit" || echo "   (systemctl start returned $?)"
+  now_state=$(state_of "$unit") now_result=$(sc show -p Result --value "$unit")
+  now_invocation=$(sc show -p InvocationID --value "$unit")
+  sleep "$WINDOW"
+  after=$(restarts "$unit")
+  attempts=$(journalctl --user --since "@$mark" -o cat --no-pager 2>/dev/null | grep -c -F "Starting $description" || true)
+  skips=$(journalctl --user --since "@$mark" -o cat --no-pager 2>/dev/null | grep -c -F "$unit: Skipped due to 'exec-condition'" || true)
+  echo "   $unit right after the start: $now_state, result $now_result," \
+    "invocation ${now_invocation:-none (unit unloaded)}"
+  echo "   $unit after ${WINDOW} s: $(state_of "$unit"), NRestarts $before -> $after," \
+    "journal: $attempts start attempt(s), $skips skip(s)"
+  check "$what is skipped by its ExecCondition (journal)" test "$skips" -eq 1
+  check "$what is inactive right after the start" test "$now_state" = inactive
+  check "$what: Result is exec-condition, or the unit was unloaded" \
+    test "$now_result" = exec-condition -o -z "$now_invocation"
+  check "$what ends inactive" test "$(state_of "$unit")" = inactive
+  check "$what is not marked failed" not_failed "$unit"
+  check "$what: NRestarts does not increase over ${WINDOW} s" test "$after" -le "$before"
+  check "$what: one start attempt and no retry in the journal" test "$attempts" -eq 1 -a "$skips" -eq 1
+}
+
 echo "== stop the node, then start the index by hand"
 sc stop "$NODE"; settle
-if sc start "$INDEX" 2>/dev/null; then started=1; else started=0; fi
-sleep 12  # past RestartSec=10: an automatic restart of the failed start would show here
+node_entered=$(sc show -p ActiveEnterTimestampMonotonic --value "$NODE")
+start_skipped "$INDEX" "an index start with the node inactive"
 states
-echo "   index result $(sc show -p Result --value "$INDEX"), restarts $(sc show -p NRestarts --value "$INDEX")"
-check "manual index start with the node inactive is refused" test "$started" -eq 0
-check "the refused index is not active" inactive "$INDEX"
-check "the refused start did not start the node" inactive "$NODE"
-# Observed, not asserted: behaviour outside the agreed unit design.
-echo "NOTE rpc after the refused index start: $(sc is-active "$RPC" 2>/dev/null || true)" \
-  "(Wants= from the index's start job does not depend on the index starting)"
-echo "NOTE index after the refused start: $(sc is-active "$INDEX" 2>/dev/null || true)," \
-  "automatic restarts $(sc show -p NRestarts --value "$INDEX") (Restart=on-failure retries a failed ExecStartPre)"
+check "the skipped index start does not leave the RPC active" inactive "$RPC"
+check "the node stays inactive" inactive "$NODE"
+check "the node was not started meanwhile" test \
+  "$(sc show -p ActiveEnterTimestampMonotonic --value "$NODE")" = "$node_entered"
+
+echo "== node up, index stopped, then start the RPC by hand"
+sc start "$NODE"; settle
+sc stop "$INDEX"; settle
+states
+start_skipped "$RPC" "an RPC start with the index inactive"
+states
+check "the RPC start did not start the index" inactive "$INDEX"
+check "the node stays active" active "$NODE"
 
 echo "== user journal (start/stop lines of the test units; they log their Description)"
 journalctl --user --since "$since" -o short-monotonic --no-pager 2>/dev/null \
-  | grep -E "$P-|TOS public testnet" | grep -E 'Start|Stop|Fail|control process' | sed 's/^/   /' \
+  | grep -E "$P-|TOS public testnet" | grep -E 'Start|Stop|Fail|[Cc]ondition|control process' | sed 's/^/   /' \
   || echo "   (no user journal available)"
 
 if [ "$FAILED" = 0 ]; then echo "lifecycle: all checks passed"; else echo "lifecycle: FAILED"; fi
