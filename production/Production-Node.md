@@ -254,6 +254,8 @@ Compare full block IDs with an independent trusted node. This repository supplie
 no accepted production signed-release/config-distribution channel. A URL or a
 matching height alone is insufficient. Prepare a verified persistent-state and
 archive sync path with the approved release before committing validator duties.
+Install the node binaries from the tos GitHub release with `fetch-release.py`
+([section 10](#10-releases-upgrades-and-restarts)), not from a host build.
 
 ### 8.1 Refreshing the global config's init block
 
@@ -318,7 +320,33 @@ command. See [operator incidents/leaving](../testnet/OPERATOR.md#9-incidents-lea
 
 ## 10. Releases, upgrades and restarts
 
-Verify revision, binary digests and authenticated release origin. Build before
+Production takes its node binaries from the tos repository's GitHub release for
+the approved tag, not from a build on each host (the testnet keeps its host
+builds). [fetch-release.py](../testnet/scripts/fetch-release.py) is that path:
+
+```bash
+sudo python3 /opt/tos-testnet/scripts/fetch-release.py --tag v<VERSION> \
+  --rev <FULL_40_CHARACTER_COMMIT> --role validator --arch x86_64 \
+  --out /var/lib/tos-build/release-<FULL_40_CHARACTER_COMMIT>
+sudo /opt/tos-testnet/scripts/install-node.sh binaries --role validator \
+  --release /var/lib/tos-build/release-<FULL_40_CHARACTER_COMMIT> --rev <FULL_40_CHARACTER_COMMIT>
+```
+
+It downloads the role's `<binary>-linux-<arch>` assets, `SHA256SUMS`,
+`release-provenance.json` and the build artifact `tos-linux-<arch>.zip` over
+HTTPS without a GitHub login, and writes nothing unless the provenance names
+the tag, the tos repository and a commit equal to `--rev`; every file matches
+`SHA256SUMS`; the zip matches the artifact digest the provenance records; and
+every binary is byte-identical to its copy in that zip. The output directory is
+the layout `check-release.sh` accepts, with the source and provenance digest in
+`BUILD-INFO`; it refuses an existing `--out` and refuses a release that lacks one
+of the role's assets. A release has to publish the standalone node assets
+(`validator-engine`, `validator-engine-console`, `generate-random-id`,
+`dht-server`) before this path works for it. These checks bind binaries to one
+published release; they do not authenticate the release itself. Compare the
+`provenance_sha256` line across hosts and with the published release.
+
+Verify revision, binary digests and authenticated release origin. Fetch before
 stopping, upgrade one validator at a time and prove sync/custody before the next.
 Stop the old process with systemctl; do not delete a held lock or kill it. An
 incompatible DB/protocol downgrade is not fixed by reinstalling old executables.

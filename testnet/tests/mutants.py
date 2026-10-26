@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Mutation guards for the operations journal, the election task and the handover checker.
+"""Mutation guards for the operations journal, the election task, the handover checker
+and the release fetch.
 
 Each mutant replaces one exact snippet of a script, runs the whole suite and
 restores the file. Every mutant must make a test fail: only pytest's exit 1
@@ -30,6 +31,7 @@ EL = W / "scripts/testnet-elections.py"
 CO = W / "scripts/testnet-coordinator.py"
 HO = W / "scripts/check-handover.py"
 LIB = W / "scripts/testnet_lib.py"
+FETCH = W / "scripts/fetch-release.py"
 
 M = [
     (
@@ -1277,6 +1279,72 @@ M += [
         EL,
         "        self._rpc = lib.retrying_reads(rpc)",
         "        self._rpc = rpc",
+    ),
+    (
+        "FR1 provenance tag and commit ignored",
+        FETCH,
+        '        if record.get(key) != expected:\n            raise Refused(\n                f"release-provenance.json records {key}',
+        '        if False:\n            raise Refused(\n                f"release-provenance.json records {key}',
+    ),
+    (
+        "FR2 artifact build commit ignored",
+        FETCH,
+        'if entry.get("head_sha") != rev:',
+        "if False:",
+    ),
+    (
+        "FR3 file absent from SHA256SUMS accepted",
+        FETCH,
+        "            if name not in sums:\n                raise Refused(",
+        "            if name not in sums:\n                continue\n                raise Refused(",
+    ),
+    (
+        "FR4 SHA256SUMS digest ignored",
+        FETCH,
+        "if sums[name] != digest:",
+        "if False:",
+    ),
+    (
+        "FR5 artifact zip digest ignored",
+        FETCH,
+        "if actual[archive_name] != recorded:",
+        "if False:",
+    ),
+    (
+        "FR6 binary not bound to the artifact zip",
+        FETCH,
+        "if member != actual[asset]:",
+        "if False:",
+    ),
+    (
+        "FR7 existing out overwritten",
+        FETCH,
+        '    if out.exists() or out.is_symlink():\n        raise Refused(f"{out} already exists',
+        '    if False:\n        raise Refused(f"{out} already exists',
+    ),
+    (
+        "FR8 missing asset tolerated",
+        FETCH,
+        "        if error.code == 404:\n            raise Refused(",
+        "        if error.code == 404:\n            return\n            raise Refused(",
+    ),
+    (
+        "FR9 check-release result ignored",
+        FETCH,
+        '        if result.returncode != 0:\n            raise Refused(f"check-release.sh',
+        '        if False:\n            raise Refused(f"check-release.sh',
+    ),
+    (
+        "FR10 malformed SHA256SUMS line accepted",
+        FETCH,
+        '        if not match:\n            raise Refused(f"SHA256SUMS line',
+        '        if not match:\n            continue\n            raise Refused(f"SHA256SUMS line',
+    ),
+    (
+        "FR11 plain http off loopback accepted",
+        FETCH,
+        'if parsed.scheme == "https" or (parsed.scheme == "http" and loopback):',
+        'if parsed.scheme in ("https", "http"):',
     ),
 ]
 
