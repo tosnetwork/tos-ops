@@ -573,3 +573,206 @@ def test_retirement_stops_the_rpc_services_before_the_full_node_and_drops_the_in
     assert "/var/lib/tos-wallet-index" in words
     assert "/etc/tos/rpc-liteservers.json" in words
     assert "/etc/tos/tos-rpc.env" not in words
+
+
+# ---------------------------------------------------------------- the documented setup, end to end
+
+OPERATOR_MD = SCRIPTS.parent / "OPERATOR.md"
+STATEFUL_SYSTEMCTL = """#!/bin/sh
+# Units are active while a file of their name exists in $FAKE_STATE.
+echo "systemctl $*" >> "$FAKE_LOG"
+unit() { echo "${1%.service}"; }
+case "$1" in
+  is-active) [ -e "$FAKE_STATE/$(unit "$3")" ]; exit $? ;;
+  enable) [ "$2" = --now ] && touch "$FAKE_STATE/$(unit "$3")"; exit 0 ;;
+  start) touch "$FAKE_STATE/$(unit "$2")"; exit 0 ;;
+  stop) rm -f "$FAKE_STATE/$(unit "$2")"; exit 0 ;;
+  *) exit 0 ;;
+esac
+"""
+# install without the owner change an unprivileged test cannot make.
+FAKE_INSTALL = """#!/usr/bin/env python3
+import os, sys
+with open(os.environ["FAKE_LOG"], "a") as log:
+    log.write("install " + " ".join(sys.argv[1:]) + "\\n")
+args, rest = [], sys.argv[1:]
+while rest:
+    if rest[0] in ("-o", "-g"):
+        rest = rest[2:]
+    else:
+        args.append(rest.pop(0))
+os.execv("/usr/bin/install", ["install", *args])
+"""
+FAKE_OK = """#!/bin/sh
+echo "$(basename "$0") $*" >> "$FAKE_LOG"
+exit 0
+"""
+# The engine's first start: config.json and a keyring, then exit 0.
+FAKE_ENGINE = """#!/bin/sh
+if [ "$1" = -V ]; then echo "validator-engine Commit: fake"; exit 0; fi
+db=""
+while [ $# -gt 0 ]; do [ "$1" = -D ] && db=$2; shift; done
+mkdir -p "$db/keyring"
+echo '{"@type": "engine.validator", "addrs": []}' > "$db/config.json"
+"""
+FAKE_RANDOM_ID = """#!/usr/bin/env python3
+import os, sys
+name = sys.argv[sys.argv.index("-n") + 1]
+open(name, "wb").write(bytes.fromhex("17236849") + os.urandom(32))
+open(name + ".pub", "wb").write(bytes.fromhex("c6b41348") + os.urandom(32))
+"""
+
+
+def documented_steps() -> list[str]:
+    """The install-node.sh lines of OPERATOR.md section 10's setup block, in order."""
+    text = OPERATOR_MD.read_text()
+    section = text[text.index("## 10. Run the public RPC role") :]
+    block = section[section.index("```bash\n") + 8 :]
+    block = block[: block.index("```")]
+    lines = block.replace("\\\n", " ").splitlines()
+    assert any("build-node-binaries.sh" in x and "--role rpc" in x for x in lines)
+    return [" ".join(x.split()) for x in lines if "/scripts/install-node.sh " in x]
+
+
+@pytest.fixture
+def fake_host(tmp_path):
+    """install-node.sh on an unprivileged fake host rooted at TOS_INSTALL_PREFIX.
+
+    systemctl keeps unit states in files, install drops the owner change,
+    the release's engine and key tool are fakes that write what the real ones
+    write. Every other step (the scripts, check-release, testnet-operator.py
+    configure and rpc-config) runs for real."""
+    prefix = tmp_path / "root"
+    for path in ("usr/local/bin", "etc/systemd/system"):
+        (prefix / path).mkdir(parents=True)
+    bundle = tmp_path / "bundle"
+    shutil.copytree(SCRIPTS.parent, bundle, ignore=shutil.ignore_patterns("tests", "__pycache__"))
+    (bundle / "scripts" / "setup-time.sh").write_text(FAKE_OK)
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    for name, text in (
+        ("id", FAKE_ID),
+        ("systemctl", STATEFUL_SYSTEMCTL),
+        ("systemd-analyze", FAKE_OK),
+        ("install", FAKE_INSTALL),
+        ("useradd", FAKE_OK),
+        ("runuser", FAKE_RUNUSER),
+    ):
+        (fakebin / name).write_text(text)
+        (fakebin / name).chmod(0o755)
+    state = tmp_path / "state"
+    state.mkdir()
+    log = tmp_path / "host.log"
+    log.write_text("")
+
+    release = tmp_path / f"release-{PIN}"
+    release.mkdir()
+    for name in RPC:
+        body = {"validator-engine": FAKE_ENGINE, "generate-random-id": FAKE_RANDOM_ID}.get(
+            name, f"#!/bin/sh\necho {name}\n"
+        )
+        (release / name).write_text(body)
+        (release / name).chmod(0o755)
+    (release / "SHA256SUMS").write_text(
+        "".join(
+            f"{hashlib.sha256((release / n).read_bytes()).hexdigest()}  {n}\n" for n in sorted(RPC)
+        )
+    )
+    (release / "BUILD-INFO").write_text(f"tos_revision {PIN}\n")
+
+    config = published_config()
+    del config["liteservers"], config["liteservers_v2"]
+    global_config = tmp_path / "global-config.json"
+    global_config.write_text(json.dumps(config, indent=2) + "\n")
+    genesis = tmp_path / "genesis"
+    genesis.mkdir()
+    (genesis / "genesis.json").write_text("{}\n")
+    for name in ("zerostate", "basestate0"):
+        boc = f"{name} boc\n".encode()
+        (genesis / f"{name}.boc").write_bytes(boc)
+        (genesis / f"{name}.fhash").write_bytes(hashlib.sha256(boc).digest())
+
+    values = {
+        "<PUBLIC_IPV4>": "192.0.2.10",
+        '"$REL"': str(release),
+        '"$TOS_COMMIT"': PIN,
+        "<GLOBAL_CONFIG_JSON>": str(global_config),
+        "<PUBLISHED_SHA256>": hashlib.sha256(global_config.read_bytes()).hexdigest(),
+        "<PUBLISHED_GENESIS_DIRECTORY>": str(genesis),
+        "sudo /opt/tos-testnet/scripts/install-node.sh": f"bash {bundle}/scripts/install-node.sh",
+    }
+    env = {
+        "PATH": f"{fakebin}:/usr/bin:/bin",
+        "FAKE_LOG": str(log),
+        "FAKE_STATE": str(state),
+        "TOS_INSTALL_PREFIX": str(prefix),
+    }
+
+    def run(steps: list[str]):
+        """Run the steps in order; return the first that fails, or None."""
+        for step in steps:
+            for placeholder, value in values.items():
+                step = step.replace(placeholder, value)
+            assert "<" not in step and "$" not in step, step
+            result = subprocess.run(shlex.split(step), capture_output=True, text=True, env=env)
+            if result.returncode != 0:
+                return result
+        return None
+
+    run.prefix, run.state, run.log = prefix, state, log
+    return run
+
+
+def test_the_documented_rpc_setup_runs_in_its_documented_order(fake_host):
+    steps = documented_steps()
+    assert [s.split()[2:5] for s in steps] == [
+        ["prepare", "--role", "fullnode"],
+        ["prepare", "--role", "rpc"],
+        ["activate", "--role", "fullnode"],
+        ["activate", "--role", "rpc"],
+    ]
+    failed = fake_host(steps)
+    assert failed is None, (failed.args, failed.stderr) if failed else ""
+    assert sorted(p.name for p in fake_host.state.iterdir()) == [
+        "tos-testnet-fullnode",
+        "tos-testnet-rpc",
+        "tos-testnet-wallet-index",
+    ]
+    started = [
+        line.split()[-1]
+        for line in fake_host.log.read_text().splitlines()
+        if line.startswith("systemctl enable --now")
+    ]
+    assert started == [
+        "tos-testnet-fullnode.service",
+        "tos-testnet-wallet-index.service",
+        "tos-testnet-rpc.service",
+    ]
+    for name in SERVICES:
+        assert (fake_host.prefix / "usr/local/bin" / name).is_file()
+    config = json.loads((fake_host.prefix / "etc/tos/rpc-liteservers.json").read_text())
+    assert config["liteservers"][0]["ip"] == lib.ip_to_tl("127.0.0.1")
+    for unit in ("tos-testnet-fullnode.service", INDEX_UNIT, RPC_UNIT):
+        assert (fake_host.prefix / "etc/systemd/system" / unit).is_file()
+
+
+def test_the_old_order_is_refused_at_the_rpc_preparation(fake_host):
+    # Activating the full node before preparing the rpc role, as the guide
+    # once said, is refused by the preflight.
+    prepare_fullnode, prepare_rpc, activate_fullnode, activate_rpc = documented_steps()
+    failed = fake_host([prepare_fullnode, activate_fullnode, prepare_rpc, activate_rpc])
+    assert failed is not None
+    assert failed.args[2:5] == ["prepare", "--role", "rpc"]
+    assert "tos-testnet-fullnode is running; stop it first" in failed.stderr
+
+
+def test_a_root_run_refuses_the_test_prefix():
+    text = INSTALL.read_text()
+    assert 'if [ -n "$PREFIX" ] && [ "$EUID" = 0 ]; then die' in text
+    # Every host path the script names is under the prefix.
+    for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        for path in ("/usr/local/bin", "/etc/tos", "/var/lib/tos", "/var/log/tos", "/etc/systemd"):
+            if path in line:
+                assert "$PREFIX" in line, line

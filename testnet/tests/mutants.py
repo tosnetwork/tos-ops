@@ -1610,6 +1610,24 @@ M += [
         "ExecCondition=/bin/systemctl is-active --quiet tos-testnet-wallet-index.service\n",
         "ExecStartPre=/bin/systemctl is-active --quiet tos-testnet-wallet-index.service\n",
     ),
+    (
+        "RR29 guide prepares the rpc role after activating the full node",
+        W / "OPERATOR.md",
+        "sudo /opt/tos-testnet/scripts/install-node.sh prepare --role rpc\n"
+        "sudo /opt/tos-testnet/scripts/install-node.sh activate --role fullnode \\\n"
+        "  --global-config <GLOBAL_CONFIG_JSON> --sha256 <PUBLISHED_SHA256> "
+        "--genesis <PUBLISHED_GENESIS_DIRECTORY>\n",
+        "sudo /opt/tos-testnet/scripts/install-node.sh activate --role fullnode \\\n"
+        "  --global-config <GLOBAL_CONFIG_JSON> --sha256 <PUBLISHED_SHA256> "
+        "--genesis <PUBLISHED_GENESIS_DIRECTORY>\n"
+        "sudo /opt/tos-testnet/scripts/install-node.sh prepare --role rpc\n",
+    ),
+    (
+        "RR30 test prefix accepted from root",
+        INSTALL,
+        'if [ -n "$PREFIX" ] && [ "$EUID" = 0 ]; then die',
+        "if false; then die",
+    ),
 ]
 
 

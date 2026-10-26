@@ -387,21 +387,31 @@ were pruned pauses at its cursor and never catches up. Start the index while the
 whole archive is still on the host; a longer retention is a reviewed template
 change, not a host edit.
 
-With approval, on the rpc host:
+With approval, on the rpc host, in this order. Both preparations come before
+the full node's activation: `prepare` (like `binaries`) refuses while the full
+node, or any other node or rpc service on the host, is active. Both activations
+come after them, the full node's first.
 
+<!-- testnet/tests/test_rpc_role.py runs this block's install-node.sh lines, in
+     this order, on a fake host; keep them runnable. -->
 ```bash
 TOS_COMMIT=<FULL_40_CHARACTER_COMMIT>
 sudo /opt/tos-testnet/scripts/build-node-binaries.sh --rev "$TOS_COMMIT" --role rpc
 REL=/var/lib/tos-build/release-$TOS_COMMIT
 sudo /opt/tos-testnet/scripts/install-node.sh prepare --role fullnode \
   --public-ip <PUBLIC_IPV4> --release "$REL" --rev "$TOS_COMMIT"
+sudo /opt/tos-testnet/scripts/install-node.sh prepare --role rpc
 sudo /opt/tos-testnet/scripts/install-node.sh activate --role fullnode \
   --global-config <GLOBAL_CONFIG_JSON> --sha256 <PUBLISHED_SHA256> --genesis <PUBLISHED_GENESIS_DIRECTORY>
-sudo /opt/tos-testnet/scripts/install-node.sh prepare --role rpc
 sudo /opt/tos-testnet/scripts/install-node.sh activate --role rpc \
   --global-config <GLOBAL_CONFIG_JSON> --sha256 <PUBLISHED_SHA256>
 curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8083/readyz   # 200 once replay caught up
 ```
+
+To add the rpc role to a full node that already runs, build `--role rpc` at the
+node's commit, `systemctl stop tos-testnet-fullnode`, run
+`prepare --role rpc --release "$REL" --rev "$TOS_COMMIT"`,
+`systemctl start tos-testnet-fullnode`, then `activate --role rpc` as above.
 
 An rpc release carries the full node's binaries and both services from one
 build, so the index always runs the source node's version. `prepare` and

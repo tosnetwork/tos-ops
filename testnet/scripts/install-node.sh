@@ -35,8 +35,11 @@
 #   unit and starts it.
 #
 # The rpc role adds the standalone public-RPC services to a full node on the
-# same host: the full node is prepared and activated with --role fullnode
-# first (from an rpc release, so the services come from the same build), then
+# same host. Order: prepare --role fullnode (from an rpc release, so the
+# services come from the same build), prepare --role rpc, activate --role
+# fullnode, activate --role rpc. Both preparations precede the full node's
+# activation, since prepare refuses while the full node runs (OPERATOR.md
+# section 10).
 #   prepare --role rpc   installs the release if given, refuses unless the
 #                        services and the full node's binaries are installed,
 #                        and creates the tos-rpc service account;
@@ -54,12 +57,18 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 TESTNET="$(dirname "$HERE")"
 PROFILE="$TESTNET/network/profile.json"
-BIN=/usr/local/bin
-ETC=/etc/tos
-DB_ROOT=/var/lib/tos
-LOG_ROOT=/var/log/tos
+# TOS_INSTALL_PREFIX roots every host path under a directory, for the tests
+# that run this script unprivileged on a fake host. A real root run refuses it
+# ($EUID is the shell's own, not a PATH tool's).
+PREFIX=${TOS_INSTALL_PREFIX:-}
+BIN=$PREFIX/usr/local/bin
+ETC=$PREFIX/etc/tos
+DB_ROOT=$PREFIX/var/lib/tos
+LOG_ROOT=$PREFIX/var/log/tos
+UNIT_DIR=$PREFIX/etc/systemd/system
 
 die() { echo "install-node: $*" >&2; exit 1; }
+if [ -n "$PREFIX" ] && [ "$EUID" = 0 ]; then die "TOS_INSTALL_PREFIX is for unprivileged tests only; unset it"; fi
 profile() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); [d:=d[k] for k in sys.argv[2:]]; print(d)' "$PROFILE" "$@"; }
 
 [ "$(id -u)" = 0 ] || die "run as root"
@@ -130,7 +139,7 @@ install_release() {
       install -m 0755 -o root -g root "$dir/$name" "$BIN/$name"
     fi
   done
-  [ -f "$dir/BUILD-INFO" ] && install -D -m 0644 "$dir/BUILD-INFO" /etc/tos/BUILD-INFO
+  [ -f "$dir/BUILD-INFO" ] && install -D -m 0644 "$dir/BUILD-INFO" "$ETC/BUILD-INFO"
   return 0
 }
 
@@ -232,9 +241,9 @@ place_static() {
 
 install_unit() {
   local unit=${1:-$UNIT}
-  install -m 0644 -o root -g root "$TESTNET/systemd/$unit" "/etc/systemd/system/$unit"
+  install -m 0644 -o root -g root "$TESTNET/systemd/$unit" "$UNIT_DIR/$unit"
   systemctl daemon-reload
-  systemd-analyze verify "/etc/systemd/system/$unit"
+  systemd-analyze verify "$UNIT_DIR/$unit"
 }
 
 # Run by activate after the global config is verified against --sha256.

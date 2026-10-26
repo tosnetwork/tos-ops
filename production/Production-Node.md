@@ -395,9 +395,17 @@ an implementation reference, not a production approval.
 sudo python3 /opt/tos-testnet/scripts/fetch-release.py --tag v<VERSION> \
   --rev <FULL_40_CHARACTER_COMMIT> --role rpc --arch x86_64 \
   --out /var/lib/tos-build/release-<FULL_40_CHARACTER_COMMIT>
+# binaries and prepare refuse while the node or a service runs: stopping the
+# node stops the index and tos-rpc with it, starting it starts them again.
+sudo systemctl stop tos-testnet-fullnode
 sudo /opt/tos-testnet/scripts/install-node.sh binaries --role rpc \
   --release /var/lib/tos-build/release-<FULL_40_CHARACTER_COMMIT> --rev <FULL_40_CHARACTER_COMMIT>
+sudo systemctl start tos-testnet-fullnode
 ```
+
+On a new host, install from that directory with the order in
+[OPERATOR.md section 10](../testnet/OPERATOR.md#10-run-the-public-rpc-role):
+both `prepare` steps, then both `activate` steps, the full node's first.
 
 ### 10.2 Upgrades
 
