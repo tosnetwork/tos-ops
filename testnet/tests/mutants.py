@@ -1301,7 +1301,7 @@ M += [
     (
         "FR4 SHA256SUMS digest ignored",
         FETCH,
-        "if sums[name] != digest:",
+        "if sums[name] != actual[name]:",
         "if False:",
     ),
     (
@@ -1345,6 +1345,61 @@ M += [
         FETCH,
         'if parsed.scheme == "https" or (parsed.scheme == "http" and loopback):',
         'if parsed.scheme in ("https", "http"):',
+    ),
+    (
+        "FR12 node artifact workflow ignored",
+        FETCH,
+        'if entry.get("workflow") != NODE_WORKFLOW:',
+        "if False:",
+    ),
+    (
+        "FR13 build record not bound to the zip",
+        FETCH,
+        '        members[build_info] = "BUILD-INFO"\n',
+        "",
+    ),
+    (
+        "FR14 build record revision ignored",
+        FETCH,
+        'if fields.get("tos_revision") != rev:',
+        "if False:",
+    ),
+    (
+        "FR15 build record binary digests ignored",
+        FETCH,
+        "if listed.get(name) != digest:",
+        "if False:",
+    ),
+    (
+        "FR16 missing library accepted",
+        FETCH,
+        "        if missing:\n",
+        "        if False:\n",
+    ),
+    ("FR17 old glibc accepted", FETCH, "if glibc < MIN_GLIBC:", "if False:"),
+    (
+        "FR18 reported commit ignored",
+        FETCH,
+        'if f"Commit: {rev}" not in ran.stdout:',
+        "if False:",
+    ),
+    (
+        "FR19 runtime check skipped",
+        FETCH,
+        "glibc = check_runnable(stage, binaries, rev)",
+        'glibc = "2.39"',
+    ),
+    (
+        "FR20 loader failure ignored",
+        FETCH,
+        'if loader.returncode != 0 or "not a dynamic executable" in output:',
+        "if False:",
+    ),
+    (
+        "FR21 missing package not named",
+        FETCH,
+        'LIBRARY_PACKAGES = {"libjemalloc.so.2": "libjemalloc2"}',
+        "LIBRARY_PACKAGES = {}",
     ),
 ]
 

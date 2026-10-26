@@ -5,6 +5,7 @@ import hashlib
 import http.server
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -19,6 +20,7 @@ CHECK = SCRIPTS / "check-release.sh"
 TAG = "v0.9.1"
 PIN = "4b4892b8d94e33fcb9699a9fd9b8032c12efdfd0"
 OTHER = "85c679c3454f306eb867e25b1960ae3d757bd3dd"
+NODE_WORKFLOW = "build-tos-linux-node-binaries.yml"
 NODE = [
     "validator-engine",
     "validator-engine-console",
@@ -28,6 +30,32 @@ NODE = [
 ]
 DHT = ["dht-server", "generate-random-id"]
 ALL = sorted(set(NODE + DHT))
+# The node build links jemalloc into these two.
+JEMALLOC = ("validator-engine", "dht-server")
+ARCHES = ("x86_64", "arm64")
+
+# A loader that answers the way glibc's ldd does, steered by the environment.
+FAKE_LDD = r"""#!/bin/sh
+if [ "$1" = --version ]; then
+  echo "ldd (Fake GLIBC ${FAKE_GLIBC:-2.39}-0) ${FAKE_GLIBC:-2.39}"
+  exit 0
+fi
+if [ -n "$FAKE_NOT_DYNAMIC" ]; then
+  echo "	not a dynamic executable"
+  exit 1
+fi
+echo "	linux-vdso.so.1 (0x00007ffd)"
+case "$(basename "$1")" in
+  validator-engine|dht-server)
+    if [ -n "$FAKE_NO_JEMALLOC" ]; then
+      echo "	libjemalloc.so.2 => not found"
+    else
+      echo "	libjemalloc.so.2 => /lib/libjemalloc.so.2 (0x00007f01)"
+    fi ;;
+esac
+if [ -n "$FAKE_MISSING" ]; then echo "	$FAKE_MISSING => not found"; fi
+echo "	libc.so.6 => /lib/libc.so.6 (0x00007f02)"
+"""
 
 
 def sha256(data: bytes) -> str:
@@ -35,52 +63,92 @@ def sha256(data: bytes) -> str:
 
 
 class FakeRelease:
-    """A release laid out as release-artifacts.py stages it, under <root>/<tag>/."""
+    """A release laid out as release-artifacts.py stages it, under <root>/<tag>/.
 
-    def __init__(self, root: Path, tag: str = TAG, commit: str = PIN, arches=("x86_64", "arm64")):
+    Change an attribute, then publish() writes a release consistent in every
+    other respect, so a test isolates exactly one defect."""
+
+    def __init__(self, root: Path, tag: str = TAG, commit: str = PIN):
         self.dir = root / tag
         self.dir.mkdir(parents=True)
         self.tag, self.commit = tag, commit
-        self.records = []
-        for arch in arches:
-            archive = self.dir / f"tos-linux-{arch}.zip"
+        self.build_commit = commit
+        self.binary_commit = commit
+        self.workflow = NODE_WORKFLOW
+        self.build_info_member = True
+        self.publish()
+
+    def binary(self, name: str, arch: str) -> bytes:
+        body = f"#!/bin/sh\n# {name} {arch}\n"
+        if name != "tos-pq-consensus-key":
+            body += f'echo "{name} build"\necho "Commit: {self.binary_commit}"\n'
+        return body.encode()
+
+    def build_info(self, arch: str) -> bytes:
+        lines = [
+            f"tos_revision {self.build_commit}",
+            "source_date_epoch 1761400000",
+            f"architecture {'aarch64' if arch == 'arm64' else arch}",
+            "compiler Ubuntu clang version 21.1.0",
+            "flags CMAKE_BUILD_TYPE=Release TOS_ARCH=x86-64-v2 PORTABLE=x86-64-v2 TOS_USE_JEMALLOC=ON",
+            "jemalloc /usr/lib/libjemalloc.so",
+            "jemalloc_package libjemalloc-dev 5.3.0-2build1",
+            "build_os Ubuntu 24.04.3 LTS",
+        ]
+        lines += [f"needed {n} libc.so.6" for n in ALL]
+        lines += [f"sha256 {sha256(self.binary(n, arch))}  {n}" for n in ALL]
+        return ("\n".join(lines) + "\n").encode()
+
+    def publish(self) -> None:
+        for path in self.dir.iterdir():
+            path.unlink()
+        records = []
+        for arch in ARCHES:
+            # The AppImage build's artifact, which carries no node binaries.
+            appimage = self.dir / f"tos-linux-{arch}.zip"
+            with zipfile.ZipFile(appimage, "w") as bundle:
+                bundle.writestr("lite-client", b"an AppImage\n")
+            archive = self.dir / f"tos-node-linux-{arch}.zip"
             with zipfile.ZipFile(archive, "w") as bundle:
                 for name in ALL:
                     bundle.writestr(name, self.binary(name, arch))
-                bundle.writestr("smartcont/elector-code.fc", ";; contract\n")
+                if self.build_info_member:
+                    bundle.writestr("BUILD-INFO", self.build_info(arch))
             for name in ALL:
                 (self.dir / f"{name}-linux-{arch}").write_bytes(self.binary(name, arch))
-            self.records.append(
-                {
-                    "workflow": f"build-tos-linux-{arch}-appimage.yml",
-                    "run_id": 1000 + len(self.records),
-                    "run_attempt": 1,
-                    "run_url": "https://example.invalid/run",
-                    "event": "push",
-                    "head_sha": commit,
-                    "artifact_id": 2000 + len(self.records),
-                    "artifact_name": f"tos-{arch}-linux",
-                    "artifact_digest": f"sha256:{sha256(archive.read_bytes())}",
-                }
-            )
-        self.write_provenance()
+            (self.dir / f"node-build-info-linux-{arch}.txt").write_bytes(self.build_info(arch))
+            for artifact, workflow, path in (
+                (f"tos-{arch}-linux", f"build-tos-linux-{arch}-appimage.yml", appimage),
+                (f"tos-node-{arch}-linux", self.workflow, archive),
+            ):
+                records.append(
+                    {
+                        "workflow": workflow,
+                        "run_id": 1000 + len(records),
+                        "run_attempt": 1,
+                        "run_url": "https://example.invalid/run",
+                        "event": "push",
+                        "head_sha": self.commit,
+                        "artifact_id": 2000 + len(records),
+                        "artifact_name": artifact,
+                        "artifact_digest": f"sha256:{sha256(path.read_bytes())}",
+                    }
+                )
+        self.write_provenance(
+            {
+                "repository": "tosnetwork/tos",
+                "release_set": "full",
+                "tag": self.tag,
+                "tag_commit": self.commit,
+                "artifacts": records,
+            }
+        )
         self.write_sums()
-
-    @staticmethod
-    def binary(name: str, arch: str) -> bytes:
-        return f"#!/bin/sh\necho {name} {arch}\n".encode()
 
     def provenance(self) -> dict:
         return json.loads((self.dir / "release-provenance.json").read_text())
 
-    def write_provenance(self, record: dict | None = None) -> None:
-        record = record or {
-            "repository": "tosnetwork/tos",
-            "release_set": "full",
-            "tag": self.tag,
-            "tag_commit": self.commit,
-            "artifacts": self.records,
-        }
+    def write_provenance(self, record: dict) -> None:
         (self.dir / "release-provenance.json").write_text(
             json.dumps(record, indent=2, sort_keys=True) + "\n"
         )
@@ -98,13 +166,23 @@ class Quiet(http.server.SimpleHTTPRequestHandler):
 
 
 @pytest.fixture
-def served(tmp_path):
+def fakebin(tmp_path):
+    directory = tmp_path / "fakebin"
+    directory.mkdir()
+    (directory / "ldd").write_text(FAKE_LDD)
+    (directory / "ldd").chmod(0o755)
+    return directory
+
+
+@pytest.fixture
+def served(tmp_path, fakebin):
     root = tmp_path / "served"
     release = FakeRelease(root)
     handler = functools.partial(Quiet, directory=str(root))
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    release.env = {"PATH": f"{fakebin}:/usr/bin:/bin"}
     try:
         yield release, f"http://127.0.0.1:{server.server_address[1]}"
     finally:
@@ -112,17 +190,40 @@ def served(tmp_path):
         server.server_close()
 
 
-def fetch(base_url, out, *, tag=TAG, rev=PIN, role="validator", arch="x86_64", extra=()):
+def fetch(base_url, out, *, tag=TAG, rev=PIN, role="validator", arch="x86_64", env=None):
     command = [sys.executable, "-I", str(FETCH), "--tag", tag, "--rev", rev, "--role", role]
     if arch is not None:
         command += ["--arch", arch]
-    command += ["--out", str(out), "--base-url", base_url, *extra]
-    return subprocess.run(command, capture_output=True, text=True)
+    command += ["--out", str(out)]
+    if base_url is not None:
+        command += ["--base-url", base_url]
+    return subprocess.run(command, capture_output=True, text=True, env=env)
+
+
+def run(release, url, out, **kwargs):
+    extra = kwargs.pop("env", {})
+    return fetch(url, out, env={**release.env, **extra}, **kwargs)
 
 
 def refused(result, text):
     assert result.returncode != 0, result.stdout
+    assert "Traceback" not in result.stderr, result.stderr
     assert text in result.stderr, result.stderr
+
+
+def edit_provenance(release, change):
+    record = release.provenance()
+    change(record)
+    release.write_provenance(record)
+    release.write_sums()
+
+
+def node_record(record, arch="x86_64"):
+    (entry,) = [e for e in record["artifacts"] if e["artifact_name"] == f"tos-node-{arch}-linux"]
+    return entry
+
+
+# ---------------------------------------------------------------- happy path
 
 
 @pytest.mark.parametrize(("role", "binaries"), [("validator", NODE), ("dht", DHT)])
@@ -131,55 +232,110 @@ def test_a_verified_release_is_written_in_the_layout_check_release_accepts(
 ):
     release, url = served
     out = tmp_path / f"release-{PIN}"
-    result = fetch(url, out, role=role, arch="arm64")
+    result = run(release, url, out, role=role, arch="arm64")
     assert result.returncode == 0, result.stderr
     assert sorted(p.name for p in out.iterdir()) == sorted([*binaries, "SHA256SUMS", "BUILD-INFO"])
     for name in binaries:
-        assert (out / name).read_bytes() == FakeRelease.binary(name, "arm64")
+        assert (out / name).read_bytes() == release.binary(name, "arm64")
         assert (out / name).stat().st_mode & 0o777 == 0o755
     info = (out / "BUILD-INFO").read_text().splitlines()
-    assert f"tos_revision {PIN}" in info
+    assert info[0] == f"tos_revision {PIN}"
     assert f"source github-release {TAG}" in info
     digest = sha256((release.dir / "release-provenance.json").read_bytes())
     assert f"provenance_sha256 {digest}" in info
+    build = sha256((release.dir / "node-build-info-linux-arm64.txt").read_bytes())
+    assert f"node_build_info_sha256 {build}" in info
+    assert "node_build compiler Ubuntu clang version 21.1.0" in info
+    assert "node_build jemalloc_package libjemalloc-dev 5.3.0-2build1" in info
+    assert any(
+        line.startswith("node_build flags ") and "TOS_USE_JEMALLOC=ON" in line for line in info
+    )
+    assert "host_glibc 2.39" in info
     check = subprocess.run(
         ["bash", str(CHECK), str(out), PIN, *binaries], capture_output=True, text=True
     )
     assert check.returncode == 0, check.stderr
 
 
+def test_the_base_url_comes_from_the_environment(served, tmp_path):
+    release, url = served
+    result = fetch(
+        None, tmp_path / "out", role="dht", env={**release.env, "TOS_RELEASE_BASE_URL": url}
+    )
+    assert result.returncode == 0, result.stderr
+
+
+# ---------------------------------------------------------------- provenance
+
+
 def test_a_release_of_another_commit_is_refused(served, tmp_path):
-    _, url = served
+    release, url = served
     out = tmp_path / "out"
-    refused(fetch(url, out, rev=OTHER), f"tag_commit '{PIN}', expected '{OTHER}'")
+    refused(run(release, url, out, rev=OTHER), f"tag_commit '{PIN}', expected '{OTHER}'")
     assert not out.exists()
 
 
 def test_a_provenance_record_of_another_tag_is_refused(served, tmp_path):
     release, url = served
-    record = release.provenance()
-    record["tag"] = "v0.9.0"
-    release.write_provenance(record)
-    release.write_sums()
-    refused(fetch(url, tmp_path / "out"), "records tag 'v0.9.0', expected 'v0.9.1'")
+    edit_provenance(release, lambda r: r.update(tag="v0.9.0"))
+    refused(run(release, url, tmp_path / "out"), "records tag 'v0.9.0', expected 'v0.9.1'")
 
 
 def test_a_provenance_record_of_another_repository_is_refused(served, tmp_path):
     release, url = served
-    record = release.provenance()
-    record["repository"] = "someone/tos"
-    release.write_provenance(record)
-    release.write_sums()
-    refused(fetch(url, tmp_path / "out"), "records repository 'someone/tos'")
+    edit_provenance(release, lambda r: r.update(repository="someone/tos"))
+    refused(run(release, url, tmp_path / "out"), "records repository 'someone/tos'")
 
 
-def test_an_artifact_built_from_another_commit_is_refused(served, tmp_path):
+def test_a_node_artifact_built_from_another_commit_is_refused(served, tmp_path):
     release, url = served
-    record = release.provenance()
-    record["artifacts"][0]["head_sha"] = OTHER
-    release.write_provenance(record)
-    release.write_sums()
-    refused(fetch(url, tmp_path / "out"), f"was built from '{OTHER}', not {PIN}")
+    edit_provenance(release, lambda r: node_record(r).update(head_sha=OTHER))
+    refused(run(release, url, tmp_path / "out"), f"was built from '{OTHER}', not {PIN}")
+
+
+def test_a_node_artifact_from_another_workflow_is_refused(served, tmp_path):
+    release, url = served
+    release.workflow = "build-tos-linux-x86-64-appimage.yml"
+    release.publish()
+    refused(
+        run(release, url, tmp_path / "out"),
+        f"came from workflow 'build-tos-linux-x86-64-appimage.yml', not {NODE_WORKFLOW}",
+    )
+
+
+def test_a_release_whose_provenance_has_no_node_artifact_is_refused(served, tmp_path):
+    release, url = served
+    edit_provenance(
+        release,
+        lambda r: r.update(
+            artifacts=[e for e in r["artifacts"] if "node" not in e["artifact_name"]]
+        ),
+    )
+    refused(run(release, url, tmp_path / "out"), "0 records of artifact tos-node-x86_64-linux")
+
+
+def test_an_artifact_digest_mismatch_is_refused(served, tmp_path):
+    release, url = served
+    edit_provenance(release, lambda r: node_record(r).update(artifact_digest="sha256:" + "0" * 64))
+    refused(
+        run(release, url, tmp_path / "out"),
+        "release-provenance.json records artifact tos-node-x86_64-linux",
+    )
+
+
+def test_the_appimage_zip_does_not_stand_in_for_the_node_zip(served, tmp_path):
+    release, url = served
+
+    # The node artifact's digest names the AppImage zip: the node zip no longer matches.
+    def swap(record):
+        (appimage,) = [e for e in record["artifacts"] if e["artifact_name"] == "tos-x86_64-linux"]
+        node_record(record)["artifact_digest"] = appimage["artifact_digest"]
+
+    edit_provenance(release, swap)
+    refused(run(release, url, tmp_path / "out"), "tos-node-linux-x86_64.zip has sha256")
+
+
+# ---------------------------------------------------------------- SHA256SUMS and the zip
 
 
 def test_a_tampered_binary_is_refused(served, tmp_path):
@@ -187,16 +343,18 @@ def test_a_tampered_binary_is_refused(served, tmp_path):
     with open(release.dir / "validator-engine-linux-x86_64", "ab") as handle:
         handle.write(b"x")
     out = tmp_path / "out"
-    refused(fetch(url, out), "validator-engine-linux-x86_64 has sha256")
+    refused(run(release, url, out), "validator-engine-linux-x86_64 has sha256")
     assert not out.exists()
 
 
-def test_a_binary_that_is_not_the_provenance_artifacts_copy_is_refused(served, tmp_path):
+def test_a_binary_that_is_not_the_zips_copy_is_refused(served, tmp_path):
     release, url = served
-    # Consistent with SHA256SUMS, but not the bytes of the recorded build artifact.
+    # Consistent with SHA256SUMS, but not the bytes of the recorded node artifact.
     (release.dir / "lite-client-linux-x86_64").write_bytes(b"another build\n")
     release.write_sums()
-    refused(fetch(url, tmp_path / "out"), "lite-client-linux-x86_64 is not the lite-client in")
+    refused(
+        run(release, url, tmp_path / "out"), "lite-client-linux-x86_64 is not the lite-client in"
+    )
 
 
 def test_a_missing_asset_is_refused(served, tmp_path):
@@ -204,14 +362,21 @@ def test_a_missing_asset_is_refused(served, tmp_path):
     (release.dir / "validator-engine-linux-x86_64").unlink()
     release.write_sums()
     out = tmp_path / "out"
-    refused(fetch(url, out), "has no asset validator-engine-linux-x86_64")
+    refused(run(release, url, out), "has no asset validator-engine-linux-x86_64")
     assert not out.exists()
+
+
+def test_a_release_without_the_node_zip_is_refused(served, tmp_path):
+    release, url = served
+    (release.dir / "tos-node-linux-x86_64.zip").unlink()
+    release.write_sums()
+    refused(run(release, url, tmp_path / "out"), "has no asset tos-node-linux-x86_64.zip")
 
 
 def test_a_release_without_provenance_is_refused(served, tmp_path):
     release, url = served
     (release.dir / "release-provenance.json").unlink()
-    refused(fetch(url, tmp_path / "out"), "has no asset release-provenance.json")
+    refused(run(release, url, tmp_path / "out"), "has no asset release-provenance.json")
 
 
 def test_a_file_not_in_sha256sums_is_refused(served, tmp_path):
@@ -220,7 +385,7 @@ def test_a_file_not_in_sha256sums_is_refused(served, tmp_path):
     lines = sums.read_text().splitlines(keepends=True)
     sums.write_text("".join(x for x in lines if not x.endswith("  dht-server-linux-x86_64\n")))
     refused(
-        fetch(url, tmp_path / "out", role="dht"),
+        run(release, url, tmp_path / "out", role="dht"),
         "dht-server-linux-x86_64 is not listed in the release's SHA256SUMS",
     )
 
@@ -230,44 +395,142 @@ def test_provenance_not_matching_sha256sums_is_refused(served, tmp_path):
     record = release.provenance()
     record["note"] = "edited after SHA256SUMS"
     release.write_provenance(record)
-    refused(fetch(url, tmp_path / "out"), "release-provenance.json has sha256")
-
-
-def test_an_artifact_digest_mismatch_is_refused(served, tmp_path):
-    release, url = served
-    record = release.provenance()
-    record["artifacts"][0]["artifact_digest"] = "sha256:" + "0" * 64
-    release.write_provenance(record)
-    release.write_sums()
-    refused(
-        fetch(url, tmp_path / "out"), "release-provenance.json records artifact tos-x86_64-linux"
-    )
+    refused(run(release, url, tmp_path / "out"), "release-provenance.json has sha256")
 
 
 def test_a_malformed_sha256sums_is_refused(served, tmp_path):
     release, url = served
     with open(release.dir / "SHA256SUMS", "a") as handle:
         handle.write("not a digest line\n")
-    refused(fetch(url, tmp_path / "out"), "SHA256SUMS line")
+    refused(run(release, url, tmp_path / "out"), "SHA256SUMS line")
+
+
+# ---------------------------------------------------------------- the node build record
+
+
+def test_a_release_without_the_node_build_record_is_refused(served, tmp_path):
+    release, url = served
+    (release.dir / "node-build-info-linux-x86_64.txt").unlink()
+    release.write_sums()
+    refused(run(release, url, tmp_path / "out"), "has no asset node-build-info-linux-x86_64.txt")
+
+
+def test_a_node_zip_without_build_info_is_refused(served, tmp_path):
+    release, url = served
+    release.build_info_member = False
+    release.publish()
+    refused(
+        run(release, url, tmp_path / "out"),
+        "tos-node-linux-x86_64.zip has 0 members named BUILD-INFO",
+    )
+
+
+def test_a_build_record_that_is_not_the_zips_copy_is_refused(served, tmp_path):
+    release, url = served
+    path = release.dir / "node-build-info-linux-x86_64.txt"
+    path.write_bytes(path.read_bytes() + b"extra line\n")
+    release.write_sums()
+    refused(
+        run(release, url, tmp_path / "out"),
+        "node-build-info-linux-x86_64.txt is not the BUILD-INFO in tos-node-linux-x86_64.zip",
+    )
+
+
+def test_a_build_record_of_another_commit_is_refused(served, tmp_path):
+    release, url = served
+    release.build_commit = OTHER
+    release.publish()
+    refused(
+        run(release, url, tmp_path / "out"),
+        f"the node build record names tos_revision '{OTHER}', not {PIN}",
+    )
+
+
+def test_a_build_record_with_another_binary_digest_is_refused(served, tmp_path):
+    release, url = served
+    original = release.build_info
+
+    def build_info(arch):
+        good = sha256(release.binary("lite-client", arch))
+        return original(arch).replace(f"sha256 {good}".encode(), b"sha256 " + b"1" * 64)
+
+    release.build_info = build_info
+    release.publish()
+    refused(run(release, url, tmp_path / "out"), "the node build record lists lite-client as")
+
+
+# ---------------------------------------------------------------- can this host run them
+
+
+def test_a_host_without_libjemalloc_is_refused_naming_the_package(served, tmp_path):
+    release, url = served
+    out = tmp_path / "out"
+    result = run(release, url, out, env={"FAKE_NO_JEMALLOC": "1"})
+    refused(result, "validator-engine needs libjemalloc.so.2, which this host lacks")
+    assert "install the package libjemalloc2" in result.stderr
+    assert not out.exists()
+
+
+def test_a_dht_host_without_libjemalloc_is_refused(served, tmp_path):
+    release, url = served
+    result = run(release, url, tmp_path / "out", role="dht", env={"FAKE_NO_JEMALLOC": "1"})
+    refused(result, "dht-server needs libjemalloc.so.2")
+
+
+def test_any_other_missing_library_is_refused(served, tmp_path):
+    release, url = served
+    result = run(release, url, tmp_path / "out", env={"FAKE_MISSING": "libgsl.so.27"})
+    refused(result, "needs libgsl.so.27, which this host lacks")
+
+
+def test_a_binary_the_loader_cannot_load_is_refused(served, tmp_path):
+    release, url = served
+    result = run(release, url, tmp_path / "out", env={"FAKE_NOT_DYNAMIC": "1"})
+    refused(result, "this host's loader cannot load")
+
+
+@pytest.mark.parametrize("glibc", ["2.35", "2.38", "1.99"])
+def test_an_older_glibc_is_refused(served, tmp_path, glibc):
+    release, url = served
+    result = run(release, url, tmp_path / "out", env={"FAKE_GLIBC": glibc})
+    refused(result, f"this host's glibc is {glibc}; the release binaries need glibc 2.39")
+
+
+def test_a_newer_glibc_is_accepted(served, tmp_path):
+    release, url = served
+    result = run(release, url, tmp_path / "out", env={"FAKE_GLIBC": "2.41"})
+    assert result.returncode == 0, result.stderr
+
+
+def test_a_binary_reporting_another_commit_is_refused(served, tmp_path):
+    release, url = served
+    release.binary_commit = OTHER
+    release.publish()
+    out = tmp_path / "out"
+    refused(run(release, url, out), f"-V does not report Commit: {PIN}")
+    assert not out.exists()
+
+
+# ---------------------------------------------------------------- arguments and output
 
 
 def test_an_existing_out_is_refused_and_left_alone(served, tmp_path):
-    _, url = served
+    release, url = served
     out = tmp_path / "out"
     out.mkdir()
     (out / "keep").write_text("operator data\n")
-    refused(fetch(url, out), "already exists")
+    refused(run(release, url, out), "already exists")
     assert [p.name for p in out.iterdir()] == ["keep"]
 
 
 def test_a_role_this_tool_does_not_know_is_refused(served, tmp_path):
-    _, url = served
-    refused(fetch(url, tmp_path / "out", role="observer"), "invalid choice: 'observer'")
+    release, url = served
+    refused(run(release, url, tmp_path / "out", role="observer"), "invalid choice: 'observer'")
 
 
 def test_an_arch_this_tool_does_not_know_is_refused(served, tmp_path):
-    _, url = served
-    refused(fetch(url, tmp_path / "out", arch="riscv64"), "invalid choice: 'riscv64'")
+    release, url = served
+    refused(run(release, url, tmp_path / "out", arch="riscv64"), "invalid choice: 'riscv64'")
 
 
 @pytest.mark.parametrize(
@@ -280,26 +543,12 @@ def test_an_arch_this_tool_does_not_know_is_refused(served, tmp_path):
     ],
 )
 def test_malformed_tags_and_revisions_are_refused(served, tmp_path, tag, rev, text):
-    _, url = served
-    refused(fetch(url, tmp_path / "out", tag=tag, rev=rev), text)
+    release, url = served
+    refused(run(release, url, tmp_path / "out", tag=tag, rev=rev), text)
 
 
 def test_plain_http_is_refused_off_loopback(tmp_path):
-    result = fetch("http://releases.example.invalid", tmp_path / "out")
-    refused(result, "must be https://")
-
-
-def test_the_base_url_comes_from_the_environment(served, tmp_path):
-    _, url = served
-    command = [sys.executable, "-I", str(FETCH), "--tag", TAG, "--rev", PIN, "--role", "dht"]
-    command += ["--arch", "x86_64", "--out", str(tmp_path / "out")]
-    result = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        env={"TOS_RELEASE_BASE_URL": url, "PATH": "/usr/bin:/bin"},
-    )
-    assert result.returncode == 0, result.stderr
+    refused(fetch("http://releases.example.invalid", tmp_path / "out"), "must be https://")
 
 
 def load_module():
@@ -309,8 +558,9 @@ def load_module():
     return module
 
 
-def test_a_result_check_release_refuses_is_not_moved_into_place(served, tmp_path):
-    _, url = served
+def test_a_result_check_release_refuses_is_not_moved_into_place(served, tmp_path, monkeypatch):
+    release, url = served
+    monkeypatch.setenv("PATH", release.env["PATH"])
     module = load_module()
     refuse = tmp_path / "refuse.sh"
     refuse.write_text("echo 'check-release: refused for the test' >&2; exit 1\n")
@@ -327,3 +577,6 @@ def test_the_role_binaries_are_the_ones_the_host_build_builds():
     assert f"validator|fullnode) TARGETS=({' '.join(module.ROLE_BINARIES['validator'])})" in build
     assert f"dht) TARGETS=({' '.join(module.ROLE_BINARIES['dht'])})" in build
     assert module.ROLE_BINARIES["fullnode"] == module.ROLE_BINARIES["validator"]
+    assert set(JEMALLOC) <= set(module.VERSIONED)
+    assert "tos-pq-consensus-key" not in module.VERSIONED
+    assert os.path.basename(str(module.CHECK_RELEASE)) == "check-release.sh"

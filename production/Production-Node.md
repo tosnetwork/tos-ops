@@ -324,7 +324,11 @@ Production takes its node binaries from the tos repository's GitHub release for
 the approved tag, not from a build on each host (the testnet keeps its host
 builds). [fetch-release.py](../testnet/scripts/fetch-release.py) is that path:
 
+The binaries link jemalloc dynamically and need glibc 2.39 or newer (Ubuntu
+24.04). Install the runtime library first; the fetch tool installs nothing:
+
 ```bash
+sudo apt-get install libjemalloc2
 sudo python3 /opt/tos-testnet/scripts/fetch-release.py --tag v<VERSION> \
   --rev <FULL_40_CHARACTER_COMMIT> --role validator --arch x86_64 \
   --out /var/lib/tos-build/release-<FULL_40_CHARACTER_COMMIT>
@@ -332,19 +336,31 @@ sudo /opt/tos-testnet/scripts/install-node.sh binaries --role validator \
   --release /var/lib/tos-build/release-<FULL_40_CHARACTER_COMMIT> --rev <FULL_40_CHARACTER_COMMIT>
 ```
 
-It downloads the role's `<binary>-linux-<arch>` assets, `SHA256SUMS`,
-`release-provenance.json` and the build artifact `tos-linux-<arch>.zip` over
-HTTPS without a GitHub login, and writes nothing unless the provenance names
-the tag, the tos repository and a commit equal to `--rev`; every file matches
-`SHA256SUMS`; the zip matches the artifact digest the provenance records; and
-every binary is byte-identical to its copy in that zip. The output directory is
-the layout `check-release.sh` accepts, with the source and provenance digest in
-`BUILD-INFO`; it refuses an existing `--out` and refuses a release that lacks one
-of the role's assets. A release has to publish the standalone node assets
-(`validator-engine`, `validator-engine-console`, `generate-random-id`,
-`dht-server`) before this path works for it. These checks bind binaries to one
-published release; they do not authenticate the release itself. Compare the
-`provenance_sha256` line across hosts and with the published release.
+It downloads over HTTPS, without a GitHub login, the role's
+`<binary>-linux-<arch>` assets, `node-build-info-linux-<arch>.txt`,
+`SHA256SUMS`, `release-provenance.json` and the node build artifact
+`tos-node-linux-<arch>.zip`. It writes nothing unless:
+
+- the provenance names the tos repository, the tag and a commit equal to
+  `--rev`, and its `tos-node-<arch>-linux` record names workflow
+  `build-tos-linux-node-binaries.yml`, `head_sha` equal to `--rev` and an
+  artifact digest equal to the zip's SHA-256;
+- every downloaded file matches `SHA256SUMS`;
+- every binary and the build record are byte-identical to their members of
+  that zip, and the build record names `--rev` and each binary's SHA-256;
+- this host can run them: `ldd` finds every needed library (`libjemalloc.so.2`
+  for `validator-engine` and `dht-server`; the refusal names `libjemalloc2`),
+  glibc is at least 2.39, and each binary with a `-V` option reports
+  `Commit: <rev>`.
+
+The output directory is the layout `check-release.sh` accepts. Its `BUILD-INFO`
+records the source, the provenance digest, the build recipe lines (compiler,
+flags, jemalloc package, build OS) and the host's glibc. The tool refuses an
+existing `--out` and a release that lacks one of the role's assets: a release
+must publish the node build assets before this path works for it. These checks
+bind binaries to one published release; they do not authenticate the release
+itself. Compare the `provenance_sha256` line across hosts and with the
+published release.
 
 Verify revision, binary digests and authenticated release origin. Fetch before
 stopping, upgrade one validator at a time and prove sync/custody before the next.

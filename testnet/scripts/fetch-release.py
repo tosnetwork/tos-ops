@@ -11,28 +11,39 @@ GitHub login, from <base-url>/<tag>/<asset>; the base URL defaults to the
 public tos repository's release downloads and can be overridden with
 --base-url or TOS_RELEASE_BASE_URL (tests serve a fake release locally).
 
-Downloaded: the role's binaries as <binary>-linux-<arch>, SHA256SUMS,
-release-provenance.json and the build artifact zip tos-linux-<arch>.zip that
-the provenance record names. Everything is verified in a private scratch
+Downloaded: the role's binaries as <binary>-linux-<arch>, the node build's
+record node-build-info-linux-<arch>.txt, SHA256SUMS, release-provenance.json
+and the node build artifact zip tos-node-linux-<arch>.zip, which the
+provenance record names as artifact tos-node-<arch>-linux of workflow
+build-tos-linux-node-binaries.yml. Everything is verified in a private scratch
 directory before --out is created, and the fetch is refused when
 
   - an asset is missing from the release;
   - release-provenance.json does not name the tos repository, the full
-    release set, --tag and a tag_commit equal to --rev;
+    release set, --tag and a tag_commit equal to --rev, or its record of the
+    node artifact names another workflow or a head_sha other than --rev;
   - SHA256SUMS is malformed, lists a name twice, or does not list a
     downloaded file, or a downloaded file's sha256 differs from it;
   - the artifact zip's sha256 differs from the artifact digest GitHub
     recorded at upload, as the provenance record carries it;
-  - a binary is not byte-identical to the member of that zip it was copied
-    from, so every binary is bound to the provenance record;
+  - a binary or the build record is not byte-identical to the member of that
+    zip it was copied from, so every file is bound to the provenance record;
+  - the build record names another tos_revision, or its sha256 of a binary
+    differs from the binary;
+  - this host cannot run the binaries: the dynamic loader (ldd) does not find
+    every library they need (validator-engine and dht-server need
+    libjemalloc.so.2 from the libjemalloc2 package), glibc is older than
+    2.39, or a binary's -V does not report Commit: <rev>. Nothing is
+    installed here: install the named package and fetch again;
   - --out already exists.
 
 The result has exactly the layout build-node-binaries.sh writes and
 check-release.sh accepts: the plain binary names (mode 0755), SHA256SUMS over
-them and BUILD-INFO naming tos_revision <rev> and the source (tag, repository,
-provenance digest, artifact run and digest). check-release.sh runs on it before
-it is moved into place, so `install-node.sh binaries|prepare --release DIR
---rev COMMIT` installs it unchanged.
+them and BUILD-INFO naming tos_revision <rev>, the source (tag, repository,
+provenance digest, artifact run and digest) and the node build's recipe
+lines. check-release.sh and the runtime check run on it before it is moved
+into place, so `install-node.sh binaries|prepare --release DIR --rev COMMIT`
+installs it unchanged.
 
 SHA256SUMS, the provenance record and the binaries come from the same
 release, so these checks detect damage, mix-ups and a release of another
@@ -64,6 +75,7 @@ CHECK_RELEASE = HERE / "check-release.sh"
 DEFAULT_REPOSITORY = "tosnetwork/tos"
 DEFAULT_BASE_URL = f"https://github.com/{DEFAULT_REPOSITORY}/releases/download"
 RELEASE_SET = "full"
+NODE_WORKFLOW = "build-tos-linux-node-binaries.yml"
 # The same binaries build-node-binaries.sh builds for each role.
 ROLE_BINARIES = {
     "validator": [
@@ -82,15 +94,41 @@ ROLE_BINARIES = {
     ],
     "dht": ["dht-server", "generate-random-id"],
 }
+# The binaries whose -V prints the commit they were built from. The consensus
+# key tool has no such option; the loader check alone covers it.
+VERSIONED = frozenset(
+    {
+        "validator-engine",
+        "validator-engine-console",
+        "lite-client",
+        "generate-random-id",
+        "dht-server",
+    }
+)
+MIN_GLIBC = (2, 39)
+# The package that provides a library a node binary needs, named in the refusal.
+LIBRARY_PACKAGES = {"libjemalloc.so.2": "libjemalloc2"}
+# Lines of the node build's BUILD-INFO copied into the release's BUILD-INFO.
+RECIPE_KEYS = (
+    "source_date_epoch",
+    "architecture",
+    "compiler",
+    "flags",
+    "jemalloc",
+    "jemalloc_package",
+    "build_os",
+)
 ARCHES = ("x86_64", "arm64")
 REV_RE = re.compile(r"^[0-9a-f]{40}$")
 TAG_RE = re.compile(r"^v[0-9A-Za-z][0-9A-Za-z._-]*$")
 SUMS_LINE_RE = re.compile(r"^([0-9a-f]{64}) [ *]([A-Za-z0-9][A-Za-z0-9._+-]*)$")
+NODE_SHA_RE = re.compile(r"^sha256 ([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._+-]*)$")
 DIGEST_RE = re.compile(r"^sha256:([0-9a-f]{64})$")
 # Generous bounds: an asset larger than this is not a node binary.
 MAX_ASSET_BYTES = 4 << 30
 MAX_METADATA_BYTES = 1 << 20
 TIMEOUT_SECONDS = 60
+RUN_TIMEOUT_SECONDS = 30
 CHUNK = 1 << 20
 
 
@@ -192,6 +230,11 @@ def provenance_artifact(record: dict, *, artifact: str, rev: str) -> dict:
             "expected exactly one"
         )
     (entry,) = matching
+    if entry.get("workflow") != NODE_WORKFLOW:
+        raise Refused(
+            f"release-provenance.json says artifact {artifact} came from workflow "
+            f"{entry.get('workflow')!r}, not {NODE_WORKFLOW}"
+        )
     if entry.get("head_sha") != rev:
         raise Refused(
             f"release-provenance.json says artifact {artifact} was built from "
@@ -222,6 +265,90 @@ def zip_member_sha256(archive: Path, name: str) -> str:
     return digest.hexdigest()
 
 
+def check_build_info(text: str, *, rev: str, digests: dict[str, str]) -> dict[str, str]:
+    """Refuse unless the node build record names --rev and each binary's digest.
+
+    Returns the record's recipe lines."""
+    fields: dict[str, str] = {}
+    listed: dict[str, str] = {}
+    for line in text.splitlines():
+        match = NODE_SHA_RE.fullmatch(line)
+        if match:
+            listed[match.group(2)] = match.group(1)
+            continue
+        key, _, value = line.partition(" ")
+        fields.setdefault(key, value)
+    if fields.get("tos_revision") != rev:
+        raise Refused(
+            f"the node build record names tos_revision {fields.get('tos_revision')!r}, not {rev}"
+        )
+    for name, digest in digests.items():
+        if listed.get(name) != digest:
+            raise Refused(
+                f"the node build record lists {name} as {listed.get(name)!r}, "
+                f"but the binary has sha256 {digest}"
+            )
+    return {key: fields[key] for key in RECIPE_KEYS if key in fields}
+
+
+def run_tool(command: list[str]) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=RUN_TIMEOUT_SECONDS,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired:
+        raise Refused(f"{command[0]} did not finish within {RUN_TIMEOUT_SECONDS} s") from None
+    except OSError as error:
+        raise Refused(f"cannot run {command[0]}: {error}") from None
+
+
+def check_runnable(stage: Path, binaries: list[str], rev: str) -> str:
+    """Refuse unless this host's loader and glibc run every binary at --rev.
+
+    Installs nothing. Returns the host's glibc version."""
+    ldd = shutil.which("ldd")
+    if ldd is None:
+        raise Refused("ldd is not installed; it comes with glibc (package libc-bin)")
+    version = run_tool([ldd, "--version"])
+    first = (version.stdout.splitlines() or [""])[0]
+    match = re.search(r"(\d+)\.(\d+)\s*$", first)
+    if version.returncode != 0 or not match:
+        raise Refused(f"cannot read this host's glibc version from ldd --version: {first!r}")
+    glibc = (int(match.group(1)), int(match.group(2)))
+    if glibc < MIN_GLIBC:
+        raise Refused(
+            f"this host's glibc is {glibc[0]}.{glibc[1]}; the release binaries need "
+            f"glibc {MIN_GLIBC[0]}.{MIN_GLIBC[1]} or newer"
+        )
+    for name in binaries:
+        path = stage / name
+        loader = run_tool([ldd, str(path)])
+        output = loader.stdout + loader.stderr
+        missing = sorted(
+            line.split("=>")[0].strip() for line in output.splitlines() if "=> not found" in line
+        )
+        if missing:
+            packages = sorted({LIBRARY_PACKAGES[lib] for lib in missing if lib in LIBRARY_PACKAGES})
+            hint = f"; install the package {', '.join(packages)}" if packages else ""
+            raise Refused(f"{name} needs {', '.join(missing)}, which this host lacks{hint}")
+        if loader.returncode != 0 or "not a dynamic executable" in output:
+            raise Refused(f"this host's loader cannot load {name}: {output.strip()[-300:]}")
+        if name in VERSIONED:
+            ran = run_tool([str(path), "-V"])
+            if f"Commit: {rev}" not in ran.stdout:
+                tail = (ran.stdout + ran.stderr).strip()[-300:]
+                raise Refused(
+                    f"{name} -V does not report Commit: {rev} (exit {ran.returncode}: {tail})"
+                )
+    return f"{glibc[0]}.{glibc[1]}"
+
+
 def fetch(
     *,
     tag: str,
@@ -247,14 +374,15 @@ def fetch(
     base_url = check_base_url(base_url)
     binaries = ROLE_BINARIES[role]
     assets = {name: f"{name}-linux-{arch}" for name in binaries}
-    archive_name = f"tos-linux-{arch}.zip"
-    artifact = f"tos-{arch}-linux"
+    archive_name = f"tos-node-linux-{arch}.zip"
+    artifact = f"tos-node-{arch}-linux"
+    build_info = f"node-build-info-linux-{arch}.txt"
 
     with tempfile.TemporaryDirectory(prefix="fetch-release-") as scratch_dir:
         scratch = Path(scratch_dir)
         downloads = scratch / "download"
         downloads.mkdir()
-        for name in ("SHA256SUMS", "release-provenance.json"):
+        for name in ("SHA256SUMS", "release-provenance.json", build_info):
             download(base_url, tag, name, downloads / name, MAX_METADATA_BYTES)
         sums = parse_sums((downloads / "SHA256SUMS").read_text(errors="replace"))
         try:
@@ -266,17 +394,15 @@ def fetch(
         for asset in [archive_name, *assets.values()]:
             download(base_url, tag, asset, downloads / asset, MAX_ASSET_BYTES)
 
-        actual = {}
-        for name in ["SHA256SUMS", "release-provenance.json", archive_name, *assets.values()]:
-            actual[name] = sha256_file(downloads / name)
-        for name, digest in actual.items():
-            if name == "SHA256SUMS":
-                continue
+        checked = ["release-provenance.json", build_info, archive_name, *assets.values()]
+        actual = {name: sha256_file(downloads / name) for name in ["SHA256SUMS", *checked]}
+        for name in checked:
             if name not in sums:
                 raise Refused(f"{name} is not listed in the release's SHA256SUMS")
-            if sums[name] != digest:
+            if sums[name] != actual[name]:
                 raise Refused(
-                    f"{name} has sha256 {digest}, but the release's SHA256SUMS lists {sums[name]}"
+                    f"{name} has sha256 {actual[name]}, but the release's SHA256SUMS "
+                    f"lists {sums[name]}"
                 )
         recorded = DIGEST_RE.fullmatch(entry["artifact_digest"]).group(1)  # type: ignore[union-attr]
         if actual[archive_name] != recorded:
@@ -284,13 +410,21 @@ def fetch(
                 f"{archive_name} has sha256 {actual[archive_name]}, but release-provenance.json "
                 f"records artifact {artifact} as {entry['artifact_digest']}"
             )
-        for name, asset in assets.items():
-            member = zip_member_sha256(downloads / archive_name, name)
+        # Each file is a copy of a member of the zip the provenance anchors.
+        members = {asset: name for name, asset in assets.items()}
+        members[build_info] = "BUILD-INFO"
+        for asset, member_name in members.items():
+            member = zip_member_sha256(downloads / archive_name, member_name)
             if member != actual[asset]:
                 raise Refused(
-                    f"{asset} is not the {name} in {archive_name} that release-provenance.json "
-                    f"records ({actual[asset]} != {member})"
+                    f"{asset} is not the {member_name} in {archive_name} that "
+                    f"release-provenance.json records ({actual[asset]} != {member})"
                 )
+        recipe = check_build_info(
+            (downloads / build_info).read_text(errors="replace"),
+            rev=rev,
+            digests={name: actual[asset] for name, asset in assets.items()},
+        )
 
         stage = scratch / "release"
         stage.mkdir()
@@ -300,6 +434,8 @@ def fetch(
         (stage / "SHA256SUMS").write_text(
             "".join(f"{actual[assets[name]]}  {name}\n" for name in sorted(assets))
         )
+        os.chmod(stage, 0o755)
+        glibc = check_runnable(stage, binaries, rev)
         fetched = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         (stage / "BUILD-INFO").write_text(
             f"tos_revision {rev}\n"
@@ -309,9 +445,11 @@ def fetch(
             f"provenance_sha256 {actual['release-provenance.json']}\n"
             f"release_sha256sums_sha256 {actual['SHA256SUMS']}\n"
             f"artifact {artifact} run {entry.get('run_id')} {entry['artifact_digest']}\n"
+            f"node_build_info_sha256 {actual[build_info]}\n"
+            + "".join(f"node_build {key} {value}\n" for key, value in recipe.items())
+            + f"host_glibc {glibc}\n"
             f"fetched {fetched}\n"
         )
-        os.chmod(stage, 0o755)
         result = subprocess.run(
             ["bash", str(CHECK_RELEASE), str(stage), rev, *binaries],
             capture_output=True,
