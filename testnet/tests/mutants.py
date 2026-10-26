@@ -1373,8 +1373,8 @@ M += [
     (
         "FR16 missing library accepted",
         FETCH,
-        "        if missing:\n",
-        "        if False:\n",
+        "    if missing:\n",
+        "    if False:\n",
     ),
     ("FR17 old glibc accepted", FETCH, "if glibc < MIN_GLIBC:", "if False:"),
     (
@@ -1398,9 +1398,44 @@ M += [
     (
         "FR21 missing package not named",
         FETCH,
-        'LIBRARY_PACKAGES = {"libjemalloc.so.2": "libjemalloc2"}',
-        "LIBRARY_PACKAGES = {}",
+        '    "libjemalloc.so.2": "libjemalloc2",\n',
+        "",
     ),
+    ("FR22 libgsl27 not named", FETCH, '    "libgsl.so.27": "libgsl27",\n', ""),
+    ("FR23 libblas3 not named", FETCH, '    "libblas.so.3": "libblas3",\n', ""),
+    (
+        "FR24 libreadline8t64 not named",
+        FETCH,
+        '    "libreadline.so.8": "libreadline8t64",\n',
+        "",
+    ),
+    ("FR25 libatomic1 not named", FETCH, '    "libatomic.so.1": "libatomic1",\n', ""),
+    (
+        "FR26 build record needed lines not compared",
+        FETCH,
+        "        check_needed(stage, binaries, needed)\n",
+        "",
+    ),
+    ("FR27 needed mismatch accepted", FETCH, "if actual != needed[name]:", "if False:"),
+    (
+        "FR28 binary without a needed line accepted",
+        FETCH,
+        "        if name not in needed:\n            raise",
+        "        if name not in needed:\n            continue\n            raise",
+    ),
+    (
+        "FR29 a binary's missing libraries dropped",
+        FETCH,
+        "        if absent:\n",
+        "        if False:\n",
+    ),
+    (
+        "FR30 unknown missing library not named",
+        FETCH,
+        "        if unknown:\n",
+        "        if False:\n",
+    ),
+    ("FR31 missing readelf not named", FETCH, "    if readelf is None:\n", "    if False:\n"),
 ]
 
 

@@ -322,13 +322,25 @@ command. See [operator incidents/leaving](../testnet/OPERATOR.md#9-incidents-lea
 
 Production takes its node binaries from the tos repository's GitHub release for
 the approved tag, not from a build on each host (the testnet keeps its host
-builds). [fetch-release.py](../testnet/scripts/fetch-release.py) is that path:
+builds). [fetch-release.py](../testnet/scripts/fetch-release.py) is that path.
 
-The binaries link jemalloc dynamically and need glibc 2.39 or newer (Ubuntu
-24.04). Install the runtime library first; the fetch tool installs nothing:
+The release binaries are dynamically linked and need Ubuntu 24.04 (glibc 2.39
+or newer) with these runtime packages. Install them before fetching; the fetch
+tool installs nothing:
+
+| Architecture | Packages |
+| --- | --- |
+| x86_64 | `libjemalloc2 libgsl27 libblas3 libreadline8t64` |
+| arm64 | `libjemalloc2 libgsl27 libblas3 libreadline8t64 libatomic1` |
+
+`libjemalloc.so.2` is linked into `validator-engine` and `dht-server`,
+`libgsl.so.27` and `libblas.so.3` into `validator-engine`, `libreadline.so.8`
+into `validator-engine-console` and `lite-client`, and `libatomic.so.1` on
+arm64. The `needed` lines of the release's build record are the authority for
+this list. The fetch also uses `ldd` (glibc) and `readelf` (binutils).
 
 ```bash
-sudo apt-get install libjemalloc2
+sudo apt-get install libjemalloc2 libgsl27 libblas3 libreadline8t64   # arm64: also libatomic1
 sudo python3 /opt/tos-testnet/scripts/fetch-release.py --tag v<VERSION> \
   --rev <FULL_40_CHARACTER_COMMIT> --role validator --arch x86_64 \
   --out /var/lib/tos-build/release-<FULL_40_CHARACTER_COMMIT>
@@ -347,10 +359,11 @@ It downloads over HTTPS, without a GitHub login, the role's
   artifact digest equal to the zip's SHA-256;
 - every downloaded file matches `SHA256SUMS`;
 - every binary and the build record are byte-identical to their members of
-  that zip, and the build record names `--rev` and each binary's SHA-256;
-- this host can run them: `ldd` finds every needed library (`libjemalloc.so.2`
-  for `validator-engine` and `dht-server`; the refusal names `libjemalloc2`),
-  glibc is at least 2.39, and each binary with a `-V` option reports
+  that zip, and the build record names `--rev`, each binary's SHA-256 and,
+  in its `needed` lines, exactly the libraries `readelf` finds in each binary;
+- this host can run them: `ldd` finds every needed library (a refusal names
+  the package of each missing library above, and still refuses an unknown
+  one), glibc is at least 2.39, and each binary with a `-V` option reports
   `Commit: <rev>`.
 
 The output directory is the layout `check-release.sh` accepts. Its `BUILD-INFO`

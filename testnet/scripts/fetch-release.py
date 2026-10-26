@@ -28,13 +28,15 @@ directory before --out is created, and the fetch is refused when
     recorded at upload, as the provenance record carries it;
   - a binary or the build record is not byte-identical to the member of that
     zip it was copied from, so every file is bound to the provenance record;
-  - the build record names another tos_revision, or its sha256 of a binary
-    differs from the binary;
+  - the build record names another tos_revision, its sha256 of a binary
+    differs from the binary, or its `needed` line for a binary differs from
+    the DT_NEEDED libraries readelf reads from it;
   - this host cannot run the binaries: the dynamic loader (ldd) does not find
-    every library they need (validator-engine and dht-server need
-    libjemalloc.so.2 from the libjemalloc2 package), glibc is older than
-    2.39, or a binary's -V does not report Commit: <rev>. Nothing is
-    installed here: install the named package and fetch again;
+    every library they need, glibc is older than 2.39, or a binary's -V does
+    not report Commit: <rev>. The refusal names the Ubuntu package of each
+    missing library it knows (libjemalloc2, libgsl27, libblas3,
+    libreadline8t64, libatomic1 on arm64). Nothing is installed here:
+    install the packages and fetch again;
   - --out already exists.
 
 The result has exactly the layout build-node-binaries.sh writes and
@@ -106,8 +108,18 @@ VERSIONED = frozenset(
     }
 )
 MIN_GLIBC = (2, 39)
-# The package that provides a library a node binary needs, named in the refusal.
-LIBRARY_PACKAGES = {"libjemalloc.so.2": "libjemalloc2"}
+# The Ubuntu 24.04 package that provides each library the release's node
+# binaries link, named in the refusal. The build record's `needed` lines are
+# the authority for what a binary links; a soname missing here is still
+# refused, without a package hint.
+LIBRARY_PACKAGES = {
+    "libjemalloc.so.2": "libjemalloc2",
+    "libgsl.so.27": "libgsl27",
+    "libblas.so.3": "libblas3",
+    "libreadline.so.8": "libreadline8t64",
+    "libatomic.so.1": "libatomic1",
+}
+NEEDED_RE = re.compile(r"\(NEEDED\)\s+Shared library: \[([^\]]+)\]")
 # Lines of the node build's BUILD-INFO copied into the release's BUILD-INFO.
 RECIPE_KEYS = (
     "source_date_epoch",
@@ -265,18 +277,28 @@ def zip_member_sha256(archive: Path, name: str) -> str:
     return digest.hexdigest()
 
 
-def check_build_info(text: str, *, rev: str, digests: dict[str, str]) -> dict[str, str]:
+def check_build_info(
+    text: str, *, rev: str, digests: dict[str, str]
+) -> tuple[dict[str, str], dict[str, list[str]]]:
     """Refuse unless the node build record names --rev and each binary's digest.
 
-    Returns the record's recipe lines."""
+    Returns the record's recipe lines and its `needed` lines (binary -> sorted
+    sonames), the libraries the build linked each binary against."""
     fields: dict[str, str] = {}
     listed: dict[str, str] = {}
+    needed: dict[str, list[str]] = {}
     for line in text.splitlines():
         match = NODE_SHA_RE.fullmatch(line)
         if match:
             listed[match.group(2)] = match.group(1)
             continue
         key, _, value = line.partition(" ")
+        if key == "needed":
+            name, *libraries = value.split()
+            if name in needed:
+                raise Refused(f"the node build record has two needed lines for {name}")
+            needed[name] = sorted(libraries)
+            continue
         fields.setdefault(key, value)
     if fields.get("tos_revision") != rev:
         raise Refused(
@@ -288,7 +310,8 @@ def check_build_info(text: str, *, rev: str, digests: dict[str, str]) -> dict[st
                 f"the node build record lists {name} as {listed.get(name)!r}, "
                 f"but the binary has sha256 {digest}"
             )
-    return {key: fields[key] for key in RECIPE_KEYS if key in fields}
+    recipe = {key: fields[key] for key in RECIPE_KEYS if key in fields}
+    return recipe, needed
 
 
 def run_tool(command: list[str]) -> subprocess.CompletedProcess:
@@ -301,11 +324,44 @@ def run_tool(command: list[str]) -> subprocess.CompletedProcess:
             timeout=RUN_TIMEOUT_SECONDS,
             check=False,
             stdin=subprocess.DEVNULL,
+            env={**os.environ, "LC_ALL": "C"},
         )
     except subprocess.TimeoutExpired:
         raise Refused(f"{command[0]} did not finish within {RUN_TIMEOUT_SECONDS} s") from None
     except OSError as error:
         raise Refused(f"cannot run {command[0]}: {error}") from None
+
+
+def elf_needed(readelf: str, path: Path) -> list[str]:
+    """The DT_NEEDED sonames of an ELF file, sorted, as `readelf -d` lists them."""
+    result = run_tool([readelf, "-d", "-W", str(path)])
+    if result.returncode != 0:
+        raise Refused(f"readelf cannot read {path.name}: {result.stderr.strip()[-300:]}")
+    return sorted(NEEDED_RE.findall(result.stdout))
+
+
+def check_needed(stage: Path, binaries: list[str], needed: dict[str, list[str]]) -> None:
+    """Refuse unless each binary links exactly the libraries the build record names.
+
+    A record without `needed` lines has nothing to compare; a record that has
+    them must have one for every binary."""
+    if not needed:
+        return
+    readelf = shutil.which("readelf")
+    if readelf is None:
+        raise Refused(
+            "readelf is not installed (package binutils); it reads the libraries "
+            "each binary links to compare them with the build record"
+        )
+    for name in binaries:
+        if name not in needed:
+            raise Refused(f"the node build record has needed lines, but none for {name}")
+        actual = elf_needed(readelf, stage / name)
+        if actual != needed[name]:
+            raise Refused(
+                f"{name} links {' '.join(actual) or 'nothing'}, but the node build record "
+                f"says {' '.join(needed[name]) or 'nothing'}"
+            )
 
 
 def check_runnable(stage: Path, binaries: list[str], rev: str) -> str:
@@ -326,21 +382,29 @@ def check_runnable(stage: Path, binaries: list[str], rev: str) -> str:
             f"this host's glibc is {glibc[0]}.{glibc[1]}; the release binaries need "
             f"glibc {MIN_GLIBC[0]}.{MIN_GLIBC[1]} or newer"
         )
+    missing: dict[str, list[str]] = {}
     for name in binaries:
-        path = stage / name
-        loader = run_tool([ldd, str(path)])
+        loader = run_tool([ldd, str(stage / name)])
         output = loader.stdout + loader.stderr
-        missing = sorted(
+        absent = sorted(
             line.split("=>")[0].strip() for line in output.splitlines() if "=> not found" in line
         )
-        if missing:
-            packages = sorted({LIBRARY_PACKAGES[lib] for lib in missing if lib in LIBRARY_PACKAGES})
-            hint = f"; install the package {', '.join(packages)}" if packages else ""
-            raise Refused(f"{name} needs {', '.join(missing)}, which this host lacks{hint}")
-        if loader.returncode != 0 or "not a dynamic executable" in output:
+        if absent:
+            missing[name] = absent
+        elif loader.returncode != 0 or "not a dynamic executable" in output:
             raise Refused(f"this host's loader cannot load {name}: {output.strip()[-300:]}")
+    if missing:
+        libraries = sorted({lib for absent in missing.values() for lib in absent})
+        packages = sorted({LIBRARY_PACKAGES[lib] for lib in libraries if lib in LIBRARY_PACKAGES})
+        unknown = [lib for lib in libraries if lib not in LIBRARY_PACKAGES]
+        detail = "; ".join(f"{name} needs {', '.join(libs)}" for name, libs in missing.items())
+        hint = f"; install the packages {' '.join(packages)}" if packages else ""
+        if unknown:
+            hint += f"; no known package provides {', '.join(unknown)}"
+        raise Refused(f"this host lacks libraries the binaries need: {detail}{hint}")
+    for name in binaries:
         if name in VERSIONED:
-            ran = run_tool([str(path), "-V"])
+            ran = run_tool([str(stage / name), "-V"])
             if f"Commit: {rev}" not in ran.stdout:
                 tail = (ran.stdout + ran.stderr).strip()[-300:]
                 raise Refused(
@@ -420,7 +484,7 @@ def fetch(
                     f"{asset} is not the {member_name} in {archive_name} that "
                     f"release-provenance.json records ({actual[asset]} != {member})"
                 )
-        recipe = check_build_info(
+        recipe, needed = check_build_info(
             (downloads / build_info).read_text(errors="replace"),
             rev=rev,
             digests={name: actual[asset] for name, asset in assets.items()},
@@ -435,6 +499,7 @@ def fetch(
             "".join(f"{actual[assets[name]]}  {name}\n" for name in sorted(assets))
         )
         os.chmod(stage, 0o755)
+        check_needed(stage, binaries, needed)
         glibc = check_runnable(stage, binaries, rev)
         fetched = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         (stage / "BUILD-INFO").write_text(

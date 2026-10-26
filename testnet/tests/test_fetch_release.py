@@ -30,11 +30,35 @@ NODE = [
 ]
 DHT = ["dht-server", "generate-random-id"]
 ALL = sorted(set(NODE + DHT))
-# The node build links jemalloc into these two.
+# The libraries the release's node build links into each binary (tos release
+# policy: the build record's `needed` lines are the authority).
+STDLIBS = ["libc.so.6", "libgcc_s.so.1", "libm.so.6", "libstdc++.so.6"]
+LINKED = {
+    "validator-engine": ["libjemalloc.so.2", "libgsl.so.27", "libblas.so.3"],
+    "dht-server": ["libjemalloc.so.2"],
+    "validator-engine-console": ["libreadline.so.8"],
+    "lite-client": ["libreadline.so.8"],
+    "generate-random-id": [],
+    "tos-pq-consensus-key": [],
+}
 JEMALLOC = ("validator-engine", "dht-server")
 ARCHES = ("x86_64", "arm64")
 
-# A loader that answers the way glibc's ldd does, steered by the environment.
+
+def linked(name: str, arch: str) -> list[str]:
+    extra = ["libatomic.so.1"] if arch == "arm64" else []
+    return sorted(LINKED[name] + STDLIBS + extra)
+
+
+# A fake binary lists its DT_NEEDED sonames as "# NEEDED <soname>" lines. The
+# fake readelf and ldd read them back the way the real tools report them.
+FAKE_READELF = r"""#!/bin/sh
+[ "$1" = -d ] && [ "$2" = -W ] || exit 2
+echo "Dynamic section at offset 0x1000 contains 30 entries:"
+sed -n 's/^# NEEDED \(.*\)$/ 0x0000000000000001 (NEEDED)             Shared library: [\1]/p' "$3"
+"""
+# ldd, steered by the environment: FAKE_GLIBC, FAKE_NOT_DYNAMIC, and
+# FAKE_MISSING (space-separated sonames this host lacks).
 FAKE_LDD = r"""#!/bin/sh
 if [ "$1" = --version ]; then
   echo "ldd (Fake GLIBC ${FAKE_GLIBC:-2.39}-0) ${FAKE_GLIBC:-2.39}"
@@ -45,16 +69,12 @@ if [ -n "$FAKE_NOT_DYNAMIC" ]; then
   exit 1
 fi
 echo "	linux-vdso.so.1 (0x00007ffd)"
-case "$(basename "$1")" in
-  validator-engine|dht-server)
-    if [ -n "$FAKE_NO_JEMALLOC" ]; then
-      echo "	libjemalloc.so.2 => not found"
-    else
-      echo "	libjemalloc.so.2 => /lib/libjemalloc.so.2 (0x00007f01)"
-    fi ;;
-esac
-if [ -n "$FAKE_MISSING" ]; then echo "	$FAKE_MISSING => not found"; fi
-echo "	libc.so.6 => /lib/libc.so.6 (0x00007f02)"
+for lib in $(sed -n 's/^# NEEDED //p' "$1"); do
+  case " $FAKE_MISSING " in
+    *" $lib "*) echo "	$lib => not found" ;;
+    *) echo "	$lib => /lib/$lib (0x00007f01)" ;;
+  esac
+done
 """
 
 
@@ -76,10 +96,17 @@ class FakeRelease:
         self.binary_commit = commit
         self.workflow = NODE_WORKFLOW
         self.build_info_member = True
+        # Overrides of what a binary links, and of what the build record says.
+        self.linked_override: dict[str, list[str]] = {}
+        self.needed_override: dict[str, list[str] | None] = {}
         self.publish()
+
+    def links(self, name: str, arch: str) -> list[str]:
+        return self.linked_override.get(name, linked(name, arch))
 
     def binary(self, name: str, arch: str) -> bytes:
         body = f"#!/bin/sh\n# {name} {arch}\n"
+        body += "".join(f"# NEEDED {lib}\n" for lib in self.links(name, arch))
         if name != "tos-pq-consensus-key":
             body += f'echo "{name} build"\necho "Commit: {self.binary_commit}"\n'
         return body.encode()
@@ -95,7 +122,10 @@ class FakeRelease:
             "jemalloc_package libjemalloc-dev 5.3.0-2build1",
             "build_os Ubuntu 24.04.3 LTS",
         ]
-        lines += [f"needed {n} libc.so.6" for n in ALL]
+        for n in ALL:
+            libs = self.needed_override.get(n, self.links(n, arch))
+            if libs is not None:
+                lines.append(" ".join(["needed", n, *sorted(libs)]))
         lines += [f"sha256 {sha256(self.binary(n, arch))}  {n}" for n in ALL]
         return ("\n".join(lines) + "\n").encode()
 
@@ -169,8 +199,9 @@ class Quiet(http.server.SimpleHTTPRequestHandler):
 def fakebin(tmp_path):
     directory = tmp_path / "fakebin"
     directory.mkdir()
-    (directory / "ldd").write_text(FAKE_LDD)
-    (directory / "ldd").chmod(0o755)
+    for name, text in (("ldd", FAKE_LDD), ("readelf", FAKE_READELF)):
+        (directory / name).write_text(text)
+        (directory / name).chmod(0o755)
     return directory
 
 
@@ -465,22 +496,109 @@ def test_a_build_record_with_another_binary_digest_is_refused(served, tmp_path):
 def test_a_host_without_libjemalloc_is_refused_naming_the_package(served, tmp_path):
     release, url = served
     out = tmp_path / "out"
-    result = run(release, url, out, env={"FAKE_NO_JEMALLOC": "1"})
-    refused(result, "validator-engine needs libjemalloc.so.2, which this host lacks")
-    assert "install the package libjemalloc2" in result.stderr
+    result = run(release, url, out, env={"FAKE_MISSING": "libjemalloc.so.2"})
+    refused(result, "this host lacks libraries the binaries need: validator-engine needs")
+    assert "install the packages libjemalloc2" in result.stderr
     assert not out.exists()
 
 
 def test_a_dht_host_without_libjemalloc_is_refused(served, tmp_path):
     release, url = served
-    result = run(release, url, tmp_path / "out", role="dht", env={"FAKE_NO_JEMALLOC": "1"})
-    refused(result, "dht-server needs libjemalloc.so.2")
+    result = run(
+        release, url, tmp_path / "out", role="dht", env={"FAKE_MISSING": "libjemalloc.so.2"}
+    )
+    refused(result, "dht-server needs libjemalloc.so.2; install the packages libjemalloc2")
 
 
-def test_any_other_missing_library_is_refused(served, tmp_path):
+@pytest.mark.parametrize(
+    ("soname", "package", "arch", "needers"),
+    [
+        ("libgsl.so.27", "libgsl27", "x86_64", ["validator-engine"]),
+        ("libblas.so.3", "libblas3", "x86_64", ["validator-engine"]),
+        (
+            "libreadline.so.8",
+            "libreadline8t64",
+            "x86_64",
+            ["validator-engine-console", "lite-client"],
+        ),
+        ("libatomic.so.1", "libatomic1", "arm64", NODE),
+    ],
+)
+def test_each_missing_release_library_is_refused_naming_its_package(
+    served, tmp_path, soname, package, arch, needers
+):
     release, url = served
-    result = run(release, url, tmp_path / "out", env={"FAKE_MISSING": "libgsl.so.27"})
-    refused(result, "needs libgsl.so.27, which this host lacks")
+    result = run(release, url, tmp_path / "out", arch=arch, env={"FAKE_MISSING": soname})
+    refused(result, f"; install the packages {package}")
+    for name in needers:
+        assert f"{name} needs {soname}" in result.stderr
+    for name in set(NODE) - set(needers):
+        assert f"{name} needs" not in result.stderr
+
+
+def test_every_missing_package_is_named_at_once(served, tmp_path):
+    release, url = served
+    missing = "libjemalloc.so.2 libgsl.so.27 libblas.so.3 libreadline.so.8"
+    result = run(release, url, tmp_path / "out", env={"FAKE_MISSING": missing})
+    refused(
+        result,
+        "validator-engine needs libblas.so.3, libgsl.so.27, libjemalloc.so.2; "
+        "validator-engine-console needs libreadline.so.8; lite-client needs libreadline.so.8; "
+        "install the packages libblas3 libgsl27 libjemalloc2 libreadline8t64",
+    )
+
+
+def test_an_unknown_missing_library_is_refused_without_a_package_hint(served, tmp_path):
+    release, url = served
+    release.linked_override["validator-engine"] = sorted(
+        linked("validator-engine", "x86_64") + ["libunknown.so.4"]
+    )
+    release.publish()
+    result = run(release, url, tmp_path / "out", env={"FAKE_MISSING": "libunknown.so.4"})
+    refused(
+        result, "validator-engine needs libunknown.so.4; no known package provides libunknown.so.4"
+    )
+    assert "install the packages" not in result.stderr
+
+
+def test_a_needed_line_that_differs_from_the_binary_is_refused(served, tmp_path):
+    release, url = served
+    release.needed_override["validator-engine"] = [
+        lib for lib in linked("validator-engine", "x86_64") if lib != "libgsl.so.27"
+    ]
+    release.publish()
+    refused(
+        run(release, url, tmp_path / "out"),
+        "validator-engine links libblas.so.3 libc.so.6 libgcc_s.so.1 libgsl.so.27",
+    )
+
+
+def test_a_binary_linking_more_than_its_needed_line_is_refused(served, tmp_path):
+    release, url = served
+    # The build record still says what the build linked; the binary links more.
+    release.linked_override["lite-client"] = sorted(linked("lite-client", "x86_64") + ["libz.so.1"])
+    release.needed_override["lite-client"] = linked("lite-client", "x86_64")
+    release.publish()
+    refused(run(release, url, tmp_path / "out"), "but the node build record says")
+
+
+def test_a_record_with_needed_lines_must_cover_every_binary(served, tmp_path):
+    release, url = served
+    release.needed_override["lite-client"] = None
+    release.publish()
+    refused(
+        run(release, url, tmp_path / "out"),
+        "the node build record has needed lines, but none for lite-client",
+    )
+
+
+def test_a_record_without_needed_lines_relies_on_the_loader_check(served, tmp_path):
+    release, url = served
+    release.needed_override = dict.fromkeys(ALL)
+    release.publish()
+    assert run(release, url, tmp_path / "out").returncode == 0
+    result = run(release, url, tmp_path / "out2", env={"FAKE_MISSING": "libgsl.so.27"})
+    refused(result, "validator-engine needs libgsl.so.27; install the packages libgsl27")
 
 
 def test_a_binary_the_loader_cannot_load_is_refused(served, tmp_path):
@@ -556,6 +674,20 @@ def load_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_a_host_without_readelf_is_refused_naming_binutils(served, tmp_path, monkeypatch):
+    release, url = served
+    monkeypatch.setenv("PATH", release.env["PATH"])
+    module = load_module()
+    which = module.shutil.which
+    monkeypatch.setattr(
+        module.shutil, "which", lambda name: None if name == "readelf" else which(name)
+    )
+    out = tmp_path / "out"
+    with pytest.raises(module.Refused, match=r"readelf is not installed \(package binutils\)"):
+        module.fetch(tag=TAG, rev=PIN, role="dht", arch="x86_64", out=out, base_url=url)
+    assert not out.exists()
 
 
 def test_a_result_check_release_refuses_is_not_moved_into_place(served, tmp_path, monkeypatch):
