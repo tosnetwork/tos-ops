@@ -254,6 +254,8 @@ Compare full block IDs with an independent trusted node. This repository supplie
 no accepted production signed-release/config-distribution channel. A URL or a
 matching height alone is insufficient. Prepare a verified persistent-state and
 archive sync path with the approved release before committing validator duties.
+Install the node binaries from the tos GitHub release with `fetch-release.py`
+([section 10](#10-releases-upgrades-and-restarts)), not from a host build.
 
 ### 8.1 Refreshing the global config's init block
 
@@ -318,7 +320,62 @@ command. See [operator incidents/leaving](../testnet/OPERATOR.md#9-incidents-lea
 
 ## 10. Releases, upgrades and restarts
 
-Verify revision, binary digests and authenticated release origin. Build before
+Production takes its node binaries from the tos repository's GitHub release for
+the approved tag, not from a build on each host (the testnet keeps its host
+builds). [fetch-release.py](../testnet/scripts/fetch-release.py) is that path.
+
+The release binaries are dynamically linked and need Ubuntu 24.04 (glibc 2.39
+or newer) with these runtime packages. Install them before fetching; the fetch
+tool installs nothing:
+
+| Architecture | Packages |
+| --- | --- |
+| x86_64 | `libjemalloc2 libgsl27 libblas3 libreadline8t64` |
+| arm64 | `libjemalloc2 libgsl27 libblas3 libreadline8t64 libatomic1` |
+
+`libjemalloc.so.2` is linked into `validator-engine` and `dht-server`,
+`libgsl.so.27` and `libblas.so.3` into `validator-engine`, `libreadline.so.8`
+into `validator-engine-console` and `lite-client`, and `libatomic.so.1` on
+arm64. The `needed` lines of the release's build record are the authority for
+this list. The fetch also uses `ldd` (glibc) and `readelf` (binutils).
+
+```bash
+sudo apt-get install libjemalloc2 libgsl27 libblas3 libreadline8t64   # arm64: also libatomic1
+sudo python3 /opt/tos-testnet/scripts/fetch-release.py --tag v<VERSION> \
+  --rev <FULL_40_CHARACTER_COMMIT> --role validator --arch x86_64 \
+  --out /var/lib/tos-build/release-<FULL_40_CHARACTER_COMMIT>
+sudo /opt/tos-testnet/scripts/install-node.sh binaries --role validator \
+  --release /var/lib/tos-build/release-<FULL_40_CHARACTER_COMMIT> --rev <FULL_40_CHARACTER_COMMIT>
+```
+
+It downloads over HTTPS, without a GitHub login, the role's
+`<binary>-linux-<arch>` assets, `node-build-info-linux-<arch>.txt`,
+`SHA256SUMS`, `release-provenance.json` and the node build artifact
+`tos-node-linux-<arch>.zip`. It writes nothing unless:
+
+- the provenance names the tos repository, the tag and a commit equal to
+  `--rev`, and its `tos-node-<arch>-linux` record names workflow
+  `build-tos-linux-node-binaries.yml`, `head_sha` equal to `--rev` and an
+  artifact digest equal to the zip's SHA-256;
+- every downloaded file matches `SHA256SUMS`;
+- every binary and the build record are byte-identical to their members of
+  that zip, and the build record names `--rev`, each binary's SHA-256 and,
+  in its `needed` lines, exactly the libraries `readelf` finds in each binary;
+- this host can run them: `ldd` finds every needed library (a refusal names
+  the package of each missing library above, and still refuses an unknown
+  one), glibc is at least 2.39, and each binary with a `-V` option reports
+  `Commit: <rev>`.
+
+The output directory is the layout `check-release.sh` accepts. Its `BUILD-INFO`
+records the source, the provenance digest, the build recipe lines (compiler,
+flags, jemalloc package, build OS) and the host's glibc. The tool refuses an
+existing `--out` and a release that lacks one of the role's assets: a release
+must publish the node build assets before this path works for it. These checks
+bind binaries to one published release; they do not authenticate the release
+itself. Compare the `provenance_sha256` line across hosts and with the
+published release.
+
+Verify revision, binary digests and authenticated release origin. Fetch before
 stopping, upgrade one validator at a time and prove sync/custody before the next.
 Stop the old process with systemctl; do not delete a held lock or kill it. An
 incompatible DB/protocol downgrade is not fixed by reinstalling old executables.

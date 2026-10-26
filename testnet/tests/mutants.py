@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Mutation guards for the operations journal, the election task and the handover checker.
+"""Mutation guards for the operations journal, the election task, the handover checker
+and the release fetch.
 
 Each mutant replaces one exact snippet of a script, runs the whole suite and
 restores the file. Every mutant must make a test fail: only pytest's exit 1
@@ -30,6 +31,7 @@ EL = W / "scripts/testnet-elections.py"
 CO = W / "scripts/testnet-coordinator.py"
 HO = W / "scripts/check-handover.py"
 LIB = W / "scripts/testnet_lib.py"
+FETCH = W / "scripts/fetch-release.py"
 
 M = [
     (
@@ -1278,6 +1280,162 @@ M += [
         "        self._rpc = lib.retrying_reads(rpc)",
         "        self._rpc = rpc",
     ),
+    (
+        "FR1 provenance tag and commit ignored",
+        FETCH,
+        '        if record.get(key) != expected:\n            raise Refused(\n                f"release-provenance.json records {key}',
+        '        if False:\n            raise Refused(\n                f"release-provenance.json records {key}',
+    ),
+    (
+        "FR2 artifact build commit ignored",
+        FETCH,
+        'if entry.get("head_sha") != rev:',
+        "if False:",
+    ),
+    (
+        "FR3 file absent from SHA256SUMS accepted",
+        FETCH,
+        "            if name not in sums:\n                raise Refused(",
+        "            if name not in sums:\n                continue\n                raise Refused(",
+    ),
+    (
+        "FR4 SHA256SUMS digest ignored",
+        FETCH,
+        "if sums[name] != actual[name]:",
+        "if False:",
+    ),
+    (
+        "FR5 artifact zip digest ignored",
+        FETCH,
+        "if actual[archive_name] != recorded:",
+        "if False:",
+    ),
+    (
+        "FR6 binary not bound to the artifact zip",
+        FETCH,
+        "if member != actual[asset]:",
+        "if False:",
+    ),
+    (
+        "FR7 existing out overwritten",
+        FETCH,
+        '    if out.exists() or out.is_symlink():\n        raise Refused(f"{out} already exists',
+        '    if False:\n        raise Refused(f"{out} already exists',
+    ),
+    (
+        "FR8 missing asset tolerated",
+        FETCH,
+        "        if error.code == 404:\n            raise Refused(",
+        "        if error.code == 404:\n            return\n            raise Refused(",
+    ),
+    (
+        "FR9 check-release result ignored",
+        FETCH,
+        '        if result.returncode != 0:\n            raise Refused(f"check-release.sh',
+        '        if False:\n            raise Refused(f"check-release.sh',
+    ),
+    (
+        "FR10 malformed SHA256SUMS line accepted",
+        FETCH,
+        '        if not match:\n            raise Refused(f"SHA256SUMS line',
+        '        if not match:\n            continue\n            raise Refused(f"SHA256SUMS line',
+    ),
+    (
+        "FR11 plain http off loopback accepted",
+        FETCH,
+        'if parsed.scheme == "https" or (parsed.scheme == "http" and loopback):',
+        'if parsed.scheme in ("https", "http"):',
+    ),
+    (
+        "FR12 node artifact workflow ignored",
+        FETCH,
+        'if entry.get("workflow") != NODE_WORKFLOW:',
+        "if False:",
+    ),
+    (
+        "FR13 build record not bound to the zip",
+        FETCH,
+        '        members[build_info] = "BUILD-INFO"\n',
+        "",
+    ),
+    (
+        "FR14 build record revision ignored",
+        FETCH,
+        'if fields.get("tos_revision") != rev:',
+        "if False:",
+    ),
+    (
+        "FR15 build record binary digests ignored",
+        FETCH,
+        "if listed.get(name) != digest:",
+        "if False:",
+    ),
+    (
+        "FR16 missing library accepted",
+        FETCH,
+        "    if missing:\n",
+        "    if False:\n",
+    ),
+    ("FR17 old glibc accepted", FETCH, "if glibc < MIN_GLIBC:", "if False:"),
+    (
+        "FR18 reported commit ignored",
+        FETCH,
+        'if f"Commit: {rev}" not in ran.stdout:',
+        "if False:",
+    ),
+    (
+        "FR19 runtime check skipped",
+        FETCH,
+        "glibc = check_runnable(stage, binaries, rev)",
+        'glibc = "2.39"',
+    ),
+    (
+        "FR20 loader failure ignored",
+        FETCH,
+        'if loader.returncode != 0 or "not a dynamic executable" in output:',
+        "if False:",
+    ),
+    (
+        "FR21 missing package not named",
+        FETCH,
+        '    "libjemalloc.so.2": "libjemalloc2",\n',
+        "",
+    ),
+    ("FR22 libgsl27 not named", FETCH, '    "libgsl.so.27": "libgsl27",\n', ""),
+    ("FR23 libblas3 not named", FETCH, '    "libblas.so.3": "libblas3",\n', ""),
+    (
+        "FR24 libreadline8t64 not named",
+        FETCH,
+        '    "libreadline.so.8": "libreadline8t64",\n',
+        "",
+    ),
+    ("FR25 libatomic1 not named", FETCH, '    "libatomic.so.1": "libatomic1",\n', ""),
+    (
+        "FR26 build record needed lines not compared",
+        FETCH,
+        "        check_needed(stage, binaries, needed)\n",
+        "",
+    ),
+    ("FR27 needed mismatch accepted", FETCH, "if actual != needed[name]:", "if False:"),
+    (
+        "FR28 binary without a needed line accepted",
+        FETCH,
+        "        if name not in needed:\n            raise",
+        "        if name not in needed:\n            continue\n            raise",
+    ),
+    (
+        "FR29 a binary's missing libraries dropped",
+        FETCH,
+        "        if absent:\n",
+        "        if False:\n",
+    ),
+    (
+        "FR30 unknown missing library not named",
+        FETCH,
+        "        if unknown:\n",
+        "        if False:\n",
+    ),
+    ("FR31 missing readelf not named", FETCH, "    if readelf is None:\n", "    if False:\n"),
 ]
 
 

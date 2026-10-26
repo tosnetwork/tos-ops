@@ -82,7 +82,8 @@ production capacity guarantee. See [profile](network/profile.json) and
 ## 3. Build the pinned binaries and prepare
 
 **Operator, after approval:** set the full ceremony commit, then build on this
-host; no binaries copied from a different CPU:
+host; no binaries copied from a different CPU. The testnet keeps these host
+builds; only production installs from tos GitHub releases with `fetch-release.py`:
 
 ```bash
 TOS_COMMIT=<FULL_40_CHARACTER_COMMIT>
