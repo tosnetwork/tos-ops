@@ -29,6 +29,7 @@ OPS = W / "scripts/testnet_ops.py"
 EL = W / "scripts/testnet-elections.py"
 CO = W / "scripts/testnet-coordinator.py"
 HO = W / "scripts/check-handover.py"
+LIB = W / "scripts/testnet_lib.py"
 
 M = [
     (
@@ -1202,6 +1203,80 @@ M += [
         NETWORK,
         '        except OSError as exc:\n            unavailable.append({"url": url, "reason": str(exc)})',
         '        except (OSError, NetworkError) as exc:\n            unavailable.append({"url": url, "reason": str(exc)})',
+    ),
+    # Reads at a block a node has not applied yet: bounded retry, narrow classification.
+    (
+        "NA1 not-applied retry without a bound",
+        LIB,
+        "                if remaining <= 0:\n                    raise",
+        "                if False:\n                    raise",
+    ),
+    (
+        "NA2 not-applied retry bound multiplied",
+        LIB,
+        "deadline = now() + NOT_APPLIED_RETRY_SECONDS",
+        "deadline = now() + 10 * NOT_APPLIED_RETRY_SECONDS",
+    ),
+    (
+        "NA3 not-applied delay never grows",
+        LIB,
+        "delay = min(delay * 2, NOT_APPLIED_MAX_DELAY)",
+        "delay = min(delay, NOT_APPLIED_MAX_DELAY)",
+    ),
+    (
+        "NA4 not-applied read not retried",
+        LIB,
+        "                if not block_not_applied(exc):\n                    raise",
+        "                if True:\n                    raise",
+    ),
+    (
+        "NA5 every node error retried",
+        LIB,
+        "                if not block_not_applied(exc):\n                    raise",
+        "                if False:\n                    raise",
+    ),
+    (
+        "NA6 classification ignores the reason",
+        LIB,
+        '        and exc.reason == "UPSTREAM_UNAVAILABLE"\n',
+        "",
+    ),
+    ("NA7 classification ignores the retryable flag", LIB, "        and exc.retryable\n", ""),
+    (
+        "NA8 classification ignores the message",
+        LIB,
+        "        and NOT_APPLIED_TEXT.search(exc.message) is not None\n",
+        "",
+    ),
+    (
+        "NA9 classification ignores error 651",
+        LIB,
+        r'NOT_APPLIED_TEXT = re.compile(r"\bError : 651 : .*\bis not applied\b", re.DOTALL)',
+        r'NOT_APPLIED_TEXT = re.compile(r"\bis not applied\b", re.DOTALL)',
+    ),
+    (
+        "NA10 sendBoc retried",
+        LIB,
+        "        if method in NEVER_RETRIED_METHODS:\n",
+        "        if False:\n",
+    ),
+    (
+        "NA11 a wrapped call wrapped again",
+        LIB,
+        'if getattr(rpc, "retries_not_applied", False):',
+        "if False:",
+    ),
+    (
+        "NA12 operations nodes read without the retry",
+        OPS,
+        "        self._rpc = lib.retrying_reads(rpc)",
+        "        self._rpc = rpc",
+    ),
+    (
+        "NA13 load chain reads without the retry",
+        EL,
+        "        self._rpc = lib.retrying_reads(rpc)",
+        "        self._rpc = rpc",
     ),
 ]
 

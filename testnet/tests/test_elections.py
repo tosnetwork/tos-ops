@@ -397,6 +397,107 @@ def test_dry_run_signs_one_batch_and_broadcasts_nothing(tmp_path, monkeypatch):
         elections.Chain("http://fake", rpc).send_boc(b"x")
 
 
+NOT_APPLIED = lib.RpcError(
+    "http://fake",
+    "getAddressInformation",
+    -32603,
+    "UPSTREAM_UNAVAILABLE",
+    "getAccountState: [Error : 651 : cannot load block (-1,8000000000000000,338211):ab:cd"
+    " : block (-1,8000000000000000,338211) is not applied (last known masterchain block: 338209)]",
+    True,
+)
+
+
+class LaggingRpc:
+    """A node `failures` reads behind: each read is refused as not applied until then."""
+
+    def __init__(self, failures, error=NOT_APPLIED):
+        self.failures, self.error, self.calls = failures, error, []
+
+    def __call__(self, url, method, /, **params):
+        self.calls.append(method)
+        if method == "sendBoc":
+            raise AssertionError("the refill broadcast outside fund()")
+        if len(self.calls) <= self.failures:
+            raise self.error
+        return {"state": "active", "balance": "0"}
+
+
+class OneRound:
+    """A refill thread's stop event that lets exactly one round run."""
+
+    def __init__(self):
+        self.rounds = 0
+
+    def wait(self, _seconds):
+        self.rounds += 1
+        return self.rounds > 1
+
+    def is_set(self):
+        return False
+
+
+def refill_once(tmp_path, monkeypatch, rpc):
+    monkeypatch.setattr(lib, "NOT_APPLIED_FIRST_DELAY", 0.001)
+    monkeypatch.setattr(lib, "NOT_APPLIED_MAX_DELAY", 0.002)
+    monkeypatch.setattr(lib, "NOT_APPLIED_RETRY_SECONDS", 0.05)
+    args = load_args(tmp_path, relayer_amount="10", dry_run=False)
+    driver = elections.LoadDriver(args, elections.Chain("http://fake", rpc), 2)
+    funded = []
+    monkeypatch.setattr(driver, "fund_from_bootstrap", lambda *a: funded.append(a[:3]))
+    driver.refill([elections.Relayer(3, RELAYER)], OneRound())
+    return driver, funded
+
+
+@pytest.mark.parametrize("failures", [1, 2])
+def test_a_refill_read_waits_for_a_lagging_node(tmp_path, monkeypatch, failures):
+    rpc = LaggingRpc(failures)
+    driver, funded = refill_once(tmp_path, monkeypatch, rpc)
+    assert driver.refill_error is None
+    assert funded == [(RELAYER, 10 * elections.NANO, "load-refill-3")]
+    assert rpc.calls == ["getAddressInformation"] * (failures + 1)
+
+
+def test_a_refill_read_still_not_applied_after_the_bound_is_a_safety_stop(tmp_path, monkeypatch):
+    # Far more refusals than the bound admits (each wait is at least 1 ms), and few
+    # enough that a read without a bound gets an answer and the test sees it.
+    rpc = LaggingRpc(200)
+    driver, funded = refill_once(tmp_path, monkeypatch, rpc)
+    assert driver.refill_error, "the read outlasted its bound"
+    assert driver.refill_error.startswith("refilling relayer 3: http://fake getAddressInformation")
+    assert "UPSTREAM_UNAVAILABLE -32603" in driver.refill_error
+    assert "is not applied" in driver.refill_error
+    assert funded == [] and 2 < len(rpc.calls) < 200
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        lib.RpcError("http://fake", "m", -32603, "UPSTREAM_UNAVAILABLE", "timeout", True),
+        lib.RpcError("http://fake", "m", -32004, "BLOCK_UNAVAILABLE", NOT_APPLIED.message, False),
+        lib.TestnetError("http://fake getAddressInformation: HTTP 502"),
+    ],
+)
+def test_other_refill_read_errors_stop_at_once(tmp_path, monkeypatch, error):
+    rpc = LaggingRpc(200, error)
+    driver, funded = refill_once(tmp_path, monkeypatch, rpc)
+    assert driver.refill_error == f"refilling relayer 3: {error}"
+    assert funded == [] and rpc.calls == ["getAddressInformation"]
+
+
+def test_a_load_send_is_never_retried(monkeypatch):
+    monkeypatch.setattr(lib, "NOT_APPLIED_RETRY_SECONDS", 5.0)
+    calls = []
+
+    def send(url, method, /, **params):
+        calls.append(method)
+        raise NOT_APPLIED
+
+    with pytest.raises(lib.RpcError):
+        elections.Chain("http://fake", send).send_boc(b"x")
+    assert calls == ["sendBoc"]
+
+
 def test_load_arguments_are_checked():
     good = load_args(__import__("pathlib").Path("/nonexistent"), dry_run=False)
     good.batches_per_second = 1.0

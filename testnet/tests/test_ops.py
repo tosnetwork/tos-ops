@@ -116,6 +116,80 @@ def test_a_transfer_settles_from_the_chain(world):
     assert len(chain.sent) == 1
 
 
+NOT_APPLIED_MESSAGE = (
+    "getAccountState: [Error : 651 : cannot load block (-1,8000000000000000,338211):ab:cd"
+    " : block (-1,8000000000000000,338211) is not applied (last known masterchain block: 338209)]"
+)
+
+
+def lagging(node, methods, failures, monkeypatch):
+    """`node` answers its first `failures` calls of `methods` as a node that has not
+    applied the block yet; returns the list of every call it received."""
+    monkeypatch.setattr(lib, "NOT_APPLIED_FIRST_DELAY", 0.001)
+    monkeypatch.setattr(lib, "NOT_APPLIED_MAX_DELAY", 0.002)
+    monkeypatch.setattr(lib, "NOT_APPLIED_RETRY_SECONDS", 0.05)
+    original, calls, refused = getattr(node.rpc, "wrapped", node.rpc), [], []
+
+    def rpc(url, rpc_method, /, **kw):
+        calls.append(rpc_method)
+        if rpc_method in methods and len(refused) < failures:
+            refused.append(rpc_method)
+            raise lib.RpcError(
+                url, rpc_method, -32603, "UPSTREAM_UNAVAILABLE", NOT_APPLIED_MESSAGE, True
+            )
+        return original(url, rpc_method, **kw)
+
+    node.rpc = rpc
+    return calls
+
+
+@pytest.mark.parametrize("failures", [1, 2])
+@pytest.mark.parametrize("index", [0, 1])
+def test_a_preflight_read_waits_for_a_lagging_validator(world, monkeypatch, failures, index):
+    chain, operations, _ = world
+    calls = lagging(operations.nodes[index], {"getAddressInformation"}, failures, monkeypatch)
+    record = run(operations, chain=chain)
+    assert record["state"] == "settled" and len(chain.sent) == 1
+    assert calls.count("getAddressInformation") > failures
+
+
+def test_a_preflight_read_still_not_applied_after_the_bound_is_unknown(world, monkeypatch):
+    chain, operations, _ = world
+    sign = signer(chain)
+    # more refusals than the bound admits, few enough that an unbounded read ends
+    lagging(operations.nodes[1], {"getAddressInformation"}, 200, monkeypatch)
+    with pytest.raises(ops.Unknown, match="is not applied"):
+        run(operations, sign=sign)
+    assert sign.calls == [] and chain.sent == []
+
+
+def test_a_validator_that_caught_up_must_still_agree(world, monkeypatch):
+    chain, operations, _ = world
+    chain.send(build_external(BOOT, 2, 1, chain.now + 300, internal_message(BOOT, NANO, False)))
+    chain.settle_all()
+    behind = chain.node("http://b", lag=True)
+    calls = lagging(behind, {"getAddressInformation", "getTransactionsStd"}, 2, monkeypatch)
+    pair = ops.Operations(
+        operations.ceremony,
+        [chain.node("http://a"), behind],
+        2,
+        clock=lambda: chain.now,
+        sleep=lambda s: chain.tick(),
+    )
+    with pytest.raises(ops.Unknown, match="disagree"):
+        pair.history(BOOT, None)
+    assert len(calls) > 2
+
+
+def test_a_send_answered_not_applied_is_not_repeated(world, monkeypatch):
+    chain, operations, _ = world
+    calls = lagging(operations.nodes[0], {"sendBoc"}, 1, monkeypatch)
+    with pytest.raises(ops.Unknown, match="is not applied"):
+        run(operations, chain=chain)
+    assert calls.count("sendBoc") == 1 and chain.sent == []
+    assert operations.journal.record("fund-a")["state"] == "signed"
+
+
 def test_a_settled_operation_is_never_sent_again(world):
     chain, operations, _ = world
     sign = signer(chain)

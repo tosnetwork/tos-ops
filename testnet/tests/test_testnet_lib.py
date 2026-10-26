@@ -1031,3 +1031,119 @@ def test_gas_credit_guard_checks_both_workchains(monkeypatch, tag, mc, wc, refus
     else:
         with pytest.raises(lib.TestnetError, match=f"ConfigParam {refused} gas_credit"):
             lib.zero_state_gas_credits(b"")
+
+
+# ---------------------------------------------------------------- reads at a block not applied yet
+
+# The answer a node a block or two behind gave a load refill in the live soak:
+# a read at the network's newest masterchain block, which this node had not applied.
+NOT_APPLIED_MESSAGE = (
+    "getAccountState: [Error : 651 : cannot load block (-1,8000000000000000,338211):"
+    "ab:cd : block (-1,8000000000000000,338211) is not applied"
+    " (last known masterchain block: 338209)]"
+)
+
+
+def not_applied(url="http://a", method="getAddressInformation"):
+    return lib.RpcError(url, method, -32603, "UPSTREAM_UNAVAILABLE", NOT_APPLIED_MESSAGE, True)
+
+
+def test_the_nodes_not_applied_answer_is_classified_from_the_wire():
+    url, _ = serve_answer(error_answer(-32603, "UPSTREAM_UNAVAILABLE", NOT_APPLIED_MESSAGE, True))
+    with pytest.raises(lib.RpcError) as caught:
+        lib.rpc(url, "getAddressInformation", address="-1:" + "00" * 32)
+    assert lib.block_not_applied(caught.value)
+
+
+OTHER_ERRORS = [
+    # the same reason, but a timeout or another not-ready answer
+    lib.RpcError("u", "m", -32603, "UPSTREAM_UNAVAILABLE", "getAccountState: timeout", True),
+    lib.RpcError(
+        "u", "m", -32603, "UPSTREAM_UNAVAILABLE", "[Error : 651 : state is not ready]", True
+    ),
+    lib.RpcError("u", "m", -32603, "UPSTREAM_UNAVAILABLE", "block x is not applied", True),
+    # the not-applied text under another reason, or not marked retryable
+    lib.RpcError("u", "m", -32004, "BLOCK_UNAVAILABLE", NOT_APPLIED_MESSAGE, False),
+    lib.RpcError("u", "m", -32603, "INTERNAL_ERROR", NOT_APPLIED_MESSAGE, False),
+    lib.RpcError("u", "m", -32603, "VERIFICATION_BACKEND_FAILURE", NOT_APPLIED_MESSAGE, True),
+    lib.RpcError("u", "m", -32603, "UPSTREAM_UNAVAILABLE", NOT_APPLIED_MESSAGE, False),
+    lib.RpcError("u", "m", -32005, "RATE_LIMITED", "Rate limit exceeded (per-IP)", True),
+    # a transport failure is not a node's answer at all
+    lib.TestnetError(f"u m: HTTP 502 {NOT_APPLIED_MESSAGE}"),
+]
+
+
+def test_only_the_not_applied_answer_is_classified_as_such():
+    assert lib.block_not_applied(not_applied())
+    for error in OTHER_ERRORS:
+        assert not lib.block_not_applied(error), error
+
+
+class FlakyRpc:
+    """Raises each of `errors` in turn, then answers; records every call."""
+
+    def __init__(self, *errors, answer=None):
+        self.errors, self.answer, self.calls = list(errors), answer, []
+
+    def __call__(self, url, method, /, **params):
+        self.calls.append((method, params))
+        if self.errors:
+            raise self.errors.pop(0)
+        return self.answer
+
+
+class FakeTime:
+    def __init__(self):
+        self.now, self.slept = 1000.0, []
+
+    def sleep(self, seconds):
+        self.slept.append(seconds)
+        self.now += seconds
+
+    def clock(self):
+        return self.now
+
+
+@pytest.mark.parametrize("failures", [1, 2])
+def test_a_read_waits_for_the_node_to_apply_the_block(failures):
+    rpc = FlakyRpc(*[not_applied()] * failures, answer={"state": "active", "balance": "7"})
+    t = FakeTime()
+    read = lib.retrying_reads(rpc, t.sleep, t.clock)
+    assert read("http://a", "getAddressInformation", address="x", timeout=5) == rpc.answer
+    assert rpc.calls == [("getAddressInformation", {"address": "x", "timeout": 5})] * (failures + 1)
+    assert t.slept == [0.5, 1.0][:failures]
+
+
+def test_a_read_still_not_applied_after_the_bound_fails_as_before():
+    rpc = FlakyRpc(*[not_applied()] * 1000)
+    t = FakeTime()
+    read = lib.retrying_reads(rpc, t.sleep, t.clock)
+    with pytest.raises(lib.RpcError) as caught:
+        read("http://a", "getAddressInformation", address="x")
+    assert lib.block_not_applied(caught.value)
+    assert sum(t.slept) == lib.NOT_APPLIED_RETRY_SECONDS == 30
+    assert t.slept[:4] == [0.5, 1.0, 2.0, 4.0] and max(t.slept) == lib.NOT_APPLIED_MAX_DELAY
+    assert len(rpc.calls) == len(t.slept) + 1 == 11
+
+
+@pytest.mark.parametrize("error", OTHER_ERRORS)
+def test_other_errors_are_raised_without_a_retry(error):
+    rpc = FlakyRpc(error, answer={})
+    t = FakeTime()
+    with pytest.raises(type(error)):
+        lib.retrying_reads(rpc, t.sleep, t.clock)("http://a", "getAddressInformation")
+    assert len(rpc.calls) == 1 and t.slept == []
+
+
+def test_a_send_is_never_retried():
+    rpc = FlakyRpc(not_applied(method="sendBoc"), answer={})
+    t = FakeTime()
+    read = lib.retrying_reads(rpc, t.sleep, t.clock)
+    with pytest.raises(lib.RpcError):
+        read("http://a", "sendBoc", boc="AA==")
+    assert rpc.calls == [("sendBoc", {"boc": "AA=="})] and t.slept == []
+
+
+def test_wrapping_twice_keeps_one_bound():
+    read = lib.retrying_reads(FlakyRpc())
+    assert lib.retrying_reads(read) is read

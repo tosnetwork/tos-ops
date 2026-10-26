@@ -236,6 +236,16 @@ class Chain:
         self.url = url
         self.rpc = rpc
 
+    @property
+    def rpc(self):
+        return self._rpc
+
+    @rpc.setter
+    def rpc(self, rpc) -> None:
+        # A read at a block this node has not applied yet waits for it within a
+        # bound (lib.retrying_reads); sendBoc is never repeated.
+        self._rpc = lib.retrying_reads(rpc)
+
     def account(self, address: str) -> tuple[str, int]:
         info = self.rpc(self.url, "getAddressInformation", address=address)
         return info["state"], int(info["balance"])

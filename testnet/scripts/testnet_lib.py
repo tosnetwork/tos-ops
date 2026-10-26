@@ -19,6 +19,7 @@ import re
 import stat
 import subprocess
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
@@ -1386,3 +1387,63 @@ def rpc(url: str, method: str, /, timeout: float = 10, **params: Any) -> Any:
     except ValueError as exc:
         raise TestnetError(f"{url} {method}: the answer is not JSON") from exc
     return rpc_result(answer, url, method)
+
+
+# A node answers a read at a masterchain block it has not applied yet (it is a
+# block or two behind the network) with UPSTREAM_UNAVAILABLE, retryable, and
+# the query path's error 651 "not ready": "cannot load block (...) : block (...)
+# is not applied". Catching up takes seconds, so a read waits for it, within a
+# bound, instead of failing the operation that made it.
+NOT_APPLIED_RETRY_SECONDS = 30.0
+NOT_APPLIED_FIRST_DELAY = 0.5
+NOT_APPLIED_MAX_DELAY = 4.0
+NOT_APPLIED_TEXT = re.compile(r"\bError : 651 : .*\bis not applied\b", re.DOTALL)
+# A send is never repeated here: whether it reached the network is for the
+# operation's journal to establish, not for a transport retry to guess.
+NEVER_RETRIED_METHODS = frozenset({"sendBoc"})
+
+
+def block_not_applied(exc: BaseException) -> bool:
+    """True only for a node's answer that it has not applied the block yet."""
+    return (
+        isinstance(exc, RpcError)
+        and exc.reason == "UPSTREAM_UNAVAILABLE"
+        and exc.retryable
+        and NOT_APPLIED_TEXT.search(exc.message) is not None
+    )
+
+
+def retrying_reads(rpc, sleep=None, clock=None):
+    """`rpc` with every read retried while the node answers block_not_applied.
+
+    The delay doubles from NOT_APPLIED_FIRST_DELAY up to NOT_APPLIED_MAX_DELAY,
+    and the read gives up with the node's last answer once
+    NOT_APPLIED_RETRY_SECONDS have passed since its first attempt. Any other
+    error, and every NEVER_RETRIED_METHODS call, is raised at once. Wrapping a
+    wrapped call returns it unchanged, so the bound is never multiplied.
+    """
+    if getattr(rpc, "retries_not_applied", False):
+        return rpc
+
+    def call(url: str, method: str, /, **params: Any) -> Any:
+        if method in NEVER_RETRIED_METHODS:
+            return rpc(url, method, **params)
+        wait = sleep or time.sleep
+        now = clock or time.monotonic
+        deadline = now() + NOT_APPLIED_RETRY_SECONDS
+        delay = NOT_APPLIED_FIRST_DELAY
+        while True:
+            try:
+                return rpc(url, method, **params)
+            except RpcError as exc:
+                if not block_not_applied(exc):
+                    raise
+                remaining = deadline - now()
+                if remaining <= 0:
+                    raise
+                wait(min(delay, remaining))
+                delay = min(delay * 2, NOT_APPLIED_MAX_DELAY)
+
+    call.retries_not_applied = True  # type: ignore[attr-defined]
+    call.wrapped = rpc  # type: ignore[attr-defined]
+    return call
