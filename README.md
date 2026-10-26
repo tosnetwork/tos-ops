@@ -70,6 +70,7 @@ Real inventories and ceremony directories stay outside the tree.
 | [testnet-governance.py](testnet/scripts/testnet-governance.py) | Change a ConfigParam by a validator vote: `propose`, `sign` (node consoles), `vote`, `status`, `adopted`; each send a journaled operation. |
 | [testnet-elections.py](testnet/scripts/testnet-elections.py) / [testnet_ops.py](testnet/scripts/testnet_ops.py) | `pool` (staking pool before genesis), `fund`, `onboard`, `withdraw`, and manual `reconcile`, `record`, `resubmit`, `baseline`, `retry`; durable journals and two-validator settlement. |
 | [check-testnet.py](testnet/scripts/check-testnet.py) | Compare independent nodes' network identity, fresh full block IDs and selected configuration. |
+| [check-handover.py](testnet/scripts/check-handover.py) | `collect` (read-only, paced, journaled) and offline `verify` of a validator-set handover: every block's certificate against its header-selected set; extended terms reported. Needs `dilithium-py` for ML-DSA-44. |
 | [watch-testnet.py](testnet/scripts/watch-testnet.py) / [check-host-disk.py](testnet/scripts/check-host-disk.py) | Retain host/node samples and report anomalies. |
 | [alert-relay.py](testnet/scripts/alert-relay.py) | Telegram alerts, acknowledgements, silence windows and coordinator/peer heartbeats. |
 | [retire-host.sh](testnet/scripts/retire-host.sh) | Archive evidence, then retire a host bound to the explicitly confirmed old zero state. |
