@@ -12,6 +12,7 @@ import ipaddress
 import json
 import re
 import shlex
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -128,10 +129,26 @@ FAKE_CHANGE = """#!/bin/sh
 echo "$(basename "$0") $*" >> "$FAKE_LOG"
 exit 97
 """
+# runuser only reads here (the bundle readability check); it runs the command
+# as the caller.
+FAKE_RUNUSER = """#!/bin/sh
+[ "$1" = -u ] && [ "$3" = -- ] || exit 2
+shift 3
+exec "$@"
+"""
 
 
 @pytest.fixture
 def host(tmp_path):
+    """install-node.sh run from a copy of the bundle on a fake host.
+
+    The copy's setup-time.sh is a fake too: install-node.sh runs it by its own
+    path, and the real one changes the clock setup. Every write the script
+    could make (clock setup, account, install, a systemctl change) is logged to
+    changes.log and fails."""
+    bundle = tmp_path / "testnet"
+    shutil.copytree(SCRIPTS.parent, bundle, ignore=shutil.ignore_patterns("tests", "__pycache__"))
+    (bundle / "scripts" / "setup-time.sh").write_text(FAKE_CHANGE)
     fakebin = tmp_path / "fakebin"
     fakebin.mkdir()
     for name, text in (
@@ -139,7 +156,7 @@ def host(tmp_path):
         ("systemctl", FAKE_SYSTEMCTL),
         ("install", FAKE_CHANGE),
         ("useradd", FAKE_CHANGE),
-        ("runuser", FAKE_CHANGE),
+        ("runuser", FAKE_RUNUSER),
     ):
         (fakebin / name).write_text(text)
         (fakebin / name).chmod(0o755)
@@ -149,7 +166,10 @@ def host(tmp_path):
     def run(*args, active: str = ""):
         env = {"PATH": f"{fakebin}:/usr/bin:/bin", "FAKE_LOG": str(log), "FAKE_ACTIVE": active}
         return subprocess.run(
-            ["bash", str(INSTALL), *args], capture_output=True, text=True, env=env
+            ["bash", str(bundle / "scripts" / "install-node.sh"), *args],
+            capture_output=True,
+            text=True,
+            env=env,
         )
 
     run.log = log
@@ -191,13 +211,51 @@ def test_a_full_node_release_does_not_satisfy_the_rpc_role(host, tmp_path):
     assert host.log.read_text() == ""
 
 
-@pytest.mark.parametrize("unit", ["tos-testnet-wallet-index", "tos-testnet-rpc"])
-def test_binaries_refuse_while_an_rpc_service_runs(host, tmp_path, unit):
-    release = make_release(tmp_path, RPC)
-    result = host("binaries", "--role", "rpc", "--release", str(release), "--rev", PIN, active=unit)
+NODE_UNITS = [
+    "tos-testnet-validator",
+    "tos-testnet-fullnode",
+    "tos-testnet-dht",
+    "tos-testnet-wallet-index",
+    "tos-testnet-rpc",
+]
+ENTRIES = {
+    "prepare-rpc": ["prepare", "--role", "rpc"],
+    "prepare-fullnode": ["prepare", "--role", "fullnode", "--public-ip", "192.0.2.10"],
+    "binaries-rpc": ["binaries", "--role", "rpc"],
+    "binaries-dht": ["binaries", "--role", "dht"],
+}
+# The first write each entry makes once the preflight passes.
+FIRST_WRITE = {
+    "prepare-rpc": "install -m 0755",
+    "prepare-fullnode": "setup-time.sh",
+    "binaries-rpc": "install -m 0755",
+    "binaries-dht": "install -m 0755",
+}
+
+
+@pytest.mark.parametrize("unit", NODE_UNITS)
+@pytest.mark.parametrize("entry", sorted(ENTRIES))
+def test_prepare_and_binaries_refuse_before_any_write_while_a_service_runs(
+    host, tmp_path, entry, unit
+):
+    release = make_release(tmp_path, RPC + ["dht-server"])
+    args = ENTRIES[entry] + ["--release", str(release), "--rev", PIN]
+    result = host(*args, active=unit)
     assert result.returncode != 0
-    assert f"{unit} is running; stop it first" in result.stderr
+    assert f"{unit} is running; stop it first" in result.stderr, result.stderr
+    # No clock setup, no account, no install, no systemctl change.
     assert host.log.read_text() == ""
+
+
+@pytest.mark.parametrize("entry", sorted(ENTRIES))
+def test_with_nothing_running_the_fakes_record_the_first_write(host, tmp_path, entry):
+    # The control for the refusals above: the same command on an idle host
+    # gets past the preflight, and its first write shows up in the log.
+    release = make_release(tmp_path, RPC + ["dht-server"])
+    result = host(*ENTRIES[entry], "--release", str(release), "--rev", PIN)
+    assert result.returncode != 0  # the fake write fails
+    log = host.log.read_text()
+    assert log.splitlines()[0].startswith(FIRST_WRITE[entry]), log
 
 
 def test_an_unknown_role_is_refused(host):
@@ -304,7 +362,6 @@ def test_rpc_units_keep_the_node_units_hardening(name):
     directives = unit_lines(name)
     assert directives["User"] != ["root"] and directives["User"]
     assert directives["LimitNOFILE"]
-    assert directives["WantedBy"] == ["multi-user.target"]
 
 
 def test_the_index_reads_the_full_node_database_read_only():
@@ -373,14 +430,36 @@ def test_services_start_after_the_full_node_and_the_index():
     index = unit_lines(INDEX_UNIT)
     rpc = unit_lines(RPC_UNIT)
     assert "tos-testnet-fullnode.service" in index["After"][0].split()
-    assert index["Requisite"] == ["tos-testnet-fullnode.service"]
     after = rpc["After"][0].split()
     assert "tos-testnet-fullnode.service" in after
     assert "tos-testnet-wallet-index.service" in after
-    # Neither pulls a stopped full node back up.
+
+
+def test_services_follow_maintenance_of_the_node_and_the_index():
+    index = unit_lines(INDEX_UNIT)
+    rpc = unit_lines(RPC_UNIT)
+    # Stop and restart of the node reach the index, of the index reach the RPC.
+    assert index["PartOf"] == ["tos-testnet-fullnode.service"]
+    assert rpc["PartOf"] == ["tos-testnet-wallet-index.service"]
+    # A start of the node starts the index, a start of the index starts the RPC.
+    assert index["WantedBy"] == ["tos-testnet-fullnode.service"]
+    assert rpc["WantedBy"] == ["tos-testnet-wallet-index.service"]
+    # A manual start of the index while the node is down is refused.
+    assert index["ExecStartPre"] == [
+        "/bin/systemctl is-active --quiet tos-testnet-fullnode.service"
+    ]
+    # Neither pulls a stopped full node back up, and Requisite= (which left the
+    # index stopped for good after a node restart) is gone.
     for d in (index, rpc):
         assert "tos-testnet-fullnode.service" not in " ".join(d.get("Wants", []))
-        assert "Requires" not in d and "BindsTo" not in d
+        for key in ("Requires", "BindsTo", "Requisite"):
+            assert key not in d, key
+
+
+def test_rpc_activation_enables_through_the_install_sections():
+    body = function_body("activate_rpc")
+    assert 'systemctl enable --now "$unit"' in body
+    assert "--runtime" not in body
 
 
 def test_the_firewall_example_opens_neither_service_port():

@@ -267,7 +267,8 @@ sudo systemctl start tos-testnet-validator
 sudo systemctl start tos-testnet-elections
 ```
 
-The binary installer refuses if **any** testnet node role on the host is active;
+`binaries` and `prepare` refuse, before they write anything, if **any** node or
+rpc service on the host is active (validator, full node, DHT, wallet index, public RPC);
 include co-hosted DHT/full-node maintenance in the approved plan. Do not proceed
 to the next validator until the coordinator verifies convergence. Preserve build
 receipts and the previous release. Stop on exit 2; do not delete a lock or edit
@@ -359,8 +360,16 @@ holds. `tos-rpc` runs as its own non-login account, cannot see
 `/var/lib/tos` or the index data, and trusts one liteserver: the full node's own
 lite server on `127.0.0.1:30003` (`rpc-liteservers.json` is the published global
 config with that entry, written by `install-node.sh activate --role rpc`).
-Start order is full node, index, `tos-rpc`; the units order themselves that way
-and the index refuses to start while the full node is not running.
+The services follow explicit maintenance stop/start/restart of the full node
+(and `tos-rpc` of the index): `PartOf=` carries a stop or restart of the node to
+the index and of the index to `tos-rpc`, and `activate --role rpc` enables the
+index as wanted by the node and `tos-rpc` as wanted by the index, so starting the
+node starts the index and then `tos-rpc` (`After=` orders them). These
+directives do not propagate a crash, and `After=` does not require a backend to
+have started successfully: after a node crash the index pauses at its cursor and
+`tos-rpc` reports backend errors per request. A manual start of the index while
+the node is not active is refused by its `ExecStartPre=` check; nothing in these
+units starts a node stopped for maintenance.
 
 **Prerequisites:** a tos commit that has the `services/` targets (`tos-rpc` and
 `tos-wallet-index`); full-node preflight floors plus the index's memory and disk
@@ -421,11 +430,13 @@ set: enabling writes needs that reviewed template change first, then
 submission backend; do not work around it.
 
 **Upgrade** with the [maintenance procedure](#8-upgrade-rollback-and-key-rotation):
-build `--role rpc`, stop `tos-testnet-rpc`, `tos-testnet-wallet-index` and
-`tos-testnet-fullnode` (`binaries` refuses while any runs), install with
-`binaries --role rpc`, then start the full node, the index and `tos-rpc` in that
-order. **Rebuild the index** only with the index stopped: move
+build `--role rpc`, `systemctl stop tos-testnet-fullnode` (which stops the index
+and `tos-rpc` with it; check all three are inactive, since `binaries` refuses
+while any runs), install with `binaries --role rpc`, then
+`systemctl start tos-testnet-fullnode`, which starts the index and `tos-rpc`
+after it. **Rebuild the index** only with the index stopped
+(`systemctl stop tos-testnet-wallet-index` stops `tos-rpc` too): move
 `/var/lib/tos-wallet-index` aside (keep it until the new index is ready), start
-the index and wait for `/readyz`. Never delete or overwrite the node database
+the index (it starts `tos-rpc`) and wait for `/readyz`. Never delete or overwrite the node database
 for an index problem. `retire-host.sh` stops both services and deletes the
 index data and `rpc-liteservers.json` with the retired epoch.

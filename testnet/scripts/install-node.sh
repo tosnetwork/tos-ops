@@ -11,6 +11,12 @@
 # compiles its own binaries from the pinned tos commit. --rev is that pinned
 # commit; check-release.sh refuses a release built from any other.
 #
+# prepare and binaries first run a preflight that writes nothing: it refuses
+# while any node or rpc service on this host is active (validator, full node,
+# DHT, wallet index, public RPC), verifies the release, and checks the
+# accounts and paths. Only then does either step set the clock, add an
+# account or install a file.
+#
 # prepare (before genesis for a genesis validator; any time for other roles):
 #   installs release binaries verified against --rev and the release's SHA256SUMS,
 #   creates the tos service account and the production layout
@@ -80,6 +86,10 @@ UNIT="tos-testnet-$ROLE.service"
 # The rpc role's services read the co-hosted full node; they own no node DB.
 SOURCE_DB="$DB_ROOT/fullnode"
 RPC_UNITS=(tos-testnet-wallet-index.service tos-testnet-rpc.service)
+# Every unit that runs an installed binary. prepare and binaries refuse while
+# any of them is active: a running process keeps the old file open, and its
+# next restart would pick up whatever was installed meanwhile.
+NODE_UNITS=(tos-testnet-validator tos-testnet-fullnode tos-testnet-dht tos-testnet-wallet-index tos-testnet-rpc)
 as_tos() { (cd / && runuser -u tos -- env TOS_BIN="$BIN" "$@"); }
 has_console() {
   python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("control") else 1)' "$DB/config.json"
@@ -99,15 +109,20 @@ role_binaries() {
 require_role_binaries() {
   local name
   for name in $(role_binaries); do
-    [ -x "$BIN/$name" ] || die "$BIN/$name is missing; pass --release DIR (an rpc role needs a release built with --role rpc)"
+    [ -x "$BIN/$name" ] || die "$BIN/$name is missing; pass --release DIR (for --role $ROLE, a release built with --role $ROLE)"
   done
 }
 
-install_release() {
-  local dir=$1 name
+verify_release() {
+  local dir=$1
   [ -n "$REV" ] || die "--rev COMMIT is required with --release"
   # shellcheck disable=SC2046 # one word per binary
   bash "$HERE/check-release.sh" "$dir" "$REV" $(role_binaries) || die "release $dir refused"
+}
+
+# Run only after preflight verified the release.
+install_release() {
+  local dir=$1 name
   # Install every binary the release carries, so a host running two roles
   # (a validator and a DHT node) keeps them from one build.
   for name in "${ALL_BINARIES[@]}"; do
@@ -119,15 +134,38 @@ install_release() {
   return 0
 }
 
-# Replace the installed binaries with another verified release. The node must
-# be stopped: a running engine keeps the old file open, and a restart picks up
-# whatever is installed.
-binaries() {
-  [ -n "$RELEASE" ] || die "--release DIR is required"
+tos_can_read_bundle() {
+  # The service account runs these scripts; a checkout under a private home is unreadable to it.
+  runuser -u tos -- test -r "$HERE/testnet_lib.py" \
+    || die "the tos account cannot read $HERE; copy testnet/ to a root-owned, world-readable path such as /opt/tos-testnet"
+}
+
+# The checks of prepare and binaries, before either writes anything (no clock
+# setup, no account, no install). It changes nothing itself.
+preflight() {
   local unit
-  for unit in tos-testnet-validator tos-testnet-fullnode tos-testnet-dht tos-testnet-wallet-index tos-testnet-rpc; do
+  for unit in "${NODE_UNITS[@]}"; do
     if systemctl is-active --quiet "$unit"; then die "$unit is running; stop it first"; fi
   done
+  if [ "$STEP" = binaries ]; then
+    [ -n "$RELEASE" ] || die "--release DIR is required"
+  elif [ "$ROLE" = rpc ]; then
+    id tos >/dev/null 2>&1 || die "the tos account is missing; prepare the full node first (--role fullnode)"
+  else
+    [ -n "$PUBLIC_IP" ] || die "--public-ip is required"
+    [ -e "$DB/config.json" ] && die "$DB/config.json exists: this node was already prepared"
+    # Before the account exists this is checked again right after creating it.
+    if id tos >/dev/null 2>&1; then tos_can_read_bundle; fi
+  fi
+  if [ -n "$RELEASE" ]; then
+    verify_release "$RELEASE"
+  else
+    require_role_binaries
+  fi
+}
+
+# Replace the installed binaries with another verified release.
+binaries() {
   install_release "$RELEASE"
   "$BIN/$(role_binaries | cut -d' ' -f1)" -V | head -1
 }
@@ -135,7 +173,6 @@ binaries() {
 prepare_rpc() {
   if [ -n "$RELEASE" ]; then install_release "$RELEASE"; fi
   require_role_binaries
-  id tos >/dev/null 2>&1 || die "the tos account is missing; prepare the full node first (--role fullnode)"
   id tos-rpc >/dev/null 2>&1 || useradd --system --no-create-home --home-dir /nonexistent \
     --shell /usr/sbin/nologin tos-rpc
   echo "next: activate the full node (--role fullnode), then activate --role rpc"
@@ -143,19 +180,13 @@ prepare_rpc() {
 
 prepare() {
   if [ "$ROLE" = rpc ]; then prepare_rpc; return; fi
-  [ -n "$PUBLIC_IP" ] || die "--public-ip is required"
   # Time first: consensus timeouts and consensus-key validity read the wall clock.
   bash "$HERE/setup-time.sh" || die "the clock is not following NTP; fix it before preparing a node"
   id tos >/dev/null 2>&1 || useradd --system --home-dir "$DB_ROOT" --shell /usr/sbin/nologin tos
-  # The service account runs these scripts; a checkout under a private home is unreadable to it.
-  runuser -u tos -- test -r "$HERE/testnet_lib.py" \
-    || die "the tos account cannot read $HERE; copy testnet/ to a root-owned, world-readable path such as /opt/tos-testnet"
+  tos_can_read_bundle
   if [ -n "$RELEASE" ]; then install_release "$RELEASE"; fi
-  for name in $(role_binaries); do
-    [ -x "$BIN/$name" ] || die "$BIN/$name is missing; pass --release DIR"
-  done
+  require_role_binaries
   install -d -m 0755 -o root -g root "$ETC" "$DB_ROOT" "$LOG_ROOT"
-  [ -e "$DB/config.json" ] && die "$DB/config.json exists: this node was already prepared"
   install -d -m 0700 -o tos -g tos "$DB"
   install -d -m 0750 -o tos -g tos "$LOG"
 
@@ -271,8 +302,8 @@ activate() {
 }
 
 case "$STEP" in
-  prepare) prepare ;;
+  prepare) preflight; prepare ;;
   activate) activate ;;
-  binaries) binaries ;;
+  binaries) preflight; binaries ;;
   *) die "unknown step $STEP" ;;
 esac

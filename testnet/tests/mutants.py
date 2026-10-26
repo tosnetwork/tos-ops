@@ -1461,16 +1461,16 @@ M += [
         '        "tos-pq-consensus-key",\n',
     ),
     (
-        "RR4 binaries ignore running rpc services",
+        "RR4 preflight ignores running rpc services",
         INSTALL,
-        "tos-testnet-dht tos-testnet-wallet-index tos-testnet-rpc; do",
-        "tos-testnet-dht; do",
+        "tos-testnet-dht tos-testnet-wallet-index tos-testnet-rpc)\n",
+        "tos-testnet-dht)\n",
     ),
     (
         "RR5 rpc activation skips the binary check",
         INSTALL,
-        "  require_role_binaries\n  id tos-rpc",
-        "  id tos-rpc",
+        "  require_role_binaries\n  id tos-rpc >/dev/null 2>&1 || die",
+        "  id tos-rpc >/dev/null 2>&1 || die",
     ),
     (
         "RR6 index source database writable",
@@ -1537,6 +1537,60 @@ M += [
         W / "scripts/retire-host.sh",
         "rm -rf --one-file-system /var/lib/tos-ctl /var/lib/tos-wallet-index\n",
         "rm -rf --one-file-system /var/lib/tos-ctl\n",
+    ),
+    (
+        "RR17 preflight running-service guard removed",
+        INSTALL,
+        '  for unit in "${NODE_UNITS[@]}"; do\n    if systemctl is-active --quiet "$unit"; then die',
+        '  for unit in "${NODE_UNITS[@]}"; do\n    if false; then die',
+    ),
+    (
+        "RR18 prepare writes before its preflight",
+        INSTALL,
+        "  prepare) preflight; prepare ;;",
+        "  prepare) prepare; preflight ;;",
+    ),
+    (
+        "RR19 binaries writes before its preflight",
+        INSTALL,
+        "  binaries) preflight; binaries ;;",
+        "  binaries) binaries; preflight ;;",
+    ),
+    (
+        "RR20 preflight ignores a running DHT node",
+        INSTALL,
+        "NODE_UNITS=(tos-testnet-validator tos-testnet-fullnode tos-testnet-dht tos-",
+        "NODE_UNITS=(tos-testnet-validator tos-testnet-fullnode tos-",
+    ),
+    (
+        "RR21 index not part of the full node",
+        INDEX_UNIT,
+        "PartOf=tos-testnet-fullnode.service\n",
+        "",
+    ),
+    (
+        "RR22 public RPC not part of the index",
+        RPC_UNIT,
+        "PartOf=tos-testnet-wallet-index.service\n",
+        "",
+    ),
+    (
+        "RR23 index not started with the full node",
+        INDEX_UNIT,
+        "WantedBy=tos-testnet-fullnode.service\n",
+        "",
+    ),
+    (
+        "RR24 public RPC not started with the index",
+        RPC_UNIT,
+        "WantedBy=tos-testnet-wallet-index.service\n",
+        "",
+    ),
+    (
+        "RR25 index start guard removed",
+        INDEX_UNIT,
+        "ExecStartPre=/bin/systemctl is-active --quiet tos-testnet-fullnode.service\n",
+        "",
     ),
 ]
 

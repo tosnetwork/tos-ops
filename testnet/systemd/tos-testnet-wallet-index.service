@@ -1,12 +1,16 @@
 [Unit]
 Description=TOS public testnet wallet index (reads the co-hosted full node's database)
 Documentation=file:///opt/tos-testnet/OPERATOR.md
-# Order: full node, then this index, then tos-rpc. Requisite, not Requires or
-# Wants: starting the index never starts a full node stopped for maintenance,
-# and stopping the full node does not stop the index (it pauses at its cursor).
+# Lifecycle: the index follows explicit maintenance stop/start/restart of the
+# full node. PartOf= carries a stop or restart of the node to the index;
+# WantedBy= the node (enabled by install-node.sh activate --role rpc) starts it
+# after each start of the node, After= orders it behind the node. Neither
+# propagates a crash of the node, and After= does not wait for the node to be
+# healthy: the index then pauses at its cursor. Nothing here starts a node
+# stopped for maintenance; see the ExecStartPre= guard below.
 After=network-online.target time-sync.target tos-testnet-fullnode.service
 Wants=network-online.target
-Requisite=tos-testnet-fullnode.service
+PartOf=tos-testnet-fullnode.service
 
 [Service]
 # As tos: the full node's database is tos-owned and owner-only (0700, files
@@ -21,6 +25,9 @@ UMask=0077
 StateDirectory=tos-wallet-index
 StateDirectoryMode=0700
 WorkingDirectory=/var/lib/tos-wallet-index
+# Start-only guard: a manual start while the full node is not active fails
+# here instead of starting an index on a stopped node.
+ExecStartPre=/bin/systemctl is-active --quiet tos-testnet-fullnode.service
 # Loopback only (the binary refuses anything else). 8083, not the index's
 # default 8081: the full node's operator JSON-RPC already listens on
 # 127.0.0.1:8081. Only tos-rpc talks to it; never route a proxy to it.
@@ -46,4 +53,4 @@ ReadWritePaths=/var/lib/tos-wallet-index
 CapabilityBoundingSet=
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=tos-testnet-fullnode.service

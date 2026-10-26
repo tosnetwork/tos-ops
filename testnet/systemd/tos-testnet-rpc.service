@@ -1,11 +1,16 @@
 [Unit]
 Description=TOS public testnet public wallet JSON-RPC (tos-rpc)
 Documentation=file:///opt/tos-testnet/OPERATOR.md
-# Order: full node (its lite server answers the chain reads), then the wallet
-# index, then this service. Ordering only: the service starts with either
-# backend down and reports their errors per request.
+# Lifecycle: follows explicit maintenance stop/start/restart of the wallet
+# index, and so of the full node (the index follows the node). PartOf= carries
+# a stop or restart of the index here; WantedBy= the index (enabled by
+# install-node.sh activate --role rpc) starts this after each start of the
+# index, and After= orders it behind the node and the index. A crash of either
+# is not propagated, and After= does not require a backend to have started
+# successfully: tos-rpc then reports backend errors per request.
 After=network-online.target tos-testnet-fullnode.service tos-testnet-wallet-index.service
 Wants=network-online.target
+PartOf=tos-testnet-wallet-index.service
 
 [Service]
 # A dedicated non-login account with no file of its own: it reads only the
@@ -50,4 +55,4 @@ InaccessiblePaths=-/var/lib/tos -/var/lib/tos-wallet-index -/var/lib/tos-ctl
 CapabilityBoundingSet=
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=tos-testnet-wallet-index.service
