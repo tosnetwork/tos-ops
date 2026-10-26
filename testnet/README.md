@@ -48,6 +48,7 @@ testnet/
 │   ├── testnet-coordinator.py    manifest | genesis | global-config
 │   ├── install-node.sh           prepare | activate one node (root)
 │   ├── check-testnet.py          independent nodes agree on one live chain; ConfigParam 34 after a rotation
+│   ├── check-handover.py         collect | verify: every block around a set handover is finalized by its chain-selected set
 │   ├── check-host-disk.py        one host's disk, consensus/, unit, memory, head and CPU; refuses below a floor
 │   ├── watch-testnet.py          coordinator: sample every validator on a schedule, keep a TSV, report anomalies
 │   ├── alert-relay.py            coordinator | peer: watch anomalies and heartbeats to Telegram; silence | unsilence
@@ -240,6 +241,56 @@ the Elector's result. For Config34's active election and Config32's historical
 active election, use the [HTTP checker](../production/scripts/README.md) with the
 approved global config, AUTH pin and [independently built verifier](../production/scripts/README.md#build-the-verifier).
 
+### Checking a validator-set handover
+
+`check-handover.py` checks that every masterchain block on both sides of a
+handover is finalized by the set the chain selected for it. Collect around the
+incoming set's `utime_since` (`--boundary`, or its alias `--term-start`), with
+one JSON-RPC URL per validator, from the coordinator:
+
+```bash
+testnet/scripts/check-handover.py collect --boundary UNIXTIME \
+    --rpc URL1 --rpc URL2 --rpc URL3 --rpc URL4 \
+    --genesis-config global.config.json --span 100 --out epoch/handover-DATE
+TOS_ROOT=$TOS_ROOT "$TOS_ROOT/.venv/bin/python" testnet/scripts/check-handover.py verify \
+    --genesis-config global.config.json --out epoch/handover-DATE
+```
+
+`collect` is read-only (an allow-list of read methods), starts requests to one
+node at least 0.6 s apart (`--interval`; `--lock-dir` shares the spacing with
+other processes) and appends every request with the hash of its answer to
+`journal.jsonl`. It may be started before the boundary: it waits for the
+boundary and for every head to pass the range, up to `--max-wait` seconds. For
+the `--span` blocks on each side of the block at the boundary time it records
+each node's certificate, lookup, header and shard tops, ConfigParam 34 at every
+set-source key block, and ConfigParam 32/34 at the range end, in
+`collection.json`. When a node has already garbage-collected a source key
+block's state, ConfigParam 34 is read at the first collected non-key block whose
+agreed header names that source, and the substitution is recorded.
+
+`verify` is offline. It decodes each set itself, binds every block's set
+through its header (`prev_key_block_seqno` selects the key block whose
+ConfigParam 34 applies) and verifies every node's certificate against that set:
+every ML-DSA-44 signature, unique signers, two-thirds of the weight. It requires
+the global config's zero state, the profile's global id, the same full ids,
+header fields, shard tops and set bytes on every node, ConfigParam 32/34 after
+the handover equal to the outgoing and incoming sets, contiguous roles with the
+last outgoing block as the installing key block, and that the wrong-set,
+spliced-signature and tampered-certificate controls are rejected. It writes
+`report.json` and exits 0 only on PASS.
+
+A block generated after its set's `utime_until` is valid while no incoming set
+is installed: the chain extends the term, as after a postponed election. The
+report lists such blocks under `extended_term` with their range and seconds
+past `utime_until`; each must still pass the binding checks above. A block
+generated before its set's `utime_since` fails.
+
+`verify` needs the `dilithium-py` package (pure Python, tested with 1.1.0); the
+tos build has no standalone ML-DSA-44 verifier, and `verify` refuses without it.
+The tests replay recorded epoch-5 captures; those that run the real verifier are
+skipped when the package is missing. Node agreement is detection, not a proof
+chain from an authenticated anchor.
+
 ## Alerts
 
 ### Install and verify the relay
@@ -401,7 +452,8 @@ Each guard was broken once on purpose and the tests failed every time:
 identity uniqueness, template line count, key id match, block agreement,
 global id, staleness, the config lock, the confirmed-global-id gate, key
 reuse across resets (validator identities and wallet keys), and the validator
-schedule checks.
+schedule checks. The handover checker's checks are mutants `CH1`-`CH29` in
+`tests/mutants.py` (`python testnet/tests/mutants.py CH1 CH2 ...`).
 
 After a reset, every coordinator step that creates or onboards a wallet takes
 `--previous-ceremony DIR` once per earlier epoch (`testnet-coordinator.py

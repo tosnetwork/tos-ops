@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mutation guards for the operations journal and the election task.
+"""Mutation guards for the operations journal, the election task and the handover checker.
 
 Each mutant replaces one exact snippet of a script, runs the whole suite and
 restores the file. Every mutant must make a test fail: only pytest's exit 1
@@ -28,8 +28,133 @@ ERRORS = re.compile(r"\b[1-9]\d* errors?\b")
 OPS = W / "scripts/testnet_ops.py"
 EL = W / "scripts/testnet-elections.py"
 CO = W / "scripts/testnet-coordinator.py"
+HO = W / "scripts/check-handover.py"
 
 M = [
+    (
+        "CH1 handover signature check ignored",
+        HO,
+        'if not verify_fn(member["pk"], payload, sig):',
+        "if False:",
+    ),
+    (
+        "CH2 handover certificate set source ignored",
+        HO,
+        'if source not in sets or sets[source]["boc"] != sets[k]["boc"]:',
+        "if False:",
+    ),
+    (
+        "CH3 handover session commitment ignored",
+        HO,
+        'if (cert.get("cc_seqno"), cert.get("validator_set_hash")) != (',
+        'if False and (cert.get("cc_seqno"), cert.get("validator_set_hash")) != (',
+    ),
+    ("CH4 handover extended-term binding ignored", HO, "if not bound_ok[s]:", "if False:"),
+    (
+        "CH5 handover extended term refused (the old window rule)",
+        HO,
+        '            term = "extended_term"\n',
+        '            term = "extended_term"\n            failures.append("outside the term")\n',
+    ),
+    (
+        "CH6 handover block before its term accepted",
+        HO,
+        "if not isinstance(t, int) or isinstance(t, bool) or t < since:",
+        "if not isinstance(t, int) or isinstance(t, bool):",
+    ),
+    (
+        "CH7 handover full-id agreement ignored",
+        HO,
+        "if len(ids) == 1 and next(iter(ids))[2] == str(s):",
+        "if True:",
+    ),
+    ("CH8 handover header field agreement ignored", HO, "if len(fields) != 1:", "if False:"),
+    (
+        "CH9 handover shard-top agreement ignored",
+        HO,
+        "if len(tops) == 1 and next(iter(tops)):",
+        "if True:",
+    ),
+    (
+        "CH10 handover set byte agreement ignored",
+        HO,
+        '        if len(cells) != 1 or None in cells:\n            failures.append(f"ConfigParam 34 at source',
+        '        if False:\n            failures.append(f"ConfigParam 34 at source',
+    ),
+    (
+        "CH11 handover set outside both post-handover sets accepted",
+        HO,
+        'if roles[s] == "other":',
+        "if False:",
+    ),
+    (
+        "CH12 handover role contiguity ignored",
+        HO,
+        'failures.append(\n                "handover roles are not contiguous',
+        'print(\n                "handover roles are not contiguous',
+    ),
+    (
+        "CH13 handover installing key block ignored",
+        HO,
+        'headers[last_out].get("is_key_block") is True and selected.get(first_in) == last_out',
+        "True",
+    ),
+    ("CH14 handover zero state ignored", HO, 'full_id(info.get("init") or {}) != zero', "False"),
+    (
+        "CH15 handover global id ignored",
+        HO,
+        'if header.get("global_id") != global_id:',
+        "if False:",
+    ),
+    (
+        "CH16 handover wrong-term binding accepted",
+        HO,
+        'if boc != sets[selected[s]]["boc"]:',
+        "if False:",
+    ),
+    (
+        "CH17 handover substitution block unchecked",
+        HO,
+        "elif substitute_block(collection, k) != read_at:",
+        "elif False:",
+    ),
+    (
+        "CH18 handover supplement skipped",
+        HO,
+        "    supplement(collection, {n.name: n for n in nodes})",
+        "    pass",
+    ),
+    ("CH19 handover pacing removed", HO, "            if gap > 0:", "            if False:"),
+    ("CH20 handover allow-list removed", HO, "if method not in READ_ONLY_METHODS:", "if False:"),
+    ("CH21 handover journal skipped", HO, "self.journal.write(", "(lambda entry: None)("),
+    ("CH22 handover interval floor removed", HO, "if interval < MIN_INTERVAL:", "if False:"),
+    (
+        "CH23 handover collect boundary disagreement ignored",
+        HO,
+        "if len(centers) != 1:\n        raise HandoverError",
+        "if False:\n        raise HandoverError",
+    ),
+    ("CH24 handover collect does not wait", HO, "while now() < args.boundary + 1:", "while False:"),
+    ("CH25 handover certificate controls unchecked", HO, "if accepted != expect:", "if False:"),
+    (
+        "CH26 handover accepted control ignored",
+        HO,
+        'failures.append(f"control accepted: {name}")',
+        "pass",
+    ),
+    (
+        "CH27 handover session ids unchecked",
+        HO,
+        '        if len(ids) != 1:\n            failures.append(f"catchain seqno',
+        '        if False:\n            failures.append(f"catchain seqno',
+    ),
+    ("CH28 handover collect zero state ignored", HO, 'if full_id(r["init"]) != zero:', "if False:"),
+    (
+        "CH29 handover verify boundary disagreement ignored",
+        HO,
+        "if len(centers) != 1:\n        failures.append",
+        "if False:\n        failures.append",
+    ),
     (
         "O56 checkpoint unexecuted receipt accepted",
         OPS,
