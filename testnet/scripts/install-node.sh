@@ -58,8 +58,10 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 TESTNET="$(dirname "$HERE")"
 PROFILE="$TESTNET/network/profile.json"
 # TOS_INSTALL_PREFIX roots every host path under a directory, for the tests
-# that run this script unprivileged on a fake host. A real root run refuses it
-# ($EUID is the shell's own, not a PATH tool's).
+# that run this script unprivileged on a fake host. A run whose effective uid
+# is 0 refuses it. The uid comes from the absolute /usr/bin/id: bash takes an
+# EUID passed in the environment as an ordinary variable, and a PATH tool can
+# be replaced.
 PREFIX=${TOS_INSTALL_PREFIX:-}
 BIN=$PREFIX/usr/local/bin
 ETC=$PREFIX/etc/tos
@@ -68,7 +70,7 @@ LOG_ROOT=$PREFIX/var/log/tos
 UNIT_DIR=$PREFIX/etc/systemd/system
 
 die() { echo "install-node: $*" >&2; exit 1; }
-if [ -n "$PREFIX" ] && [ "$EUID" = 0 ]; then die "TOS_INSTALL_PREFIX is for unprivileged tests only; unset it"; fi
+if [ -n "$PREFIX" ] && [ "$(/usr/bin/id -u)" = 0 ]; then die "TOS_INSTALL_PREFIX is for unprivileged tests only; unset it"; fi
 profile() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); [d:=d[k] for k in sys.argv[2:]]; print(d)' "$PROFILE" "$@"; }
 
 [ "$(id -u)" = 0 ] || die "run as root"

@@ -766,10 +766,62 @@ def test_the_old_order_is_refused_at_the_rpc_preparation(fake_host):
     assert "tos-testnet-fullnode is running; stop it first" in failed.stderr
 
 
-def test_a_root_run_refuses_the_test_prefix():
+def root_namespace_available() -> bool:
+    """True when an unprivileged user namespace can map this user to uid 0."""
+    if shutil.which("unshare") is None:
+        return False
+    probe = subprocess.run(
+        ["unshare", "--user", "--map-root-user", "/usr/bin/id", "-u"],
+        capture_output=True,
+        text=True,
+    )
+    return probe.returncode == 0 and probe.stdout.strip() == "0"
+
+
+PREFIX_REFUSAL = "TOS_INSTALL_PREFIX is for unprivileged tests only"
+
+
+def run_with_injected_euid(tmp_path, *, as_root: bool):
+    """install-node.sh with TOS_INSTALL_PREFIX, EUID=1000 in the environment and
+    an `id` on PATH that answers 1000; as_root runs it with effective uid 0."""
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    (fakebin / "id").write_text("#!/bin/sh\necho 1000\n")
+    (fakebin / "id").chmod(0o755)
+    prefix = tmp_path / "root"
+    prefix.mkdir()
+    env = {
+        "PATH": f"{fakebin}:/usr/bin:/bin",
+        "EUID": "1000",
+        "TOS_INSTALL_PREFIX": str(prefix),
+    }
+    command = ["bash", str(INSTALL), "binaries", "--role", "rpc"]
+    if as_root:
+        command = ["unshare", "--user", "--map-root-user", *command]
+    result = subprocess.run(command, capture_output=True, text=True, env=env)
+    return result, prefix
+
+
+def test_a_root_run_refuses_the_test_prefix_even_with_an_injected_euid(tmp_path):
+    if not root_namespace_available():
+        pytest.skip("unshare --user --map-root-user is not available to this user")
+    result, prefix = run_with_injected_euid(tmp_path, as_root=True)
+    assert result.returncode != 0
+    assert PREFIX_REFUSAL in result.stderr, result.stderr
+    assert list(prefix.iterdir()) == []
+
+
+def test_an_unprivileged_run_accepts_the_test_prefix(tmp_path):
+    # The control: the same command with the real, non-zero effective uid gets
+    # past the prefix guard (and stops later, at the root check of the fake id).
+    result, _ = run_with_injected_euid(tmp_path, as_root=False)
+    assert result.returncode != 0
+    assert PREFIX_REFUSAL not in result.stderr
+    assert "run as root" in result.stderr
+
+
+def test_every_host_path_is_under_the_test_prefix():
     text = INSTALL.read_text()
-    assert 'if [ -n "$PREFIX" ] && [ "$EUID" = 0 ]; then die' in text
-    # Every host path the script names is under the prefix.
     for line in text.splitlines():
         if line.lstrip().startswith("#"):
             continue

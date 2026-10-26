@@ -1625,8 +1625,14 @@ M += [
     (
         "RR30 test prefix accepted from root",
         INSTALL,
-        'if [ -n "$PREFIX" ] && [ "$EUID" = 0 ]; then die',
+        'if [ -n "$PREFIX" ] && [ "$(/usr/bin/id -u)" = 0 ]; then die',
         "if false; then die",
+    ),
+    (
+        "RR31 test prefix guard reads the injectable EUID",
+        INSTALL,
+        'if [ -n "$PREFIX" ] && [ "$(/usr/bin/id -u)" = 0 ]; then die',
+        'if [ -n "$PREFIX" ] && [ "$EUID" = 0 ]; then die',
     ),
 ]
 
