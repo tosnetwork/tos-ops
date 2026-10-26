@@ -9,6 +9,9 @@
 #   30002/tcp  console: never public; the engine listens on all interfaces, so
 #              this file is what keeps it on loopback
 #   8081/tcp, 9100/tcp  JSON-RPC and exporter are bound to 127.0.0.1 already
+#   8080/tcp, 8083/tcp  rpc host: tos-rpc and tos-wallet-index, bound to
+#              127.0.0.1; never open them. Only tos-rpc is published, through
+#              the operator's TLS reverse proxy on this host (its port below)
 
 table inet tos_testnet {
   chain input {
@@ -27,6 +30,9 @@ table inet tos_testnet {
 
     # --- full node only: public lite server ---
     # tcp dport 30003 accept
+
+    # --- rpc host only (a full node too): the TLS reverse proxy for tos-rpc ---
+    # tcp dport 443 accept
 
     # --- DHT bootstrap host only ---
     # udp dport 30300 accept

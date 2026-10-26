@@ -115,12 +115,16 @@ def test_the_pinned_revision_must_be_a_full_commit_id(tmp_path, rev):
 
 def test_install_node_passes_the_pinned_revision_to_the_check():
     text = (SCRIPTS / "install-node.sh").read_text()
-    body = text[text.index("install_release() {") :]
+    body = text[text.index("verify_release() {") :]
     body = body[: body.index("\n}\n")]
     assert '[ -n "$REV" ] || die "--rev COMMIT is required with --release"' in body
     assert 'bash "$HERE/check-release.sh" "$dir" "$REV" $(role_binaries)' in body
-    # The check runs before the first install.
-    assert body.index("check-release.sh") < body.index("install -m 0755")
+    # The check runs in the preflight, before any step installs a file.
+    preflight = text[text.index("preflight() {") :]
+    preflight = preflight[: preflight.index("\n}\n")]
+    assert 'verify_release "$RELEASE"' in preflight
+    assert "  prepare) preflight; prepare ;;" in text
+    assert "  binaries) preflight; binaries ;;" in text
 
 
 def test_the_build_takes_the_commit_time_before_cmake_configures():

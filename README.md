@@ -65,7 +65,7 @@ Real inventories and ceremony directories stay outside the tree.
 | [fetch-release.py](testnet/scripts/fetch-release.py) | Production binary path: fetch a role's binaries from a tos GitHub release, verify them against `SHA256SUMS` and `release-provenance.json`, and write a release directory `install-node.sh` accepts. |
 | [remove-old-builds.sh](testnet/scripts/remove-old-builds.sh) | After an upgrade: remove other revisions' build trees and releases and `/opt/tos-testnet.old`, keeping the running revision and every log. |
 | [tok01-signer.py](testnet/scripts/tok01-signer.py) | Signer adapter for tos `scripts/tok01-lifecycle.py --sender-command`: wallet v1 senders, keys 0600, returns only after the sender's seqno moved. |
-| [install-node.sh](testnet/scripts/install-node.sh) | Prepare, install binaries and activate validator, full-node or DHT roles. |
+| [install-node.sh](testnet/scripts/install-node.sh) | Prepare, install binaries and activate validator, full-node, rpc (wallet index and public RPC beside a full node) or DHT roles. |
 | [testnet-operator.py](testnet/scripts/testnet-operator.py) / [testnet-dht.py](testnet/scripts/testnet-dht.py) | Produce operator and signed DHT public records. |
 | [testnet-coordinator.py](testnet/scripts/testnet-coordinator.py) | Validate records and generate the manifest, genesis and global config. |
 | [testnet-governance.py](testnet/scripts/testnet-governance.py) | Change a ConfigParam by a validator vote: `propose`, `sign` (node consoles), `vote`, `status`, `adopted`; each send a journaled operation. |
@@ -75,7 +75,7 @@ Real inventories and ceremony directories stay outside the tree.
 | [watch-testnet.py](testnet/scripts/watch-testnet.py) / [check-host-disk.py](testnet/scripts/check-host-disk.py) | Retain host/node samples and report anomalies. |
 | [alert-relay.py](testnet/scripts/alert-relay.py) | Telegram alerts, acknowledgements, silence windows and coordinator/peer heartbeats. |
 | [retire-host.sh](testnet/scripts/retire-host.sh) | Archive evidence, then retire a host bound to the explicitly confirmed old zero state. |
-| [systemd/](testnet/systemd/) / [firewall/](testnet/firewall/) | Node, elections and alert units; inbound firewall example. |
+| [systemd/](testnet/systemd/) / [firewall/](testnet/firewall/) | Node, elections and alert units, the rpc role's `tos-testnet-wallet-index` and `tos-testnet-rpc` units; inbound firewall example. |
 | [rehearse-loopback.sh](testnet/scripts/rehearse-loopback.sh) | Rehearse genesis and node activation on an isolated loopback network. |
 
 Tests: [testnet/tests/](testnet/tests/); operation mutation controls are in

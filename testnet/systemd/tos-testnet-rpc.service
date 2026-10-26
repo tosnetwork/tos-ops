@@ -1,0 +1,62 @@
+[Unit]
+Description=TOS public testnet public wallet JSON-RPC (tos-rpc)
+Documentation=file:///opt/tos-testnet/OPERATOR.md
+# Lifecycle: follows explicit maintenance stop/start/restart of the wallet
+# index, and so of the full node (the index follows the node). PartOf= carries
+# a stop or restart of the index here; WantedBy= the index (enabled by
+# install-node.sh activate --role rpc) starts this after each start of the
+# index, and After= orders it behind the node and the index. A crash of either
+# is not propagated, and After= does not require a backend to have started
+# successfully: tos-rpc then reports backend errors per request. A start while
+# the index is not active is skipped (ExecCondition= below).
+After=network-online.target tos-testnet-fullnode.service tos-testnet-wallet-index.service
+Wants=network-online.target
+PartOf=tos-testnet-wallet-index.service
+
+[Service]
+# A dedicated non-login account with no file of its own: it reads only the
+# public /etc/tos/rpc-liteservers.json (install-node.sh activate --role rpc)
+# and cannot read the node database or the index.
+User=tos-rpc
+Group=tos-rpc
+UMask=0077
+WorkingDirectory=/
+# Start-only condition: skipped (inactive, not failed, no restart) unless the
+# wallet index is active, for example when the index's own start was skipped.
+ExecCondition=/bin/systemctl is-active --quiet tos-testnet-wallet-index.service
+# Read-only unless a submission backend is configured explicitly. To enable
+# writes, put in the root-owned /etc/tos/tos-rpc.env
+#   TOS_RPC_MODE=--submission-address 127.0.0.1:8081
+# only after the full node's operator RPC runs with
+# --json-rpc-trust-proxy-headers (OPERATOR.md, "Run the public RPC role").
+# TOS_RPC_OPTIONS carries the proxy controls, for example
+#   TOS_RPC_OPTIONS=--trust-proxy-headers --trusted-proxy 127.0.0.1
+# The unbraced $VAR form passes each word as one argument and nothing when empty.
+Environment=TOS_RPC_MODE=--readonly
+Environment=TOS_RPC_OPTIONS=
+EnvironmentFile=-/etc/tos/tos-rpc.env
+# Loopback: only the operator's TLS reverse proxy on this host reaches it. The
+# index address is loopback too; neither it nor the submission backend is a
+# public proxy route.
+ExecStart=/usr/local/bin/tos-rpc \
+  --global-config /etc/tos/rpc-liteservers.json \
+  --index-address 127.0.0.1:8083 \
+  --listen 127.0.0.1:8080 \
+  $TOS_RPC_MODE $TOS_RPC_OPTIONS
+Restart=on-failure
+RestartSec=10
+# Exit 2 is a configuration refusal (no liteserver, write mode without a
+# loopback submission backend, a public write bind); restarting cannot fix it.
+RestartPreventExitStatus=2
+KillMode=control-group
+TimeoutStopSec=30
+LimitNOFILE=65536
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+InaccessiblePaths=-/var/lib/tos -/var/lib/tos-wallet-index -/var/lib/tos-ctl
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=tos-testnet-wallet-index.service

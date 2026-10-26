@@ -267,7 +267,8 @@ sudo systemctl start tos-testnet-validator
 sudo systemctl start tos-testnet-elections
 ```
 
-The binary installer refuses if **any** testnet node role on the host is active;
+`binaries` and `prepare` refuse, before they write anything, if **any** node or
+rpc service on the host is active (validator, full node, DHT, wallet index, public RPC);
 include co-hosted DHT/full-node maintenance in the approved plan. Do not proceed
 to the next validator until the coordinator verifies convergence. Preserve build
 receipts and the previous release. Stop on exit 2; do not delete a lock or edit
@@ -335,3 +336,122 @@ A nonzero exit means stop and investigate; never remove data by hand.
 Report sanitized UTC times, revision, public identity, service state, operation
 IDs/transaction hashes, checks and refusals to the coordinator. No seed, token,
 wallet secret or environment dump belongs in an incident report.
+
+## 10. Run the public RPC role
+
+The `rpc` role serves the public wallet JSON-RPC from the standalone services
+`tos-wallet-index` and `tos-rpc`, outside every validator process. It is a
+**full node host**: the index reads the full node's database on the same host
+and `tos-rpc` reaches the index only over loopback, so all three processes run
+there. See the pinned tos checkout's `doc/standalone-wallet-services.md` and
+`doc/FullNode.md` for what the services do.
+
+| Unit | Account | Listens | Reads | Writes |
+| --- | --- | --- | --- | --- |
+| `tos-testnet-fullnode` | `tos` | ADNL/QUIC, lite server 30003/tcp, operator JSON-RPC `127.0.0.1:8081` | | `/var/lib/tos/fullnode` |
+| `tos-testnet-wallet-index` | `tos` | `127.0.0.1:8083` (tos-rpc only) | `/var/lib/tos/fullnode`, read-only in its mount namespace | `/var/lib/tos-wallet-index` only |
+| `tos-testnet-rpc` | `tos-rpc` | `127.0.0.1:8080` (the operator's TLS proxy only) | `/etc/tos/rpc-liteservers.json` | nothing |
+
+The index runs as `tos` because the node database is owner-only; its unit
+mounts that database read-only (`ReadOnlyPaths=`) and gives it a separate
+`StateDirectory=` that does not overlap it, as the tos document requires. It
+listens on 8083, not its default 8081, which the full node's operator JSON-RPC
+holds. `tos-rpc` runs as its own non-login account, cannot see
+`/var/lib/tos` or the index data, and trusts one liteserver: the full node's own
+lite server on `127.0.0.1:30003` (`rpc-liteservers.json` is the published global
+config with that entry, written by `install-node.sh activate --role rpc`).
+The services follow explicit maintenance stop/start/restart of the full node
+(and `tos-rpc` of the index): `PartOf=` carries a stop or restart of the node to
+the index and of the index to `tos-rpc`, and `activate --role rpc` enables the
+index as wanted by the node and `tos-rpc` as wanted by the index, so starting the
+node starts the index and then `tos-rpc` (`After=` orders them). These
+directives do not propagate a crash, and `After=` does not require a backend to
+have started successfully: after a node crash the index pauses at its cursor and
+`tos-rpc` reports backend errors per request. A start of the index while the
+node is not active, or of `tos-rpc` while the index is not active, is skipped
+(`ExecCondition=`): the unit stays inactive, not failed, and is not retried;
+nothing in these units starts a node stopped for maintenance. The lifecycle was
+checked with a real systemd 249 user manager
+([check-rpc-units-lifecycle.sh](tests/check-rpc-units-lifecycle.sh));
+**outstanding:** repeat that check on a systemd 255 / Ubuntu 24.04 host before
+rollout.
+
+**Prerequisites:** a tos commit that has the `services/` targets (`tos-rpc` and
+`tos-wallet-index`); full-node preflight floors plus the index's memory and disk
+(it holds its own RocksDB index; monitor resident memory, cursor lag and disk).
+The index replays from masterchain block 1, so the full node must hold the
+complete block archive from block 1: activate it with `--genesis` before or at
+the epoch start. The supplied full-node template keeps the archive for 7 days
+(`--archive-ttl 604800`): an index started, or rebuilt, after the oldest blocks
+were pruned pauses at its cursor and never catches up. Start the index while the
+whole archive is still on the host; a longer retention is a reviewed template
+change, not a host edit.
+
+With approval, on the rpc host, in this order. Both preparations come before
+the full node's activation: `prepare` (like `binaries`) refuses while the full
+node, or any other node or rpc service on the host, is active. Both activations
+come after them, the full node's first.
+
+<!-- testnet/tests/test_rpc_role.py runs this block's install-node.sh lines, in
+     this order, on a fake host; keep them runnable. -->
+```bash
+TOS_COMMIT=<FULL_40_CHARACTER_COMMIT>
+sudo /opt/tos-testnet/scripts/build-node-binaries.sh --rev "$TOS_COMMIT" --role rpc
+REL=/var/lib/tos-build/release-$TOS_COMMIT
+sudo /opt/tos-testnet/scripts/install-node.sh prepare --role fullnode \
+  --public-ip <PUBLIC_IPV4> --release "$REL" --rev "$TOS_COMMIT"
+sudo /opt/tos-testnet/scripts/install-node.sh prepare --role rpc
+sudo /opt/tos-testnet/scripts/install-node.sh activate --role fullnode \
+  --global-config <GLOBAL_CONFIG_JSON> --sha256 <PUBLISHED_SHA256> --genesis <PUBLISHED_GENESIS_DIRECTORY>
+sudo /opt/tos-testnet/scripts/install-node.sh activate --role rpc \
+  --global-config <GLOBAL_CONFIG_JSON> --sha256 <PUBLISHED_SHA256>
+curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8083/readyz   # 200 once replay caught up
+```
+
+To add the rpc role to a full node that already runs, build `--role rpc` at the
+node's commit, `systemctl stop tos-testnet-fullnode`, run
+`prepare --role rpc --release "$REL" --rev "$TOS_COMMIT"`,
+`systemctl start tos-testnet-fullnode`, then `activate --role rpc` as above.
+
+An rpc release carries the full node's binaries and both services from one
+build, so the index always runs the source node's version. `prepare` and
+`binaries --role rpc` refuse a release that lacks either service, and
+`activate --role rpc` refuses unless both services and the full node's binaries
+are installed, the full node runs on the same global config and the tos-rpc
+account exists. Production takes the same set from the tos GitHub release with
+`fetch-release.py --role rpc`; that requires the release to include
+`tos-rpc-linux-<arch>` and `tos-wallet-index-linux-<arch>` in its node build
+artifact and build record.
+
+**Exposure.** Only `tos-rpc` is published, through the operator's TLS reverse
+proxy on this host, which forwards to `127.0.0.1:8080` and replaces any
+client-supplied identity headers. The host firewall opens the proxy's port and
+nothing for 8080, 8081 or 8083 (see the rpc block in
+[tos-testnet.nft](firewall/tos-testnet.nft)). The index endpoint and the full
+node's operator RPC are never proxy routes. For per-client attribution behind
+the proxy, set in the root-owned `/etc/tos/tos-rpc.env`:
+
+```
+TOS_RPC_OPTIONS=--trust-proxy-headers --trusted-proxy 127.0.0.1
+```
+
+**Read-only by default.** The unit passes `--readonly` unless
+`/etc/tos/tos-rpc.env` sets `TOS_RPC_MODE` explicitly. Submissions go to the
+full node's operator RPC and require it to run with
+`--json-rpc-trust-proxy-headers`, which the supplied full-node template does not
+set: enabling writes needs that reviewed template change first, then
+`TOS_RPC_MODE=--submission-address 127.0.0.1:8081` and a restart of
+`tos-testnet-rpc`. `tos-rpc` refuses (exit 2) a write mode without a loopback
+submission backend; do not work around it.
+
+**Upgrade** with the [maintenance procedure](#8-upgrade-rollback-and-key-rotation):
+build `--role rpc`, `systemctl stop tos-testnet-fullnode` (which stops the index
+and `tos-rpc` with it; check all three are inactive, since `binaries` refuses
+while any runs), install with `binaries --role rpc`, then
+`systemctl start tos-testnet-fullnode`, which starts the index and `tos-rpc`
+after it. **Rebuild the index** only with the index stopped
+(`systemctl stop tos-testnet-wallet-index` stops `tos-rpc` too): move
+`/var/lib/tos-wallet-index` aside (keep it until the new index is ready), start
+the index (it starts `tos-rpc`) and wait for `/readyz`. Never delete or overwrite the node database
+for an index problem. `retire-host.sh` stops both services and deletes the
+index data and `rpc-liteservers.json` with the retired epoch.

@@ -21,6 +21,13 @@ Subcommands, in ceremony order:
       client key is written to --client-dir for the operator; the server keys
       go into the node keyring.
 
+  rpc-config --global-config FILE --liteserver-pub FILE --port N --out FILE
+      The liteserver configuration tos-rpc trusts on an rpc host: the
+      published global config with its liteservers replaced by the co-hosted
+      full node's own lite server on 127.0.0.1:N (the key `configure` wrote to
+      the full node's client dir as liteserver.pub). Refuses the placeholder
+      config and an existing FILE.
+
 Nothing here generates or reads a wallet key.
 """
 
@@ -186,6 +193,43 @@ def cmd_configure(args: argparse.Namespace) -> None:
         )
 
 
+LOOPBACK = "127.0.0.1"
+
+
+def rpc_liteserver_config(global_config: dict, liteserver_pub: bytes, port: int) -> dict:
+    """The global config with one trusted liteserver: the local full node's, on loopback."""
+    if not isinstance(global_config, dict) or not isinstance(global_config.get("validator"), dict):
+        raise lib.TestnetError("the global config has no validator section")
+    if lib.is_pregenesis(global_config):
+        raise lib.TestnetError("refused: placeholder config")
+    if len(liteserver_pub) != 36 or not liteserver_pub.startswith(lib.ED25519_PUBLIC_TL_PREFIX):
+        raise lib.TestnetError("the lite server key is not a generate-random-id Ed25519 public key")
+    if not 0 < port < 65536:
+        raise lib.TestnetError(f"lite server port {port} is out of range")
+    config = {k: v for k, v in global_config.items() if k not in ("liteservers", "liteservers_v2")}
+    config["liteservers"] = [
+        {
+            "ip": lib.ip_to_tl(LOOPBACK),
+            "port": port,
+            "id": {"@type": "pub.ed25519", "key": lib.b64(liteserver_pub[4:])},
+        }
+    ]
+    return config
+
+
+def cmd_rpc_config(args: argparse.Namespace) -> None:
+    try:
+        global_config = json.loads(args.global_config.read_text())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise lib.TestnetError(f"cannot read {args.global_config}: {exc}") from None
+    try:
+        public = args.liteserver_pub.read_bytes()
+    except OSError as exc:
+        raise lib.TestnetError(f"cannot read {args.liteserver_pub}: {exc}") from None
+    lib.write_new_json(args.out, rpc_liteserver_config(global_config, public, args.port))
+    print(f"wrote {args.out}: tos-rpc trusts the lite server on {LOOPBACK}:{args.port}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -211,6 +255,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--role", choices=("validator", "fullnode"), required=True)
     p.add_argument("--client-dir", type=Path, required=True)
     p.set_defaults(func=cmd_configure)
+
+    p = sub.add_parser("rpc-config")
+    p.add_argument("--global-config", type=Path, required=True)
+    p.add_argument("--liteserver-pub", type=Path, required=True)
+    p.add_argument("--port", type=int, required=True)
+    p.add_argument("--out", type=Path, required=True)
+    p.set_defaults(func=cmd_rpc_config)
 
     args = parser.parse_args(argv)
     try:

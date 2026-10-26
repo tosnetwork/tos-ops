@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fetch a role's node binaries from a tos GitHub release, verified, as a release DIR.
 
-    fetch-release.py --tag v<version> --rev <40-hex commit> --role validator|fullnode|dht
+    fetch-release.py --tag v<version> --rev <40-hex commit> --role validator|fullnode|rpc|dht
                      [--arch x86_64|arm64] --out DIR [--base-url URL]
 
 Production takes its node binaries from the tos repository's GitHub releases
@@ -15,7 +15,10 @@ Downloaded: the role's binaries as <binary>-linux-<arch>, the node build's
 record node-build-info-linux-<arch>.txt, SHA256SUMS, release-provenance.json
 and the node build artifact zip tos-node-linux-<arch>.zip, which the
 provenance record names as artifact tos-node-<arch>-linux of workflow
-build-tos-linux-node-binaries.yml. Everything is verified in a private scratch
+build-tos-linux-node-binaries.yml. The rpc role also needs the standalone
+services tos-rpc-linux-<arch> and tos-wallet-index-linux-<arch>, members of the
+same zip and lines of the same build record, so it works only with a release
+that publishes them. Everything is verified in a private scratch
 directory before --out is created, and the fetch is refused when
 
   - an asset is missing from the release;
@@ -94,10 +97,25 @@ ROLE_BINARIES = {
         "generate-random-id",
         "tos-pq-consensus-key",
     ],
+    # A full node host that also runs tos-wallet-index and tos-rpc: the index
+    # reads the co-hosted node's database and must run the same version. The
+    # services ship as tos-rpc-linux-<arch> and tos-wallet-index-linux-<arch>
+    # in the node build artifact; a release without them is refused (missing
+    # asset) like any other.
+    "rpc": [
+        "validator-engine",
+        "validator-engine-console",
+        "lite-client",
+        "generate-random-id",
+        "tos-pq-consensus-key",
+        "tos-rpc",
+        "tos-wallet-index",
+    ],
     "dht": ["dht-server", "generate-random-id"],
 }
 # The binaries whose -V prints the commit they were built from. The consensus
-# key tool has no such option; the loader check alone covers it.
+# key tool and the two RPC services have no such option; the loader check
+# alone covers them.
 VERSIONED = frozenset(
     {
         "validator-engine",

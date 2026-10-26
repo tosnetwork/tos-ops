@@ -2,13 +2,20 @@
 # Install and bring up one public testnet node on this host. Run as root.
 #
 #   install-node.sh prepare  --role validator|fullnode|dht --public-ip IP [--release DIR --rev COMMIT]
-#   install-node.sh activate --role validator|fullnode|dht --global-config FILE --sha256 HEX
+#   install-node.sh prepare  --role rpc [--release DIR --rev COMMIT]
+#   install-node.sh activate --role validator|fullnode|rpc|dht --global-config FILE --sha256 HEX
 #                            [--genesis DIR] [--validator-id HEX]
-#   install-node.sh binaries --role validator|fullnode|dht --release DIR --rev COMMIT
+#   install-node.sh binaries --role validator|fullnode|rpc|dht --release DIR --rev COMMIT
 #
 # The release DIR is what build-node-binaries.sh wrote on this host: each host
 # compiles its own binaries from the pinned tos commit. --rev is that pinned
 # commit; check-release.sh refuses a release built from any other.
+#
+# prepare and binaries first run a preflight that writes nothing: it refuses
+# while any node or rpc service on this host is active (validator, full node,
+# DHT, wallet index, public RPC), verifies the release, and checks the
+# accounts and paths. Only then does either step set the clock, add an
+# account or install a file.
 #
 # prepare (before genesis for a genesis validator; any time for other roles):
 #   installs release binaries verified against --rev and the release's SHA256SUMS,
@@ -27,18 +34,43 @@
 #   closed) and a lite server on a full node, installs the
 #   unit and starts it.
 #
+# The rpc role adds the standalone public-RPC services to a full node on the
+# same host. Order: prepare --role fullnode (from an rpc release, so the
+# services come from the same build), prepare --role rpc, activate --role
+# fullnode, activate --role rpc. Both preparations precede the full node's
+# activation, since prepare refuses while the full node runs (OPERATOR.md
+# section 10).
+#   prepare --role rpc   installs the release if given, refuses unless the
+#                        services and the full node's binaries are installed,
+#                        and creates the tos-rpc service account;
+#   activate --role rpc  refuses unless the binaries are installed and the full
+#                        node is activated with the same global config, writes
+#                        /etc/tos/rpc-liteservers.json (the global config with
+#                        the full node's own lite server on loopback as the one
+#                        trusted liteserver), installs both units and starts
+#                        tos-testnet-wallet-index, then tos-testnet-rpc.
+# tos-rpc starts read-only; see OPERATOR.md for enabling submissions.
+#
 # Nothing here touches a wallet key.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 TESTNET="$(dirname "$HERE")"
 PROFILE="$TESTNET/network/profile.json"
-BIN=/usr/local/bin
-ETC=/etc/tos
-DB_ROOT=/var/lib/tos
-LOG_ROOT=/var/log/tos
+# TOS_INSTALL_PREFIX roots every host path under a directory, for the tests
+# that run this script unprivileged on a fake host. A run whose effective uid
+# is 0 refuses it. The uid comes from the absolute /usr/bin/id: bash takes an
+# EUID passed in the environment as an ordinary variable, and a PATH tool can
+# be replaced.
+PREFIX=${TOS_INSTALL_PREFIX:-}
+BIN=$PREFIX/usr/local/bin
+ETC=$PREFIX/etc/tos
+DB_ROOT=$PREFIX/var/lib/tos
+LOG_ROOT=$PREFIX/var/log/tos
+UNIT_DIR=$PREFIX/etc/systemd/system
 
 die() { echo "install-node: $*" >&2; exit 1; }
+if [ -n "$PREFIX" ] && [ "$(/usr/bin/id -u)" = 0 ]; then die "TOS_INSTALL_PREFIX is for unprivileged tests only; unset it"; fi
 profile() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); [d:=d[k] for k in sys.argv[2:]]; print(d)' "$PROFILE" "$@"; }
 
 [ "$(id -u)" = 0 ] || die "run as root"
@@ -58,28 +90,50 @@ while [ $# -gt 0 ]; do
     *) die "unknown option $1" ;;
   esac
 done
-case "$ROLE" in validator|fullnode|dht) ;; *) die "--role must be validator, fullnode or dht" ;; esac
+case "$ROLE" in validator|fullnode|rpc|dht) ;; *) die "--role must be validator, fullnode, rpc or dht" ;; esac
 DB="$DB_ROOT/$ROLE"
 LOG="$LOG_ROOT/$ROLE"
 UNIT="tos-testnet-$ROLE.service"
+# The rpc role's services read the co-hosted full node; they own no node DB.
+SOURCE_DB="$DB_ROOT/fullnode"
+RPC_UNITS=(tos-testnet-wallet-index.service tos-testnet-rpc.service)
+# Every unit that runs an installed binary. prepare and binaries refuse while
+# any of them is active: a running process keeps the old file open, and its
+# next restart would pick up whatever was installed meanwhile.
+NODE_UNITS=(tos-testnet-validator tos-testnet-fullnode tos-testnet-dht tos-testnet-wallet-index tos-testnet-rpc)
 as_tos() { (cd / && runuser -u tos -- env TOS_BIN="$BIN" "$@"); }
 has_console() {
   python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("control") else 1)' "$DB/config.json"
 }
 
-ALL_BINARIES=(validator-engine validator-engine-console dht-server lite-client generate-random-id tos-pq-consensus-key)
+ALL_BINARIES=(validator-engine validator-engine-console dht-server lite-client generate-random-id tos-pq-consensus-key
+  tos-rpc tos-wallet-index)
 role_binaries() {
   case "$ROLE" in
     dht) echo dht-server generate-random-id ;;
+    # The full node's binaries too: the index must run the source node's version.
+    rpc) echo validator-engine validator-engine-console lite-client generate-random-id tos-pq-consensus-key \
+      tos-rpc tos-wallet-index ;;
     *) echo validator-engine validator-engine-console lite-client generate-random-id tos-pq-consensus-key ;;
   esac
 }
+require_role_binaries() {
+  local name
+  for name in $(role_binaries); do
+    [ -x "$BIN/$name" ] || die "$BIN/$name is missing; pass --release DIR (for --role $ROLE, a release built with --role $ROLE)"
+  done
+}
 
-install_release() {
-  local dir=$1 name
+verify_release() {
+  local dir=$1
   [ -n "$REV" ] || die "--rev COMMIT is required with --release"
   # shellcheck disable=SC2046 # one word per binary
   bash "$HERE/check-release.sh" "$dir" "$REV" $(role_binaries) || die "release $dir refused"
+}
+
+# Run only after preflight verified the release.
+install_release() {
+  local dir=$1 name
   # Install every binary the release carries, so a host running two roles
   # (a validator and a DHT node) keeps them from one build.
   for name in "${ALL_BINARIES[@]}"; do
@@ -87,37 +141,63 @@ install_release() {
       install -m 0755 -o root -g root "$dir/$name" "$BIN/$name"
     fi
   done
-  [ -f "$dir/BUILD-INFO" ] && install -D -m 0644 "$dir/BUILD-INFO" /etc/tos/BUILD-INFO
+  [ -f "$dir/BUILD-INFO" ] && install -D -m 0644 "$dir/BUILD-INFO" "$ETC/BUILD-INFO"
   return 0
 }
 
-# Replace the installed binaries with another verified release. The node must
-# be stopped: a running engine keeps the old file open, and a restart picks up
-# whatever is installed.
-binaries() {
-  [ -n "$RELEASE" ] || die "--release DIR is required"
+tos_can_read_bundle() {
+  # The service account runs these scripts; a checkout under a private home is unreadable to it.
+  runuser -u tos -- test -r "$HERE/testnet_lib.py" \
+    || die "the tos account cannot read $HERE; copy testnet/ to a root-owned, world-readable path such as /opt/tos-testnet"
+}
+
+# The checks of prepare and binaries, before either writes anything (no clock
+# setup, no account, no install). It changes nothing itself.
+preflight() {
   local unit
-  for unit in tos-testnet-validator tos-testnet-fullnode tos-testnet-dht; do
+  for unit in "${NODE_UNITS[@]}"; do
     if systemctl is-active --quiet "$unit"; then die "$unit is running; stop it first"; fi
   done
+  if [ "$STEP" = binaries ]; then
+    [ -n "$RELEASE" ] || die "--release DIR is required"
+  elif [ "$ROLE" = rpc ]; then
+    id tos >/dev/null 2>&1 || die "the tos account is missing; prepare the full node first (--role fullnode)"
+  else
+    [ -n "$PUBLIC_IP" ] || die "--public-ip is required"
+    [ -e "$DB/config.json" ] && die "$DB/config.json exists: this node was already prepared"
+    # Before the account exists this is checked again right after creating it.
+    if id tos >/dev/null 2>&1; then tos_can_read_bundle; fi
+  fi
+  if [ -n "$RELEASE" ]; then
+    verify_release "$RELEASE"
+  else
+    require_role_binaries
+  fi
+}
+
+# Replace the installed binaries with another verified release.
+binaries() {
   install_release "$RELEASE"
   "$BIN/$(role_binaries | cut -d' ' -f1)" -V | head -1
 }
 
+prepare_rpc() {
+  if [ -n "$RELEASE" ]; then install_release "$RELEASE"; fi
+  require_role_binaries
+  id tos-rpc >/dev/null 2>&1 || useradd --system --no-create-home --home-dir /nonexistent \
+    --shell /usr/sbin/nologin tos-rpc
+  echo "next: activate the full node (--role fullnode), then activate --role rpc"
+}
+
 prepare() {
-  [ -n "$PUBLIC_IP" ] || die "--public-ip is required"
+  if [ "$ROLE" = rpc ]; then prepare_rpc; return; fi
   # Time first: consensus timeouts and consensus-key validity read the wall clock.
   bash "$HERE/setup-time.sh" || die "the clock is not following NTP; fix it before preparing a node"
   id tos >/dev/null 2>&1 || useradd --system --home-dir "$DB_ROOT" --shell /usr/sbin/nologin tos
-  # The service account runs these scripts; a checkout under a private home is unreadable to it.
-  runuser -u tos -- test -r "$HERE/testnet_lib.py" \
-    || die "the tos account cannot read $HERE; copy testnet/ to a root-owned, world-readable path such as /opt/tos-testnet"
+  tos_can_read_bundle
   if [ -n "$RELEASE" ]; then install_release "$RELEASE"; fi
-  for name in $(role_binaries); do
-    [ -x "$BIN/$name" ] || die "$BIN/$name is missing; pass --release DIR"
-  done
+  require_role_binaries
   install -d -m 0755 -o root -g root "$ETC" "$DB_ROOT" "$LOG_ROOT"
-  [ -e "$DB/config.json" ] && die "$DB/config.json exists: this node was already prepared"
   install -d -m 0700 -o tos -g tos "$DB"
   install -d -m 0750 -o tos -g tos "$LOG"
 
@@ -162,9 +242,44 @@ place_static() {
 }
 
 install_unit() {
-  install -m 0644 -o root -g root "$TESTNET/systemd/$UNIT" "/etc/systemd/system/$UNIT"
+  local unit=${1:-$UNIT}
+  install -m 0644 -o root -g root "$TESTNET/systemd/$unit" "$UNIT_DIR/$unit"
   systemctl daemon-reload
-  systemd-analyze verify "/etc/systemd/system/$UNIT"
+  systemd-analyze verify "$UNIT_DIR/$unit"
+}
+
+# Run by activate after the global config is verified against --sha256.
+activate_rpc() {
+  local unit tmp port
+  for unit in "${RPC_UNITS[@]}"; do
+    if systemctl is-active --quiet "$unit"; then die "$unit is running; stop it first"; fi
+  done
+  require_role_binaries
+  id tos-rpc >/dev/null 2>&1 || die "the tos-rpc account is missing; run prepare --role rpc first"
+  [ -f "$SOURCE_DB/config.json" ] || die "$SOURCE_DB/config.json is missing; prepare and activate the full node first"
+  [ -f "$SOURCE_DB/console-client/liteserver.pub" ] \
+    || die "$SOURCE_DB/console-client/liteserver.pub is missing; activate the full node first"
+  cmp -s "$GLOBAL_CONFIG" "$ETC/global-config.json" \
+    || die "$ETC/global-config.json is not this global config; activate the full node with it first"
+  systemctl is-active --quiet tos-testnet-fullnode || die "tos-testnet-fullnode is not running; start it first"
+
+  port=$(profile ports liteserver_tcp)
+  tmp=$(mktemp -u "$ETC/.rpc-liteservers.XXXXXX")
+  python3 "$HERE/testnet-operator.py" rpc-config --global-config "$ETC/global-config.json" \
+    --liteserver-pub "$SOURCE_DB/console-client/liteserver.pub" --port "$port" --out "$tmp"
+  if [ -e "$ETC/rpc-liteservers.json" ] && ! cmp -s "$tmp" "$ETC/rpc-liteservers.json"; then
+    rm -f "$tmp"
+    die "$ETC/rpc-liteservers.json exists with different content; replace it deliberately"
+  fi
+  install -m 0644 -o root -g root "$tmp" "$ETC/rpc-liteservers.json"
+  rm -f "$tmp"
+
+  # Dependency order: full node, then the index, then the public RPC.
+  for unit in "${RPC_UNITS[@]}"; do install_unit "$unit"; done
+  for unit in "${RPC_UNITS[@]}"; do
+    systemctl enable --now "$unit"
+    systemctl --no-pager --lines=5 status "$unit" || true
+  done
 }
 
 activate() {
@@ -176,6 +291,7 @@ activate() {
   if [ -e "$ETC/global-config.json" ] && ! cmp -s "$GLOBAL_CONFIG" "$ETC/global-config.json"; then
     die "$ETC/global-config.json exists with different content; replace it deliberately"
   fi
+  if [ "$ROLE" = rpc ]; then activate_rpc; return; fi
   install -m 0644 -o root -g root "$GLOBAL_CONFIG" "$ETC/global-config.json"
   [ -f "$DB/config.json" ] || die "$DB/config.json is missing; run prepare first"
 
@@ -197,8 +313,8 @@ activate() {
 }
 
 case "$STEP" in
-  prepare) prepare ;;
+  prepare) preflight; prepare ;;
   activate) activate ;;
-  binaries) binaries ;;
+  binaries) preflight; binaries ;;
   *) die "unknown step $STEP" ;;
 esac
