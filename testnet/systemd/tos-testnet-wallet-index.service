@@ -1,0 +1,49 @@
+[Unit]
+Description=TOS public testnet wallet index (reads the co-hosted full node's database)
+Documentation=file:///opt/tos-testnet/OPERATOR.md
+# Order: full node, then this index, then tos-rpc. Requisite, not Requires or
+# Wants: starting the index never starts a full node stopped for maintenance,
+# and stopping the full node does not stop the index (it pauses at its cursor).
+After=network-online.target time-sync.target tos-testnet-fullnode.service
+Wants=network-online.target
+Requisite=tos-testnet-fullnode.service
+
+[Service]
+# As tos: the full node's database is tos-owned and owner-only (0700, files
+# 0600), so no other account can read it. In this unit's mount namespace the
+# database is read-only (ReadOnlyPaths=) and the only writable path is the
+# index's own state directory, which does not overlap the source. The index
+# opens the source with RocksDB secondary handles, without the writer lock,
+# and needs no node key.
+User=tos
+Group=tos
+UMask=0077
+StateDirectory=tos-wallet-index
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/tos-wallet-index
+# Loopback only (the binary refuses anything else). 8083, not the index's
+# default 8081: the full node's operator JSON-RPC already listens on
+# 127.0.0.1:8081. Only tos-rpc talks to it; never route a proxy to it.
+ExecStart=/usr/local/bin/tos-wallet-index \
+  --source-db /var/lib/tos/fullnode \
+  --data-dir /var/lib/tos-wallet-index \
+  --listen 127.0.0.1:8083
+Restart=on-failure
+RestartSec=10
+# Exit 2 is a configuration refusal (bad arguments, overlapping directories,
+# no node database); restarting cannot fix it. Exit 1 after a stuck source
+# request is restarted and resumes from the durable cursor.
+RestartPreventExitStatus=2
+KillMode=control-group
+TimeoutStopSec=60
+LimitNOFILE=1572864
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadOnlyPaths=/var/lib/tos/fullnode
+ReadWritePaths=/var/lib/tos-wallet-index
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

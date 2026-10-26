@@ -33,7 +33,7 @@ network, not production defaults under another name.
 | --- | --- | --- |
 | Validator | ADNL and QUIC | Consensus keys for one validator identity; signs set duties |
 | Full node | ADNL and QUIC | No consensus seed; sync source |
-| RPC / lite server | Per approved access policy | Separate query capacity; no validator key |
+| RPC / lite server | Per approved access policy | Separate query capacity; no validator key. Public wallet RPC is a full node plus `tos-wallet-index` and `tos-rpc` on one host ([section 10.1](#101-the-rpc-role)) |
 | Archive | Per approved access policy | Retained history with measured capacity |
 | DHT | ADNL UDP | Address discovery; independent bootstrap hosts |
 
@@ -374,6 +374,32 @@ must publish the node build assets before this path works for it. These checks
 bind binaries to one published release; they do not authenticate the release
 itself. Compare the `provenance_sha256` line across hosts and with the
 published release.
+
+### 10.1 The rpc role
+
+The rpc role is a full node host that also runs the standalone public-RPC
+services: `tos-wallet-index` reads the co-hosted node's database read-only and
+`tos-rpc` serves the wallet HTTP endpoint behind a TLS proxy, read-only unless a
+submission backend is configured. It uses the same release path:
+`fetch-release.py --role rpc` fetches the full node's binaries and both services
+from one tag, with every check above, and `install-node.sh binaries --role rpc`
+installs them together, so the index always matches the source node's version.
+This requires the release to include `tos-rpc-linux-<arch>` and
+`tos-wallet-index-linux-<arch>`, as members of `tos-node-linux-<arch>.zip` with
+`sha256` and `needed` lines in its build record; the fetch refuses a release
+without them. The unit templates and the operating procedure are the testnet's
+([OPERATOR.md section 10](../testnet/OPERATOR.md#10-run-the-public-rpc-role)),
+an implementation reference, not a production approval.
+
+```bash
+sudo python3 /opt/tos-testnet/scripts/fetch-release.py --tag v<VERSION> \
+  --rev <FULL_40_CHARACTER_COMMIT> --role rpc --arch x86_64 \
+  --out /var/lib/tos-build/release-<FULL_40_CHARACTER_COMMIT>
+sudo /opt/tos-testnet/scripts/install-node.sh binaries --role rpc \
+  --release /var/lib/tos-build/release-<FULL_40_CHARACTER_COMMIT> --rev <FULL_40_CHARACTER_COMMIT>
+```
+
+### 10.2 Upgrades
 
 Verify revision, binary digests and authenticated release origin. Fetch before
 stopping, upgrade one validator at a time and prove sync/custody before the next.

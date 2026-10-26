@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 # Build the node binaries from source on the host that will run them. Run as root.
 #
-#   build-node-binaries.sh --rev <tos commit> --role validator|fullnode|dht [--jobs N] [--with-dht]
+#   build-node-binaries.sh --rev <tos commit> --role validator|fullnode|rpc|dht [--jobs N] [--with-dht]
+#
+# The rpc role is a full node host that also runs the standalone public-RPC
+# services: tos-wallet-index reads the full node's database on this host and
+# tos-rpc may only reach the index over loopback, so all three run here. Its
+# release carries the full node's binaries plus tos-rpc and tos-wallet-index,
+# built from one commit (the index must match the source node's version and
+# database layout). It needs a tos commit that has the services/ targets.
 #
 # Every host compiles its own binaries from the pinned tos commit instead of
 # receiving them from another machine. A binary built for one CPU can stop
@@ -39,8 +46,9 @@ done
 [[ "$REV" =~ ^[0-9a-f]{40}$ ]] || die "--rev must be a full 40-character commit id"
 case "$ROLE" in
   validator|fullnode) TARGETS=(validator-engine validator-engine-console lite-client generate-random-id tos-pq-consensus-key) ;;
+  rpc) TARGETS=(validator-engine validator-engine-console lite-client generate-random-id tos-pq-consensus-key tos-rpc tos-wallet-index) ;;
   dht) TARGETS=(dht-server generate-random-id) ;;
-  *) die "--role must be validator, fullnode or dht" ;;
+  *) die "--role must be validator, fullnode, rpc or dht" ;;
 esac
 [ "$WITH_DHT" = 1 ] && TARGETS+=(dht-server)
 
@@ -99,6 +107,8 @@ declare -A PATHS=(
   [generate-random-id]=utils/generate-random-id
   [tos-pq-consensus-key]=crypto/pq/tos-pq-consensus-key
   [dht-server]=dht-server/dht-server
+  [tos-rpc]=services/tos-rpc
+  [tos-wallet-index]=services/tos-wallet-index
 )
 OUT=$WORK/release-$REV
 rm -rf "$OUT.tmp"

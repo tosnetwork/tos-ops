@@ -24,11 +24,14 @@
 # Then it stops and disables every testnet unit on the host, and deletes:
 #   /var/lib/tos/{validator,fullnode,dht}   databases, consensus seed, keys
 #   /var/log/tos/{validator,fullnode,dht}   logs (now in the archive)
+#   /var/lib/tos-wallet-index               an rpc host's index of the retired chain
 #   /etc/tos/global-config.json             the retired epoch's config
+#   /etc/tos/rpc-liteservers.json           tos-rpc's copy of it (rpc host)
 #   /var/lib/tos-ctl, /etc/tos/tosctl.env   the operator tool's vault and its master key
 #   the user tos-ctl                        it owned only /var/lib/tos-ctl
 # and keeps the installed binaries, /var/lib/tos-build and the time setup.
-# It keeps the user tos (the next epoch's nodes run as it) and, on the DHT
+# It keeps the user tos (the next epoch's nodes run as it), on an rpc host the
+# user tos-rpc and the operator's /etc/tos/tos-rpc.env, and, on the DHT
 # host, the alert peer and its user tos-alert: the watchdog is not part of an
 # epoch and must keep running across the reset.
 #
@@ -56,7 +59,9 @@ installed=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["val
   || die "$CONFIG has no validator.zero_state.root_hash"
 [ "$installed" = "$CONFIRM" ] || die "this host runs zero state $installed, not $CONFIRM; refusing"
 
-UNITS=(tos-testnet-elections tos-testnet-validator tos-testnet-fullnode tos-testnet-dht)
+# The rpc services first: they read the full node, which stops after them.
+UNITS=(tos-testnet-rpc tos-testnet-wallet-index tos-testnet-elections tos-testnet-validator
+  tos-testnet-fullnode tos-testnet-dht)
 present_units() {
   local unit
   for unit in "${UNITS[@]}"; do
@@ -122,8 +127,8 @@ echo "evidence: $ARCHIVE ($(du -h "$ARCHIVE" | cut -f1)), sha256 $(cut -c1-16 "$
 for role in validator fullnode dht; do
   rm -rf --one-file-system "/var/lib/tos/$role" "/var/log/tos/$role"
 done
-rm -rf --one-file-system /var/lib/tos-ctl
-rm -f "$CONFIG" /etc/tos/tosctl.env
+rm -rf --one-file-system /var/lib/tos-ctl /var/lib/tos-wallet-index
+rm -f "$CONFIG" /etc/tos/tosctl.env /etc/tos/rpc-liteservers.json
 # tos-ctl owned nothing but the state just deleted; init-operator.sh creates it
 # again. Removing it means no later file can inherit a retired user's id.
 if id -u tos-ctl >/dev/null 2>&1; then

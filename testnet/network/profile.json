@@ -43,7 +43,10 @@
     "liteserver_tcp": 30003,
     "dht_udp": 30300,
     "json_rpc_loopback": 8081,
-    "exporter_loopback": 9100
+    "exporter_loopback": 9100,
+    "rpc_http_loopback": 8080,
+    "wallet_index_loopback": 8083,
+    "rpc_note": "The rpc role (a full node host that also runs tos-wallet-index and tos-rpc): tos-rpc listens on rpc_http_loopback for the operator's TLS reverse proxy, the index on wallet_index_loopback for tos-rpc only (not the index's default 8081, which the full node's operator JSON-RPC holds). Neither is opened in the host firewall; tos-rpc's write backend is the full node's json_rpc_loopback."
   },
   "retention": {
     "note": "Validator consensus databases are deleted only behind the GC checkpoint, which never passes the last key block, state_ttl or the persistent-state serializer (production/Production-Node.md, 'The GC floor'). With a 4 h term a validator normally keeps under 5 h of them, about 30 GB at the first epoch's 145 GB a day, and up to about 10 h (60 GB) when a key block opens a new 2^17 s persistent-state period and the serializer waits up to 6 h.",

@@ -72,6 +72,8 @@ testnet/
 │   ├── tos-testnet-validator.service         user tos
 │   ├── tos-testnet-fullnode.service          user tos
 │   ├── tos-testnet-dht.service               user tos
+│   ├── tos-testnet-wallet-index.service      rpc hosts, user tos; full node DB read-only
+│   ├── tos-testnet-rpc.service               rpc hosts, user tos-rpc; read-only by default
 │   ├── tos-testnet-elections.service         validator hosts, user tos-ctl
 │   ├── tos-testnet-alert-peer.service        DHT host, user tos-alert
 │   └── tos-testnet-alert-coordinator.service user-unit example for the coordinator
@@ -114,7 +116,8 @@ open election.
 | --- | --- | --- | --- |
 | Genesis validator | 4, one per operator, one per host | `tos-testnet-validator` | ADNL 30001/udp, QUIC 31001/udp |
 | DHT bootstrap | at least 2, on separate hosts | `tos-testnet-dht` | 30300/udp |
-| Full node / RPC | at least 2, team-run (planned) | `tos-testnet-fullnode` | ADNL, QUIC, lite server 30003/tcp; JSON-RPC only through a proxy |
+| Full node | at least 2, team-run (planned) | `tos-testnet-fullnode` | ADNL, QUIC, lite server 30003/tcp |
+| Public RPC (`rpc` role) | planned, on full node hosts | `tos-testnet-fullnode`, `tos-testnet-wallet-index`, `tos-testnet-rpc` ([OPERATOR.md §10](OPERATOR.md#10-run-the-public-rpc-role)) | as full node, plus `tos-rpc` only through the operator's TLS proxy; the index and operator RPC never |
 | Observer | at least 2 independent (G0, planned) | a full node another party runs | as full node |
 
 The tooling does not establish which hosts are currently deployed. Verify the

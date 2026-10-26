@@ -29,7 +29,11 @@ NODE = [
     "tos-pq-consensus-key",
 ]
 DHT = ["dht-server", "generate-random-id"]
-ALL = sorted(set(NODE + DHT))
+# The standalone public-RPC services, published as tos-rpc-linux-<arch> and
+# tos-wallet-index-linux-<arch> from the same node build artifact.
+SERVICES = ["tos-rpc", "tos-wallet-index"]
+RPC = NODE + SERVICES
+ALL = sorted(set(NODE + DHT + SERVICES))
 # The libraries the release's node build links into each binary (tos release
 # policy: the build record's `needed` lines are the authority).
 STDLIBS = ["libc.so.6", "libgcc_s.so.1", "libm.so.6", "libstdc++.so.6"]
@@ -40,7 +44,11 @@ LINKED = {
     "lite-client": ["libreadline.so.8"],
     "generate-random-id": [],
     "tos-pq-consensus-key": [],
+    "tos-rpc": ["libjemalloc.so.2"],
+    "tos-wallet-index": ["libjemalloc.so.2"],
 }
+# Binaries without a -V option (no "Commit:" line).
+UNVERSIONED = ("tos-pq-consensus-key", "tos-rpc", "tos-wallet-index")
 JEMALLOC = ("validator-engine", "dht-server")
 ARCHES = ("x86_64", "arm64")
 
@@ -96,6 +104,8 @@ class FakeRelease:
         self.binary_commit = commit
         self.workflow = NODE_WORKFLOW
         self.build_info_member = True
+        # False: a release published before the node artifact carried the services.
+        self.services = True
         # Overrides of what a binary links, and of what the build record says.
         self.linked_override: dict[str, list[str]] = {}
         self.needed_override: dict[str, list[str] | None] = {}
@@ -107,7 +117,7 @@ class FakeRelease:
     def binary(self, name: str, arch: str) -> bytes:
         body = f"#!/bin/sh\n# {name} {arch}\n"
         body += "".join(f"# NEEDED {lib}\n" for lib in self.links(name, arch))
-        if name != "tos-pq-consensus-key":
+        if name not in UNVERSIONED:
             body += f'echo "{name} build"\necho "Commit: {self.binary_commit}"\n'
         return body.encode()
 
@@ -122,12 +132,15 @@ class FakeRelease:
             "jemalloc_package libjemalloc-dev 5.3.0-2build1",
             "build_os Ubuntu 24.04.3 LTS",
         ]
-        for n in ALL:
+        for n in self.shipped():
             libs = self.needed_override.get(n, self.links(n, arch))
             if libs is not None:
                 lines.append(" ".join(["needed", n, *sorted(libs)]))
-        lines += [f"sha256 {sha256(self.binary(n, arch))}  {n}" for n in ALL]
+        lines += [f"sha256 {sha256(self.binary(n, arch))}  {n}" for n in self.shipped()]
         return ("\n".join(lines) + "\n").encode()
+
+    def shipped(self) -> list[str]:
+        return [n for n in ALL if self.services or n not in SERVICES]
 
     def publish(self) -> None:
         for path in self.dir.iterdir():
@@ -140,11 +153,11 @@ class FakeRelease:
                 bundle.writestr("lite-client", b"an AppImage\n")
             archive = self.dir / f"tos-node-linux-{arch}.zip"
             with zipfile.ZipFile(archive, "w") as bundle:
-                for name in ALL:
+                for name in self.shipped():
                     bundle.writestr(name, self.binary(name, arch))
                 if self.build_info_member:
                     bundle.writestr("BUILD-INFO", self.build_info(arch))
-            for name in ALL:
+            for name in self.shipped():
                 (self.dir / f"{name}-linux-{arch}").write_bytes(self.binary(name, arch))
             (self.dir / f"node-build-info-linux-{arch}.txt").write_bytes(self.build_info(arch))
             for artifact, workflow, path in (
@@ -257,7 +270,7 @@ def node_record(record, arch="x86_64"):
 # ---------------------------------------------------------------- happy path
 
 
-@pytest.mark.parametrize(("role", "binaries"), [("validator", NODE), ("dht", DHT)])
+@pytest.mark.parametrize(("role", "binaries"), [("validator", NODE), ("dht", DHT), ("rpc", RPC)])
 def test_a_verified_release_is_written_in_the_layout_check_release_accepts(
     served, tmp_path, role, binaries
 ):
@@ -286,6 +299,47 @@ def test_a_verified_release_is_written_in_the_layout_check_release_accepts(
         ["bash", str(CHECK), str(out), PIN, *binaries], capture_output=True, text=True
     )
     assert check.returncode == 0, check.stderr
+
+
+def test_a_release_without_the_services_is_refused_for_rpc_only(served, tmp_path):
+    release, url = served
+    release.services = False
+    release.publish()
+    out = tmp_path / "out"
+    refused(run(release, url, out, role="rpc"), "has no asset tos-rpc-linux-x86_64")
+    assert not out.exists()
+    assert run(release, url, tmp_path / "fullnode", role="fullnode").returncode == 0
+
+
+@pytest.mark.parametrize("name", SERVICES)
+def test_a_service_binary_that_is_not_the_zips_copy_is_refused(served, tmp_path, name):
+    release, url = served
+    (release.dir / f"{name}-linux-x86_64").write_bytes(b"another build\n")
+    release.write_sums()
+    refused(
+        run(release, url, tmp_path / "out", role="rpc"),
+        f"{name}-linux-x86_64 is not the {name} in",
+    )
+
+
+@pytest.mark.parametrize("name", SERVICES)
+def test_a_service_without_a_needed_line_is_refused(served, tmp_path, name):
+    release, url = served
+    release.needed_override[name] = None
+    release.publish()
+    refused(
+        run(release, url, tmp_path / "out", role="rpc"),
+        f"the node build record has needed lines, but none for {name}",
+    )
+
+
+def test_a_host_without_the_services_library_is_refused(served, tmp_path):
+    release, url = served
+    result = run(
+        release, url, tmp_path / "out", role="rpc", env={"FAKE_MISSING": "libjemalloc.so.2"}
+    )
+    refused(result, "tos-wallet-index needs libjemalloc.so.2")
+    assert "tos-rpc needs libjemalloc.so.2" in result.stderr
 
 
 def test_the_base_url_comes_from_the_environment(served, tmp_path):
@@ -708,7 +762,9 @@ def test_the_role_binaries_are_the_ones_the_host_build_builds():
     build = (SCRIPTS / "build-node-binaries.sh").read_text()
     assert f"validator|fullnode) TARGETS=({' '.join(module.ROLE_BINARIES['validator'])})" in build
     assert f"dht) TARGETS=({' '.join(module.ROLE_BINARIES['dht'])})" in build
+    assert f"rpc) TARGETS=({' '.join(module.ROLE_BINARIES['rpc'])})" in build
     assert module.ROLE_BINARIES["fullnode"] == module.ROLE_BINARIES["validator"]
     assert set(JEMALLOC) <= set(module.VERSIONED)
     assert "tos-pq-consensus-key" not in module.VERSIONED
+    assert not set(SERVICES) & module.VERSIONED
     assert os.path.basename(str(module.CHECK_RELEASE)) == "check-release.sh"
