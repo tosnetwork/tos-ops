@@ -178,9 +178,14 @@ The canonical `gen-zerostate.fif` pins mainnet: `1 setglobalid` and a
 `SOURCE_DATE_EPOCH` check for 1789434000 (its initial set is 21,600 s since
 tos #206, 131,072 s before). `testnet-coordinator.py genesis` copies the template
 into the ceremony directory and replaces exactly those three lines, plus the
-two that set the validator schedule (`config.election_params!` and
-`orig_vset_valid_for`, from the profile); if any of them is missing or appears
-twice, the template changed and the ceremony refuses. It also inserts one line
+five named constants that set the validator schedule (`orig_vset_valid_for`,
+`validators_elected_for`, `elections_start_before`, `elections_end_before`,
+`stakes_frozen_for`, from the profile); if any of them is missing or appears
+twice, the template changed and the ceremony refuses. The template checks its
+first election against those constants before writing any state (since tos
+#324), so each constant must be bound once, above that schedule guard, and
+`config.election_params!` must be written from the names after it; a template
+in any other shape, including the one before tos #324, is refused. It also inserts one line
 after the first, `0x<tag> constant quantum-network-tag`, the AUTH network tag
 the template's own guard demands for version 16, and refuses a template whose
 guard is gone or that already defines a tag or the admission candidate. The patched copy, the original's SHA-256, the tos revision and the

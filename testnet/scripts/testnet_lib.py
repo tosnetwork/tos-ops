@@ -42,15 +42,31 @@ ED25519_PUBLIC_TL_PREFIX = bytes.fromhex("c6b41348")
 ED25519_PRIVATE_TL_PREFIX = bytes.fromhex("17236849")
 
 # The lines of the canonical template a testnet ceremony replaces: the three
-# that pin it to mainnet, and the two that set the validator schedule. Exactly
-# these and nothing else; any other difference in the template is a change the
-# ceremony did not review, so it is refused.
+# that pin it to mainnet, and the five named constants that set the validator
+# schedule. Exactly these and nothing else; any other difference in the
+# template is a change the ceremony did not review, so it is refused.
 TEMPLATE_GLOBAL_ID_LINE = "1 setglobalid   // TOS mainnet global_id"
 TEMPLATE_EPOCH_LINE = "1789434000 constant mainnet_genesis_utime"
 TEMPLATE_EPOCH_ABORT_LINE = 'now mainnet_genesis_utime = not abort"SOURCE_DATE_EPOCH must be 1789434000 for TOS mainnet genesis"'
-TEMPLATE_ELECTION_PARAMS_LINE = "65536 32768 8192 32768 config.election_params!"
-# The mainnet initial set lasts 6 h since tos #206 (131,072 s before it).
-TEMPLATE_INITIAL_SET_LINE = "21600 =: orig_vset_valid_for"
+# The schedule constants, keyed by validator_schedule()'s names. The template
+# defines them once, checks the first election against them, then writes
+# ConfigParam 15 and the initial set from them. The mainnet initial set lasts
+# 6 h since tos #206 (131,072 s before it).
+TEMPLATE_SCHEDULE_CONSTANTS = (
+    ("initial_set_valid_for", "orig_vset_valid_for", 21600),
+    ("elected_for", "validators_elected_for", 65536),
+    ("elections_start_before", "elections_start_before", 16384),
+    ("elections_end_before", "elections_end_before", 8192),
+    ("stake_held_for", "stakes_frozen_for", 32768),
+)
+# The template's first schedule guard. Every schedule constant must be defined
+# above it, so the guard checks the values the ceremony chose.
+TEMPLATE_SCHEDULE_GUARD_LINE = "now orig_vset_valid_for + constant bootstrap_until"
+# ConfigParam 15 must be written from the constants, not from literals.
+TEMPLATE_ELECTION_PARAMS_LINE = (
+    "validators_elected_for elections_start_before elections_end_before stakes_frozen_for "
+    "config.election_params!"
+)
 # A version-16 genesis needs a public AUTH network tag (ConfigParam 48) defined
 # before the template's own guard runs. The ceremony inserts the definition
 # right after the first line; the guard must still be there to refuse a
@@ -705,9 +721,12 @@ def patch_template(
 
     `schedule` is what validator_schedule() returns, `auth_tag` what
     supplied_auth_network_tag() returns. Each replaced line must occur exactly
-    once. A template that changed around these lines has not been reviewed for a
-    testnet ceremony and is refused, and so is one that already defines a tag
-    or selects the frozen admission candidate.
+    once. The schedule is the template's named constants: each must be bound
+    once, above the template's schedule guard, so the guard checks the
+    ceremony's values and ConfigParam 15 is written from them. A template that
+    changed around these lines has not been reviewed for a testnet ceremony and
+    is refused, and so is one that already defines a tag or selects the frozen
+    admission candidate.
     """
     check_global_id(global_id)
     tag = check_auth_network_tag(auth_tag.hex() if isinstance(auth_tag, bytes) else auth_tag)
@@ -717,23 +736,39 @@ def patch_template(
         raise TestnetError("the template already defines an AUTH tag or the admission candidate")
     if not isinstance(epoch, int) or epoch <= 1789434000:
         raise TestnetError("the testnet genesis epoch must be later than the mainnet template's")
-    params = " ".join(str(schedule[name]) for name in ELECTION_PARAM_NAMES)
-    replacements = (
+    pins = (
         (TEMPLATE_GLOBAL_ID_LINE, f"{global_id} setglobalid   // TOS public testnet global_id"),
         (TEMPLATE_EPOCH_LINE, f"{epoch} constant mainnet_genesis_utime"),
         (
             TEMPLATE_EPOCH_ABORT_LINE,
             f'now mainnet_genesis_utime = not abort"SOURCE_DATE_EPOCH must be {epoch} for this TOS testnet genesis"',
         ),
-        (TEMPLATE_ELECTION_PARAMS_LINE, f"{params} config.election_params!"),
-        (TEMPLATE_INITIAL_SET_LINE, f"{schedule['initial_set_valid_for']} =: orig_vset_valid_for"),
     )
     lines = text.split("\n")
-    for old, new in replacements:
-        hits = [i for i, line in enumerate(lines) if line == old]
+
+    def only(line: str) -> int:
+        hits = [i for i, candidate in enumerate(lines) if candidate == line]
         if len(hits) != 1:
-            raise TestnetError(f"template line not found exactly once: {old!r}")
-        lines[hits[0]] = new
+            raise TestnetError(f"template line not found exactly once: {line!r}")
+        return hits[0]
+
+    guard = only(TEMPLATE_SCHEDULE_GUARD_LINE)
+    if only(TEMPLATE_ELECTION_PARAMS_LINE) < guard:
+        raise TestnetError("the template writes ConfigParam 15 before its schedule guard")
+    for old, new in pins:
+        lines[only(old)] = new
+    for key, name, mainnet in TEMPLATE_SCHEDULE_CONSTANTS:
+        value = schedule[key]
+        if not isinstance(value, int) or isinstance(value, bool) or not 0 < value < 2**32:
+            raise TestnetError(f"schedule {key} is out of range: {value!r}")
+        index = only(f"{mainnet} constant {name}")
+        # The guard must check the ceremony's value, and nothing may rebind it after.
+        if index > guard:
+            raise TestnetError(f"the template defines {name} after its schedule guard")
+        binding = re.compile(rf"(constant|=:)\s+{re.escape(name)}\b")
+        if any(binding.search(line) for i, line in enumerate(lines) if i != index):
+            raise TestnetError(f"the template binds {name} more than once")
+        lines[index] = f"{value} constant {name}"
     if lines[0] != TEMPLATE_FIRST_LINE:
         raise TestnetError(f"the template's first line is not {TEMPLATE_FIRST_LINE!r}")
     lines.insert(

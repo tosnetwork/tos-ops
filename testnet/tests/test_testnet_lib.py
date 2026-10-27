@@ -244,6 +244,9 @@ def test_manifest_packs_index_order_and_size():
 # ---------------------------------------------------------------- template
 
 
+# The shape of the canonical template around the replaced lines: the pins,
+# the five schedule constants, the schedule guards that read them, ConfigParam
+# 15 written from them and the initial set written from orig_vset_valid_for.
 TEMPLATE = "\n".join(
     [
         lib.TEMPLATE_FIRST_LINE,
@@ -253,9 +256,16 @@ TEMPLATE = "\n".join(
         "0x544F5301 default-subwallet-id!",
         lib.TEMPLATE_EPOCH_LINE,
         lib.TEMPLATE_EPOCH_ABORT_LINE,
+        "21600 constant orig_vset_valid_for",
+        "65536 constant validators_elected_for",
+        "16384 constant elections_start_before",
+        "8192 constant elections_end_before",
+        "32768 constant stakes_frozen_for",
+        lib.TEMPLATE_SCHEDULE_GUARD_LINE,
+        "bootstrap_until elections_start_before - now max constant first_election_open",
         lib.TEMPLATE_ELECTION_PARAMS_LINE,
         "1 1 9 config.validator_num!",
-        lib.TEMPLATE_INITIAL_SET_LINE,
+        "now dup orig_vset_valid_for + 0 config.validators!",
     ]
 )
 SCHEDULE = {
@@ -267,10 +277,42 @@ SCHEDULE = {
 }
 TAG = lib.derive_auth_network_tag("tos-public-testnet", 2, 4)
 
+# Epoch 5 as its published genesis.json records it: genesis 2026-10-24 11:00 UTC,
+# a 6 h initial set, the first election open 15:00-16:30 UTC and its set in
+# office at 17:00 UTC (a 7,200 s lead), then 14,400 s terms.
+EPOCH5_SOURCE_DATE_EPOCH = 1792839600
+EPOCH5_SCHEDULE = {
+    "initial_set_valid_for": 21600,
+    "elected_for": 14400,
+    "elections_start_before": 7200,
+    "elections_end_before": 1800,
+    "stake_held_for": 7200,
+}
+EPOCH5_CONSTANTS = {
+    "orig_vset_valid_for": 21600,
+    "validators_elected_for": 14400,
+    "elections_start_before": 7200,
+    "elections_end_before": 1800,
+    "stakes_frozen_for": 7200,
+}
+EPOCH5_FIRST_ELECTION = {"opens": 1792854000, "closes": 1792859400, "takes_office": 1792861200}
+EPOCH5_TAG = bytes.fromhex("3edc0460815cddd18f2b878004f50d7191d0dbd34d772d298b281e0767d7fd2c")
+
+
+def schedule_constants(text):
+    """{constant name: value} for every `<n> constant <name>` the schedule uses."""
+    names = {name for _, name, _ in lib.TEMPLATE_SCHEDULE_CONSTANTS}
+    found = {}
+    for line in text.split("\n"):
+        parts = line.split()
+        if len(parts) == 3 and parts[1] == "constant" and parts[2] in names:
+            assert parts[2] not in found
+            found[parts[2]] = int(parts[0])
+    return found
+
 
 def test_patch_replaces_the_pins_and_the_schedule_only():
-    # The testnet's 6 h initial set equals the mainnet template's since tos #206;
-    # another lifetime shows the line is still replaced.
+    # Another lifetime than the template's 6 h shows the constant is replaced.
     patched = lib.patch_template(
         TEMPLATE, 2, 1800000000, dict(SCHEDULE, initial_set_valid_for=25200), TAG
     )
@@ -284,13 +326,41 @@ def test_patch_replaces_the_pins_and_the_schedule_only():
     assert after[2] == lib.TEMPLATE_AUTH_GUARD_LINE
     after = after[:1] + after[2:]
     changed = [i for i, (a, b) in enumerate(zip(before, after)) if a != b]
-    assert changed == [3, 5, 6, 7, 9]
+    assert changed == [3, 5, 6, 7, 8, 9, 10, 11]
     assert after[3].startswith("2 setglobalid")
     assert after[5] == "1800000000 constant mainnet_genesis_utime"
     assert "1800000000" in after[6]
-    assert after[7] == "14400 7200 1800 7200 config.election_params!"
-    assert after[9] == "25200 =: orig_vset_valid_for"
-    assert after[8] == before[8]
+    assert after[7:12] == [
+        "25200 constant orig_vset_valid_for",
+        "14400 constant validators_elected_for",
+        "7200 constant elections_start_before",
+        "1800 constant elections_end_before",
+        "7200 constant stakes_frozen_for",
+    ]
+    # The guards and the writers keep reading the names.
+    assert after[12:] == before[12:]
+
+
+def test_patch_puts_the_epoch5_schedule_above_the_guard():
+    patched = lib.patch_template(TEMPLATE, 2, EPOCH5_SOURCE_DATE_EPOCH, EPOCH5_SCHEDULE, EPOCH5_TAG)
+    lines = patched.split("\n")
+    guard = lines.index(lib.TEMPLATE_SCHEDULE_GUARD_LINE)
+    assert schedule_constants("\n".join(lines[:guard])) == EPOCH5_CONSTANTS
+    assert schedule_constants("\n".join(lines[guard:])) == {}
+
+
+def test_epoch5_schedule_is_the_repository_profile_and_its_record():
+    assert lib.validator_schedule(lib.load_profile()) == EPOCH5_SCHEDULE
+    # The template's own guard arithmetic, which the genesis record must match.
+    t = EPOCH5_SOURCE_DATE_EPOCH
+    bootstrap_until = t + EPOCH5_SCHEDULE["initial_set_valid_for"]
+    opens = max(bootstrap_until - EPOCH5_SCHEDULE["elections_start_before"], t)
+    takes_office = opens + EPOCH5_SCHEDULE["elections_start_before"]
+    closes = takes_office - EPOCH5_SCHEDULE["elections_end_before"]
+    assert {"opens": opens, "closes": closes, "takes_office": takes_office} == (
+        EPOCH5_FIRST_ELECTION
+    )
+    assert takes_office <= bootstrap_until and opens < closes < takes_office
 
 
 def test_patch_refuses_a_template_without_the_tag_guard_or_with_its_own_tag():
@@ -324,9 +394,51 @@ def test_patch_refuses_a_changed_template():
     doubled = TEMPLATE + "\n" + lib.TEMPLATE_EPOCH_LINE
     with pytest.raises(lib.TestnetError, match="exactly once"):
         lib.patch_template(doubled, 2, 1800000000, SCHEDULE, TAG)
-    for line in (lib.TEMPLATE_ELECTION_PARAMS_LINE, lib.TEMPLATE_INITIAL_SET_LINE):
+    gone = [lib.TEMPLATE_SCHEDULE_GUARD_LINE, lib.TEMPLATE_ELECTION_PARAMS_LINE]
+    gone += [f"{value} constant {name}" for _, name, value in lib.TEMPLATE_SCHEDULE_CONSTANTS]
+    for line in gone:
         with pytest.raises(lib.TestnetError, match="exactly once"):
             lib.patch_template(TEMPLATE.replace(line, "// moved"), 2, 1800000000, SCHEDULE, TAG)
+
+
+def test_patch_refuses_the_template_before_the_named_schedule():
+    # The shape before the template checked its first election: ConfigParam 15
+    # as literals and the initial set assigned near the end. Its guard-free
+    # schedule cannot be reviewed the same way, so it is refused.
+    old = (
+        TEMPLATE.replace(
+            lib.TEMPLATE_ELECTION_PARAMS_LINE, "65536 32768 8192 32768 config.election_params!"
+        )
+        .replace(lib.TEMPLATE_SCHEDULE_GUARD_LINE + "\n", "")
+        .replace("21600 constant orig_vset_valid_for\n", "")
+        + "\n21600 =: orig_vset_valid_for"
+    )
+    with pytest.raises(lib.TestnetError, match="exactly once"):
+        lib.patch_template(old, 2, 1800000000, SCHEDULE, TAG)
+
+
+def test_patch_refuses_a_schedule_the_guard_would_not_check():
+    lines = TEMPLATE.split("\n")
+    guard = lines.index(lib.TEMPLATE_SCHEDULE_GUARD_LINE)
+    # A constant moved below the guard.
+    moved = lines[:]
+    moved.insert(guard, moved.pop(moved.index("8192 constant elections_end_before")))
+    with pytest.raises(lib.TestnetError, match="after its schedule guard"):
+        lib.patch_template("\n".join(moved), 2, 1800000000, SCHEDULE, TAG)
+    # A constant rebound after the patched definition.
+    for rebinding in ("16384 =: elections_start_before", "1 constant  stakes_frozen_for"):
+        with pytest.raises(lib.TestnetError, match="more than once"):
+            lib.patch_template(TEMPLATE + "\n" + rebinding, 2, 1800000000, SCHEDULE, TAG)
+    # ConfigParam 15 written before the guard ran.
+    early = lines[:]
+    early.insert(guard, early.pop(early.index(lib.TEMPLATE_ELECTION_PARAMS_LINE)))
+    with pytest.raises(lib.TestnetError, match="before its schedule guard"):
+        lib.patch_template("\n".join(early), 2, 1800000000, SCHEDULE, TAG)
+    for value in (0, 2**32, True, "7200"):
+        with pytest.raises(lib.TestnetError, match="out of range"):
+            lib.patch_template(
+                TEMPLATE, 2, 1800000000, dict(SCHEDULE, elections_end_before=value), TAG
+            )
 
 
 def test_patch_refuses_mainnet_id_and_old_epoch():
@@ -336,13 +448,20 @@ def test_patch_refuses_mainnet_id_and_old_epoch():
         lib.patch_template(TEMPLATE, 2, 1789434000, SCHEDULE, TAG)
 
 
-def test_patch_matches_the_tos_template_when_available():
+def tos_template():
     root = os.environ.get("TOS_ROOT")
     if not root:
         pytest.skip("TOS_ROOT not set")
     from pathlib import Path
 
-    text = (Path(root) / "crypto/smartcont/gen-zerostate.fif").read_text()
+    return (Path(root) / "crypto/smartcont/gen-zerostate.fif").read_text()
+
+
+def test_patch_matches_the_tos_template_when_available():
+    text = tos_template()
+    assert schedule_constants(text) == {
+        name: value for _, name, value in lib.TEMPLATE_SCHEDULE_CONSTANTS
+    }
     patched = lib.patch_template(
         text, 2, 1800000000, dict(SCHEDULE, initial_set_valid_for=25200), TAG
     )
@@ -350,11 +469,23 @@ def test_patch_matches_the_tos_template_when_available():
     assert lines[1].startswith(f"0x{TAG.hex()} constant quantum-network-tag")
     del lines[1]
     diff = [(a, b) for a, b in zip(text.split("\n"), lines) if a != b]
-    assert len(diff) == 5
-    # With the repository's own schedule the initial-set line stays as it is.
+    # Three pins and the five schedule constants, nothing else.
+    assert len(diff) == 8
+    # With the repository's own lifetime that constant stays as it is.
     lines = lib.patch_template(text, 2, 1800000000, SCHEDULE, TAG).split("\n")
     del lines[1]
-    assert len([1 for a, b in zip(text.split("\n"), lines) if a != b]) == 4
+    assert len([1 for a, b in zip(text.split("\n"), lines) if a != b]) == 7
+
+
+def test_patch_puts_the_epoch5_schedule_into_the_tos_template():
+    patched = lib.patch_template(
+        tos_template(), 2, EPOCH5_SOURCE_DATE_EPOCH, EPOCH5_SCHEDULE, EPOCH5_TAG
+    )
+    lines = patched.split("\n")
+    guard = lines.index(lib.TEMPLATE_SCHEDULE_GUARD_LINE)
+    assert schedule_constants("\n".join(lines[:guard])) == EPOCH5_CONSTANTS
+    assert schedule_constants(patched) == EPOCH5_CONSTANTS
+    assert lines.index(lib.TEMPLATE_ELECTION_PARAMS_LINE) > guard
 
 
 # ---------------------------------------------------------------- validator schedule
@@ -974,6 +1105,70 @@ def test_generated_genesis_has_the_adopted_gas_credits(tmp_path):
         21: 20000,
     }
     lib.zero_state_retired_params((tmp_path / "zerostate.boc").read_bytes())
+
+
+def run_create_state(tmp_path, patched, epoch):
+    """Run the pinned create-state on a patched template; the completed process."""
+    import subprocess
+    from pathlib import Path
+
+    root = os.environ.get("TOS_ROOT")
+    if not root:
+        pytest.skip("TOS_ROOT not set")
+    root = Path(root)
+    binary = Path(os.environ.get("CREATE_STATE_PATH", root / "build/crypto/create-state"))
+    if not binary.is_file():
+        pytest.fail("build create-state before testing the generated genesis")
+    (tmp_path / "testnet.fif").write_text(patched)
+    (tmp_path / "validator-pq.pub").write_bytes(
+        lib.pack_manifest([public_record(i) for i in range(1, 5)])
+    )
+    # Deterministic disposable test key, never a network identity.
+    (tmp_path / "main-wallet.pk").write_bytes(bytes([0x53]) * 32)
+    return subprocess.run(
+        [
+            str(binary),
+            "-I",
+            str(root / "crypto/fift/lib") + ":" + str(root / "crypto/smartcont"),
+            "-I",
+            str(binary.parent / "smartcont"),
+            "-s",
+            str(tmp_path / "testnet.fif"),
+        ],
+        cwd=tmp_path,
+        env=dict(os.environ, SOURCE_DATE_EPOCH=str(epoch)),
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_epoch5_schedule_passes_the_template_guard_and_reaches_the_zero_state(tmp_path):
+    patched = lib.patch_template(
+        tos_template(), 2, EPOCH5_SOURCE_DATE_EPOCH, EPOCH5_SCHEDULE, EPOCH5_TAG
+    )
+    run = run_create_state(tmp_path, patched, EPOCH5_SOURCE_DATE_EPOCH)
+    assert run.returncode == 0, run.stdout + run.stderr
+    params = lib.zero_state_config((tmp_path / "zerostate.boc").read_bytes())[2]
+    election = params[15].data
+    assert [int.from_bytes(election[i : i + 4], "big") for i in range(0, 16, 4)] == [
+        EPOCH5_SCHEDULE[name] for name in lib.ELECTION_PARAM_NAMES
+    ]
+    # ConfigParam 34: validators_ext#12 utime_since:uint32 utime_until:uint32.
+    current = params[34].data
+    assert current[0] == 0x12
+    assert int.from_bytes(current[1:5], "big") == EPOCH5_SOURCE_DATE_EPOCH
+    assert int.from_bytes(current[5:9], "big") == EPOCH5_FIRST_ELECTION["takes_office"]
+
+
+def test_template_guard_checks_the_patched_schedule(tmp_path):
+    # Valid for the template's own constants, so only the patched values can
+    # make the guard refuse: a lead longer than the bootstrap term.
+    schedule = dict(EPOCH5_SCHEDULE, elections_start_before=30000, elected_for=65536)
+    patched = lib.patch_template(tos_template(), 2, EPOCH5_SOURCE_DATE_EPOCH, schedule, EPOCH5_TAG)
+    run = run_create_state(tmp_path, patched, EPOCH5_SOURCE_DATE_EPOCH)
+    assert run.returncode != 0
+    assert "first election would extend the bootstrap validator term" in run.stdout + run.stderr
+    assert not (tmp_path / "zerostate.boc").exists()
 
 
 def gas_prices_cell(tag, credit, flat=False, damage=None):
