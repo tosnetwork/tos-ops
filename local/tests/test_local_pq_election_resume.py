@@ -103,7 +103,7 @@ def harness(tmp_path, monkeypatch):
 
     class Request:
         def __init__(self, **kwargs):
-            assert kwargs["stake_owner"] == WALLET.hash_part
+            assert kwargs["src_addr"] == WALLET.hash_part
             self.kwargs = kwargs
 
         def parse_result(self, response):
