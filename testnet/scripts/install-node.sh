@@ -4,7 +4,7 @@
 #   install-node.sh prepare  --role validator|fullnode|dht --public-ip IP [--release DIR --rev COMMIT]
 #   install-node.sh prepare  --role rpc [--release DIR --rev COMMIT]
 #   install-node.sh activate --role validator|fullnode|rpc|dht --global-config FILE --sha256 HEX
-#                            [--genesis DIR] [--validator-id HEX]
+#                            [--genesis DIR] [--validator-id HEX] [--no-start]
 #   install-node.sh binaries --role validator|fullnode|rpc|dht --release DIR --rev COMMIT
 #
 # The release DIR is what build-node-binaries.sh wrote on this host: each host
@@ -33,6 +33,11 @@
 #   adds the console on 30002/tcp (on every address; the host firewall keeps it
 #   closed) and a lite server on a full node, installs the
 #   unit and starts it.
+#   --no-start (full node only) does all of that, enables the unit and does not
+#   start it: the database stays a node that has never run, which is what
+#   `tosctl node sync bootstrap` installs verified chain data into. Bootstrap
+#   starts the unit itself. Starting it by hand instead makes the node sync from
+#   genesis, after which bootstrap refuses it.
 #
 # The rpc role adds the standalone public-RPC services to a full node on the
 # same host. Order: prepare --role fullnode (from an rpc release, so the
@@ -76,7 +81,7 @@ profile() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); [d:=d[k
 [ "$(id -u)" = 0 ] || die "run as root"
 [ $# -ge 1 ] || die "usage: install-node.sh prepare|activate|binaries --role ROLE ..."
 STEP=$1; shift
-ROLE="" PUBLIC_IP="" RELEASE="" REV="" GLOBAL_CONFIG="" SHA256="" GENESIS="" VALIDATOR_ID=""
+ROLE="" PUBLIC_IP="" RELEASE="" REV="" GLOBAL_CONFIG="" SHA256="" GENESIS="" VALIDATOR_ID="" NO_START=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --role) ROLE=$2; shift 2 ;;
@@ -87,10 +92,12 @@ while [ $# -gt 0 ]; do
     --sha256) SHA256=$2; shift 2 ;;
     --genesis) GENESIS=$2; shift 2 ;;
     --validator-id) VALIDATOR_ID=$2; shift 2 ;;
+    --no-start) NO_START=1; shift ;;
     *) die "unknown option $1" ;;
   esac
 done
 case "$ROLE" in validator|fullnode|rpc|dht) ;; *) die "--role must be validator, fullnode, rpc or dht" ;; esac
+[ -z "$NO_START" ] || [ "$STEP" = activate ] || die "--no-start applies only to activate"
 DB="$DB_ROOT/$ROLE"
 LOG="$LOG_ROOT/$ROLE"
 UNIT="tos-testnet-$ROLE.service"
@@ -283,6 +290,9 @@ activate_rpc() {
 }
 
 activate() {
+  if [ -n "$NO_START" ] && [ "$ROLE" != fullnode ]; then
+    die "--no-start is for a full node that tosctl node sync bootstrap fills; a $ROLE is never bootstrapped"
+  fi
   [ -n "$GLOBAL_CONFIG" ] && [ -n "$SHA256" ] || die "--global-config and --sha256 are required"
   [ "$(sha256sum "$GLOBAL_CONFIG" | cut -d' ' -f1)" = "$SHA256" ] || die "global config SHA-256 mismatch"
   python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import json, testnet_lib as l; c=json.load(open(sys.argv[2])); sys.exit("refused: placeholder config" if l.is_pregenesis(c) else 0)' \
@@ -308,6 +318,13 @@ activate() {
     fi
   fi
   install_unit
+  if [ -n "$NO_START" ]; then
+    systemctl enable "$UNIT"
+    if systemctl is-active --quiet "$UNIT"; then die "$UNIT started although --no-start was given"; fi
+    echo "$UNIT is installed and enabled but not started; $DB has never run."
+    echo "next: tosctl node sync bootstrap (doc/node-data-sync.md in the tos repository), which starts it"
+    return
+  fi
   systemctl enable --now "$UNIT"
   systemctl --no-pager --lines=5 status "$UNIT" || true
 }
