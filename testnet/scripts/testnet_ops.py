@@ -70,6 +70,15 @@ ACTIVATION_VALID_UNTIL = 0xFFFFFFFF
 # What a wallet v3 self-deployment needs on its account before it is sent.
 ACTIVATION_FEE_NANOTOS = NANO // 10
 WALLET_V3_MODE = 3
+# The bootstrap wallet's final transfer: carry the whole remaining balance (128)
+# and delete the account once it is empty (32), to the ConfigParam 5 blackhole.
+SWEEP_MODE = 128 + 32
+BLACKHOLE = lib.BLACKHOLE
+EMPTY_BODY_HASH = lib.cell_from_bits("").hash().hex()
+# Search envelope for the transaction that ran a sweep, from the masterchain head
+# at signing: the message expires 300 s after signing, so it ran within that many
+# seconds of blocks; the search stops at the first run that took effect.
+SWEEP_SEARCH_BLOCKS = 4096
 BOOTSTRAP_WALLET = "-1:" + "11" * 32
 # Hash of WCode3 used by the independently held genesis artifact.
 BOOTSTRAP_CODE_HASH = "5829bd66ea5884eef70788d0609acad76af5c418aed2fc17709def2224cf9164"
@@ -87,6 +96,8 @@ def certificate_digest(value: dict) -> str:
 # caller's expect check).
 COORDINATOR_KINDS = (
     "fund",
+    "owner-fund",
+    "sweep",
     "activate-owner",
     "principal",
     "withdraw",
@@ -103,6 +114,16 @@ CRASH_ENV = "TESTNET_OPS_CRASH_AT"
 CRASH_POINTS = ("planned", "signed", "broadcast", "delivered")
 # The stake authorization algorithm a pool order carries (ML-DSA-44).
 MLDSA44_ALGORITHM_ID = 1
+
+
+def burn_expect(block_boc: bytes):
+    """A sweep's settlement extra: its burn verified in the block file `block_boc`
+    (Operations.verify_burn). Without one a delivered sweep stays pending."""
+
+    def expect(operations, record, delivery, evidence):
+        return operations.verify_burn(record, delivery, evidence, block_boc)
+
+    return expect
 
 
 class OperationRefused(lib.TestnetError):
@@ -433,6 +454,32 @@ class Node:
         page/header is bound to the lookup's full block identity. No account-history
         cursor or current account state is involved.
         """
+        for tx in self.shard_transactions(destination, created_lt):
+            if tx["in_kind"] == "internal" and tx["in_hash"] == message_hash:
+                if tx["lt"] <= created_lt:
+                    raise Unknown(
+                        f"{self.url}: unknown delivery block: delivery precedes message creation"
+                    )
+                return tx
+        return None
+
+    def external_runs(self, wallet: str, external_hash: str, from_lt: int) -> list[dict]:
+        """Every transaction of `wallet` that ran the external message, oldest first,
+        up to and including the first one that took effect, from the blocks after
+        `from_lt`. This finds a run without the account's head, which a deleted
+        account no longer has."""
+        runs = []
+        for tx in self.shard_transactions(wallet, from_lt, SWEEP_SEARCH_BLOCKS):
+            if tx["in_kind"] == "external" and tx["in_hash"] == external_hash:
+                runs.append({k: v for k, v in tx.items() if k != "block"})
+                if took_effect(tx):
+                    break
+        return runs
+
+    def shard_transactions(self, destination: str, created_lt: int, budget: int | None = None):
+        """The destination's transactions in its shard's blocks from created_lt on, in
+        block order, each decoded from its own BOC and carrying its block id."""
+        budget = DELIVERY_BLOCKS if budget is None else budget
         wc, account = destination.split(":")
         prefix = int(account[:16], 16)
         shard = prefix | 1
@@ -448,9 +495,9 @@ class Node:
         )
         stop = int(head["end_lt"])
         seen = set()
-        for _ in range(DELIVERY_BLOCKS):
+        for _ in range(budget):
             if cursor >= stop:
-                return None
+                return
             block = self.call("lookupBlock", workchain=int(wc), shard=str(shard), lt=str(cursor))
             try:
                 block_wc, block_shard = int(block["workchain"]), int(block["shard"])
@@ -502,10 +549,7 @@ class Node:
                                 destination,
                                 position[1],
                             )
-                            if tx["in_kind"] == "internal" and tx["in_hash"] == message_hash:
-                                if tx["lt"] <= created_lt:
-                                    raise ValueError("delivery precedes message creation")
-                                return dict(tx, block=block)
+                            yield dict(tx, block=block)
                     if not page["incomplete"]:
                         break
                     if not rows:
@@ -516,7 +560,7 @@ class Node:
                 cursor = int(header["end_lt"]) + 1
             except (KeyError, TypeError, ValueError, lib.TestnetError) as exc:
                 raise Unknown(f"{self.url}: unknown delivery block: {exc}") from exc
-        raise Unknown(f"delivery search exceeds {DELIVERY_BLOCKS} shard blocks; remains unsettled")
+        raise Unknown(f"delivery search exceeds {budget} shard blocks; remains unsettled")
 
 
 # ---------------------------------------------------------------- transactions from their BOC
@@ -577,6 +621,10 @@ def decode_message(cell: lib.Cell) -> dict:
     }
 
 
+# AccountStatus: acc_state_uninit$00 frozen$01 active$10 nonexist$11.
+ACCOUNT_STATUS = ("uninit", "frozen", "active", "nonexist")
+
+
 def verify_transaction(data: Any, tx_hash: str, address: str, tx_lt: int) -> dict:
     """A transaction decoded from its BOC, bound to its reported id and account.
 
@@ -597,7 +645,8 @@ def verify_transaction(data: Any, tx_hash: str, address: str, tx_lt: int) -> dic
         lt = s.bits(64)
         previous_hash, previous_lt = s.bytes(32).hex(), s.bits(64)
         utime = s.bits(32)
-        s.bits(15 + 2 + 2)
+        s.bits(15)
+        orig_status, end_status = ACCOUNT_STATUS[s.bits(2)], ACCOUNT_STATUS[s.bits(2)]
         if f"{address.split(':')[0]}:{account}" != address or lt != tx_lt:
             raise Unknown(f"transaction {tx_hash} belongs to {account} at lt {lt}")
         m = lib.Slice(s.take_ref())
@@ -651,6 +700,8 @@ def verify_transaction(data: Any, tx_hash: str, address: str, tx_lt: int) -> dic
         "compute_success": compute_success,
         "credit": credit,
         "out": outgoing,
+        "orig_status": orig_status,
+        "end_status": end_status,
     }
 
 
@@ -1198,8 +1249,11 @@ class Operations:
 
         def read(node):
             info = node.account(wallet)
+            if info.get("state") == "uninitialized":
+                # Deleted: a node reports an account it does not hold this way.
+                return {"head": None, "seqno": None, "identity": None, "deleted": True}
             if info.get("state") != "active":
-                raise Unknown("checkpoint wallet must be active")
+                raise Unknown("checkpoint wallet must be active or deleted")
             try:
                 code = lib.parse_boc(base64.b64decode(info["code"], validate=True))
                 data = lib.Slice(lib.parse_boc(base64.b64decode(info["data"], validate=True)))
@@ -1213,11 +1267,93 @@ class Operations:
                     if int(last.get("lt", 0)) == 0
                     else {"hash": b64hash(last["hash"]).hex(), "lt": str(last["lt"])}
                 )
-                return {"head": head, "seqno": seqno, "identity": identity}
+                return {"head": head, "seqno": seqno, "identity": identity, "deleted": False}
             except (KeyError, ValueError, lib.TestnetError) as exc:
                 raise Unknown(f"checkpoint wallet snapshot refused: {exc}") from exc
 
         return self.both(read)
+
+    def bootstrap_state(self, wallet: str) -> dict:
+        """The bootstrap wallet's snapshot, also once its final sweep deleted it.
+
+        A deleted account has no head on the node, so the head is the sweep's own
+        transaction, found from the sweep's signed boundary: the journaled external
+        message, searched in the blocks after the masterchain head at signing on
+        both validators. It must be the one run of that message that took effect,
+        and it must have ended the account (end status nonexist). Its counter is the
+        sweep's seqno plus one; bootstrap_tail then walks back from it to the
+        boundary like from any head. -1:111...1 is not a StateInit address, so a
+        later credit can only make an account that never runs code again."""
+        snapshot = self.bootstrap_snapshot(wallet)
+        if not snapshot["deleted"]:
+            return snapshot
+        found = []
+        for record in self.journal.for_wallet(wallet):
+            if record.get("kind") != "sweep" or not isinstance(record.get("boc"), str):
+                continue
+            tx = self.sweep_transaction(record)
+            if tx is not None:
+                found.append((record, tx))
+        if len(found) != 1:
+            raise Unknown(
+                f"{wallet} is not active and {len(found)} journaled sweeps took effect; "
+                "exactly one must explain the deletion"
+            )
+        record, tx = found[0]
+        if tx["end_status"] != "nonexist":
+            raise Unknown(f"{wallet} is not active but sweep {tx['hash']} did not delete it")
+        return {
+            "head": {"hash": tx["hash"], "lt": str(tx["lt"])},
+            "seqno": record["seqno"] + 1,
+            "identity": self.bootstrap_identity(wallet),
+            "deleted": True,
+            "swept_by": record["id"],
+        }
+
+    def sweep_transaction(self, record: dict) -> dict | None:
+        """The transaction in which a signed sweep took effect, agreed by both
+        validators, or None when it has not run."""
+        try:
+            floor = int(record["search_lt"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise Unknown(f"sweep {record['id']} has no signed search boundary") from exc
+
+        def read(node):
+            runs = node.external_runs(record["wallet"], record["external_hash"], floor)
+            return next((tx for tx in runs if took_effect(tx)), None)
+
+        return self.both(read)
+
+    def bootstrap_retired(self, wallet: str) -> str | None:
+        """The sweep that retired the bootstrap wallet as a funding source: one that
+        settled, or that took effect and failed a later check. None otherwise."""
+        if wallet != BOOTSTRAP_WALLET:
+            return None
+        for record in self.journal.for_wallet(wallet):
+            if record.get("kind") != "sweep":
+                continue
+            evidence = record.get("evidence") or {}
+            if state_of(record) == "settled" or (
+                state_of(record) == "failed" and evidence.get("wallet_tx")
+            ):
+                return record["id"]
+        return None
+
+    def search_floor(self) -> int:
+        """The lower of the two validators' masterchain head end_lt: every block a
+        message broadcast after this read lands in starts above it."""
+
+        def read(node):
+            last = node.call("getMasterchainInfo")["last"]
+            header = node.call(
+                "getBlockHeader",
+                workchain=lib.MASTERCHAIN,
+                shard=str(lib.MASTERCHAIN_SHARD),
+                seqno=int(last["seqno"]),
+            )
+            return int(header["end_lt"])
+
+        return min(self.read_both(read))
 
     def bootstrap_certificate(self, wallet: str) -> dict | None:
         genesis = json.loads((self.ceremony / "genesis.json").read_text())
@@ -1328,7 +1464,8 @@ class Operations:
                     or decoded["subwallet"] != 0
                     or decoded["external_hash"] != record["external_hash"]
                     or record.get("identity") != self.bootstrap_identity(wallet)[:2]
-                    or decoded["mode"] != WALLET_V3_MODE
+                    or decoded["mode"]
+                    != (SWEEP_MODE if record["kind"] == "sweep" else WALLET_V3_MODE)
                     or decoded["init_hash"] is not None
                     or decoded["internal"]
                     != {
@@ -1368,7 +1505,7 @@ class Operations:
         if self.journal.baseline(wallet) is not None:
             raise Unknown("bootstrap checkpoint origin must be genesis, not a manual baseline")
         start = cp["post_seqno"] if cp else 0
-        snapshot = self.bootstrap_snapshot(wallet)
+        snapshot = self.bootstrap_state(wallet)
         if cp and (
             not snapshot["head"]
             or int(snapshot["head"]["lt"]) < int(cp["head"]["lt"])
@@ -1408,7 +1545,7 @@ class Operations:
                 raise Unknown(f"unexplained outgoing transaction {tx['hash']}")
         if not tail["pruned"] and served != set(range(start, end)):
             raise Unknown("served wallet counter continuity disagrees with terminal receipts")
-        if self.bootstrap_snapshot(wallet) != snapshot:
+        if self.bootstrap_state(wallet) != snapshot:
             raise Unknown("wallet snapshot moved during checkpoint verification")
         return {
             "wallet": wallet,
@@ -1418,6 +1555,7 @@ class Operations:
             "head": snapshot["head"],
             "post_seqno": end,
             "identity": snapshot["identity"],
+            "deleted": snapshot["deleted"],
             "counter_interval": [start, end],
             "served_consumers": len(served),
             "pruned_gap": tail["pruned"],
@@ -1506,6 +1644,12 @@ class Operations:
         """Refuse unless the wallet's history is complete, agreed and explained, and
         no other operation of the wallet is open. Called with the journal lock held."""
         self.check_network()
+        retired = self.bootstrap_retired(wallet)
+        if retired:
+            raise OperationRefused(
+                f"the bootstrap wallet has been swept ({retired}); it is retired as a funding "
+                "source: fund from a pool owner wallet (owner-fund, top-up)"
+            )
         for record in self.journal.for_wallet(wallet):
             if record["id"] != op_id and state_of(record) in ("planned", "signed", "broadcast"):
                 raise OperationRefused(
@@ -1557,6 +1701,10 @@ class Operations:
         if params["kind"] not in KINDS:
             raise OperationRefused(f"unknown operation kind {params['kind']}")
         wallet = params["wallet"]
+        if params["kind"] == "sweep" and not self.bootstrap_identity(wallet):
+            raise OperationRefused(
+                "a sweep needs the pinned bootstrap wallet (genesis.json main_wallet_public_key)"
+            )
         with self.journal.lock(wallet):
             op_id = self.journal.newest(step)
             record = self.journal.record(op_id)
@@ -1580,6 +1728,9 @@ class Operations:
             boundary = witness["head"] if witness else self.head(wallet)
             seqno = witness["post_seqno"] if witness else self.seqno(wallet)
             identity = tuple(witness["identity"][:2]) if witness else self.identity(wallet)
+            # A sweep deletes its wallet, and with it the head settlement would page
+            # back from; the masterchain head before signing bounds where it can run.
+            extra = {"search_lt": str(self.search_floor())} if params["kind"] == "sweep" else {}
             boc = sign(seqno)
             decoded = decode_external(boc)
             self.check_message(decoded, record, seqno)
@@ -1595,6 +1746,7 @@ class Operations:
                     "boundary": boundary,
                     "identity": list(identity) if identity else None,
                     "gate_witness": witness,
+                    **extra,
                 },
             )
             crash_point(op_id, "signed")
@@ -1632,8 +1784,22 @@ class Operations:
             raise OperationRefused(
                 f"the message expires at {decoded['valid_until']}, outside ({now}, {now + ttl + TTL_SKEW}]"
             )
-        if decoded["mode"] != WALLET_V3_MODE or decoded["init_hash"]:
-            raise OperationRefused("not a wallet v3 transfer with send mode 3 and no StateInit")
+        mode = SWEEP_MODE if params["kind"] == "sweep" else WALLET_V3_MODE
+        if decoded["mode"] != mode or decoded["init_hash"]:
+            raise OperationRefused(
+                f"not a wallet v3 transfer with send mode {mode} and no StateInit"
+            )
+        if params["kind"] == "sweep" and (
+            params["destination"] != BLACKHOLE
+            or params["value"] != 0
+            or params["bounce"] is not False
+            or params.get("state_init_hash") is not None
+            or params["body_hash"] != EMPTY_BODY_HASH
+        ):
+            raise OperationRefused(
+                "a sweep is a non-bounce transfer of value 0, empty body and no StateInit, "
+                f"to the blackhole {BLACKHOLE}"
+            )
         internal = decoded["internal"] or {}
         expected = {
             "destination": params["destination"],
@@ -1720,6 +1886,7 @@ class Operations:
                     "gate_witness",
                     "checkpoint_refusal",
                     "reason",
+                    "search_lt",
                 }
             }
             successor = attempt_id(step, n + 1)
@@ -1740,7 +1907,7 @@ class Operations:
         """Every wallet transaction of the record's external message, newest first."""
         wallet = record["wallet"]
         if self.bootstrap_identity(wallet):
-            snapshot = self.bootstrap_snapshot(wallet)
+            snapshot = self.bootstrap_state(wallet)
             tail = self.bootstrap_tail(wallet, snapshot, record.get("boundary"))
             if tail["pruned"]:
                 raise Unknown("settlement transaction history pruned before its signed boundary")
@@ -1791,6 +1958,8 @@ class Operations:
             "wallet_tx_lt": str(tx["lt"]),
             "explains": [tx["hash"]],
         }
+        if record["kind"] == "sweep":
+            return self.settle_sweep(record, tx, evidence, expect)
         if record["kind"] == "activate-owner":
             if tx["out"]:
                 return "failed", dict(evidence, form="a", reason="a self-deployment that sent")
@@ -1814,7 +1983,7 @@ class Operations:
             return "pending", dict(evidence, reason="the message is not delivered yet")
         evidence["destination_tx"] = delivery["hash"]
         kind = record["kind"]
-        if kind == "fund":
+        if kind in ("fund", "owner-fund"):
             # Mode 3 charges forwarding separately: the destination is credited the
             # full message value. A credit to an undeployed wallet has a skipped
             # compute and may be aborted; it keeps the credit unless it bounced.
@@ -1836,6 +2005,153 @@ class Operations:
         if expect:
             return expect(self, record, delivery, evidence)
         return "settled", evidence
+
+    def settle_sweep(self, record: dict, tx: dict, evidence: dict, expect) -> tuple[str, dict]:
+        """A sweep settles from its own transaction (one non-bounced internal message
+        to the blackhole carrying a value, the wallet deleted), the wallet reading
+        not active on both validators, the blackhole's transaction for that message
+        crediting nothing, and the burn verified in that block's ValueFlow (expect,
+        verify_burn). Without a block to verify it stays pending."""
+        evidence["wallet_end_status"] = tx["end_status"]
+        out = tx["out"]
+        if (
+            len(out) != 1
+            or out[0]["kind"] != "internal"
+            or out[0]["destination"] != record["destination"]
+            or out[0]["bounced"]
+        ):
+            return "failed", dict(
+                evidence,
+                form="a",
+                reason="the sweep emitted not exactly one message to the blackhole",
+            )
+        message = out[0]
+        evidence["message"] = message["hash"]
+        if tx["end_status"] != "nonexist":
+            return "failed", dict(
+                evidence,
+                form="a",
+                reason=f"the sweep left the wallet {tx['end_status']}, not deleted",
+            )
+        if message["value"] <= 0:
+            return "failed", dict(evidence, form="a", reason="the sweep carried no value")
+        evidence["burned_nanotos"] = message["value"]
+        accounts = self.read_both(lambda node: node.account(record["wallet"]))
+        if any(a["state"] != "uninitialized" for a in accounts):
+            return "pending", dict(
+                evidence, reason="the swept wallet still reads active on a validator"
+            )
+        evidence["wallet_after"] = [
+            {"state": a["state"], "balance": int(a["balance"])} for a in accounts
+        ]
+        delivery = self.find_delivery(record["destination"], message["hash"], message["created_lt"])
+        if delivery is None:
+            return "pending", dict(
+                evidence, reason="the sweep is not delivered to the blackhole yet"
+            )
+        evidence["destination_tx"] = delivery["hash"]
+        evidence["destination_block"] = delivery["block"]
+        evidence["blackhole_end_status"] = delivery["end_status"]
+        if delivery["in_value"] != message["value"] or delivery["credit"] != 0 or delivery["out"]:
+            return "failed", dict(
+                evidence,
+                form="b",
+                reason=f"the blackhole was credited {delivery['credit']} of {message['value']}: "
+                "not burned (is ConfigParam 5 in force?)",
+            )
+        if expect is None:
+            block = delivery["block"]
+            return "pending", dict(
+                evidence,
+                reason=(
+                    "burned at the blackhole; verify the burn in its block: fetch block "
+                    f"({block['workchain']},{int(block['shard']) & (2**64 - 1):016x},{block['seqno']})"
+                    f":{b64hash(block['root_hash']).hex().upper()}"
+                    f":{b64hash(block['file_hash']).hex().upper()} "
+                    f"and run record --id {record['id']} --settled --hint {evidence['wallet_tx']} "
+                    "--block-boc FILE"
+                ),
+            )
+        return expect(self, record, delivery, evidence)
+
+    def verify_burn(
+        self, record: dict, delivery: dict, evidence: dict, boc: bytes
+    ) -> tuple[str, dict]:
+        """The sweep's burn in its block, from the block's own bytes.
+
+        The file must hash to the file hash of the block both validators found the
+        blackhole transaction in. In it: the network's global id, a masterchain block
+        of that seqno whose lt range holds the transaction; the blackhole
+        transaction itself (by hash) with every other blackhole transaction of the
+        block, each crediting nothing; a balancing ValueFlow whose burned equals
+        what those transactions burned, which ConfigParam 5 at 0/1 (read again on
+        both validators) makes all the block burns. A mismatch refuses and leaves
+        the operation open: stop and investigate."""
+        block_id = delivery["block"]
+        if hashlib.sha256(boc).digest() != b64hash(block_id["file_hash"]):
+            raise OperationRefused(
+                f"the block file is not block {block_id['seqno']} (file hash "
+                f"{b64hash(block_id['file_hash']).hex()}), where the blackhole transaction is"
+            )
+        try:
+            block = lib.read_block(boc)
+        except lib.TestnetError as exc:
+            raise OperationRefused(f"the block file cannot be read: {exc}") from exc
+        if (
+            block["global_id"] != self.global_id
+            or not block["masterchain"]
+            or block["workchain"] != lib.MASTERCHAIN
+            or block["seqno"] != int(block_id["seqno"])
+            or not block["start_lt"] <= delivery["lt"] <= block["end_lt"]
+        ):
+            raise OperationRefused("the block file is not the masterchain block of the burn")
+        self.both(lambda node: lib.check_burning_config(self.config_cell(node, 5))["fee_burn"])
+        account = BLACKHOLE.split(":")[1]
+        burns = []
+        for lt, cell in sorted(block["transactions"].get(account, {}).items()):
+            data = base64.b64encode(lib.serialize_boc(cell)).decode()
+            tx = verify_transaction(data, cell.hash().hex(), BLACKHOLE, lt)
+            if tx["in_kind"] != "internal" or tx["credit"] != 0 or tx["out"]:
+                raise OperationRefused(
+                    f"blackhole transaction {tx['hash']} in the block is not a burn"
+                )
+            burns.append({"tx": tx["hash"], "lt": lt, "nanotos": tx["in_value"]})
+        if delivery["hash"] not in {b["tx"] for b in burns}:
+            raise OperationRefused("the block holds no transaction of the blackhole for this sweep")
+        flow = block["value_flow"]
+        burned = sum(b["nanotos"] for b in burns)
+        if flow["burned"] != burned:
+            raise OperationRefused(
+                f"the block's ValueFlow.burned is {flow['burned']}, its blackhole transactions "
+                f"burned {burned}: the burn does not reconcile; stop and investigate"
+            )
+        wallet = record["wallet"].split(":")[1]
+        wallet_in_block = any(
+            cell.hash().hex() == evidence["wallet_tx"]
+            for cell in block["transactions"].get(wallet, {}).values()
+        )
+        return "settled", dict(
+            evidence,
+            burn={
+                "block": block_id,
+                "block_file_sha256": hashlib.sha256(boc).hexdigest(),
+                "value_flow": flow,
+                "blackhole_transactions": burns,
+                "sweep_message": evidence["message"],
+                "sweep_burned_nanotos": evidence["burned_nanotos"],
+                "wallet_tx_in_block": wallet_in_block,
+            },
+        )
+
+    def config_cell(self, node: Node, number: int) -> lib.Cell:
+        try:
+            answer = node.call("getConfigParam", param=number)
+        except Unknown as exc:
+            raise Unknown(f"ConfigParam {number} is unavailable: {exc}") from exc
+        try:
+            return lib.parse_boc(base64.b64decode(answer["config"]["bytes"], validate=True))
+        except (KeyError, TypeError, ValueError, lib.TestnetError) as exc:
+            raise Unknown(f"{node.url}: ConfigParam {number} is unavailable: {exc}") from exc
 
     def check_activated(self, record: dict, evidence: dict) -> tuple[str, dict]:
         state = self.identity(record["wallet"])
@@ -2170,6 +2486,10 @@ class Operations:
         explained = self.journal.explained()
         for wallet in wallets:
             try:
+                retired = self.bootstrap_retired(wallet)
+                if retired:
+                    report.setdefault("retired", []).append(self.retired_report(wallet, retired))
+                    continue
                 if self.bootstrap_identity(wallet):
                     prefix = self.verify_bootstrap_prefix(wallet)
                     report.setdefault("checkpoints", []).append(
@@ -2193,6 +2513,25 @@ class Operations:
             except Unknown as exc:
                 report["unexplained"].append({"wallet": wallet, "unknown": str(exc)})
         return report
+
+    def retired_report(self, wallet: str, sweep_id: str) -> dict:
+        """A swept bootstrap wallet: its sweep's evidence, and the account still not
+        active on both validators. No history is needed: the account is gone and its
+        address is no StateInit's, so nothing can ever run code there again."""
+        accounts = self.read_both(lambda node: node.account(wallet))
+        if any(a["state"] != "uninitialized" for a in accounts):
+            raise Unknown(f"the swept bootstrap wallet {wallet} reads {accounts[0]['state']}")
+        record = self.journal.record(sweep_id) or {}
+        evidence = record.get("evidence") or {}
+        return {
+            "wallet": wallet,
+            "swept_by": sweep_id,
+            "state": record.get("state"),
+            "wallet_tx": evidence.get("wallet_tx"),
+            "destination_tx": evidence.get("destination_tx"),
+            "burned_nanotos": evidence.get("burned_nanotos"),
+            "now": [{"state": a["state"], "balance": int(a["balance"])} for a in accounts],
+        }
 
     def set_baseline(self, wallet: str, reason: str) -> dict:
         with self.journal.lock(wallet):

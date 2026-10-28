@@ -2,7 +2,7 @@
   "schema_version": 1,
   "network": "tos-public-testnet",
   "status": "LIVE",
-  "status_note": "Epoch 4 is running: genesis T 2026-10-18 09:30:00 UTC, four validators and two DHT hosts. The values below are the ones epoch 5 is generated with; until its genesis, the AUTH tag below is epoch 5's, not the running epoch's.",
+  "status_note": "Epoch 5 is running: genesis T 2026-10-24 11:00:00 UTC, four validators and two DHT hosts. The schedule, supply and funding values below are the ones epoch 6 is generated with (memo STATUS 13.254, the CFG-01 epoch-6 plan): a 2 h ConfigParam 15, an 80,151 TOS bootstrap wallet swept to the ConfigParam 5 blackhole once two elected sets hold the four stakes, and 10 TOS of operator fee money. The AUTH tag below is still epoch 5's; it moves to epoch 6's before that genesis.",
   "global_id": {
     "value": 2,
     "status": "CONFIRMED",
@@ -15,12 +15,14 @@
     "global_version": 16,
     "initial_set_valid_for_seconds": 21600,
     "election_params": {
-      "elected_for": 14400,
-      "elections_start_before": 7200,
-      "elections_end_before": 1800,
-      "stake_held_for": 7200
+      "elected_for": 7200,
+      "elections_start_before": 3600,
+      "elections_end_before": 900,
+      "stake_held_for": 3600
     },
-    "schedule_note": "Testnet schedule, decided 2026-10-12 after the first epoch: the canonical template's 131,072 s initial set and 65,536 s terms meant no key block, and so no state or consensus-DB GC, for the first 34 h, and the disks filled first. Here the first election opens at T + 4 h and closes at T + 5.5 h, the elected set takes office at T + 6 h, and the set rotates every 4 h, each rotation a key block. testnet_lib.validator_schedule checks the values against each other.",
+    "schedule_note": "Epoch 6 genesis carries the 2 h schedule epoch 5 adopted by its live ConfigParam 15 vote (validators_elected_for 7200, elections_start_before 3600, elections_end_before 900, stake_held_for 3600; test-lead resolution of the CFG-01 plan's amendment 3). The first election opens at T + 5 h and closes at T + 5 h 45 min, the elected set takes office at T + 6 h, and the set rotates every 2 h, each rotation a key block; the overlapping second set is installed at T + 8 h. The coordinator reads ConfigParam 15 back from the generated state and refuses any other values. A rehearsal at production timing uses network/profile-production-timing.json. The first testnet epoch's template schedule (131,072 s initial set, 65,536 s terms) produced no key block, and so no state or consensus-DB GC, for 34 h, and the disks filled first. testnet_lib.validator_schedule checks the values against each other.",
+    "total_supply_tos": 81151,
+    "supply_note": "The genesis total the coordinator requires of the generated state: the bootstrap wallet (elections.bootstrap_wallet_tos) plus the Elector's and the Config contract's 500 TOS each in the canonical template. ConfigParam 5 must name the blackhole -1:ff...ff with no fee burning and be critical.",
     "source_date_epoch": null,
     "source_date_epoch_note": "Chosen and frozen by the coordinator at the ceremony (decision D03). It must lie in the future when the ceremony runs and leave the initial validator set enough lifetime to complete the first two elections.",
     "auth_network_tag": {
@@ -55,10 +57,13 @@
     "fullnode": {"state_ttl": 86400, "archive_ttl": 604800}
   },
   "elections": {
-    "note": "What testnet-elections.py onboard moves for each genesis validator. The staking account, and so the validator id genesis records, is a single-nominator pool whose owner is an offline wallet on the coordinator and whose validator is the operator wallet on the host. The stake principal never passes through the operator wallet: the bootstrap wallet funds the owner (pool_tos + pool_owner_reserve_tos), the owner sends pool_tos to the pool, and the operator wallet gets only fee money (the pool deployment, and for every election the stake order's fees and a recovery message). The bootstrap wallet holds 100,000 TOS: four validators at 150 + 20,015 leave 19,340. Each pool holds two fixed stakes of 10,002 (the Elector subtracts 1 TOS before it compares with the 10,000 minimum), for the first and the overlapping second election.",
+    "note": "What testnet-elections.py onboard moves for each genesis validator. The staking account, and so the validator id genesis records, is a single-nominator pool whose owner is an offline wallet on the coordinator and whose validator is the operator wallet on the host. The stake principal never passes through the operator wallet: the bootstrap wallet funds the owner (pool_tos + pool_owner_reserve_tos), the owner sends pool_tos to the pool, and the operator wallet gets only fee money (the pool deployment, and for every election the stake order's fees and a recovery message). The bootstrap wallet holds 80,151 TOS (memo STATUS 13.155/13.254, BOOTSTRAP-AMOUNT.md): four validators at 10 + 20,015 = 20,025 use 80,100 and leave 51 for its own transfer fees, the 50 TOS margin and whole-TOS rounding. Once ConfigParam 34 and 32 are both elected sets holding the four stakes, `sweep` sends what is left (send mode 160) to the ConfigParam 5 blackhole and deletes the wallet; after that operator fee money and load funding come from the pool owners (`top-up`, `load --funding-owner`), never from the bootstrap wallet. Each pool holds two fixed stakes of 10,002 (the Elector subtracts 1 TOS before it compares with the 10,000 minimum), for the first and the overlapping second election.",
     "stake_order_nanotos": 1200000000,
     "stake_order_note": "The value the election task attaches to a stake order it sends from the operator wallet to the pool: ELECTOR_STAKE_FEE (1 TOS) + NPOOL_COMPUTE_FEE (0.2 TOS), tos tosctl/src/node-control/elections/src/runner.rs send_stake; the pool forwards the stake itself. The history gate explains exactly one outbound internal message to the recorded operator pool: new-stake (at most this value), recover-stake, update-validator-set, validator-deposit or process-withdraw-requests, each with its decoded body and documented value limit (CEREMONY.md, Election task history). Only new-stake carries an election id and requires its transaction time inside that election window, using current ConfigParam 15 on both validators only when it equals genesis. No historical state read is needed.",
-    "operator_funding_tos": 150,
+    "operator_funding_tos": 10,
+    "operator_funding_note": "Epoch 5 measured at most 5.933747311 TOS of operator cash through the first stake recovery and the third stake order, and 1.442093644 TOS for one stake order and recovery, the allowance for one failed submission (BOOTSTRAP-AMOUNT.md); 10 TOS leaves about 2.6 spare. Later fee money comes from the pool owner (`top-up`).",
+    "bootstrap_wallet_tos": 80151,
+    "bootstrap_margin_tos": 50,
     "pool_deploy_tos": 2,
     "pool_tos": 20010,
     "pool_owner_reserve_tos": 5,

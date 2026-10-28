@@ -4,6 +4,11 @@
 #
 #   TOS_ROOT=<tos checkout> TOS_BUILD=<its build dir> rehearse-loopback.sh WORKDIR [SECONDS]
 #
+# REHEARSAL_PROFILE names another network profile (default network/profile.json),
+# such as network/profile-production-timing.json for a rehearsal of the bootstrap
+# flow at production ConfigParam 15 timing; genesis, pool and the node copies all
+# read it.
+#
 # With REHEARSAL_HOLD_SECONDS=N the network stays up for N seconds after the
 # check passes, for fault experiments: each validator's exact command is in
 # WORKDIR/node-<i>.start and its PID in WORKDIR/node-<i>.pid, so one can be
@@ -46,6 +51,9 @@ WORK=$1
 RUN_SECONDS=${2:-300}
 HOLD_SECONDS=${REHEARSAL_HOLD_SECONDS:-0}
 BASE_PORT=${REHEARSAL_BASE_PORT:-42000}
+PROFILE=${REHEARSAL_PROFILE:-$TESTNET/network/profile.json}
+[ -f "$PROFILE" ] || { echo "no profile $PROFILE" >&2; exit 2; }
+PROFILE="$(cd "$(dirname "$PROFILE")" && pwd)/$(basename "$PROFILE")"
 [ -e "$WORK" ] && { echo "$WORK exists; use a new directory" >&2; exit 2; }
 mkdir -m 0700 -p "$WORK"
 WORK="$(cd "$WORK" && pwd)"
@@ -79,7 +87,7 @@ for tool in "$TOS_BIN"/*; do [ -x "$tool" ] || { echo "missing build output $(re
 port() { echo $((BASE_PORT + 10 * $1 + $2)); }   # node, slot
 node_profile() {
   # Node i's copy of the profile: same network, its own ports on this host.
-  python3 - "$TESTNET/network/profile.json" "$WORK/profile-$1.json" \
+  python3 - "$PROFILE" "$WORK/profile-$1.json" \
     "$(port "$1" 0)" "$(port "$1" 2)" "$(port "$1" 3)" "$(port "$1" 4)" "$(port "$1" 5)" <<'EOF'
 import json, sys
 src, out, adnl, console, lite, rpc, exporter = sys.argv[1], sys.argv[2], *map(int, sys.argv[3:])
@@ -106,7 +114,7 @@ for i in 1 2 3 4; do
   (umask 077; "$TOS_BIN/tos-pq-consensus-key" generate "$db/keys/pq-consensus.seed" >"$WORK/consensus-$i.txt")
   key_id=$(awk '$1 == "key_id" {print $2}' "$WORK/consensus-$i.txt")
   operator_wallet="-1:$(printf 'rehearsal-operator-%s' "$i" | sha256sum | cut -d' ' -f1)"
-  python3 "$EL" pool --name "operator-$i" --operator "$operator_wallet" --ceremony "$WORK/ceremony" \
+  python3 "$EL" --profile "$PROFILE" pool --name "operator-$i" --operator "$operator_wallet" --ceremony "$WORK/ceremony" \
     --tos-root "$TOS_ROOT" --fift "$TOS_BUILD/crypto/fift" >"$WORK/pool-$i.json"
   validator_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["validator_id"])' \
     "$WORK/pool-$i.json")
@@ -123,16 +131,16 @@ for d in 1 2; do
 done
 
 log "coordinator: manifest, genesis, global config"
-python3 "$CO" manifest --ceremony "$WORK/ceremony" --tos-root "$TOS_ROOT" \
+python3 "$CO" --profile "$PROFILE" manifest --ceremony "$WORK/ceremony" --tos-root "$TOS_ROOT" \
   "$WORK"/record-{1,2,3,4}.json
 EPOCH=$(($(date +%s) + 30))
 # The coordinator exports the announced AUTH network tag by hand; here it is
 # read from the profile, unless the caller set one (which genesis then checks).
-: "${TOS_AUTH_NETWORK_TAG:=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["genesis"]["auth_network_tag"]["value"])' "$TESTNET/network/profile.json")}"
+: "${TOS_AUTH_NETWORK_TAG:=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["genesis"]["auth_network_tag"]["value"])' "$PROFILE")}"
 export TOS_AUTH_NETWORK_TAG
-python3 "$CO" genesis --ceremony "$WORK/ceremony" --tos-root "$TOS_ROOT" --tos-build "$TOS_BUILD" \
+python3 "$CO" --profile "$PROFILE" genesis --ceremony "$WORK/ceremony" --tos-root "$TOS_ROOT" --tos-build "$TOS_BUILD" \
   --epoch "$EPOCH" >"$WORK/genesis.out"
-python3 "$CO" global-config --ceremony "$WORK/ceremony" "$WORK/dht-node-1.json" "$WORK/dht-node-2.json"
+python3 "$CO" --profile "$PROFILE" global-config --ceremony "$WORK/ceremony" "$WORK/dht-node-1.json" "$WORK/dht-node-2.json"
 GLOBAL="$WORK/ceremony/global-config.json"
 
 log "DHT nodes start"

@@ -7,6 +7,7 @@ import json
 import os
 import time
 
+import chainbuild
 import fakechain
 import pytest
 import testnet_lib as lib
@@ -2776,3 +2777,348 @@ def test_checkpoint_pruned_head_regression_refused(checkpoint_world, monkeypatch
     checkpoint_prune(operations, monkeypatch)
     with pytest.raises(ops.Unknown, match="head regressed"):
         operations.gate(BOOT, "future")
+
+
+# ------------------------------------------------ the bootstrap wallet's final sweep
+
+BLACK = ops.BLACKHOLE
+
+
+@pytest.fixture
+def sweep_world(checkpoint_world):
+    """A pinned bootstrap wallet on a chain whose ConfigParam 5 burns at the blackhole."""
+    chain, _, _ = checkpoint_world
+    chain.blackhole = BLACK
+    chain.config[5] = chainbuild.burning_config()
+    chain.head_bounds_lt = True
+    return checkpoint_world
+
+
+def sweep_params(**extra):
+    extra = {"value": 0, "destination": BLACK, **extra}
+    return params(kind="sweep", label="sweep-bootstrap", **extra)
+
+
+def sweep_signer(chain, **kw):
+    kw.setdefault("destination", BLACK)
+    kw.setdefault("value", 0)
+    kw.setdefault("mode", ops.SWEEP_MODE)
+    return signer(chain, **kw)
+
+
+def sweep(operations, chain, op_id="sweep-bootstrap", p=None, sign=None):
+    return operations.run(op_id, p or sweep_params(), sign or sweep_signer(chain), lambda d: None)
+
+
+def swept(operations, chain, op_id="sweep-bootstrap"):
+    """Run the sweep until it waits for its burn block; (record, pending evidence)."""
+    with pytest.raises(ops.OperationRefused, match="fetch block"):
+        sweep(operations, chain, op_id)
+    record = operations.journal.record(op_id)
+    outcome, evidence = operations.settle(record)
+    assert outcome == "pending", evidence
+    return record, evidence
+
+
+def burn_block(chain, evidence, flow=None, include=True, global_id=2, extra_txs=None):
+    """The burn block's file, registered so the chain names it by its file hash."""
+    seqno = int(evidence["destination_block"]["seqno"])
+    blackhole = chain.account(BLACK)["txs"]
+    cells = {
+        int(t["transaction_id"]["lt"]): chainbuild.tx_cell(t)
+        for t in blackhole
+        if int(t["transaction_id"]["lt"]) == seqno and include
+    }
+    cells.update(extra_txs or {})
+    boc = chainbuild.block(
+        global_id,
+        seqno,
+        seqno,
+        seqno,
+        flow or chainbuild.balanced_flow(evidence["burned_nanotos"]),
+        {BLACK.split(":")[1]: cells},
+    )
+    chain.blocks[seqno] = boc
+    return boc
+
+
+def settle_burn(operations, evidence, boc, op_id="sweep-bootstrap"):
+    return operations.record_settled(op_id, evidence["wallet_tx"], ops.burn_expect(boc))
+
+
+def test_a_sweep_burns_the_whole_balance_and_deletes_the_wallet(sweep_world):
+    chain, operations, ceremony = sweep_world
+    run(operations, "fund-a", chain=chain)
+    before = chain.account(BOOT)["balance"]
+    record, evidence = swept(operations, chain)
+    lines = [
+        json.loads(x)["state"]
+        for x in operations.journal.path(record["id"]).read_text().splitlines()
+    ]
+    assert lines == ["planned", "signed", "broadcast"]
+    assert int(record["search_lt"]) > 0 and record["seqno"] == 1
+    # The chain: the wallet is gone, all of it went to the blackhole and was burned.
+    assert chain.account(BOOT)["deleted"] and chain.account(BOOT)["balance"] == 0
+    assert evidence["wallet_end_status"] == "nonexist"
+    assert evidence["burned_nanotos"] == before - NANO // 100
+    assert evidence["wallet_after"] == [{"state": "uninitialized", "balance": 0}] * 2
+    assert "credit" not in evidence["reason"]
+    boc = burn_block(chain, evidence)
+    settled = settle_burn(operations, evidence, boc)
+    assert settled["state"] == "settled"
+    burn = settled["evidence"]["burn"]
+    assert burn["value_flow"]["burned"] == evidence["burned_nanotos"]
+    assert burn["blackhole_transactions"] == [
+        {
+            "tx": settled["evidence"]["destination_tx"],
+            "lt": int(evidence["destination_block"]["seqno"]),
+            "nanotos": evidence["burned_nanotos"],
+        }
+    ]
+    assert burn["sweep_message"] == settled["evidence"]["message"]
+    # The terminal certificate covers the deleted wallet up to the sweep's counter.
+    cp = operations.bootstrap_certificate(BOOT)
+    assert cp["deleted"] is True and cp["post_seqno"] == record["seqno"] + 1
+    assert cp["head"]["hash"] == settled["evidence"]["wallet_tx"]
+    assert "checkpoint_refusal" not in settled
+
+
+def test_a_settled_sweep_retires_the_bootstrap_wallet(sweep_world):
+    chain, operations, _ = sweep_world
+    record, evidence = swept(operations, chain)
+    settle_burn(operations, evidence, burn_block(chain, evidence))
+    assert operations.bootstrap_retired(BOOT) == record["id"]
+    with pytest.raises(ops.OperationRefused, match="has been swept"):
+        run(operations, "fund-after", chain=chain)
+    with pytest.raises(ops.OperationRefused, match="has been swept"):
+        sweep(operations, chain, "sweep-again")
+    report = operations.reconcile([BOOT])
+    assert report["unexplained"] == []
+    assert report["retired"][0]["swept_by"] == record["id"]
+    assert report["retired"][0]["burned_nanotos"] == evidence["burned_nanotos"]
+    # Retirement concerns only the bootstrap source; other wallets still sign.
+    assert operations.bootstrap_retired(OTHER) is None
+
+
+def test_a_retired_wallet_that_reads_active_again_is_unexplained(sweep_world):
+    chain, operations, _ = sweep_world
+    _, evidence = swept(operations, chain)
+    settle_burn(operations, evidence, burn_block(chain, evidence))
+    chain.account(BOOT)["deleted"] = False
+    chain.account(BOOT)["state"] = "active"
+    report = operations.reconcile([BOOT])
+    assert "reads active" in report["unexplained"][0]["unknown"]
+
+
+@pytest.mark.parametrize(
+    "sign_kw, p_kw, message",
+    [
+        ({"mode": 3}, {}, "send mode 160"),
+        ({"mode": 128}, {}, "send mode 160"),
+        ({"bounce": True}, {"bounce": True}, "non-bounce"),
+        ({"destination": DEST}, {"destination": DEST}, "to the blackhole"),
+        ({"value": NANO}, {"value": NANO}, "value 0"),
+    ],
+)
+def test_only_the_exact_final_transfer_is_signed_as_a_sweep(sweep_world, sign_kw, p_kw, message):
+    chain, operations, _ = sweep_world
+    with pytest.raises(ops.OperationRefused, match=message):
+        sweep(operations, chain, p=sweep_params(**p_kw), sign=sweep_signer(chain, **sign_kw))
+    assert chain.sent == []
+    assert operations.journal.record("sweep-bootstrap")["state"] == "planned"
+
+
+def test_a_funding_signed_with_the_sweep_mode_is_refused(sweep_world):
+    chain, operations, _ = sweep_world
+    with pytest.raises(ops.OperationRefused, match="send mode 3"):
+        run(operations, chain=chain, sign=signer(chain, mode=ops.SWEEP_MODE))
+    assert chain.sent == []
+
+
+def test_a_sweep_needs_the_pinned_bootstrap_wallet(world):
+    chain, operations, _ = world
+    with pytest.raises(ops.OperationRefused, match="pinned bootstrap"):
+        sweep(operations, chain)
+    assert chain.sent == [] and operations.journal.record("sweep-bootstrap") is None
+
+
+def test_a_sweep_that_did_not_delete_the_wallet_failed(sweep_world):
+    chain, operations, _ = sweep_world
+    chain.keep_swept = True
+    with pytest.raises(ops.OperationRefused, match="not deleted"):
+        sweep(operations, chain)
+    record = operations.journal.record("sweep-bootstrap")
+    assert record["state"] == "failed" and record["evidence"]["form"] == "a"
+
+
+def test_a_sweep_credited_at_the_blackhole_is_not_burned(sweep_world):
+    chain, operations, _ = sweep_world
+    chain.blackhole = None  # ConfigParam 5 not in force: an ordinary account is credited
+    with pytest.raises(ops.OperationRefused, match="not burned"):
+        sweep(operations, chain)
+    record = operations.journal.record("sweep-bootstrap")
+    assert record["state"] == "failed" and record["evidence"]["form"] == "b"
+    # It took effect: the bootstrap wallet is retired all the same.
+    assert operations.bootstrap_retired(BOOT) == "sweep-bootstrap"
+
+
+@pytest.mark.parametrize("point", ["signed", "broadcast"])
+def test_an_interrupted_sweep_is_settled_from_its_signed_boundary(sweep_world, monkeypatch, point):
+    chain, operations, _ = sweep_world
+    run(operations, "fund-a", chain=chain)
+    crash_at(monkeypatch, "sweep-bootstrap", point)
+    with pytest.raises(Crash):
+        sweep(operations, chain)
+    monkeypatch.setattr(ops, "crash_point", lambda *a: None)
+    if point == "signed":
+        assert chain.sent == [chain.sent[0]]  # only the funding went out
+        with pytest.raises(ops.OperationRefused, match="fetch block"):
+            operations.resubmit("sweep-bootstrap")
+    chain.settle_all()
+    assert chain.account(BOOT)["deleted"]
+    # A rerun refuses the open operation; reconcile shows it from the chain alone.
+    with pytest.raises(ops.OperationRefused, match="is open"):
+        sweep(operations, chain)
+    row = next(
+        r for r in operations.reconcile([BOOT])["operations"] if r["id"] == "sweep-bootstrap"
+    )
+    outcome, evidence = row["chain"]
+    assert outcome == "pending" and "fetch block" in evidence["reason"]
+    settled = settle_burn(operations, evidence, burn_block(chain, evidence))
+    assert settled["state"] == "settled"
+    assert operations.bootstrap_certificate(BOOT)["deleted"] is True
+
+
+def test_a_deleted_wallet_no_journaled_sweep_explains_is_unknown(sweep_world):
+    chain, operations, _ = sweep_world
+    run(operations, "fund-a", chain=chain)
+    chain.account(BOOT)["deleted"] = True
+    with pytest.raises(ops.Unknown, match="exactly one must explain"):
+        operations.gate(BOOT, "next")
+
+
+def test_a_sweep_without_its_signed_search_boundary_is_unknown(sweep_world):
+    chain, operations, _ = sweep_world
+    record, _ = swept(operations, chain)
+    path = operations.journal.path(record["id"])
+    lines = [json.loads(x) for x in path.read_text().splitlines()]
+    for line in lines:
+        line.pop("search_lt", None)
+    path.write_text("".join(json.dumps(x) + "\n" for x in lines))
+    with pytest.raises(ops.Unknown, match="search boundary"):
+        operations.settle(operations.journal.record(record["id"]))
+
+
+def test_a_deleted_wallet_validators_disagree_on_is_unknown(sweep_world, monkeypatch):
+    chain, operations, _ = sweep_world
+    record, _ = swept(operations, chain)
+    real = operations.nodes[1].external_runs
+    monkeypatch.setattr(operations.nodes[1], "external_runs", lambda *a: real(*a)[:-1])
+    with pytest.raises(ops.Unknown, match="disagree"):
+        operations.settle(operations.journal.record(record["id"]))
+
+
+def test_the_burn_block_must_be_the_blackhole_transactions_block(sweep_world):
+    chain, operations, _ = sweep_world
+    _, evidence = swept(operations, chain)
+    good = burn_block(chain, evidence)
+    with pytest.raises(ops.OperationRefused, match="file hash"):
+        settle_burn(operations, evidence, good + b"\x00")
+    assert operations.journal.record("sweep-bootstrap")["state"] == "broadcast"
+
+
+@pytest.mark.parametrize(
+    "damage, message",
+    [
+        ("burned-short", "does not reconcile"),
+        ("value-flow-v1", "does not reconcile"),
+        ("unbalanced", "does not balance"),
+        ("no-transaction", "no transaction of the blackhole"),
+        ("other-network", "not the masterchain block"),
+        ("credited-burn", "not a burn"),
+    ],
+)
+def test_a_burn_the_block_does_not_account_for_refuses(sweep_world, damage, message):
+    chain, operations, _ = sweep_world
+    _, evidence = swept(operations, chain)
+    burned = evidence["burned_nanotos"]
+    kw = {}
+    if damage == "burned-short":
+        kw["flow"] = chainbuild.balanced_flow(burned - 1)
+    elif damage == "unbalanced":
+        kw["flow"] = dict(chainbuild.balanced_flow(burned), created=1)
+    elif damage == "no-transaction":
+        kw["include"] = False
+        kw["flow"] = chainbuild.balanced_flow(0)
+    elif damage == "other-network":
+        kw["global_id"] = 3
+    elif damage == "credited-burn":
+        credited = fakechain.transaction_cell(
+            BLACK,
+            int(evidence["destination_block"]["seqno"]) + 1,
+            internal_message(BLACK, NANO, False),
+            [],
+            False,
+            False,
+            NANO,
+        )
+        kw["extra_txs"] = {int(evidence["destination_block"]["seqno"]) + 1: credited}
+    if damage == "value-flow-v1":
+        seqno = int(evidence["destination_block"]["seqno"])
+        cell = chainbuild.tx_cell(
+            next(t for t in chain.account(BLACK)["txs"] if int(t["transaction_id"]["lt"]) == seqno)
+        )
+        boc = chainbuild.block(
+            2,
+            seqno,
+            seqno,
+            seqno,
+            chainbuild.balanced_flow(0),
+            {BLACK.split(":")[1]: {seqno: cell}},
+            v2=False,
+        )
+        chain.blocks[seqno] = boc
+    else:
+        boc = burn_block(chain, evidence, **kw)
+    with pytest.raises(ops.OperationRefused, match=message):
+        settle_burn(operations, evidence, boc)
+    assert operations.journal.record("sweep-bootstrap")["state"] == "broadcast"
+
+
+@pytest.mark.parametrize("config", [chainbuild.burning_config(num=1, denom=2), None])
+def test_the_burn_is_verified_only_under_the_decided_config_param_5(sweep_world, config):
+    chain, operations, _ = sweep_world
+    _, evidence = swept(operations, chain)
+    boc = burn_block(chain, evidence)
+    chain.config[5] = config
+    with pytest.raises(lib.TestnetError):
+        settle_burn(operations, evidence, boc)
+    assert operations.journal.record("sweep-bootstrap")["state"] == "broadcast"
+
+
+def test_a_sweep_before_deletion_settles_through_the_ordinary_head(sweep_world):
+    # Until the account is gone the head is read as always; the search is not used.
+    chain, operations, _ = sweep_world
+    record = None
+    with pytest.raises(ops.OperationRefused):
+        sweep(operations, chain, sign=sweep_signer(chain, ttl=1))  # expires unexecuted
+    record = operations.journal.record("sweep-bootstrap")
+    assert not chain.account(BOOT).get("deleted")
+    chain.now += 400
+    failed = operations.record_failed(record["id"], "c")
+    assert failed["state"] == "failed" and failed["evidence"]["form"] == "c"
+    # An expired sweep never took effect: the wallet is not retired and may be swept again.
+    assert operations.bootstrap_retired(BOOT) is None
+
+
+def test_an_owner_fund_settles_like_a_funding(world):
+    chain, operations, _ = world
+    chain.wallet(OWNER, 50 * NANO, public_key="0e" * 32, subwallet=0x504F4F4C)
+    record = run(
+        operations,
+        "owner-fund-a",
+        p=params(wallet=OWNER, kind="owner-fund", destination=OTHER),
+        sign=signer(chain, wallet=OWNER, destination=OTHER),
+    )
+    assert record["state"] == "settled"
+    assert chain.account(OTHER)["balance"] == 5 * NANO

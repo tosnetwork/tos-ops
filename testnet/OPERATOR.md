@@ -259,9 +259,13 @@ timeouts need coordinator cross-node/UDP checks; this bundle has no dedicated
 peer-health command. Coordinator watching/alerts: [testnet README](README.md#watching-the-network).
 
 The operator wallet pays only fees: 1.2 TOS with every stake order and 0.2 TOS
-with every recovery, plus its own gas. Ask the coordinator for a journaled
-bootstrap [`fund` top-up](CEREMONY.md#topping-up-an-operator-wallet) well before
-it runs low; the principal stays in the pool.
+with every recovery, plus its own gas. Onboarding gives it 10 TOS, about two
+elections past the first returned stake, and staking rewards never reach it (they
+go to the pool and its owner). Ask the coordinator for a journaled
+[top-up](CEREMONY.md#topping-up-an-operator-wallet) well before it runs low: from
+your pool's owner (`top-up`, after the owner withdrew rewards), or before the
+bootstrap wallet is swept a `fund` out of its margin. The principal stays in the
+pool.
 
 The gate explains only fully matched election-task pool messages from their
 transaction BOCs. New-stake also requires a genesis-unchanged ConfigParam 15 on

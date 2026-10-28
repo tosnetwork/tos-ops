@@ -61,8 +61,10 @@ testnet/
 │   ├── testnet-elections.py      pool: before genesis, the offline owner and the staking pool (the validator id);
 │   │                             fund | onboard: bring a genesis validator into elections;
 │   │                             withdraw: principal back to the offline pool owner;
+│   │                             top-up: operator fee money from its pool owner;
+│   │                             sweep: the bootstrap wallet's final transfer to the blackhole;
 │   │                             reconcile | record | resubmit | baseline | retry: manual operation recovery;
-│   │                             load: load test through a post-quantum high-volume wallet (coordinator)
+│   │                             load: load test through a post-quantum high-volume wallet, owner-funded (coordinator)
 │   ├── testnet-governance.py     propose | sign | vote | status | adopted: change a ConfigParam by a validator vote (coordinator)
 │   ├── testnet_ops.py            value-moving operations: journal, two-validator gate, settlement by hashes
 │   ├── retire-host.sh            archive a host's evidence, then retire it from an ended epoch (root)
@@ -150,7 +152,8 @@ scripts refuse or flag it rather than choose silently.
 | --- | --- | --- |
 | D03 global id | `network/profile.json` `global_id` | 2, `CONFIRMED` 2026-10-12 (mainnet 1). The scripts refuse 1 and 3, and `genesis` refuses any global id not marked `CONFIRMED` |
 | D03 genesis epoch | `testnet-coordinator.py genesis --epoch` | chosen at the ceremony; refused if older than one hour or more than 14 days ahead |
-| D03 validator schedule | `network/profile.json` `genesis.initial_set_valid_for_seconds` and `genesis.election_params`; `genesis` replaces the two template lines and records them in `genesis.json` | decided 2026-10-12 after the first epoch: initial set 21,600 s, ConfigParam 15 = 14,400 / 7,200 / 1,800 / 7,200 (first election T + 4 h to T + 5.5 h, a new set and a key block every 4 h). The canonical 131,072 s / 65,536 s schedule left the first epoch without GC for 34 h |
+| D03 validator schedule | `network/profile.json` `genesis.initial_set_valid_for_seconds` and `genesis.election_params`; `genesis` replaces the two template lines and records them in `genesis.json` | epoch 6 (CFG-01, test lead 2026-10-28): initial set 21,600 s, ConfigParam 15 = 7,200 / 3,600 / 900 / 3,600, the 2 h schedule epoch 5 adopted by its live vote (first election T + 5 h to T + 5 h 45 min, a new set and a key block every 2 h); `genesis` reads ConfigParam 15 back from the state. `network/profile-production-timing.json` keeps the canonical schedule for a production-timing rehearsal. The canonical 131,072 s / 65,536 s schedule left the first epoch without GC for 34 h |
+| Genesis supply and burning (ConfigParam 5) | `network/profile.json` `elections.bootstrap_wallet_tos`, `genesis.total_supply_tos`; the values themselves come from the tos template | 80,151 TOS bootstrap wallet, 81,151 TOS total; ConfigParam 5 = blackhole `-1:ff…ff`, fees burned 0/1, critical. `genesis` refuses any other state; the bootstrap wallet is swept to the blackhole after the second elected set (CEREMONY.md, "Sweeping the bootstrap wallet") |
 | Validator retention | `network/profile.json` `retention`, `systemd/tos-testnet-validator.service` | `state_ttl` 3,600 s, `archive_ttl` 86,400 s; a test keeps the unit and the profile equal |
 | D05 privacy | the template deploys no pool | disabled; version 16 without `quantum-admission-candidate` |
 | AUTH network tag (ConfigParam 48) | `network/profile.json` `genesis.auth_network_tag`, given to `genesis` as `TOS_AUTH_NETWORK_TAG` | epoch 5 (test lead, 2026-10-24; the owner may replace the rule): SHA-256 of `TOS-AUTH-NETWORK-TAG-v1;network=tos-public-testnet;global_id=2;epoch=5` = `3edc0460…fd2c`, a new tag every epoch. Version 16 makes ConfigParam 48 mandatory and critical; tos assigns no tag (CEREMONY.md section 5) |
