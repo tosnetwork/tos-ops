@@ -179,6 +179,26 @@ Before the announced epoch, height zero can be expected; afterward ask the
 coordinator to run [the two-node live check](CEREMONY.md#7-coordinator-the-chain-is-live).
 An active unit alone does not prove sync or correct custody.
 
+### A new full node from a published snapshot
+
+A new full node can start from a signed snapshot generation instead of syncing
+from genesis. Activate it with `--no-start`, then install the generation with
+`tosctl node sync bootstrap` (tos repository, `doc/node-data-sync.md`, section
+"Bootstrap a new node"):
+
+```bash
+sudo /opt/tos-testnet/scripts/install-node.sh activate --role fullnode \
+  --global-config <GLOBAL_CONFIG_JSON> --sha256 <PUBLISHED_SHA256> \
+  --genesis <PUBLISHED_GENESIS_DIRECTORY> --no-start
+systemctl is-active tos-testnet-fullnode   # inactive: the database has never run
+```
+
+`--no-start` does everything `activate` does and enables the unit, but does not
+start it. Bootstrap refuses a database that has ever run, so do not start the
+unit before bootstrap; bootstrap starts it once the verified data is installed.
+If the node starts first, it syncs from genesis as usual. `--no-start` is
+refused for every other role: a validator never joins from a snapshot.
+
 ## 6. Onboard for elections
 
 **Operator supplies:** label, host/approved SSH access, the operator wallet made
