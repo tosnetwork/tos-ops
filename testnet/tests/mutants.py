@@ -1663,6 +1663,12 @@ M += [
         '    if True:\n        return "set"',
     ),
     (
+        "MW5 the refusal prints the configured record",
+        OPERATOR,
+        "f\"a different master wallet is configured (fields that differ: {', '.join(differ)}; \"",
+        "f\"a different master wallet is configured ({json.dumps(current)}; fields that differ: {', '.join(differ)}; \"",
+    ),
+    (
         "MW3 init-operator.sh replaces the master wallet",
         W / "scripts/init-operator.sh",
         "--secret-name master-wallet-secret --version V3R2 >/dev/null",

@@ -1,3 +1,4 @@
+import base64
 import importlib.util
 import json
 import os
@@ -212,3 +213,30 @@ def test_init_operator_configures_and_checks_the_master_wallet():
     assert 'if [ "$master_action" = set ]; then' in script
     # subwallet 42 and workchain 0 are the command's defaults (tosctl master_wallet_cmd.rs).
     assert "--subwallet-id" not in script and "--workchain 0" not in script
+
+
+SECRET_MARKER = "5ec7e75ec7e75ec7e75ec7e75ec7e75ec7e75ec7e75ec7e75ec7e75ec7e75ec7"
+
+
+@pytest.mark.parametrize(
+    ("key", "kind"),
+    [
+        (
+            {"type_id": 1, "pvt_key": base64.b64encode(bytes.fromhex(SECRET_MARKER)).decode()},
+            "inline private key",
+        ),
+        (SECRET_MARKER + SECRET_MARKER, "inline key pair"),
+        ({"name": "secret-" + SECRET_MARKER}, "vault key"),
+    ],
+)
+def test_the_refusal_never_prints_the_configured_record(tmp_path, key, kind):
+    """tosctl accepts inline key material in a master-wallet record; a refusal
+    names only the differing fields and the key's kind."""
+    path = tosctl_config(tmp_path, dict(EPOCH5_MASTER_WALLET, key=key))
+    result = run_master_wallet(path)
+    assert result.returncode == 1
+    assert "fields that differ: key" in result.stderr
+    assert f"key kind: {kind}" in result.stderr
+    b64 = base64.b64encode(bytes.fromhex(SECRET_MARKER)).decode()
+    for marker in (SECRET_MARKER, b64, SECRET_MARKER[:16]):
+        assert marker not in result.stdout and marker not in result.stderr

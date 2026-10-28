@@ -250,10 +250,38 @@ def master_wallet_action(config: dict) -> str:
         return "set"
     if current == MASTER_WALLET:
         return "keep"
+    # The record may carry key material (tosctl accepts an inline private key or
+    # key pair), so the refusal names only the fields that differ and the key's
+    # kind, never a value.
+    if isinstance(current, dict):
+        differ = sorted(
+            field
+            for field in set(current) | set(MASTER_WALLET)
+            if current.get(field) != MASTER_WALLET.get(field)
+        )
+        kind = key_kind(current.get("key"))
+    else:
+        differ, kind = ["(not a record)"], "unknown"
     raise lib.TestnetError(
-        f"a different master wallet is configured ({json.dumps(current, sort_keys=True)}), "
-        f"not {json.dumps(MASTER_WALLET, sort_keys=True)}; it is never replaced"
+        f"a different master wallet is configured (fields that differ: {', '.join(differ)}; "
+        f"key kind: {kind}); expected the vault key master-wallet-secret, V3R2, subwallet 42, "
+        "workchain 0; it is never replaced"
     )
+
+
+def key_kind(key) -> str:
+    """The kind of a tosctl KeyConfig, from its shape only (never its contents)."""
+    if isinstance(key, dict):
+        if set(key) == {"name"}:
+            return "vault key"
+        if "pvt_key" in key:
+            return "inline private key"
+        if "pub_key" in key:
+            return "public key"
+        return "unknown"
+    if isinstance(key, str):
+        return "inline key pair"
+    return "unknown"
 
 
 def cmd_master_wallet(args: argparse.Namespace) -> None:
