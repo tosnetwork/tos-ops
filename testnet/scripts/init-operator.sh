@@ -7,7 +7,8 @@
 # NAME labels this validator in tosctl (node NAME, wallet op-NAME, pool
 # pool-NAME). Creates the non-login system user tos-ctl, /var/lib/tos-ctl
 # (owned by tos-ctl, 0700) and /etc/tos/tosctl.env (root, 0600) with a fresh
-# vault master key, points tosctl at the validator's loopback JSON-RPC and
+# vault master key, points tosctl at the validator's loopback JSON-RPC,
+# configures tosctl's master wallet (the election task needs one) and
 # creates the operator wallet (V3R2, masterchain). Without --wallet-only it
 # also imports the engine console's client key and registers the node's
 # console, which exist once install-node.sh activate has run. Prints the
@@ -81,6 +82,19 @@ set +a
 cd "$DIR"
 [ -f "$CONFIG_PATH" ] || as_ctl tosctl config generate -o "$CONFIG_PATH" >/dev/null
 as_ctl tosctl config chain-rpc set --url "http://127.0.0.1:$(profile ports json_rpc_loopback)/jsonRPC" >/dev/null
+# The election task (tosctl service) refuses to start without a master wallet,
+# and `tosctl config generate` no longer writes one. Configure the record the
+# generated configuration used to carry (vault key master-wallet-secret, V3R2,
+# subwallet 42, workchain 0; testnet-operator.py MASTER_WALLET): the service
+# creates that key in the vault on its first start. A different master wallet
+# already configured is never replaced (it may hold funds).
+master_action=$(python3 "$HERE/testnet-operator.py" master-wallet --config "$CONFIG_PATH") \
+  || die "the master wallet in $CONFIG_PATH is not the expected one; not replacing it"
+if [ "$master_action" = set ]; then
+  as_ctl tosctl config master-wallet set --secret-name master-wallet-secret --version V3R2 >/dev/null
+fi
+python3 "$HERE/testnet-operator.py" master-wallet --config "$CONFIG_PATH" --require >/dev/null \
+  || die "the master wallet is not configured as expected in $CONFIG_PATH"
 
 if [ "$WALLET_ONLY" = 0 ] && ! as_ctl tosctl key ls 2>/dev/null | grep -q 'console-client'; then
   # Root reads the validator's key file; tos-ctl writes the copy tosctl imports.

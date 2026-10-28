@@ -382,7 +382,7 @@ python3 /opt/tos-testnet/scripts/testnet-elections.py onboard \
 It refuses unless `ceremony/pools.json` records the validator's pool, the pool
 derives from its recorded owner and operator wallet, and the genesis records
 name it as a validator id. It runs `init-operator.sh` on the host (vault,
-console key, node registration, operator wallet) and refuses unless the host's
+console key, node registration, tosctl's master wallet, operator wallet) and refuses unless the host's
 operator wallet is the one the pool was derived from (a host that kept
 `/var/lib/tos-ctl` over a reset still has the old wallet key). Then it runs these
 steps, in order:
@@ -403,6 +403,18 @@ steps, in order:
    for another account);
 7. it runs `enable-elections.sh`, which installs
    `systemd/tos-testnet-elections.service` (`Restart=always`).
+
+The election task (`tosctl service`) refuses to start without a master wallet
+(`service failed: initialize runtime config store: master wallet not
+configured`), and `tosctl config generate` no longer writes one. So
+`init-operator.sh`, in both modes, configures exactly the record the generated
+configuration used to carry and epoch 5 ran with: vault key
+`master-wallet-secret`, V3R2, subwallet 42, workchain 0 (`tosctl config
+master-wallet set --secret-name master-wallet-secret --version V3R2`; the
+record is `MASTER_WALLET` in `testnet-operator.py`). The service creates that
+key in the host's vault on its first start, as it did on epoch 5; no step here
+creates or reads it, and the testnet sends it no value. A rerun keeps it; a
+different master wallet already configured is refused, never replaced.
 
 The amounts are `elections` in the profile. `ceremony/secret/main-wallet.pk`
 and the pool owners' keys never leave the coordinator.

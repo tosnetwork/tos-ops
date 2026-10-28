@@ -1649,6 +1649,31 @@ M += [
         "InaccessiblePaths=-/var/lib/tos -/var/lib/tos-wallet-index -/var/lib/tos-ctl\n",
         "ReadWritePaths=/var/lib/tos/fullnode\n",
     ),
+    # tosctl's master wallet (init-operator.sh, testnet-operator.py master-wallet).
+    (
+        "MW1 a different master wallet is kept",
+        OPERATOR,
+        '    if current == MASTER_WALLET:\n        return "keep"',
+        '    if True:\n        return "keep"',
+    ),
+    (
+        "MW2 an existing master wallet is set again",
+        OPERATOR,
+        '    if current is None:\n        return "set"',
+        '    if True:\n        return "set"',
+    ),
+    (
+        "MW3 init-operator.sh replaces the master wallet",
+        W / "scripts/init-operator.sh",
+        "--secret-name master-wallet-secret --version V3R2 >/dev/null",
+        "--secret-name master-wallet-secret --version V3R2 --force >/dev/null",
+    ),
+    (
+        "MW4 init-operator.sh skips the required check",
+        W / "scripts/init-operator.sh",
+        'master-wallet --config "$CONFIG_PATH" --require >/dev/null',
+        'master-wallet --config "$CONFIG_PATH" >/dev/null',
+    ),
     (
         "RR13 rpc liteserver not on loopback",
         OPERATOR,
