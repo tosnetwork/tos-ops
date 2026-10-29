@@ -7,12 +7,13 @@ Real bytes anchor every reader:
 * zerostate-v16-auth.boc is create-state output of the canonical template before
   the CFG-01 change (100,000 TOS bootstrap wallet, no ConfigParam 5): the
   account reader must find exactly that, and the genesis check must refuse it.
-* zerostate-epoch6-candidate.boc is create-state output (tos d1cbbd2f4, global id 2,
-  SOURCE_DATE_EPOCH 1793000000, the epoch-6 AUTH tag rule, the disposable test key
-  0x53 repeated) of that template with the CFG-01 bootstrap lines applied as
-  epoch6_candidate() below writes them: an 80,151 TOS wallet, ConfigParam 5 =
-  blackhole -1:ff...ff burning 0/1, 5 critical, and the epoch-6 ConfigParam 15.
-  Regenerate it from the merged tos template once that lands.
+* zerostate-epoch6-candidate.boc is create-state output of the merged CFG-01
+  template (tos 5d8b4d3ad, the merge of tos #365, which carries the bootstrap lines
+  itself: an 80,151 TOS wallet, ConfigParam 5 = blackhole -1:ff...ff burning 0/1, 5
+  critical), with global id 2, SOURCE_DATE_EPOCH 1793000000, the epoch-6 AUTH tag
+  rule, the epoch-6 ConfigParam 15 and the disposable test key 0x53 repeated, made
+  by create_state() below; test_the_epoch6_profile_schedule_reaches_the_zero_state
+  regenerates it and requires the same bytes.
 * masterchain-block-seq12.boc is a real masterchain block (tos
   test/pq-native/x02-config34-fixtures/z01-seq12-block.boc; its sha256 is its
   recorded file hash).
@@ -342,9 +343,9 @@ def test_the_epoch6_profile_schedule_reaches_the_zero_state(tmp_path):
     ]
     found = check(boc, schedule)
     assert found["bootstrap_wallet_nanotos"] == 80_151 * NANO
-    if "TM$80151" not in tos_template():
-        # The committed candidate is exactly this output of the pre-merge template.
-        assert boc == CANDIDATE
+    # The committed candidate is exactly this output of the merged template.
+    assert "TM$80151" in tos_template(), "TOS_ROOT predates the CFG-01 template (tos #365)"
+    assert boc == CANDIDATE
 
 
 def test_the_production_timing_schedule_reaches_the_zero_state(tmp_path):
