@@ -123,7 +123,71 @@ def load_profile(path: Path = PROFILE_PATH) -> dict[str, Any]:
     public = [ports["adnl_udp"], ports["adnl_udp"] + ports["quic_udp_offset"], ports["dht_udp"]]
     if ports["adnl_udp"] + ports["quic_udp_offset"] > 65535 or len(set(public)) != len(public):
         raise TestnetError("profile UDP ports collide or the derived QUIC port is out of range")
+    shielded_pool_record(profile)
     return profile
+
+
+SHIELDED_POOL_DISABLED = "disabled"
+SHIELDED_POOL_RESTRICTED = "restricted-epoch-6-test"
+SHIELDED_POOL_EPOCH = 6
+
+
+def _hex64(value: Any, name: str) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise TestnetError(f"shielded pool record: {name} must be 64 lowercase hex digits")
+    return value
+
+
+def shielded_pool_record(profile: dict[str, Any]) -> dict[str, Any] | None:
+    """The shielded pool's activation record, or None while the feature is disabled.
+
+    The flag is metadata: it deploys and protects nothing. A restricted status
+    must carry a record bound to this profile's network: its global id, the
+    AUTH tag of the same epoch, and an address that is the StateInit hash. Any
+    other status, or a record without that status, is refused.
+    """
+    features = profile.get("features", {})
+    status = features.get("shielded_pool")
+    record = features.get("shielded_pool_record")
+    if status == SHIELDED_POOL_DISABLED:
+        if record is not None:
+            raise TestnetError("shielded pool record present while the feature is disabled")
+        return None
+    if status != SHIELDED_POOL_RESTRICTED:
+        raise TestnetError(f"unknown shielded pool status {status!r}")
+    if not isinstance(record, dict) or record.get("status") != status:
+        raise TestnetError("a restricted shielded pool needs a record with the same status")
+    network = record.get("network", {})
+    pool = record.get("pool", {})
+    tag = profile.get("genesis", {}).get("auth_network_tag", {})
+    if network.get("global_id") != profile.get("global_id", {}).get("value"):
+        raise TestnetError("shielded pool record: global id differs from the profile")
+    if (
+        network.get("epoch") != SHIELDED_POOL_EPOCH
+        or tag.get("campaign_epoch") != SHIELDED_POOL_EPOCH
+    ):
+        raise TestnetError("shielded pool record: the restricted test is for epoch 6 only")
+    if _hex64(network.get("auth_network_tag"), "auth_network_tag") != tag.get("value"):
+        raise TestnetError("shielded pool record: AUTH tag differs from the profile's epoch tag")
+    for name in ("zero_state_root_hash", "zero_state_file_hash", "config_param_48_hash"):
+        _hex64(network.get(name), name)
+    for name in (
+        "code_hash",
+        "data_hash",
+        "state_init_hash",
+        "state_init_boc_sha256",
+        "execution_domain",
+    ):
+        _hex64(pool.get(name), name)
+    if pool.get("address") != "0:" + pool["state_init_hash"]:
+        raise TestnetError("shielded pool record: the address is not 0:<StateInit hash>")
+    groth16 = record.get("groth16", {})
+    for name in ("vk_sha256", "transcript"):
+        _hex64(groth16.get(name), name)
+    _hex64(record.get("profile", {}).get("profile_hash"), "profile_hash")
+    if not record.get("gate_decisions"):
+        raise TestnetError("shielded pool record: no gate decision recorded")
+    return record
 
 
 def validator_schedule(profile: dict[str, Any]) -> dict[str, int]:

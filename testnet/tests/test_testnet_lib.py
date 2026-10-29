@@ -45,7 +45,82 @@ def test_repository_profile_loads():
     assert profile["global_id"]["value"] == 2
     assert lib.confirmed_global_id(profile) == 2
     assert profile["genesis"]["validators"] == 4
-    assert profile["features"]["shielded_pool"] == "disabled"
+    assert profile["features"]["shielded_pool"] == "restricted-epoch-6-test"
+    assert profile["features"]["energy"] == "disabled"
+
+
+def test_the_shielded_pool_record_is_bound_to_this_epoch():
+    profile = lib.load_profile()
+    record = lib.shielded_pool_record(profile)
+    assert record["network"]["global_id"] == 2
+    assert record["network"]["auth_network_tag"] == profile["genesis"]["auth_network_tag"]["value"]
+    assert record["pool"]["address"] == "0:" + record["pool"]["state_init_hash"]
+    assert record["pool"]["address"] == (
+        "0:60b33d9dbd3e6e4a45a6cf3f3693106186c3911cd75c8c26cb6a679294c29a34"
+    )
+    assert record["groth16"]["vk_sha256"] == (
+        "49696f52f361817869f68c3ba68d0d5a854737a4133ae4616255ac4a3846778c"
+    )
+
+
+def _restricted():
+    return copy.deepcopy(lib.load_profile())
+
+
+@pytest.mark.parametrize(
+    "change, message",
+    [
+        (lambda p: p["features"].update(shielded_pool="enabled"), "unknown shielded pool status"),
+        (
+            lambda p: p["features"].update(shielded_pool="disabled"),
+            "present while the feature is disabled",
+        ),
+        (lambda p: p["features"].pop("shielded_pool_record"), "needs a record"),
+        (
+            lambda p: p["features"]["shielded_pool_record"]["network"].update(global_id=3),
+            "global id",
+        ),
+        (
+            lambda p: p["features"]["shielded_pool_record"]["network"].update(epoch=5),
+            "epoch 6 only",
+        ),
+        (lambda p: p["genesis"]["auth_network_tag"].update(campaign_epoch=7), "epoch 6 only"),
+        (
+            lambda p: p["features"]["shielded_pool_record"]["network"].update(
+                auth_network_tag="00" * 32
+            ),
+            "AUTH tag",
+        ),
+        (
+            lambda p: p["features"]["shielded_pool_record"]["pool"].update(
+                address="0:" + "11" * 32
+            ),
+            "StateInit hash",
+        ),
+        (
+            lambda p: p["features"]["shielded_pool_record"]["pool"].update(code_hash="xyz"),
+            "code_hash",
+        ),
+        (
+            lambda p: p["features"]["shielded_pool_record"].update(gate_decisions=[]),
+            "no gate decision",
+        ),
+    ],
+)
+def test_a_malformed_shielded_pool_record_is_refused(change, message):
+    profile = _restricted()
+    change(profile)
+    with pytest.raises(lib.TestnetError, match=message):
+        lib.shielded_pool_record(profile)
+
+
+def test_a_disabled_pool_without_a_record_loads(tmp_path):
+    profile = _restricted()
+    profile["features"]["shielded_pool"] = "disabled"
+    del profile["features"]["shielded_pool_record"]
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps(profile))
+    assert lib.shielded_pool_record(lib.load_profile(path)) is None
 
 
 @pytest.mark.parametrize("value", [1, 3, 0, True, 2**31, -(2**31) - 1, "2", None])
