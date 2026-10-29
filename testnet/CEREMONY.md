@@ -232,6 +232,17 @@ also refuses a zero state that still defines ConfigParam 47, or lists it in
 ConfigParam 9 or 10: that parameter named the validator controller codes and
 left tos with the controller, so its presence means the tos tree predates
 staking from the operator's own account.
+It refuses a genesis that is not the decided supply (CFG-01, memo STATUS 13.254):
+ConfigParam 5 must name the blackhole `-1:ff…ff`, burn no fees (0/1) and be
+critical (ConfigParam 10); the bootstrap wallet `-1:111…1` must hold exactly
+`elections.bootstrap_wallet_tos` (80,151 TOS) and the state exactly
+`genesis.total_supply_tos` (81,151 TOS: the wallet plus the Elector's and the
+Config contract's 500 each), each account's balance, the accounts dictionary and
+`total_balance` agreeing; and ConfigParam 15 read back from the state must be the
+profile's schedule. These values come from the canonical template, so `--tos-root`
+must be at a tos commit that carries them. `genesis.json` records the result as
+`bootstrap` (the ConfigParam 5 cell hash, the blackhole, the balances and the
+read-back schedule).
 create-state itself runs the node's configuration check (`valid_config_data`,
 which includes `validate_auth_policy_config`) before it writes a zero state,
 and every node checks it again when it starts. `genesis.json` records the
@@ -244,7 +255,8 @@ the two runs it derives the bootstrap wallet's public key from the new
 moves `main-wallet.pk`, the only secret output, to `ceremony/secret/`. Take that key
 offline: it funds the four operator wallets and pool owners for the first
 elections (tos `doc/validator-genesis-bootstrap.md`, "First ordinary elections")
-and nothing else.
+and nothing else; once two elected sets hold the four stakes, the
+[sweep](#sweeping-the-bootstrap-wallet) burns what is left and deletes the wallet.
 
 AUTH validation and the complete summary are checked in `run-a` before any
 key or output is published. Existing outputs are never overwritten. If genesis
@@ -333,13 +345,18 @@ After the first ordinary election, drop `--genesis-set`.
 ## 8. After genesis
 
 The schedule is `genesis` in `network/profile.json`, and `genesis.json` prints
-its times. The bootstrap set is valid for 21,600 s after the epoch T, and each
-elected set for 14,400 s. The four validators must be onboarded (operator
-wallets and pool owners funded, pools deployed and holding the principal) and
-stake through two overlapping elections (Production-Node.md section 9). The first election opens at T + 4 h and closes
-at T + 5.5 h; the elected set takes office at T + 6 h. The next election opens
-at T + 8 h, and the set rotates every 4 h after that, each rotation a key
-block. Everything has to be ready before the first window opens.
+its times. Epoch 6 carries the 2 h ConfigParam 15 epoch 5 adopted by its live
+vote (7,200 / 3,600 / 900 / 3,600). The bootstrap set is valid for 21,600 s after
+the epoch T, and each elected set for 7,200 s. The four validators must be
+onboarded (operator wallets and pool owners funded, pools deployed and holding the
+principal) and stake through two overlapping elections (Production-Node.md
+section 9). The first election opens at T + 5 h and closes at T + 5 h 45 min; the
+elected set takes office at T + 6 h. The next election opens at T + 7 h, its set
+takes office at T + 8 h, and the set rotates every 2 h after that, each rotation a
+key block. Everything has to be ready before the first window opens. A rehearsal
+of the bootstrap flow at production timing uses
+`network/profile-production-timing.json` (the canonical template's schedule;
+`rehearse-loopback.sh` takes it as `REHEARSAL_PROFILE`).
 
 The first epoch used the canonical template's schedule unchanged: a 131,072 s
 bootstrap set and 65,536 s terms. Its first key block after genesis would have
@@ -365,13 +382,14 @@ python3 /opt/tos-testnet/scripts/testnet-elections.py onboard \
 It refuses unless `ceremony/pools.json` records the validator's pool, the pool
 derives from its recorded owner and operator wallet, and the genesis records
 name it as a validator id. It runs `init-operator.sh` on the host (vault,
-console key, node registration, operator wallet) and refuses unless the host's
+console key, node registration, tosctl's master wallet, operator wallet) and refuses unless the host's
 operator wallet is the one the pool was derived from (a host that kept
 `/var/lib/tos-ctl` over a reset still has the old wallet key). Then it runs these
 steps, in order:
 
 1. it funds the operator wallet from the bootstrap wallet with fee money only
-   (`operator_funding_tos`, 150) and activates it;
+   (`operator_funding_tos`, 10: the measured epoch-5 operator spend through the
+   first returned stake plus one failed submission) and activates it;
 2. it funds the pool's **owner** with the principal and a reserve (`pool_tos` +
    `pool_owner_reserve_tos`) and activates it; the owner's key stays on the
    coordinator (below);
@@ -385,6 +403,18 @@ steps, in order:
    for another account);
 7. it runs `enable-elections.sh`, which installs
    `systemd/tos-testnet-elections.service` (`Restart=always`).
+
+The election task (`tosctl service`) refuses to start without a master wallet
+(`service failed: initialize runtime config store: master wallet not
+configured`), and `tosctl config generate` no longer writes one. So
+`init-operator.sh`, in both modes, configures exactly the record the generated
+configuration used to carry and epoch 5 ran with: vault key
+`master-wallet-secret`, V3R2, subwallet 42, workchain 0 (`tosctl config
+master-wallet set --secret-name master-wallet-secret --version V3R2`; the
+record is `MASTER_WALLET` in `testnet-operator.py`). The service creates that
+key in the host's vault on its first start, as it did on epoch 5; no step here
+creates or reads it, and the testnet sends it no value. A rerun keeps it; a
+different master wallet already configured is refused, never replaced.
 
 The amounts are `elections` in the profile. `ceremony/secret/main-wallet.pk`
 and the pool owners' keys never leave the coordinator.
@@ -567,8 +597,13 @@ root moves over once with `migrate-nonroot-services.sh --role validator`
 
 `testnet-elections.py fund --id ID --label LABEL` sends from the bootstrap wallet
 on its own as operation ID. **Its `--dry-run` still signs and saves a private BOC
-under `sent/`, but does not journal or broadcast**; obtain signing permission first. `load` makes each
-bootstrap transfer its own operation.
+under `sent/`, but does not journal or broadcast**; obtain signing permission
+first. After the [sweep](#sweeping-the-bootstrap-wallet) `fund` refuses before it
+signs anything, `--dry-run` included. `load` never spends the bootstrap wallet: it
+takes `--funding-owner NAME` and makes each transfer from that pool owner its own
+`owner-fund` operation; give it rewards withdrawn after the first returned stake
+(about 13,550 TOS a day network-wide at the current ConfigParam 14), and start
+per-type load after day 1.
 
 A step whose operation failed terminally is never retried under its id and never
 reset. A person starts another attempt, `ID.attempt-N`, which names the failed
@@ -583,19 +618,110 @@ python3 "$S" retry "${C[@]}" --step ID --reason TEXT
 The operator wallet pays only fees: tosctl's election task attaches 1.2 TOS
 (`ELECTOR_STAKE_FEE` + `NPOOL_COMPUTE_FEE`) to every stake order and 0.2 TOS to
 every recovery, and pays its own gas; the stake itself comes from the pool. The
-150 TOS of onboarding last for many elections. Top it up before it runs low,
-from the bootstrap wallet, as an ordinary `fund` operation with its own fixed
-id; it is settled by message and transaction hashes on both validators, and
-repeating the same id reports it and does not fund twice. These commands move
-value; do not run them as part of deployment verification.
+10 TOS of onboarding cover the first two stakes, the first recovery and one
+failed submission with about 2.6 TOS spare, about two more election cycles.
+Single-nominator rewards go to the pool and its owner, never to the operator, so
+fee money after that comes from the owner.
+
+**Before the sweep** a top-up may still come from the bootstrap wallet, out of its
+50 TOS margin only, as an ordinary `fund` operation with its own fixed id:
 
 ```bash
 # C is the common ceremony / tools / --rpc / --confirm-rpc arguments above.
 python3 "$S" fund "${C[@]}" --id top-up-node-1-1 --label top-up-node-1-1 \
-  --to <RECORDED_OPERATOR_WALLET> --amount 50 --dry-run
+  --to <RECORDED_OPERATOR_WALLET> --amount 5 --dry-run
 python3 "$S" fund "${C[@]}" --id top-up-node-1-1 --label top-up-node-1-1 \
-  --to <RECORDED_OPERATOR_WALLET> --amount 50
+  --to <RECORDED_OPERATOR_WALLET> --amount 5
 ```
+
+**After the sweep** (and whenever it is the better source) the pool owner pays:
+withdraw rewards from the pool to the owner between elections (`withdraw`, above),
+then send the operator its fee money with `top-up`, an `owner-fund` operation
+signed with the owner's offline key, non-bounce:
+
+```bash
+python3 "$S" top-up "${C[@]}" --name node-1 --id top-up-node-1-2 --new --amount 5 --dry-run
+# After approval, repeat without --dry-run; omit --new to report a settled id later.
+python3 "$S" top-up "${C[@]}" --name node-1 --id top-up-node-1-2 --new --amount 5
+```
+
+It refuses unless the operator wallet is the pool's recorded one and active, and
+the owner keeps a withdrawal message (1 TOS) and its fee after the transfer. Both
+kinds settle by message and transaction hashes on both validators (the operator's
+credit equals the value), and repeating the same id reports it and does not fund
+twice. `--dry-run` of `top-up` signs nothing. These commands move value; do not
+run them as part of deployment verification.
+
+#### Sweeping the bootstrap wallet
+
+The bootstrap wallet is one-time (memo STATUS 13.155/13.254). Once the second
+elected set is installed and holds all four stakes, its remaining balance (the
+margin less what top-ups used, and the rounding) is sent with wallet-v3 send mode
+160 (128: the whole remaining balance; 32: delete the account once empty), value
+0, non-bounce, to the ConfigParam 5 blackhole `-1:ff…ff`, where the credit phase
+destroys it and the block counts it in `ValueFlow.burned`. Nothing can be signed
+from `-1:111…1` again: the account is gone and its address is no StateInit's.
+
+`sweep` refuses unless, read on both validators: live ConfigParam 5 names the
+blackhole and burns 0/1 (without it the transfer would create an ordinary account
+holding the funds); the four `fund-op-`, `fund-owner-` and `principal-` operations
+are settled; ConfigParam 34 and 32 are both elected sets of exactly the four pools,
+each matched by an Elector result (the genesis set has none) and the previous one
+older; each pool holds a frozen, unbanned stake in both results; each operator
+wallet holds at least the measured first-recovery cash (0.203224039 TOS) plus the
+1 TOS fee allowance; and no other bootstrap operation is open. Then it reads the
+wallet's history like every bootstrap operation.
+
+```bash
+python3 "$S" sweep "${C[@]}" --dry-run
+```
+
+The dry run makes all those reads and prints the exact transfer it would sign
+(mode, seqno, destination, value, bounce flag), the balance it would burn at most
+and the history check; **it signs and writes nothing**. Review it, then with
+explicit approval:
+
+```bash
+python3 "$S" sweep "${C[@]}"
+```
+
+The signed message is decoded and refused unless it is exactly that transfer;
+every other kind is still refused anything but send mode 3. The run journals the
+signed message and the masterchain head before signing (the search boundary:
+the deleted account has no head to read history back from), broadcasts once, and
+waits. It settles only when both validators show the wallet's transaction for
+that message with end status `nonexist` and one non-bounced message to the
+blackhole carrying a value, the wallet reading deleted, and the blackhole's
+transaction for that message crediting nothing; then it stops **pending**, naming
+the block of the blackhole transaction. Fetch that block's file with the
+lite-client (`-D DIR`, `getblock <block-id-ext>`: the file is saved under its file
+hash) and record it:
+
+```bash
+python3 "$S" record "${C[@]}" --id sweep-bootstrap --settled --hint <WALLET_TX> \
+  --block-boc <BLOCK_FILE>
+```
+
+The file must hash to the block id both validators reported. In it the burn must
+reconcile: a masterchain block of this network and seqno whose lt range holds the
+transaction; the blackhole transaction itself (by hash) and every other blackhole
+transaction of the block crediting nothing; a balancing `ValueFlow` whose `burned`
+equals what those transactions burned (ConfigParam 5 at 0/1, read again on both
+validators, burns no fees). The total supply does not simply fall by the swept
+amount, because block rewards and fees keep flowing; the block's own flow is what
+is checked. A mismatch refuses and leaves the operation open. The settled record
+keeps the wallet transaction, the message, the blackhole transaction, the block id,
+its file hash and its whole value flow, and its terminal checkpoint certifies the
+deleted wallet up to the sweep's counter. `reconcile` then reports the wallet as
+retired.
+
+Publish the wallet transaction, the blackhole transaction, the block id and its
+`ValueFlow.burned`. An interrupted sweep is resolved like any open operation
+(`reconcile`, `resubmit` while it can still run, `record`): settlement finds the
+transaction from the signed boundary also after the account is gone. Record it
+within about a day, before validators prune that history. Under memo STATUS
+13.156 any accepted failure of the sweep (a `failed` record of form a or b) stops
+the ceremony for review; it retires the bootstrap wallet all the same.
 
 If the first election cannot be conducted, the Elector cancels it at
 `elect_at` and refunds the stakes. The chain does not stop: the genesis set
@@ -744,7 +870,18 @@ python3 $S/testnet-elections.py record --ceremony ./ceremony \
 # Review the two-validator evidence, then repeat without --dry-run.
 ```
 
-This applies only to unsigned planned `fund` operations. Any signing evidence,
+This applies only to unsigned planned `fund` operations (bootstrap wallet) and
+`owner-fund` operations (a pool owner's `top-up` or `load` funding); never to a
+sweep. Such a plan is what a real run refused before signing leaves behind, for
+example a `load` whose `--deploy-amount` the owner cannot pay (its dry run does
+not check that): while the plan is open the gate refuses every other operation
+of that wallet, so close it before the owner's next `top-up` or `withdraw`. A
+signed copy of the plan's message outside the journal (`ceremony/sent/`, found by
+its name or by its wallet, destination, value and body; a fund dry run writes one)
+refuses abandonment until its `valid_until` has passed on both validators: before
+that it could still be accepted. The operator copy of an owner transfer is written
+only after the signed journal line is durable, so a crash while signing leaves no
+such copy next to a planned record. Any signing evidence,
 a matching transfer or external funding intent since the plan's creation time,
 unavailable/incomplete history, or disagreement refuses the operation. The
 check reads signing-wallet history back through a decoded transaction older

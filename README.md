@@ -118,7 +118,7 @@ Root files: [AGENTS.md](AGENTS.md) (`CLAUDE.md` links to it) and
 ### Onboard, top up or withdraw
 
 1. Follow [onboarding §8.1](testnet/CEREMONY.md#81-onboarding-a-genesis-validator-for-elections), including both-validator checks and readiness before enabling elections.
-2. For later fee money, follow [fee top-ups](testnet/CEREMONY.md#topping-up-an-operator-wallet): a journaled `fund` operation to the recorded operator wallet; the stake principal stays in the pool.
+2. For later fee money, follow [fee top-ups](testnet/CEREMONY.md#topping-up-an-operator-wallet): a journaled `top-up` from the pool owner to the recorded operator wallet (before the bootstrap [sweep](testnet/CEREMONY.md#sweeping-the-bootstrap-wallet) a `fund` out of its 50 TOS margin may still serve); the stake principal stays in the pool. The bootstrap wallet is swept to the ConfigParam 5 blackhole once two elected sets hold the four stakes, and is never a funding source after that.
 3. Use the same [§8.1 operation procedures](testnet/CEREMONY.md#81-onboarding-a-genesis-validator-for-elections) for withdrawal or interrupted operations. Inspect `reconcile`; verify evidence with `record`, resubmit only the original message, or explicitly `retry` a terminal failure. A baseline is a deliberate history acknowledgement, not an automatic recovery.
 
 ### Retire and reset

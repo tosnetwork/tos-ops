@@ -40,6 +40,141 @@ INDEX_UNIT = W / "systemd/tos-testnet-wallet-index.service"
 RPC_UNIT = W / "systemd/tos-testnet-rpc.service"
 
 M = [
+    # The bootstrap wallet's sweep, its burn and the epoch genesis check.
+    (
+        "S1 sweep prerequisite ConfigParam 5 not read",
+        EL,
+        "    burning = operations.both(\n        lambda node: lib.check_burning_config(operations.config_cell(node, 5))\n    )",
+        '    burning = {"blackhole": ops.BLACKHOLE, "fee_burn": (0, 1)}',
+    ),
+    (
+        "S2 sweep send mode not checked",
+        OPS,
+        'mode = SWEEP_MODE if params["kind"] == "sweep" else WALLET_V3_MODE',
+        'mode = decoded["mode"]',
+    ),
+    (
+        "S3 sweep shape not checked",
+        OPS,
+        'if params["kind"] == "sweep" and (\n            params["destination"] != BLACKHOLE',
+        'if False and (\n            params["destination"] != BLACKHOLE',
+    ),
+    (
+        "S4 sweep settles without deleting the wallet",
+        OPS,
+        '        if tx["end_status"] != "nonexist":\n            return "failed", dict(',
+        '        if False:\n            return "failed", dict(',
+    ),
+    (
+        "S5 sweep credited at the blackhole settles",
+        OPS,
+        'if delivery["in_value"] != message["value"] or delivery["credit"] != 0 or delivery["out"]:',
+        "if False:",
+    ),
+    (
+        "S6 sweep settles without its burn block",
+        OPS,
+        '        if expect is None:\n            block = delivery["block"]',
+        '        if expect is None:\n            return "settled", evidence\n            block = delivery["block"]',
+    ),
+    (
+        "S7 burn block not authenticated by its file hash",
+        OPS,
+        'if hashlib.sha256(boc).digest() != b64hash(block_id["file_hash"]):',
+        "if False:",
+    ),
+    ("S8 ValueFlow.burned not reconciled", OPS, 'if flow["burned"] != burned:', "if False:"),
+    (
+        "S9 gate ignores the retired bootstrap wallet",
+        OPS,
+        '        retired = self.bootstrap_retired(wallet)\n        if retired:\n            raise OperationRefused(\n                f"the bootstrap wallet has been swept',
+        '        retired = None\n        if retired:\n            raise OperationRefused(\n                f"the bootstrap wallet has been swept',
+    ),
+    (
+        "S10 fund signs a dry run after the sweep",
+        EL,
+        '    retired = operations.bootstrap_retired(BOOTSTRAP_WALLET)\n    if retired:\n        raise lib.TestnetError(\n            f"the bootstrap wallet has been swept ({retired}); it funds nothing',
+        '    retired = None\n    if retired:\n        raise lib.TestnetError(\n            f"the bootstrap wallet has been swept ({retired}); it funds nothing',
+    ),
+    (
+        "S11 deleted wallet found on one validator only",
+        OPS,
+        "return self.both(read)\n\n    def bootstrap_retired",
+        "return self.read_both(read)[0]\n\n    def bootstrap_retired",
+    ),
+    (
+        "S12 operator recovery floor ignored",
+        EL,
+        '        if balance < floor:\n            raise lib.TestnetError(\n                f"op-{name} holds',
+        '        if False:\n            raise lib.TestnetError(\n                f"op-{name} holds',
+    ),
+    (
+        "S13 frozen stake not checked",
+        EL,
+        'if member is None or member["stake"] <= 0 or member["banned"]:',
+        "if member is None:",
+    ),
+    (
+        "S14 genesis set taken for an elected one",
+        EL,
+        "            if len(results) != 1:\n",
+        "            if False:\n",
+    ),
+    (
+        "S24 set with two Elector results accepted",
+        EL,
+        "            if len(results) != 1:\n",
+        "            if not results:\n",
+    ),
+    (
+        "S15 onboarding not required before the sweep",
+        EL,
+        'if ops.state_of(journal.record(op_id)) != "settled":',
+        "if False:",
+    ),
+    (
+        "S16 sweep receipt bound to send mode 3",
+        OPS,
+        '!= (SWEEP_MODE if record["kind"] == "sweep" else WALLET_V3_MODE)',
+        "!= WALLET_V3_MODE",
+    ),
+    (
+        "S17 genesis without ConfigParam 5 accepted",
+        LIB,
+        "    if 5 not in params:\n",
+        "    if False:\n",
+    ),
+    (
+        "S18 genesis ConfigParam 5 not critical accepted",
+        LIB,
+        "if 10 not in params or 5 not in hashmap_items(params[10], 32):",
+        "if False:",
+    ),
+    (
+        "S19 genesis bootstrap balance not checked",
+        LIB,
+        "if held != bootstrap_nanotos:",
+        "if False:",
+    ),
+    (
+        "S20 genesis ConfigParam 15 not read back",
+        LIB,
+        '    if actual != expected:\n        raise TestnetError(f"ConfigParam 15 in the zero state',
+        '    if False:\n        raise TestnetError(f"ConfigParam 15 in the zero state',
+    ),
+    ("S21 unbalanced ValueFlow accepted", LIB, "if credit != debit:", "if False:"),
+    (
+        "S22 top-up spends the owner's withdrawal money",
+        EL,
+        "if balance < value + OWNER_MESSAGE_NANOTOS + ops.FEE_ALLOWANCE_NANOTOS // 10:",
+        "if False:",
+    ),
+    (
+        "S23 genesis check not called",
+        CO,
+        '    bootstrap_check = lib.zero_state_bootstrap(\n        (built / "zerostate.boc").read_bytes(), wallet_nanotos, total_nanotos, schedule\n    )',
+        "    bootstrap_check = {}",
+    ),
     (
         "CH1 handover signature check ignored",
         HO,
@@ -231,8 +366,8 @@ M = [
     (
         "O54 checkpoint verification one node only",
         OPS,
-        "return self.both(read)\n\n    def bootstrap_certificate",
-        "return self.read_both(read)[0]\n\n    def bootstrap_certificate",
+        "return self.both(read)\n\n    def bootstrap_state",
+        "return self.read_both(read)[0]\n\n    def bootstrap_state",
     ),
     (
         "O32 gate precedes plan creation",
@@ -274,8 +409,26 @@ M = [
     (
         "O39 nonfund plan abandoned",
         OPS,
-        'if state_of(record) != "planned" or record.get("kind") != "fund":',
+        'if state_of(record) != "planned" or record.get("kind") not in ABANDONABLE_KINDS:',
         "if False:",
+    ),
+    (
+        "O39b owner-fund plan cannot be abandoned",
+        OPS,
+        'ABANDONABLE_KINDS = ("fund", "owner-fund")',
+        'ABANDONABLE_KINDS = ("fund",)',
+    ),
+    (
+        "O39c an unexpired signed artifact does not block abandonment",
+        OPS,
+        '                if not all(now > artifact["valid_until"] for now in times):',
+        "                if False:",
+    ),
+    (
+        "O39d the operator copy is exported before the signed journal line",
+        EL,
+        "        op_id, params, sign, lambda decoded: None, prerequisites, expect, export=export\n",
+        "        op_id, params, lambda seqno: (lambda b: (export(b, seqno), b)[1])(sign(seqno)), lambda decoded: None, prerequisites, expect\n",
     ),
     (
         "O40 stale validators accepted for abandonment",
@@ -352,8 +505,8 @@ M = [
     (
         "DH9 delivery block budget bypassed",
         OPS,
-        "range(DELIVERY_BLOCKS)",
-        "range(DELIVERY_BLOCKS * 10)",
+        "budget = DELIVERY_BLOCKS if budget is None else budget",
+        "budget = DELIVERY_BLOCKS * 10 if budget is None else budget",
     ),
     (
         "ER9 changed current election parameters accepted",
@@ -1513,6 +1666,37 @@ M += [
         RPC_UNIT,
         "InaccessiblePaths=-/var/lib/tos -/var/lib/tos-wallet-index -/var/lib/tos-ctl\n",
         "ReadWritePaths=/var/lib/tos/fullnode\n",
+    ),
+    # tosctl's master wallet (init-operator.sh, testnet-operator.py master-wallet).
+    (
+        "MW1 a different master wallet is kept",
+        OPERATOR,
+        '    if current == MASTER_WALLET:\n        return "keep"',
+        '    if True:\n        return "keep"',
+    ),
+    (
+        "MW2 an existing master wallet is set again",
+        OPERATOR,
+        '    if current is None:\n        return "set"',
+        '    if True:\n        return "set"',
+    ),
+    (
+        "MW5 the refusal prints the configured record",
+        OPERATOR,
+        "f\"a different master wallet is configured (fields that differ: {', '.join(differ)}; \"",
+        "f\"a different master wallet is configured ({json.dumps(current)}; fields that differ: {', '.join(differ)}; \"",
+    ),
+    (
+        "MW3 init-operator.sh replaces the master wallet",
+        W / "scripts/init-operator.sh",
+        "--secret-name master-wallet-secret --version V3R2 >/dev/null",
+        "--secret-name master-wallet-secret --version V3R2 --force >/dev/null",
+    ),
+    (
+        "MW4 init-operator.sh skips the required check",
+        W / "scripts/init-operator.sh",
+        'master-wallet --config "$CONFIG_PATH" --require >/dev/null',
+        'master-wallet --config "$CONFIG_PATH" >/dev/null',
     ),
     (
         "RR13 rpc liteserver not on loopback",

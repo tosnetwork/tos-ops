@@ -11,13 +11,20 @@ runGetMethod, getTransactionsStd with summaries and previous_transaction_id).
 The external messages it executes are real-shaped wallet v3 messages
 (build_external), decoded with testnet_ops.decode_external, so the same bytes go
 through the coordinator's checks and the chain.
+
+Send mode 128 carries the whole remaining balance and 32 then deletes the
+account, as the node does: the account answers as it does for an address it does
+not hold (uninitialized, no balance, no last transaction), its transactions stay
+readable by lt and hash, and the transaction's end status is nonexist. With
+`blackhole` set (ConfigParam 5), a message to it is burned in its credit phase:
+credit 0. `config` overrides getConfigParam; `blocks` maps a block seqno to its
+file bytes, whose sha256 is then that block's file hash, as for a real block.
 """
 
 from __future__ import annotations
 
 import base64
 import hashlib
-import itertools
 import os
 from pathlib import Path
 
@@ -142,6 +149,7 @@ def transaction_cell(
     utime=0,
     previous_hash="0" * 64,
     previous_lt=0,
+    statuses="0000",
 ):
     """A transaction of the block.tlb layout with the fields testnet_ops decodes."""
     bits = "0111" + format(int(account.split(":")[1], 16), "0256b") + format(lt, "064b")
@@ -150,8 +158,7 @@ def transaction_cell(
         + format(previous_lt, "064b")
         + format(utime, "032b")
         + format(len(out_cells), "015b")
-        + "00"
-        + "00"
+        + statuses
     )
     msgs_bits, msgs_refs = "", []
     if in_cell is not None:
@@ -184,6 +191,24 @@ def transaction_cell(
     )
 
 
+class LtCounter:
+    """Logical time: increasing, and past any head end_lt already reported."""
+
+    def __init__(self, start):
+        self.next = start
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        value = self.next
+        self.next += 1
+        return value
+
+    def reserve(self, end_lt):
+        self.next = max(self.next, end_lt + 1)
+
+
 def summary(message):
     return {k: v for k, v in message.items() if not k.startswith("_")}
 
@@ -195,7 +220,7 @@ class Chain:
         self.accounts = {}
         self.externals = []
         self.internals = []
-        self.lt = itertools.count(1000)
+        self.lt = LtCounter(1000)
         self.now = 1_800_000_000
         self.sent = []  # every sendBoc's external hash, in order
         self.behaviour = {}  # address -> callable(chain, address, account, message, in_msg)
@@ -203,6 +228,13 @@ class Chain:
         # wallet -> count: its next accepted externals compute successfully and then
         # abort in the action phase: the fee is charged, the seqno stays, nothing is sent.
         self.abort_next = {}
+        self.blackhole = None  # ConfigParam 5's blackhole, when in force
+        self.config = {}  # ConfigParam number -> cell, before the zero-state fixture
+        self.blocks = {}  # block seqno -> its file bytes
+        self.keep_swept = False  # mode 32 does not delete (a broken chain, for refusals)
+        # Later transactions get lts above any head end_lt already served, as on a
+        # real chain (off by default: older tests pin the plain numbering).
+        self.head_bounds_lt = False
 
     # -- accounts
 
@@ -255,7 +287,15 @@ class Chain:
     # -- execution
 
     def record_tx(
-        self, address, in_msg, out, success=True, aborted=False, credit=None, skipped=False
+        self,
+        address,
+        in_msg,
+        out,
+        success=True,
+        aborted=False,
+        credit=None,
+        skipped=False,
+        statuses="0000",
     ):
         lt = next(self.lt)
         account = self.account(address)
@@ -273,6 +313,7 @@ class Chain:
             if account["txs"]
             else "0" * 64,
             previous_lt=int(account["txs"][-1]["transaction_id"]["lt"]) if account["txs"] else 0,
+            statuses=statuses,
         )
         account["txs"].append(
             {
@@ -342,6 +383,27 @@ class Chain:
                     address, transfer["destination"], transfer["value"], transfer["bounce"], body
                 )
             )
+        mode = decoded.get("mode") or 3
+        if internal and mode & 128:
+            # All of the balance left after the fee goes with the message.
+            account["balance"] -= NANO // 100
+            value, account["balance"] = account["balance"], 0
+            out.append(
+                self.emit(
+                    address,
+                    internal["destination"],
+                    value,
+                    internal["bounce"],
+                    decoded.get("_body"),
+                    init=decoded.get("_internal_init"),
+                )
+            )
+            if mode & 32 and not self.keep_swept:
+                account.update(state="nonexist", code=None, data=None, deleted=True)
+                self.record_tx(address, in_msg, out, statuses="1011")
+                return
+            self.record_tx(address, in_msg, out, statuses="1010")
+            return
         if internal and account["balance"] >= internal["value"]:
             account["balance"] -= internal["value"] + NANO // 100
             out.append(
@@ -393,6 +455,19 @@ class Chain:
         behaviour = self.behaviour.get(destination)
         if behaviour is not None:
             behaviour(self, destination, account, message, message)
+            return
+        if destination == self.blackhole:
+            # Burned in the credit phase; the account never comes to exist.
+            self.record_tx(
+                destination,
+                message,
+                [],
+                success=False,
+                aborted=True,
+                credit=0,
+                skipped=True,
+                statuses="1111",
+            )
             return
         account["balance"] += value
         init = message.get("_init")
@@ -472,6 +547,7 @@ class NodeRpc:
             return {"init": dict(chain.zero_state), "last": {"seqno": 10}}
 
         def block_id(wc, seq):
+            file = chain.blocks.get(seq) if wc == lib.MASTERCHAIN else None
             return {
                 "workchain": wc,
                 "shard": str(lib.MASTERCHAIN_SHARD),
@@ -480,7 +556,9 @@ class NodeRpc:
                     hashlib.sha256(f"block:{wc}:{seq}".encode()).digest()
                 ).decode(),
                 "file_hash": base64.b64encode(
-                    hashlib.sha256(f"file:{wc}:{seq}".encode()).digest()
+                    hashlib.sha256(
+                        file if file is not None else f"file:{wc}:{seq}".encode()
+                    ).digest()
                 ).decode(),
             }
 
@@ -501,6 +579,9 @@ class NodeRpc:
                 if seq == 10
                 else seq
             )
+            if seq == 10 and chain.head_bounds_lt:
+                # Like a real chain, every later transaction is after the head read now.
+                chain.lt.reserve(end)
             return {
                 "id": block_id(params.get("workchain", -1), seq),
                 "end_lt": str(end),
@@ -540,6 +621,11 @@ class NodeRpc:
             chain.send(base64.b64decode(params["boc"]))
             return {}
         if method == "getConfigParam":
+            override = chain.config.get(params["param"], False)
+            if override is None:
+                raise lib.RpcError(url, method, -32603, "INTERNAL_ERROR", "no such param", False)
+            if override is not False:
+                return {"config": {"bytes": base64.b64encode(lib.serialize_boc(override)).decode()}}
             fixture = Path(__file__).parent / "data/zerostate-v16-auth.boc"
             _, _, config = lib.zero_state_config(fixture.read_bytes())
             return {
@@ -550,6 +636,15 @@ class NodeRpc:
         account = chain.account(params["address"])
         txs = self.visible(account)
         if method == "getAddressInformation":
+            if account.get("deleted"):
+                # The node holds no such account: the answer of an unused address.
+                return {
+                    "state": "uninitialized",
+                    "balance": str(account["balance"]),
+                    "code": "",
+                    "data": "",
+                    "last_transaction_id": {"lt": "0", "hash": ""},
+                }
             last = txs[-1]["transaction_id"] if txs else {"lt": "0", "hash": ""}
             code, data = account["code"], account["data"]
             return {
@@ -582,7 +677,7 @@ class NodeRpc:
         if method == "runGetMethod":
             getter = params["method"]
             if getter == "seqno":
-                if account["state"] != "active":
+                if account["state"] != "active" or account.get("deleted"):
                     return {"exit_code": -13, "stack": []}
                 return {"exit_code": 0, "stack": [["num", hex(account["seqno"])]]}
             handler = account.get("getters", {}).get(getter)

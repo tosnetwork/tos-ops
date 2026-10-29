@@ -876,10 +876,14 @@ BOC_MAGIC = bytes.fromhex("b5ee9c72")
 class Cell:
     """An ordinary cell: data bits, references, and its representation hash."""
 
-    __slots__ = ("data", "bits", "refs", "_hash", "_depth")
+    __slots__ = ("data", "bits", "refs", "exotic", "_hash", "_depth")
 
-    def __init__(self, data: bytes, bits: int, refs: list[Cell]):
+    def __init__(self, data: bytes, bits: int, refs: list[Cell], exotic: bool = False):
         self.data, self.bits, self.refs = data, bits, refs
+        # An exotic or higher-level cell (a Merkle update or pruned branch in a
+        # block) is only ever walked past: its hash, and so any ancestor's, is
+        # not computed here.
+        self.exotic = exotic
         self._hash: bytes | None = None
         self._depth: int | None = None
 
@@ -890,6 +894,8 @@ class Cell:
 
     def hash(self) -> bytes:
         """The representation hash (level 0), as the node's get_hash() computes it."""
+        if self.exotic:
+            raise TestnetError("the hash of an exotic cell is not computed here")
         if self._hash is None:
             full, rem = divmod(self.bits, 8)
             descriptor = bytes([len(self.refs), full * 2 + (1 if rem else 0)])
@@ -979,6 +985,16 @@ def serialize_boc(root: Cell) -> bytes:
 
 def parse_boc(boc: bytes) -> Cell:
     """The single root of a bag of cells. Only ordinary level-0 cells are admitted."""
+    cells, root = parse_boc_cells(boc)
+    return cells[root]
+
+
+def parse_boc_cells(boc: bytes, exotic: bool = False) -> tuple[list[Cell], int]:
+    """Every cell of a single-root bag of cells, and the root's index.
+
+    With `exotic`, exotic and higher-level cells are admitted as Cell(exotic=True):
+    a block's state update is a Merkle update whose hash is never needed, only
+    the ordinary cells beside it (its value flow, its transactions)."""
     pos = 0
 
     def take(size: int) -> int:
@@ -1002,13 +1018,14 @@ def parse_boc(boc: bytes) -> Cell:
     root = take(ref_size)
     if flags & 0x80:
         take(count * off_size)
-    raw: list[tuple[bytes, int, list[int]]] = []
+    raw: list[tuple[bytes, int, list[int], bool]] = []
     for _ in range(count):
         d1, d2 = take(1), take(1)
-        if d1 & 8 or d1 >> 5:
+        special = bool(d1 & 8 or d1 >> 5)
+        if special and not exotic:
             raise TestnetError("the bag of cells holds an exotic or higher-level cell")
         if d1 & 16:
-            take(32 + 2)
+            take((bin(d1 >> 5).count("1") + 1) * (32 + 2))
         refs = d1 & 7
         if refs > 4:
             raise TestnetError("a cell has more than four references")
@@ -1023,16 +1040,16 @@ def parse_boc(boc: bytes) -> Cell:
             if not last:
                 raise TestnetError("a cell's completion tag is missing")
             bits = 8 * size - (last & -last).bit_length()
-        raw.append((data, bits, [take(ref_size) for _ in range(refs)]))
+        raw.append((data, bits, [take(ref_size) for _ in range(refs)], special))
     if root >= count:
         raise TestnetError("the bag of cells names a root it does not hold")
     cells: list[Cell | None] = [None] * count
     for index in range(count - 1, -1, -1):
-        data, bits, refs = raw[index]
+        data, bits, refs, special = raw[index]
         if any(r <= index or r >= count for r in refs):
             raise TestnetError("a cell refers backwards or outside the bag")
-        cells[index] = Cell(data, bits, [cells[r] for r in refs])  # type: ignore[misc]
-    return cells[root]  # type: ignore[return-value]
+        cells[index] = Cell(data, bits, [cells[r] for r in refs], special)  # type: ignore[misc]
+    return cells, root  # type: ignore[return-value]
 
 
 def hashmap_items(cell: Cell, key_bits: int) -> dict[int, Slice]:
@@ -1228,6 +1245,342 @@ def zero_state_auth_policy(
         "mandatory_and_critical": True,
         "global_version": version,
         "capabilities": capabilities,
+    }
+
+
+# ---------------------------------------------------------------- supply and burning
+
+# The masterchain blackhole ConfigParam 5 names (memo STATUS 13.254): inbound value
+# to it is destroyed in its credit phase and counted in the block's ValueFlow.burned.
+# It is also where the bootstrap wallet's final transfer (mode 128 + 32) goes.
+BLACKHOLE = "-1:" + "ff" * 32
+# TOS burns no fees: ConfigParam 5's fee_burn_num / fee_burn_denom.
+FEE_BURN = (0, 1)
+BURNING_CONFIG_TAG = 0x01
+NANOTOS = 10**9
+BOOTSTRAP_ACCOUNT = "11" * 32
+# The genesis accounts beside the bootstrap wallet: the Elector and the Config
+# contract, 500 TOS each, in the canonical template.
+GENESIS_SYSTEM_ACCOUNTS_TOS = 1000
+BLOCK_TAG = 0x11EF55AA
+BLOCK_INFO_TAG = 0x9BC7A987
+BLOCK_EXTRA_TAG = 0x4A33F6FD
+VALUE_FLOW_TAG = 0xB8E48DFB
+VALUE_FLOW_V2_TAG = 0x3EBF98B7
+
+
+def read_grams(s: Slice) -> int:
+    """Grams (VarUInteger 16): a 4-bit byte length, then the value."""
+    return s.bits(8 * s.bits(4))
+
+
+def read_currency_collection(s: Slice, allow_extra: bool = False) -> int:
+    """CurrencyCollection: grams, then (Maybe ^ExtraCurrencyCollection). TOS has no
+    extra currencies; one is refused unless the caller only skips the value."""
+    grams = read_grams(s)
+    if s.bits(1):
+        if not allow_extra:
+            raise TestnetError("extra currencies are not expected here")
+        s.take_ref()
+    return grams
+
+
+def hashmap_label(s: Slice, left: int) -> tuple[int, int]:
+    """A HmLabel at the slice: (label value, label length), refusing an overlong one."""
+    width = left.bit_length()
+    if s.bits(1) == 0:  # hml_short
+        length = 0
+        while s.bits(1):
+            length += 1
+        if length > left:
+            raise TestnetError("a hashmap label is longer than its key")
+        return s.bits(length), length
+    if s.bits(1) == 0:  # hml_long
+        length = s.bits(width)
+        if length > left:
+            raise TestnetError("a hashmap label is longer than its key")
+        return s.bits(length), length
+    bit, length = s.bits(1), s.bits(width)  # hml_same
+    if length > left:
+        raise TestnetError("a hashmap label is longer than its key")
+    return ((1 << length) - 1) if bit else 0, length
+
+
+def hashmap_aug_items(root: Slice, key_bits: int) -> dict[int, Slice]:
+    """Every leaf of a HashmapAug key_bits X Y whose edge starts at `root`:
+    key -> a slice at the leaf's extra (Y), which its value (X) follows. A fork's
+    extra is not read: its two children are its first two references."""
+    items: dict[int, Slice] = {}
+
+    def walk(s: Slice, prefix: int, left: int) -> None:
+        label, length = hashmap_label(s, left)
+        prefix, left = (prefix << length) | label, left - length
+        if left == 0:
+            if prefix in items:
+                raise TestnetError("a hashmap key occurs twice")
+            items[prefix] = s
+            return
+        children = (s.take_ref(), s.take_ref())
+        for branch, child in enumerate(children):
+            walk(Slice(child), (prefix << 1) | branch, left - 1)
+
+    walk(root, 0, key_bits)
+    return items
+
+
+def hashmap_aug_e_items(s: Slice, key_bits: int, read_extra) -> tuple[dict[int, Slice], Any]:
+    """A HashmapAugE at the slice (ahme_empty$0 extra / ahme_root$1 ^root extra):
+    (its leaves as hashmap_aug_items gives them, the root extra read_extra returns);
+    the slice is left after the root extra."""
+    if s.bits(1) == 0:
+        return {}, read_extra(s)
+    root = s.take_ref()
+    return hashmap_aug_items(Slice(root), key_bits), read_extra(s)
+
+
+def burning_config(cell: Cell) -> dict[str, Any]:
+    """ConfigParam 5: burning_config#01 blackhole_addr:(Maybe bits256)
+    fee_burn_num:# fee_burn_denom:#, decoded and checked as the TL-B constrains it."""
+    s = Slice(cell)
+    try:
+        if s.bits(8) != BURNING_CONFIG_TAG:
+            raise TestnetError("ConfigParam 5 is not burning_config#01")
+        blackhole = f"-1:{s.bytes(32).hex()}" if s.bits(1) else None
+        num, denom = s.bits(32), s.bits(32)
+    except TestnetError as exc:
+        raise TestnetError(f"ConfigParam 5 is malformed: {exc}") from exc
+    if not s.end():
+        raise TestnetError("ConfigParam 5 has data after its burning config")
+    if denom < 1 or num > denom:
+        raise TestnetError(f"ConfigParam 5 burns {num}/{denom}, which the TL-B refuses")
+    return {"blackhole": blackhole, "fee_burn": (num, denom)}
+
+
+def check_burning_config(cell: Cell) -> dict[str, Any]:
+    """Refuse unless ConfigParam 5 is the decided one: the blackhole -1:ff...ff and
+    no fee burning. Without the blackhole a transfer there creates an ordinary
+    account holding the value instead of destroying it."""
+    config = burning_config(cell)
+    if config["blackhole"] != BLACKHOLE:
+        raise TestnetError(f"ConfigParam 5 names blackhole {config['blackhole']}, not {BLACKHOLE}")
+    if config["fee_burn"] != FEE_BURN:
+        raise TestnetError(
+            f"ConfigParam 5 burns {config['fee_burn'][0]}/{config['fee_burn'][1]} of fees, not 0/1"
+        )
+    return config
+
+
+def depth_balance(s: Slice) -> int:
+    """DepthBalanceInfo: split_depth:(#<= 30) balance:CurrencyCollection -> balance."""
+    s.bits(5)
+    return read_currency_collection(s)
+
+
+def zero_state_supply(boc: bytes) -> dict[str, Any]:
+    """The zero state's accounts and total balance, as the state commits to them.
+
+    Each ShardAccounts leaf's DepthBalanceInfo carries its account's balance and
+    the dictionary root's extra their sum; total_balance is the state's own
+    figure. All three must agree, or the state is refused."""
+    root = parse_boc(boc)
+    if Slice(root).bits(32) != SHARD_STATE_TAG or len(root.refs) != 4:
+        raise TestnetError("the zero state is not a masterchain ShardStateUnsplit")
+    try:
+        leaves, accounts_total = hashmap_aug_e_items(Slice(root.refs[1]), 256, depth_balance)
+        balances = {f"{key:064x}": depth_balance(leaf) for key, leaf in leaves.items()}
+        totals = Slice(root.refs[2])
+        totals.bits(64 + 64)  # overload and underload history
+        total_balance = read_currency_collection(totals)
+    except TestnetError as exc:
+        raise TestnetError(f"the zero state's accounts are malformed: {exc}") from exc
+    if sum(balances.values()) != accounts_total or accounts_total != total_balance:
+        raise TestnetError(
+            f"the zero state's balances do not add up: accounts {sum(balances.values())}, "
+            f"dictionary {accounts_total}, total_balance {total_balance}"
+        )
+    return {"balances": balances, "total_balance": total_balance}
+
+
+def zero_state_election_params(boc: bytes) -> tuple[int, int, int, int]:
+    """ConfigParam 15 of the zero state, in ELECTION_PARAM_NAMES order."""
+    params = zero_state_config(boc)[2]
+    if 15 not in params:
+        raise TestnetError("the zero state has no ConfigParam 15")
+    s = Slice(params[15])
+    values = tuple(s.bits(32) for _ in ELECTION_PARAM_NAMES)
+    if not s.end():
+        raise TestnetError("ConfigParam 15 has data after its four values")
+    return values  # type: ignore[return-value]
+
+
+def zero_state_bootstrap(
+    boc: bytes, bootstrap_nanotos: int, total_nanotos: int, schedule: dict[str, int]
+) -> dict[str, Any]:
+    """Refuse a genesis that is not the decided epoch configuration; return what
+    genesis.json records.
+
+    ConfigParam 5 names the blackhole -1:ff...ff and burns no fees, and is
+    critical (ConfigParam 10), so no ordinary vote can point it at a spendable
+    account; the bootstrap wallet -1:111...1 holds exactly the profile's amount and
+    the state exactly the profile's total; ConfigParam 15 is the profile's
+    schedule, read back from the state rather than from the template."""
+    params = zero_state_config(boc)[2]
+    if 5 not in params:
+        raise TestnetError(
+            "the zero state has no ConfigParam 5: a transfer to the blackhole would "
+            "create an ordinary account instead of burning; build it from a tos tree "
+            "whose template sets it"
+        )
+    burning = check_burning_config(params[5])
+    if 10 not in params or 5 not in hashmap_items(params[10], 32):
+        raise TestnetError("ConfigParam 5 is not critical (ConfigParam 10)")
+    supply = zero_state_supply(boc)
+    held = supply["balances"].get(BOOTSTRAP_ACCOUNT)
+    if held != bootstrap_nanotos:
+        raise TestnetError(
+            f"the bootstrap wallet -1:{BOOTSTRAP_ACCOUNT} holds {held} nanotos, "
+            f"expected {bootstrap_nanotos}"
+        )
+    if supply["total_balance"] != total_nanotos:
+        raise TestnetError(
+            f"the zero state holds {supply['total_balance']} nanotos, expected {total_nanotos}"
+        )
+    expected = tuple(schedule[name] for name in ELECTION_PARAM_NAMES)
+    actual = zero_state_election_params(boc)
+    if actual != expected:
+        raise TestnetError(f"ConfigParam 15 in the zero state is {actual}, expected {expected}")
+    return {
+        "config_param_5_hash_hex": params[5].hash().hex(),
+        "blackhole": burning["blackhole"],
+        "fee_burn": list(burning["fee_burn"]),
+        "config_param_5_critical": True,
+        "bootstrap_wallet": f"-1:{BOOTSTRAP_ACCOUNT}",
+        "bootstrap_wallet_nanotos": held,
+        "total_balance_nanotos": supply["total_balance"],
+        "election_params_read_back": list(actual),
+    }
+
+
+def genesis_supply_targets(profile: dict[str, Any]) -> tuple[int, int]:
+    """(bootstrap wallet, total supply) in nanotos as the profile decides them; the
+    total is the bootstrap wallet plus the template's two 500-TOS system accounts."""
+    elections = profile.get("elections", {})
+    wallet = elections.get("bootstrap_wallet_tos")
+    total = profile.get("genesis", {}).get("total_supply_tos")
+    for name, value in (
+        ("elections.bootstrap_wallet_tos", wallet),
+        ("genesis.total_supply_tos", total),
+    ):
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise TestnetError(f"profile {name} must be a positive whole number of TOS: {value!r}")
+    if total != wallet + GENESIS_SYSTEM_ACCOUNTS_TOS:
+        raise TestnetError(
+            f"genesis.total_supply_tos {total} is not the bootstrap wallet {wallet} plus "
+            f"{GENESIS_SYSTEM_ACCOUNTS_TOS} TOS of system accounts"
+        )
+    return wallet * NANOTOS, total * NANOTOS
+
+
+# ---------------------------------------------------------------- blocks and value flow
+
+
+def value_flow(cell: Cell) -> dict[str, int]:
+    """A block's ValueFlow (v1 or v2), every field in nanotos; v1 has burned 0.
+
+    The flow must balance as the validator checks it (block::ValueFlow::validate):
+    from_prev_blk + imported + fees_imported + created + minted + recovered ==
+    to_next_blk + exported + fees_collected + burned."""
+    s = Slice(cell)
+    try:
+        tag = s.bits(32)
+        if tag not in (VALUE_FLOW_TAG, VALUE_FLOW_V2_TAG):
+            raise TestnetError(f"not a ValueFlow ({tag:#x})")
+        first = Slice(s.take_ref())
+        flow = {
+            name: read_currency_collection(first)
+            for name in ("from_prev_blk", "to_next_blk", "imported", "exported")
+        }
+        flow["fees_collected"] = read_currency_collection(s)
+        flow["burned"] = read_currency_collection(s) if tag == VALUE_FLOW_V2_TAG else 0
+        second = Slice(s.take_ref())
+        for name in ("fees_imported", "recovered", "created", "minted"):
+            flow[name] = read_currency_collection(second)
+        if not (first.end() and second.end() and s.end()):
+            raise TestnetError("data after its fields")
+    except TestnetError as exc:
+        raise TestnetError(f"the block's ValueFlow is malformed: {exc}") from exc
+    flow["version"] = 2 if tag == VALUE_FLOW_V2_TAG else 1
+    credit = sum(
+        flow[k]
+        for k in ("from_prev_blk", "imported", "fees_imported", "created", "minted", "recovered")
+    )
+    debit = sum(flow[k] for k in ("to_next_blk", "exported", "fees_collected", "burned"))
+    if credit != debit:
+        raise TestnetError(f"the block's ValueFlow does not balance: {credit} in, {debit} out")
+    return flow
+
+
+def read_block(boc: bytes) -> dict[str, Any]:
+    """A block from its file bytes: global id, BlockInfo's identity and lt range,
+    its ValueFlow, and the transaction cells of each account (account hex -> {lt:
+    transaction cell}). The state update (a Merkle update) is not read."""
+    cells, index = parse_boc_cells(boc, exotic=True)
+    root = cells[index]
+    s = Slice(root)
+    try:
+        if s.bits(32) != BLOCK_TAG or len(root.refs) != 4:
+            raise TestnetError("not a block")
+        global_id = s.bits(32)
+        global_id -= (global_id >> 31) << 32
+        info = Slice(root.refs[0])
+        if info.bits(32) != BLOCK_INFO_TAG:
+            raise TestnetError("not a BlockInfo")
+        info.bits(32)  # version
+        not_master = info.bits(1)
+        info.bits(7 + 8)  # merge/split flags, key_block, vert_seqno_incr; flags
+        seqno = info.bits(32)
+        info.bits(32)  # vert_seq_no
+        if info.bits(2) != 0:
+            raise TestnetError("not a ShardIdent")
+        info.bits(6)  # shard_pfx_bits
+        workchain = info.bits(32)
+        workchain -= (workchain >> 31) << 32
+        info.bits(64)  # shard_prefix
+        gen_utime, start_lt, end_lt = info.bits(32), info.bits(64), info.bits(64)
+        extra = Slice(root.refs[3])
+        if extra.bits(32) != BLOCK_EXTRA_TAG:
+            raise TestnetError("not a BlockExtra")
+        extra.take_ref()  # in_msg_descr
+        extra.take_ref()  # out_msg_descr
+        account_blocks = Slice(extra.take_ref())
+        leaves, _ = hashmap_aug_e_items(
+            account_blocks, 256, lambda x: read_currency_collection(x, allow_extra=True)
+        )
+        transactions: dict[str, dict[int, Cell]] = {}
+        for key, leaf in leaves.items():
+            read_currency_collection(leaf, allow_extra=True)
+            if leaf.bits(4) != 0x5:
+                raise TestnetError("not an AccountBlock")
+            account = leaf.bytes(32).hex()
+            if int(account, 16) != key:
+                raise TestnetError("an AccountBlock under another account's key")
+            txs = {}
+            for lt, tx in hashmap_aug_items(leaf, 64).items():
+                read_currency_collection(tx, allow_extra=True)
+                txs[lt] = tx.take_ref()
+            transactions[account] = txs
+    except TestnetError as exc:
+        raise TestnetError(f"the block cannot be read: {exc}") from exc
+    return {
+        "global_id": global_id,
+        "workchain": workchain,
+        "seqno": seqno,
+        "masterchain": not not_master,
+        "gen_utime": gen_utime,
+        "start_lt": start_lt,
+        "end_lt": end_lt,
+        "value_flow": value_flow(root.refs[1]),
+        "transactions": transactions,
     }
 
 

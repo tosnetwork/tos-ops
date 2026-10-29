@@ -296,6 +296,16 @@ EPOCH5_CONSTANTS = {
     "stakes_frozen_for": 7200,
 }
 EPOCH5_FIRST_ELECTION = {"opens": 1792854000, "closes": 1792859400, "takes_office": 1792861200}
+# Epoch 6: the 2 h schedule epoch 5 adopted by its live ConfigParam 15 vote, with the
+# same 6 h initial set (CFG-01 plan, test-lead resolution of amendment 3).
+EPOCH6_SCHEDULE = {
+    "initial_set_valid_for": 21600,
+    "elected_for": 7200,
+    "elections_start_before": 3600,
+    "elections_end_before": 900,
+    "stake_held_for": 3600,
+}
+EPOCH6_TEST_EPOCH = 1793000000
 EPOCH5_TAG = bytes.fromhex("3edc0460815cddd18f2b878004f50d7191d0dbd34d772d298b281e0767d7fd2c")
 
 
@@ -349,8 +359,19 @@ def test_patch_puts_the_epoch5_schedule_above_the_guard():
     assert schedule_constants("\n".join(lines[guard:])) == {}
 
 
-def test_epoch5_schedule_is_the_repository_profile_and_its_record():
-    assert lib.validator_schedule(lib.load_profile()) == EPOCH5_SCHEDULE
+def test_epoch6_schedule_is_the_repository_profile():
+    assert lib.validator_schedule(lib.load_profile()) == EPOCH6_SCHEDULE
+    # First election T + 5 h to T + 5 h 45 min, in office at T + 6 h, then 2 h terms.
+    t = EPOCH6_TEST_EPOCH
+    bootstrap_until = t + EPOCH6_SCHEDULE["initial_set_valid_for"]
+    opens = max(bootstrap_until - EPOCH6_SCHEDULE["elections_start_before"], t)
+    takes_office = opens + EPOCH6_SCHEDULE["elections_start_before"]
+    closes = takes_office - EPOCH6_SCHEDULE["elections_end_before"]
+    assert (opens - t, closes - t, takes_office - t) == (18000, 20700, 21600)
+    assert takes_office + EPOCH6_SCHEDULE["elected_for"] - t == 28800
+
+
+def test_epoch5_schedule_record_matches_the_template_arithmetic():
     # The template's own guard arithmetic, which the genesis record must match.
     t = EPOCH5_SOURCE_DATE_EPOCH
     bootstrap_until = t + EPOCH5_SCHEDULE["initial_set_valid_for"]
@@ -503,7 +524,7 @@ def schedule_profile(**changes):
 
 
 def test_repository_schedule_is_the_decided_one():
-    assert lib.validator_schedule(lib.load_profile()) == SCHEDULE
+    assert lib.validator_schedule(lib.load_profile()) == EPOCH6_SCHEDULE
 
 
 @pytest.mark.parametrize(
@@ -511,7 +532,14 @@ def test_repository_schedule_is_the_decided_one():
     [
         ({"elections_end_before": 7200}, "end_before < elections_start_before"),
         ({"elections_start_before": 14400}, "start_before < elected_for"),
-        ({"initial_set_valid_for": 7200 + 3599}, "at least 3600"),
+        (
+            {
+                "initial_set_valid_for": EPOCH6_SCHEDULE["elections_start_before"]
+                + lib.MIN_FIRST_ELECTION_LEAD_SECONDS
+                - 1
+            },
+            "at least 3600",
+        ),
         ({"elected_for": 0}, "out of range"),
         ({"stake_held_for": True}, "out of range"),
         ({"elected_for": "14400"}, "out of range"),
@@ -535,7 +563,8 @@ def test_schedule_refuses_missing_or_extra_election_params():
 
 
 def test_schedule_accepts_the_least_lead_time():
-    assert lib.validator_schedule(schedule_profile(initial_set_valid_for=7200 + 3600))
+    least = EPOCH6_SCHEDULE["elections_start_before"] + lib.MIN_FIRST_ELECTION_LEAD_SECONDS
+    assert lib.validator_schedule(schedule_profile(initial_set_valid_for=least))
 
 
 def test_load_profile_refuses_an_unworkable_schedule(tmp_path):
@@ -881,10 +910,10 @@ def test_rpc_never_branches_on_an_ok_field():
 def test_profile_tag_is_sha256_of_its_rule():
     profile = lib.load_profile()
     entry = lib.profile_auth_network_tag(profile)
-    rule = "TOS-AUTH-NETWORK-TAG-v1;network=tos-public-testnet;global_id=2;epoch=5"
+    rule = "TOS-AUTH-NETWORK-TAG-v1;network=tos-public-testnet;global_id=2;epoch=6"
     assert entry["rule"] == rule
     assert entry["tag"] == hashlib.sha256(rule.encode()).digest()
-    assert entry["tag"].hex() == "3edc0460815cddd18f2b878004f50d7191d0dbd34d772d298b281e0767d7fd2c"
+    assert entry["tag"].hex() == "99d8ae3469661895b820b4c41b6ad21acc448370e814c68d52ee3a12ae2c407a"
 
 
 @pytest.mark.parametrize(
@@ -892,7 +921,7 @@ def test_profile_tag_is_sha256_of_its_rule():
     [
         ({"value": "00" * 32}, "reserved"),
         ({"value": "e3" * 31}, "64 hexadecimal"),
-        ({"campaign_epoch": 6}, "not SHA-256"),
+        ({"campaign_epoch": 7}, "not SHA-256"),
         ({"rule": "something else"}, "not SHA-256"),
         ({"status": "PROPOSED"}, "status"),
         ({"campaign_epoch": True}, "campaign_epoch"),

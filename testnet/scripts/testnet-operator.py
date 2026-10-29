@@ -28,6 +28,13 @@ Subcommands, in ceremony order:
       the full node's client dir as liteserver.pub). Refuses the placeholder
       config and an existing FILE.
 
+  master-wallet --config FILE [--require]
+      What init-operator.sh does about tosctl's master wallet, which the
+      election task needs: prints `set` when FILE (tosctl-config.json) has
+      none, `keep` when it has exactly the epoch-5 record (vault key
+      master-wallet-secret, V3R2, subwallet 42, workchain 0), and refuses any
+      other master wallet. --require refuses unless it is configured.
+
 Nothing here generates or reads a wallet key.
 """
 
@@ -217,6 +224,81 @@ def rpc_liteserver_config(global_config: dict, liteserver_pub: bytes, port: int)
     return config
 
 
+# tosctl service (the election task) refuses to start without a master wallet,
+# and `tosctl config generate` no longer writes an implied one. The record is the
+# one the generated configuration used to carry and epoch 5 ran with: the vault
+# key master-wallet-secret, wallet V3R2, subwallet 42, workchain 0. The service
+# creates that key in the vault on its first start, as it did then; nothing here
+# creates or reads a key. init-operator.sh configures it with
+# `tosctl config master-wallet set` and checks the result with --require.
+MASTER_WALLET = {
+    "key": {"name": "master-wallet-secret"},
+    "version": "V3R2",
+    "subwallet_id": 42,
+    "workchain": 0,
+}
+
+
+def master_wallet_action(config: dict) -> str:
+    """'set' when the configuration has no master wallet yet, 'keep' when it has
+    exactly MASTER_WALLET; refuses anything else, so a configured master wallet,
+    which may hold funds, is never replaced."""
+    if "master_wallet" not in config:
+        raise lib.TestnetError("the tosctl configuration has no master_wallet field")
+    current = config["master_wallet"]
+    if current is None:
+        return "set"
+    if current == MASTER_WALLET:
+        return "keep"
+    # The record may carry key material (tosctl accepts an inline private key or
+    # key pair), so the refusal names only the fields that differ and the key's
+    # kind, never a value.
+    if isinstance(current, dict):
+        differ = sorted(
+            field
+            for field in set(current) | set(MASTER_WALLET)
+            if current.get(field) != MASTER_WALLET.get(field)
+        )
+        kind = key_kind(current.get("key"))
+    else:
+        differ, kind = ["(not a record)"], "unknown"
+    raise lib.TestnetError(
+        f"a different master wallet is configured (fields that differ: {', '.join(differ)}; "
+        f"key kind: {kind}); expected the vault key master-wallet-secret, V3R2, subwallet 42, "
+        "workchain 0; it is never replaced"
+    )
+
+
+def key_kind(key) -> str:
+    """The kind of a tosctl KeyConfig, from its shape only (never its contents)."""
+    if isinstance(key, dict):
+        if set(key) == {"name"}:
+            return "vault key"
+        if "pvt_key" in key:
+            return "inline private key"
+        if "pub_key" in key:
+            return "public key"
+        return "unknown"
+    if isinstance(key, str):
+        return "inline key pair"
+    return "unknown"
+
+
+def cmd_master_wallet(args: argparse.Namespace) -> None:
+    try:
+        config = json.loads(args.config.read_text())
+    except (OSError, ValueError) as exc:
+        raise lib.TestnetError(
+            f"cannot read the tosctl configuration {args.config}: {exc}"
+        ) from None
+    if not isinstance(config, dict):
+        raise lib.TestnetError(f"{args.config} is not a tosctl configuration")
+    action = master_wallet_action(config)
+    if args.require and action != "keep":
+        raise lib.TestnetError(f"{args.config} has no master wallet configured")
+    print(action)
+
+
 def cmd_rpc_config(args: argparse.Namespace) -> None:
     try:
         global_config = json.loads(args.global_config.read_text())
@@ -262,6 +344,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--port", type=int, required=True)
     p.add_argument("--out", type=Path, required=True)
     p.set_defaults(func=cmd_rpc_config)
+
+    p = sub.add_parser("master-wallet")
+    p.add_argument("--config", type=Path, required=True, help="tosctl-config.json")
+    p.add_argument("--require", action="store_true", help="refuse unless it is configured")
+    p.set_defaults(func=cmd_master_wallet)
 
     args = parser.parse_args(argv)
     try:

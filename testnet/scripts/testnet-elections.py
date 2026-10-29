@@ -9,7 +9,39 @@ and drive load through a post-quantum high-volume wallet.
       preloaded `<global id> constant tos-global-id`, so the signature commits
       to the testnet global id. Non-bounce, the sender pays fees, 300 s
       expiry. It is operation ID (default: the label; see onboard) and returns
-      when both validators show it delivered.
+      when both validators show it delivered. Refused once the bootstrap wallet
+      has been swept (below), also with --dry-run.
+
+  sweep   --ceremony DIR --tos-root DIR --fift PATH --rpc URL --confirm-rpc URL
+          [--id ID] [--dry-run]
+      The bootstrap wallet's final transfer, operation ID (default
+      sweep-bootstrap): wallet-v3 send mode 160 (128 + 32: all of the remaining
+      balance, then the account is deleted), value 0, non-bounce, empty body, to
+      the ConfigParam 5 blackhole -1:ff...ff. Refused unless, read on both
+      validators: live ConfigParam 5 names that blackhole and burns no fees; the
+      four validators' fund-op-, fund-owner- and principal- operations are
+      settled; ConfigParam 34 and 32 are both elected sets (each matched by an
+      Elector result) of exactly the four pools, the previous one older; every
+      pool holds a frozen, unbanned stake in both results; every operator wallet
+      holds at least the first recovery's measured cash plus the fee allowance;
+      and no other bootstrap operation is open. --dry-run checks all of that and
+      the wallet's history and prints the transfer it would sign; it signs and
+      writes nothing. A sweep settles when its transaction deleted the wallet and
+      sent one message to the blackhole, the wallet reads deleted on both
+      validators, the blackhole's transaction credited nothing, and the burn is
+      verified in that block: the run stops pending with the block id, and a
+      person runs record --settled --hint TX --block-boc FILE with that block's
+      file (lite-client getblock with -D DIR saves it under its file hash). After
+      it the bootstrap wallet is retired as a funding source: fund refuses.
+
+  top-up  --name NAME --id ID [--new] --amount TOS --ceremony DIR --tos-root DIR
+          --fift PATH --rpc URL --confirm-rpc URL [--dry-run]
+      Fee money for NAME's operator wallet from its pool owner (the owner holds
+      the reserve and the rewards it withdraws), as operation ID of kind
+      owner-fund: a non-bounce transfer signed here with the owner's offline key,
+      settled like fund (the operator's credit equals the value). Refused unless
+      the operator wallet is active and the owner keeps the value, a withdrawal
+      message and its fee. --dry-run checks and signs nothing.
 
   pool    --name NAME --operator ADDRESS --ceremony DIR --tos-root DIR --fift PATH
           [--previous-ceremony DIR]...
@@ -84,16 +116,20 @@ and drive load through a post-quantum high-volume wallet.
       Restoring the operator wallet is the same command with --to set to it.
 
   reconcile | record --id ID (--settled | --failed a|b|c|d | --abandoned | --checkpoint) [--hint TX]
+          [--block-boc FILE]
           | resubmit --id ID | baseline --wallet ADDR --reason TEXT
           (with --ceremony DIR --tos-root DIR --fift PATH --rpc URL --confirm-rpc URL)
       The person's side of an open operation (testnet_ops.py): reconcile
       prints every record against the chain and every unexplained transfer;
       record verifies the evidence on both validators before it writes;
-      resubmit sends the original message while it can still execute;
+      resubmit sends the original message while it can still execute
+      (a sweep's prerequisites are checked again first); record --settled of a
+      sweep takes its burn block's file with --block-boc;
       baseline accepts a wallet's history from before the journal.
 
   load   --ceremony DIR --tos-root DIR --fift PATH --rpc URL --key-tool PATH
-          --state DIR [--target-gas-per-block N | --batches-per-second R]
+          --state DIR --funding-owner NAME
+          [--target-gas-per-block N | --batches-per-second R]
           [--actions-per-batch K] [--duration S] [--relayers N]
           [--send-rpc URL]... [--watch-rpc URL]... [--transfers skip|deliver]
           [--deploy-amount TOS] [--relayer-amount TOS] [--dry-run]
@@ -103,8 +139,9 @@ and drive load through a post-quantum high-volume wallet.
       (tos-pq-key keygen) and the wallet state (new-pq-highload-wallet.fif)
       are created in the --state directory (0700, keys 0600; never put it in
       a repository), N wallet-v3 relayers on the basechain get their own keys
-      there, and the bootstrap wallet funds and deploys all of them through
-      `fund`. Their addresses go to DIR/wallets.json as
+      there, and pool owner NAME (--funding-owner) funds and deploys all of
+      them, each transfer an owner-fund operation: load never spends the
+      bootstrap wallet. Their addresses go to DIR/wallets.json as
       load-<wallet address prefix>/highload and .../relayer-I, and an address an earlier epoch recorded is refused, so a
       --state directory is never carried over a reset. The wallet has no external handler: a relayer forwards each
       signed request in an internal message whose value pays the compute, and
@@ -119,14 +156,15 @@ and drive load through a post-quantum high-volume wallet.
       compute, no message. deliver sends real transfers to the relayers, but a
       collator defers a sender's messages past 10 per block and drains them
       slowly, so it is refused above 40 transfers/s. The relayers pay for every
-      batch and are topped up from the bootstrap wallet while the test runs.
+      batch and are topped up from the funding owner while the test runs.
       Query ids continue across runs (load-state.json). Each second it prints
       batches sent, accepted (the relayer's seqno moved), failed and executed
       (the wallet recorded the id); at the end it writes summary-<time>.json
       with batches, transfers, gas and the fees spent (balance delta of the
       wallet and the relayers, top-ups included). It stops after the messages
       in flight on SIGINT, and on its own when a --rpc or --watch-rpc node's
-      masterchain head is older than 60 s or a balance falls below its floor.
+      masterchain head is older than 60 s or a balance (the funding owner's
+      included, --owner-floor) falls below its floor.
       --dry-run signs one batch into DIR/dry-run-<time>/ and broadcasts nothing.
 
 Resets. Every testnet epoch uses global id 2, so a wallet key that survives a
@@ -326,12 +364,14 @@ def sign_wallet_v3(
     init: Path | str | None = None,
     body: Path | None = None,
     run=subprocess.run,
+    mode: int = ops.WALLET_V3_MODE,
 ) -> bytes:
     """A wallet-v3 transfer signed here, offline, with tos crypto/smartcont/wallet-v3.fif.
 
     The private key is copied into a private temporary directory only for the
     signing; a preloaded `<global id> constant tos-global-id` makes the signature
-    commit to the network's global id. 300 s expiry, the sender pays fees.
+    commit to the network's global id. 300 s expiry, the sender pays fees (send
+    mode 3), or `mode` (-m) for the bootstrap wallet's final sweep.
     """
     smartcont = Path(args.tos_root) / "crypto" / "smartcont"
     with tempfile.TemporaryDirectory(prefix="sign-") as work:
@@ -356,6 +396,8 @@ def sign_wallet_v3(
             "-t",
             "300",
         ]
+        if mode != ops.WALLET_V3_MODE:
+            argv += ["-m", str(mode)]
         if init:
             argv += ["-I", str(Path(init).resolve())]
         if body:
@@ -398,6 +440,12 @@ def fund(args: argparse.Namespace, operations: ops.Operations, global_id: int) -
     init = getattr(args, "init", None)
     init_hash = lib.parse_boc(Path(init).read_bytes()).hash().hex() if init else None
     op_id = getattr(args, "op_id", None) or args.label
+    retired = operations.bootstrap_retired(BOOTSTRAP_WALLET)
+    if retired:
+        raise lib.TestnetError(
+            f"the bootstrap wallet has been swept ({retired}); it funds nothing any more: "
+            "use top-up (an owner-fund operation from a pool owner)"
+        )
 
     def sign(seqno: int) -> bytes:
         return sign_wallet_v3(
@@ -819,14 +867,18 @@ def owner_transfer(
     prerequisites,
     extra: dict | None = None,
     expect=None,
+    bounce: bool = True,
+    init: Path | None = None,
 ) -> dict:
-    """A bounceable transfer from the pool owner, signed here with its offline key."""
+    """A transfer from the pool owner, signed here with its offline key: bounceable
+    to a pool, non-bounce (with a StateInit for a deployment) for owner-fund."""
     ceremony = Path(args.ceremony)
     paths = pool_owner_paths(ceremony, name)
     if not paths["key"].is_file():
         raise lib.TestnetError(f"{paths['key']} is missing; the pool owner key stays here")
     owner = address_from_file(paths["addr"])
     body_hash = lib.parse_boc(body.read_bytes()).hash().hex() if body else EMPTY_BODY_HASH
+    init_hash = lib.parse_boc(Path(init).read_bytes()).hash().hex() if init else None
 
     def sign(seqno: int) -> bytes:
         boc = sign_wallet_v3(
@@ -838,27 +890,33 @@ def owner_transfer(
             POOL_OWNER_SUBWALLET,
             seqno,
             nanotos_text(value),
-            bounce=True,
+            bounce=bounce,
+            init=init,
             body=body,
         )
+        return boc
+
+    def export(boc: bytes, seqno: int) -> None:
+        # The operator copy, written by run() only after the signed journal line.
         sent = lib.private_dir(ceremony / "sent")
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
         lib.write_new(sent / f"{stamp}-owner-{name}-seq{seqno}-{op_id}.boc", boc, 0o600)
-        return boc
 
     params = {
         "kind": kind,
         "wallet": owner,
         "destination": pool,
         "value": value,
-        "bounce": True,
+        "bounce": bounce,
         "body_hash": body_hash,
-        "state_init_hash": None,
+        "state_init_hash": init_hash,
         "name": name,
         "subwallet": POOL_OWNER_SUBWALLET,
     }
     params.update(extra or {})
-    return operations.run(op_id, params, sign, lambda decoded: None, prerequisites, expect)
+    return operations.run(
+        op_id, params, sign, lambda decoded: None, prerequisites, expect, export=export
+    )
 
 
 def owner_role_check(operations: ops.Operations, tos_root, pool: str, owner: str) -> None:
@@ -1110,6 +1168,290 @@ def change_validator(args: argparse.Namespace, operations: ops.Operations, globa
             out.write(json.dumps(result, sort_keys=True) + "\n")
     print(json.dumps(result, indent=2))
     return result
+
+
+# ---------------------------------------------------------------- owner-funded top-ups
+
+
+def owner_keeps(operations: ops.Operations, owner: str, value: int) -> None:
+    """The owner must keep, after `value`, one withdrawal message and its fee: it is
+    the only wallet that can take principal and rewards out of its pool."""
+    balance = operations.balance(owner)
+    if balance < value + OWNER_MESSAGE_NANOTOS + ops.FEE_ALLOWANCE_NANOTOS // 10:
+        raise lib.TestnetError(
+            f"the pool owner {owner} holds {balance / NANO:.9f} TOS: it cannot pay "
+            f"{value / NANO:.9f} TOS and keep a withdrawal message and its fee; withdraw "
+            "rewards from the pool first"
+        )
+
+
+def top_up(args: argparse.Namespace, operations: ops.Operations, global_id: int) -> dict:
+    """Fee money for NAME's operator wallet from its pool owner, as operation --id."""
+    name = args.name
+    ceremony = Path(args.ceremony)
+    pool_record = read_pools(ceremony).get(name)
+    if not pool_record or not all(pool_record.get(k) for k in ("pool", "owner", "operator")):
+        raise lib.TestnetError(f"{ceremony / POOLS_FILE} records no pool for {name}")
+    owner = address_from_file(pool_owner_paths(ceremony, name)["addr"])
+    if pool_record["owner"] != owner:
+        raise lib.TestnetError(f"the pool's recorded owner {pool_record['owner']} is not {owner}")
+    operator = pool_record["operator"]
+    if operator == owner:
+        raise lib.TestnetError(f"{name}'s operator wallet is its owner; nothing to top up")
+    if not ops.SAFE_ID.match(args.id or ""):
+        raise lib.TestnetError(f"not an operation id: {args.id!r}")
+    value = parse_tos(str(args.amount), "--amount")
+    if value <= 0:
+        raise lib.TestnetError(f"--amount must be positive: {args.amount!r}")
+    existing = operations.journal.record(args.id)
+    if args.new and existing is not None:
+        raise lib.TestnetError(f"operation {args.id} exists; --new needs a new id")
+    if not args.new and existing is None:
+        raise lib.TestnetError(f"no operation {args.id}; create a top-up with --new")
+
+    def prerequisites() -> None:
+        operations.check_network()
+        if operations.identity(operator) is None:
+            raise lib.TestnetError(f"the operator wallet {operator} is not active")
+        owner_keeps(operations, owner, value)
+
+    if args.dry_run:
+        prerequisites()
+        print(
+            f"dry run: {args.id}: {value / NANO:.9f} TOS from {owner} to {operator}; nothing signed"
+        )
+        return {"dry_run": True}
+    record = owner_transfer(
+        args,
+        operations,
+        global_id,
+        name,
+        args.id,
+        "owner-fund",
+        operator,
+        value,
+        None,
+        prerequisites,
+        {"label": f"top-up-{name}", "purpose": "operator fee money"},
+        bounce=False,
+    )
+    result = {
+        "id": args.id,
+        "name": name,
+        "owner": owner,
+        "operator": operator,
+        "nanotos": value,
+        "owner_tx": record["evidence"]["wallet_tx"],
+        "operator_tx": record["evidence"]["destination_tx"],
+    }
+    print(json.dumps(result, indent=2))
+    return result
+
+
+# ---------------------------------------------------------------- the bootstrap wallet's sweep
+
+SWEEP_ID = "sweep-bootstrap"
+# What an operator wallet spent on its first stake recovery in epoch 5, inferred as
+# the third stake window's debit less the second's (dated measurement, 2026-10-24;
+# BOOTSTRAP-AMOUNT.md "Stake and recovery cash needed before first return"). After
+# the sweep nothing refills an operator before its first returned stake, so each
+# must already hold this and the fee allowance.
+FIRST_RECOVERY_NANOTOS = 203_224_039
+ONBOARDING_STEPS = ("fund-op", "fund-owner", "principal")
+
+
+def network_check():
+    """The shared decoders of validator sets and the Elector (production/network_check.py)."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "production"))
+    import network_check as shared
+
+    return shared
+
+
+def elected_sets(operations: ops.Operations, pools: dict[str, str]) -> dict:
+    """ConfigParam 32 and 34 as both validators serve them, each an elected set of
+    exactly the four pools with an Elector result, and every pool's stake frozen
+    and unbanned in both results. The genesis set has no Elector result, so it can
+    be neither. Returns the summary the dry run and the record print."""
+    shared = network_check()
+    wanted = {pool.split(":")[1] for pool in pools.values()}
+
+    def read(node):
+        sets = {}
+        for number in (32, 34):
+            try:
+                sets[number] = shared.decode_set(operations.config_cell(node, number))
+            except lib.TestnetError as exc:
+                raise lib.TestnetError(
+                    f"{node.url}: ConfigParam {number} is not an installed validator set: {exc}"
+                ) from exc
+        info = node.account(ELECTOR)
+        try:
+            data = lib.parse_boc(base64.b64decode(info.get("data") or "", validate=True))
+        except (ValueError, lib.TestnetError) as exc:
+            raise ops.Unknown(f"{node.url}: Elector data unavailable: {exc}") from exc
+        elector = shared.decode_elector(data)
+        out = {}
+        for number, decoded in sets.items():
+            ids = {v["id"] for v in decoded["validators"]}
+            if ids != wanted:
+                raise lib.TestnetError(
+                    f"ConfigParam {number} is not the four pools: {sorted(i[:16] for i in ids)}"
+                )
+            results = [p for p in elector["past"] if p["hash"] == decoded["hash"]]
+            if len(results) != 1:
+                raise lib.TestnetError(
+                    f"ConfigParam {number} has no single Elector result: not an elected set "
+                    "(the genesis set is not elected; wait for the second election)"
+                )
+            stakes = {m["id"]: m for m in results[0]["members"]}
+            for pool in sorted(wanted):
+                member = stakes.get(pool)
+                if member is None or member["stake"] <= 0 or member["banned"]:
+                    raise lib.TestnetError(
+                        f"the Elector holds no frozen, unbanned stake of pool {pool[:16]} "
+                        f"for ConfigParam {number}"
+                    )
+            out[number] = {
+                "set_hash": decoded["hash"],
+                "utime_since": decoded["since"],
+                "utime_until": decoded["until"],
+                "election_id": results[0]["election_id"],
+                "stakes_nanotos": {pool: stakes[pool]["stake"] for pool in sorted(wanted)},
+            }
+        if not out[32]["utime_since"] < out[34]["utime_since"]:
+            raise lib.TestnetError("ConfigParam 32 is not older than ConfigParam 34")
+        return out
+
+    return operations.both(read)
+
+
+def sweep_prerequisites(args: argparse.Namespace, operations: ops.Operations) -> dict:
+    """Everything that must hold before the bootstrap wallet is swept, read on both
+    validators; refuses otherwise. Returns what was found."""
+    operations.check_network()
+    burning = operations.both(
+        lambda node: lib.check_burning_config(operations.config_cell(node, 5))
+    )
+    ceremony = Path(args.ceremony)
+    pools = read_pools(ceremony)
+    if len(pools) != lib.GENESIS_VALIDATORS or not all(
+        entry.get("pool") and entry.get("operator") for entry in pools.values()
+    ):
+        raise lib.TestnetError(
+            f"{ceremony / POOLS_FILE} records {len(pools)} pools; the sweep waits for all "
+            f"{lib.GENESIS_VALIDATORS}"
+        )
+    journal = operations.journal
+    for name in sorted(pools):
+        for step in ONBOARDING_STEPS:
+            op_id = journal.newest(f"{step}-{name}")
+            if ops.state_of(journal.record(op_id)) != "settled":
+                raise lib.TestnetError(f"operation {op_id} is not settled; onboarding is not done")
+    sets = elected_sets(operations, {name: entry["pool"] for name, entry in pools.items()})
+    floor = FIRST_RECOVERY_NANOTOS + ops.FEE_ALLOWANCE_NANOTOS
+    operators = {}
+    for name in sorted(pools):
+        operator = pools[name]["operator"]
+        balance = operations.balance(operator)
+        if balance < floor:
+            raise lib.TestnetError(
+                f"op-{name} holds {balance / NANO:.9f} TOS, less than a first recovery and its "
+                f"fee ({floor / NANO:.9f}); top it up before the bootstrap wallet is swept"
+            )
+        operators[name] = balance
+    for record in journal.for_wallet(BOOTSTRAP_WALLET):
+        if ops.state_of(record) in ("planned", "signed", "broadcast") and record["id"] != args.id:
+            raise lib.TestnetError(f"bootstrap operation {record['id']} is open")
+    return {
+        "config_param_5": {
+            "blackhole": burning["blackhole"],
+            "fee_burn": list(burning["fee_burn"]),
+        },
+        "elected_sets": {f"config_param_{k}": v for k, v in sets.items()},
+        "operator_balances_nanotos": operators,
+        "operator_floor_nanotos": floor,
+    }
+
+
+def sweep_params(op_id: str) -> dict:
+    return {
+        "kind": "sweep",
+        "wallet": BOOTSTRAP_WALLET,
+        "destination": ops.BLACKHOLE,
+        "value": 0,
+        "bounce": False,
+        "body_hash": EMPTY_BODY_HASH,
+        "state_init_hash": None,
+        "label": op_id,
+        # The bootstrap wallet is wallet v3 with subwallet 0 (gen-zerostate.fif).
+        "subwallet": 0,
+    }
+
+
+def sweep(args: argparse.Namespace, operations: ops.Operations, global_id: int) -> dict:
+    """The bootstrap wallet's final transfer to the blackhole, as operation --id."""
+    op_id = args.id
+    if not ops.SAFE_ID.match(op_id or ""):
+        raise lib.TestnetError(f"not an operation id: {op_id!r}")
+    if operations.bootstrap_identity(BOOTSTRAP_WALLET) is None:
+        raise lib.TestnetError(
+            "genesis.json records no main_wallet_public_key: the bootstrap wallet is not pinned"
+        )
+    retired = operations.bootstrap_retired(BOOTSTRAP_WALLET)
+    if retired:
+        record = operations.journal.record(retired)
+        print(json.dumps({k: record.get(k) for k in ("id", "state", "evidence")}, indent=2))
+        if retired != op_id:
+            raise lib.TestnetError(f"the bootstrap wallet was already swept by {retired}")
+        return record
+    ceremony = Path(args.ceremony)
+    params = sweep_params(op_id)
+
+    def prerequisites() -> None:
+        sweep_prerequisites(args, operations)
+
+    if args.dry_run:
+        with operations.journal.lock(BOOTSTRAP_WALLET):
+            found = sweep_prerequisites(args, operations)
+            witness = operations.gate(BOOTSTRAP_WALLET, op_id)
+        balance = operations.balance(BOOTSTRAP_WALLET)
+        report = {
+            "dry_run": True,
+            "signed": False,
+            "operation": op_id,
+            "transfer": dict(params, mode=ops.SWEEP_MODE, seqno=witness["post_seqno"]),
+            "bootstrap_balance_nanotos": balance,
+            "burns_at_most_nanotos": balance,
+            "prerequisites": found,
+            "history": {
+                k: witness[k] for k in ("origin", "head", "counter_interval", "pruned_gap")
+            },
+            "assumption": witness["assumption"],
+        }
+        print(json.dumps(report, indent=2))
+        return report
+    key = ceremony / "secret" / "main-wallet.pk"
+    if not key.is_file():
+        raise lib.TestnetError(f"{key} is missing; the bootstrap key stays with the coordinator")
+
+    def sign(seqno: int) -> bytes:
+        return sign_wallet_v3(
+            args,
+            global_id,
+            key,
+            (ceremony / "main-wallet.addr").read_bytes(),
+            ops.BLACKHOLE,
+            0,
+            seqno,
+            "0",
+            bounce=False,
+            mode=ops.SWEEP_MODE,
+        )
+
+    record = operations.run(op_id, params, sign, lambda decoded: None, prerequisites)
+    print(json.dumps({k: record.get(k) for k in ("id", "state", "evidence")}, indent=2))
+    return record
 
 
 # ---------------------------------------------------------------- host-built operator messages
@@ -1997,23 +2339,38 @@ class LoadDriver:
 
     # -- deployment
 
-    def fund_from_bootstrap(self, to: str, nanotos: int, label: str, init: Path | None) -> None:
-        amount = f"{nanotos // NANO}.{nanotos % NANO:09d}"
-        fund(
-            argparse.Namespace(
-                ceremony=self.args.ceremony,
-                tos_root=self.args.tos_root,
-                fift=self.args.fift,
-                to=to,
-                amount=amount,
-                label=label,
-                # A top-up is a new transfer each time it is asked for.
-                op_id=f"load-{label}-{time.strftime('%Y%m%dt%H%M%S', time.gmtime())}",
-                dry_run=False,
-                init=init,
-            ),
+    def funding_owner(self) -> tuple[str, str]:
+        """(name, address) of the pool owner whose reserve and withdrawn rewards fund
+        the load; the bootstrap wallet never does."""
+        name = self.args.funding_owner
+        paths = pool_owner_paths(Path(self.args.ceremony), name)
+        owner = address_from_file(paths["addr"])
+        recorded = read_pools(Path(self.args.ceremony)).get(name, {}).get("owner")
+        if recorded != owner:
+            raise lib.TestnetError(f"{name} is not a recorded pool owner ({recorded} != {owner})")
+        return name, owner
+
+    def fund_from_owner(self, to: str, nanotos: int, label: str, init: Path | None) -> None:
+        name, owner = self.funding_owner()
+
+        def prerequisites() -> None:
+            owner_keeps(self.operations, owner, nanotos)
+
+        owner_transfer(
+            self.args,
             self.operations,
             self.global_id,
+            name,
+            # A top-up is a new transfer each time it is asked for.
+            f"load-{label}-{time.strftime('%Y%m%dt%H%M%S', time.gmtime())}",
+            "owner-fund",
+            to,
+            nanotos,
+            None,
+            prerequisites,
+            {"label": label, "purpose": "load"},
+            bounce=False,
+            init=init,
         )
 
     def deploy(self, wallet: str, relayers: list[Relayer]) -> None:
@@ -2021,19 +2378,17 @@ class LoadDriver:
         state, balance = self.chain.account(wallet)
         if state != "active":
             print(f"deploy the wallet {wallet} with {target / NANO:.3f} TOS", flush=True)
-            self.fund_from_bootstrap(
-                wallet, target, "load-wallet", self.state / "highload.init.boc"
-            )
+            self.fund_from_owner(wallet, target, "load-wallet", self.state / "highload.init.boc")
             self.chain.wait_active(wallet)
         elif balance < target // 2:
             print(f"top up the wallet {wallet} to {target / NANO:.3f} TOS", flush=True)
-            self.fund_from_bootstrap(wallet, target - balance, "load-wallet-top-up", None)
+            self.fund_from_owner(wallet, target - balance, "load-wallet-top-up", None)
         relayer_amount = parse_tos(self.args.relayer_amount, "--relayer-amount")
         for relayer in relayers:
             state, balance = self.chain.account(relayer.address)
             if balance < relayer_amount // 2:
                 print(f"fund relayer {relayer.index} {relayer.address}", flush=True)
-                self.fund_from_bootstrap(
+                self.fund_from_owner(
                     relayer.address, relayer_amount - balance, f"load-relayer-{relayer.index}", None
                 )
                 state = self.chain.account(relayer.address)[0]
@@ -2136,7 +2491,7 @@ class LoadDriver:
         return out
 
     def refill(self, relayers: list[Relayer], done: threading.Event) -> None:
-        """Top relayers back up from the bootstrap wallet, off the send loop: the relayers
+        """Top relayers back up from the funding owner, off the send loop: the relayers
         pay for every batch (value for compute, import and forwarding fees)."""
         amount = parse_tos(self.args.relayer_amount, "--relayer-amount")
         while not done.wait(5):
@@ -2146,7 +2501,7 @@ class LoadDriver:
                 try:
                     balance = self.chain.account(relayer.address)[1]
                     if balance < amount // 3:
-                        self.fund_from_bootstrap(
+                        self.fund_from_owner(
                             relayer.address,
                             amount - balance,
                             f"load-refill-{relayer.index}",
@@ -2178,9 +2533,10 @@ class LoadDriver:
                 return (
                     f"relayer {relayer.index} balance {balance / NANO:.3f} TOS is below the floor"
                 )
-        bootstrap = self.chain.account(BOOTSTRAP_WALLET)[1]
-        if bootstrap < parse_tos(self.args.bootstrap_floor, "--bootstrap-floor"):
-            return f"the bootstrap wallet balance {bootstrap / NANO:.3f} TOS is below the floor"
+        _, owner = self.funding_owner()
+        balance = self.chain.account(owner)[1]
+        if balance < parse_tos(self.args.owner_floor, "--owner-floor"):
+            return f"the funding owner's balance {balance / NANO:.3f} TOS is below the floor"
         return None
 
     # -- run
@@ -2539,6 +2895,10 @@ class LoadDriver:
 def check_load_args(args: argparse.Namespace) -> None:
     if not args.dry_run and not (args.target_gas_per_block or args.batches_per_second):
         raise lib.TestnetError("give --target-gas-per-block or --batches-per-second")
+    if not args.dry_run and not args.funding_owner:
+        raise lib.TestnetError(
+            "give --funding-owner NAME: load is funded from a pool owner, never the bootstrap wallet"
+        )
     if args.batches_per_second is not None and args.batches_per_second <= 0:
         raise lib.TestnetError("--batches-per-second must be positive")
     if args.duration <= 0 or args.max_retries < 0:
@@ -2572,6 +2932,15 @@ def main(argv: list[str] | None = None) -> int:
     p_fund.add_argument("--amount", required=True)
     p_fund.add_argument("--label", required=True)
     p_fund.add_argument("--dry-run", action="store_true")
+    p_sweep = sub.add_parser("sweep", parents=[common])
+    p_sweep.add_argument("--id", default=SWEEP_ID, help="the sweep's operation id")
+    p_sweep.add_argument("--dry-run", action="store_true")
+    p_top_up = sub.add_parser("top-up", parents=[common])
+    p_top_up.add_argument("--name", required=True)
+    p_top_up.add_argument("--id", required=True, help="the top-up's operation id")
+    p_top_up.add_argument("--new", action="store_true", help="create the operation --id")
+    p_top_up.add_argument("--amount", required=True)
+    p_top_up.add_argument("--dry-run", action="store_true")
     p_pool = sub.add_parser("pool")
     for flag in ("--name", "--operator", "--ceremony", "--tos-root", "--fift"):
         p_pool.add_argument(flag, required=True)
@@ -2605,7 +2974,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     outcome.add_argument("--failed", choices=("a", "b", "c", "d"))
     outcome.add_argument(
-        "--abandoned", action="store_true", help="Close a verified unsigned planned fund"
+        "--abandoned",
+        action="store_true",
+        help="Close a verified unsigned planned fund or owner-fund",
     )
     p_record.add_argument(
         "--dry-run",
@@ -2613,6 +2984,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Verify abandonment or a bootstrap checkpoint without recording",
     )
     p_record.add_argument("--hint", help="the wallet or destination transaction hash (hex)")
+    p_record.add_argument(
+        "--block-boc",
+        type=Path,
+        help="a sweep's burn block file (lite-client getblock -D), verified by its file hash",
+    )
     p_resubmit = sub.add_parser("resubmit", parents=[common])
     p_resubmit.add_argument("--id", required=True)
     p_retry = sub.add_parser("retry", parents=[common])
@@ -2640,7 +3016,8 @@ def main(argv: list[str] | None = None) -> int:
     p_load.add_argument("--max-retries", type=int, default=5)
     p_load.add_argument("--wallet-floor", default="5")
     p_load.add_argument("--relayer-floor", default="2")
-    p_load.add_argument("--bootstrap-floor", default="100")
+    p_load.add_argument("--funding-owner", help="the pool owner NAME that funds the load")
+    p_load.add_argument("--owner-floor", default="100")
     p_load.add_argument("--watch-rpc", action="append")
     p_load.add_argument("--send-rpc", action="append")
     p_load.add_argument("--dry-run", action="store_true")
@@ -2668,6 +3045,10 @@ def main(argv: list[str] | None = None) -> int:
                 withdraw(args, operations, global_id)
             elif args.command == "change-validator":
                 change_validator(args, operations, global_id)
+            elif args.command == "sweep":
+                sweep(args, operations, global_id)
+            elif args.command == "top-up":
+                top_up(args, operations, global_id)
             elif args.command in ("reconcile", "record", "resubmit", "baseline", "retry"):
                 manual(args, operations)
             else:
@@ -2736,8 +3117,20 @@ def manual(args: argparse.Namespace, operations: ops.Operations) -> None:
     if record is None:
         raise lib.TestnetError(f"no operation {args.id}")
     expect = expect_for(args, record) if record["kind"] in ops.HOST_KINDS else None
+    block_boc = getattr(args, "block_boc", None)
+    if block_boc is not None:
+        if record["kind"] != "sweep":
+            raise lib.TestnetError("--block-boc verifies a sweep's burn; this is not a sweep")
+        expect = ops.burn_expect(Path(block_boc).read_bytes())
     if args.command == "resubmit":
         prerequisites = None
+        if record["kind"] == "sweep":
+
+            def prerequisites():
+                sweep_prerequisites(
+                    argparse.Namespace(**dict(vars(args), id=record["id"])), operations
+                )
+
         if record["kind"] in ("principal", "withdraw"):
             entry = read_pools(Path(args.ceremony)).get(record.get("name"), {})
 

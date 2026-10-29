@@ -30,6 +30,7 @@ def load_script(name: str, module: str):
 
 elections = load_script("testnet-elections.py", "testnet_elections_wallets")
 coordinator = load_script("testnet-coordinator.py", "testnet_coordinator_wallets")
+REAL_BOOTSTRAP_CHECK = lib.zero_state_bootstrap
 
 KEY_A = "pubkey:" + "a1" * 32
 KEY_B = "pubkey:" + "b2" * 32
@@ -252,6 +253,11 @@ def genesis_setup(tmp_path, monkeypatch, wallet_key: bytes):
     # create_state above emits opaque stand-in bytes; real BOC checks have their own tests.
     monkeypatch.setattr(lib, "zero_state_gas_credits", lambda boc: {20: 10000, 21: 20000})
     monkeypatch.setattr(lib, "zero_state_retired_params", lambda boc: None)
+    monkeypatch.setattr(
+        lib,
+        "zero_state_bootstrap",
+        lambda boc, wallet, total, schedule: {"bootstrap_wallet_nanotos": wallet},
+    )
     monkeypatch.setattr(
         lib,
         "wallet_public_key",
@@ -723,3 +729,36 @@ def test_create_state_finds_its_inputs_from_relative_paths(tmp_path, monkeypatch
         == "created\n"
     )
     assert (run_dir / "create-state.log").read_text() == "created\n"
+
+
+def test_genesis_records_the_bootstrap_check(tmp_path, monkeypatch):
+    ceremony, args, runs = genesis_setup(tmp_path, monkeypatch, b"\x09" * 32)
+    seen = []
+
+    def bootstrap(boc, wallet, total, schedule):
+        seen.append((wallet, total, schedule))
+        return {"bootstrap_wallet_nanotos": wallet, "blackhole": lib.BLACKHOLE}
+
+    monkeypatch.setattr(lib, "zero_state_bootstrap", bootstrap)
+    assert coordinator.main(args) == 0
+    profile = lib.load_profile()
+    assert seen == [(80_151 * 10**9, 81_151 * 10**9, lib.validator_schedule(profile))]
+    recorded = json.loads((ceremony / "genesis.json").read_text())["bootstrap"]
+    assert recorded == {"bootstrap_wallet_nanotos": 80_151 * 10**9, "blackhole": lib.BLACKHOLE}
+
+
+def test_a_genesis_without_the_decided_bootstrap_publishes_nothing(tmp_path, monkeypatch, capsys):
+    ceremony, args, runs = genesis_setup(tmp_path, monkeypatch, b"\x0a" * 32)
+    # The real check on the real pre-CFG-01 genesis: no ConfigParam 5.
+    old_state = (Path(__file__).parent / "data" / "zerostate-v16-auth.boc").read_bytes()
+    monkeypatch.setattr(
+        lib,
+        "zero_state_bootstrap",
+        lambda boc, wallet, total, schedule: REAL_BOOTSTRAP_CHECK(
+            old_state, wallet, total, schedule
+        ),
+    )
+    assert coordinator.main(args) == 1
+    assert "no ConfigParam 5" in capsys.readouterr().err
+    assert runs == ["run-a", "run-b"]
+    assert published(ceremony) == []

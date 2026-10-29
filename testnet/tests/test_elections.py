@@ -84,18 +84,62 @@ def test_raw_address_check():
             elections.check_raw_address(bad)
 
 
-def test_repository_profile_has_the_election_amounts():
-    e = lib.load_profile()["elections"]
+# Dated measurements, not values derived from chain config: the epoch-5 bootstrap
+# analysis (BOOTSTRAP-AMOUNT.md, 2026-10-28, from the epoch-5 operation journals and
+# operator balance snapshots of 2026-10-24).
+# The most operator cash any validator spent through its first stake recovery and
+# third stake order, its 2 TOS pool deployment included (node-1).
+MEASURED_OPERATOR_CASH_NANOTOS = 5_933_747_311
+# One stake order and recovery window, the allowance for one failed submission.
+FAILURE_ALLOWANCE_NANOTOS = 1_442_093_644
+# The eight funding transfers' measured wallet fees plus the sweep budgeted at the
+# largest of them.
+BOOTSTRAP_TRANSFER_FEES_NANOTOS = 28_622_334
+
+
+def check_election_amounts(e):
     assert e["stake_tos"] == 10002
     assert e["pool_tos"] >= 2 * e["stake_tos"]
     # The principal reaches the pool from its offline owner, never through the
     # operator wallet on the host, which gets fee money only.
     assert e["operator_funding_tos"] < e["stake_tos"]
-    assert e["operator_funding_tos"] >= e["pool_deploy_tos"] + 50
+    # Fee money must carry the operator through its first returned stake with one
+    # failed submission: nothing refills it from the bootstrap wallet after the sweep.
+    assert e["operator_funding_tos"] * NANO >= (
+        MEASURED_OPERATOR_CASH_NANOTOS + FAILURE_ALLOWANCE_NANOTOS
+    )
     # tosctl's election task attaches ELECTOR_STAKE_FEE + NPOOL_COMPUTE_FEE to a pool order.
     assert e["stake_order_nanotos"] == 1_200_000_000
     per_validator = e["operator_funding_tos"] + e["pool_tos"] + e["pool_owner_reserve_tos"]
-    assert 4 * per_validator <= 100000
+    # The bootstrap wallet funds the four validators, keeps the margin, and what is
+    # left pays its own transfers (whole-TOS rounding on top).
+    spare = e["bootstrap_wallet_tos"] - 4 * per_validator - e["bootstrap_margin_tos"]
+    assert spare * NANO >= BOOTSTRAP_TRANSFER_FEES_NANOTOS
+    assert spare < 2
+
+
+def test_repository_profile_has_the_election_amounts():
+    check_election_amounts(lib.load_profile()["elections"])
+    assert lib.load_profile()["elections"]["bootstrap_wallet_tos"] == 80151
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        # 6 TOS covers the measured spend but not the failure allowance.
+        ("operator_funding_tos", 6),
+        # Not enough for four validators, the margin and the transfer fees.
+        ("bootstrap_wallet_tos", 80140),
+        # A margin eaten by the funding.
+        ("bootstrap_margin_tos", 51),
+        # The historical 150 TOS of operator money no longer fits the wallet.
+        ("operator_funding_tos", 150),
+    ],
+)
+def test_the_election_amount_guard_catches_a_wrong_value(field, value):
+    e = dict(lib.load_profile()["elections"], **{field: value})
+    with pytest.raises(AssertionError):
+        check_election_amounts(e)
 
 
 # ---------------------------------------------------------------- load
@@ -345,6 +389,8 @@ def load_args(tmp_path, **extra):
         send_rpc=None,
         dry_run=True,
         previous_ceremony=[],
+        funding_owner="node-1",
+        owner_floor="100",
     )
     args.update(extra)
     return elections.argparse.Namespace(**args)
@@ -444,7 +490,7 @@ def refill_once(tmp_path, monkeypatch, rpc):
     args = load_args(tmp_path, relayer_amount="10", dry_run=False)
     driver = elections.LoadDriver(args, elections.Chain("http://fake", rpc), 2)
     funded = []
-    monkeypatch.setattr(driver, "fund_from_bootstrap", lambda *a: funded.append(a[:3]))
+    monkeypatch.setattr(driver, "fund_from_owner", lambda *a: funded.append(a[:3]))
     driver.refill([elections.Relayer(3, RELAYER)], OneRound())
     return driver, funded
 
@@ -511,6 +557,8 @@ def test_load_arguments_are_checked():
         ("wallet_timeout", 0),
         ("actions_per_batch", 255),
         ("transfer_nanotos", -1),
+        # Load is funded by a pool owner, never by the bootstrap wallet.
+        ("funding_owner", None),
     ):
         bad = elections.argparse.Namespace(**vars(good))
         setattr(bad, field, value)

@@ -42,9 +42,15 @@ later reset reads it through --previous-ceremony to refuse reused wallet keys.
       unless ConfigParam 8 is the profile's version, ConfigParam 48 is the
       initial AUTH policy for this tag and 48 is in both ConfigParam 9
       (mandatory) and 10 (critical), as the node requires from version 16.
-      Writes genesis.json (with main_wallet_public_key and auth_policy: the
-      tag, its rule and the ConfigParam 48 cell hash), main-wallet.pub and
-      wallets.json.
+      It also refuses unless ConfigParam 5 names the blackhole -1:ff...ff,
+      burns no fees (0/1) and is critical; the bootstrap wallet -1:111...1 holds
+      exactly elections.bootstrap_wallet_tos and the state exactly
+      genesis.total_supply_tos (the wallet plus the Elector's and the Config
+      contract's 500 TOS each), the balances adding up; and ConfigParam 15 read
+      from the state is the profile's schedule. Writes genesis.json (with
+      main_wallet_public_key, auth_policy: the tag, its rule and the ConfigParam
+      48 cell hash, and bootstrap: the ConfigParam 5 cell hash, the blackhole and
+      the balances), main-wallet.pub and wallets.json.
 
   global-config --ceremony DIR DHT_NODE.json [DHT_NODE.json ...]
       Build global-config.json from the zero state and the signed DHT records
@@ -302,6 +308,10 @@ def cmd_genesis(args: argparse.Namespace) -> None:
     )
     auth["network_tag_rule"] = auth_entry["rule"]
     auth["network_tag_status"] = auth_entry["status"]
+    wallet_nanotos, total_nanotos = lib.genesis_supply_targets(profile)
+    bootstrap_check = lib.zero_state_bootstrap(
+        (built / "zerostate.boc").read_bytes(), wallet_nanotos, total_nanotos, schedule
+    )
     valid_for = schedule["initial_set_valid_for"]
     utc = datetime.timezone.utc
 
@@ -323,6 +333,7 @@ def cmd_genesis(args: argparse.Namespace) -> None:
         },
         "main_wallet_public_key": main_public.hex(),
         "auth_policy": auth,
+        "bootstrap": bootstrap_check,
         "zero_state": lib.zero_state_entry(rhash, fhash),
         "zero_state_hex": {"root_hash": rhash.hex(), "file_hash": fhash.hex()},
         "basestate0_hex": {

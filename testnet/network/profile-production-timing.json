@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "network": "tos-public-testnet",
+  "status": "REHEARSAL",
+  "status_note": "Not a network profile: the explicit profile for a rehearsal of the bootstrap flow (funding, two elections, a failed-submission recovery, the sweep) at production ConfigParam 15 timing, on a disposable loopback chain (testnet/scripts/rehearse-loopback.sh with REHEARSAL_PROFILE naming this file). Everything but the schedule is network/profile.json's; tests keep the two identical otherwise.",
+  "global_id": {
+    "value": 2,
+    "status": "CONFIRMED",
+    "confirmed": "2026-10-12",
+    "note": "Signature replay domain (ConfigParam 19), confirmed by the owner (decision D03 in memo public-testnet/README.md): public testnet 2, mainnet 1, local development network 3. No other TOS network and neither TON network (mainnet -239, testnet -3) uses 2."
+  },
+  "genesis": {
+    "template": "crypto/smartcont/gen-zerostate.fif",
+    "validators": 4,
+    "global_version": 16,
+    "initial_set_valid_for_seconds": 21600,
+    "election_params": {
+      "elected_for": 65536,
+      "elections_start_before": 16384,
+      "elections_end_before": 8192,
+      "stake_held_for": 32768
+    },
+    "schedule_note": "The canonical template's schedule unchanged (crypto/smartcont/gen-zerostate.fif: 21,600 s initial set, 65,536 s terms, elections from 16,384 s to 8,192 s before a term, stakes held 32,768 s), which memo STATUS 13.155 asks the bootstrap rehearsal to run at. The first election opens at T + 5,216 s (about 1 h 27 min) and closes at T + 13,408 s (about 3 h 43 min); the elected set takes office at T + 6 h and the second at T + 6 h + 65,536 s, so the sweep comes about 24 h after genesis.",
+    "total_supply_tos": 81151,
+    "supply_note": "The genesis total the coordinator requires of the generated state: the bootstrap wallet (elections.bootstrap_wallet_tos) plus the Elector's and the Config contract's 500 TOS each in the canonical template. ConfigParam 5 must name the blackhole -1:ff...ff with no fee burning and be critical.",
+    "source_date_epoch": null,
+    "source_date_epoch_note": "Chosen and frozen by the coordinator at the ceremony (decision D03). It must lie in the future when the ceremony runs and leave the initial validator set enough lifetime to complete the first two elections.",
+    "auth_network_tag": {
+      "campaign_epoch": 6,
+      "rule": "TOS-AUTH-NETWORK-TAG-v1;network=tos-public-testnet;global_id=2;epoch=6",
+      "value": "99d8ae3469661895b820b4c41b6ad21acc448370e814c68d52ee3a12ae2c407a",
+      "status": "CHOSEN",
+      "note": "ConfigParam 48 (AUTH policy) is mandatory and critical from global version 16, and a version-16 genesis needs an explicit public 256-bit network tag; tos assigns none. The value is SHA-256 of the ASCII rule, so anyone can recompute it. It changes every epoch: all epochs share global id 2, and Quantum wallet keys and signatures bind the tag, so a fresh tag keeps an epoch's wallets and signed messages from carrying over to the next, as the fresh-identity checks do for everything else. It is never a tos test namespace (one repeated byte, or bytes 00..1f) nor the mainnet admission candidate's 0x42 repeated. The genesis step refuses unless TOS_AUTH_NETWORK_TAG names exactly this value, and records it with the ConfigParam 48 cell hash in genesis.json. Chosen by the test lead on 2026-10-17 for epoch 4 and moved to epoch 5 on 2026-10-24 and to epoch 6 on 2026-10-28; the owner may replace the rule before the launch."
+    }
+  },
+  "features": {
+    "shielded_pool": "disabled",
+    "energy": "disabled",
+    "note": "Neither may be activated on the public testnet until its own acceptance gate passes (memo public-testnet/README.md section 3.2)."
+  },
+  "ports": {
+    "adnl_udp": 30001,
+    "quic_udp_offset": 1000,
+    "console_tcp": 30002,
+    "liteserver_tcp": 30003,
+    "dht_udp": 30300,
+    "json_rpc_loopback": 8081,
+    "exporter_loopback": 9100,
+    "rpc_http_loopback": 8080,
+    "wallet_index_loopback": 8083,
+    "rpc_note": "The rpc role (a full node host that also runs tos-wallet-index and tos-rpc): tos-rpc listens on rpc_http_loopback for the operator's TLS reverse proxy, the index on wallet_index_loopback for tos-rpc only (not the index's default 8081, which the full node's operator JSON-RPC holds). Neither is opened in the host firewall; tos-rpc's write backend is the full node's json_rpc_loopback."
+  },
+  "retention": {
+    "note": "Validator consensus databases are deleted only behind the GC checkpoint, which never passes the last key block, state_ttl or the persistent-state serializer (production/Production-Node.md, 'The GC floor'). With a 4 h term a validator normally keeps under 5 h of them, about 30 GB at the first epoch's 145 GB a day, and up to about 10 h (60 GB) when a key block opens a new 2^17 s persistent-state period and the serializer waits up to 6 h.",
+    "validator": {
+      "state_ttl": 3600,
+      "archive_ttl": 86400
+    },
+    "validator_logs": {
+      "rotate_mb": 15,
+      "keep_files": 5,
+      "session_stats_max_mb": 512,
+      "max_total_mb": 2048,
+      "note": "Owner decision 2026-10-12: at most 2 GB of logs per validator (memo EPOCH-1-FINDINGS.md, E1-05). One file per engine thread (threads + 1 files), each with keep_files rotated copies, plus the session stats file, which the engine rotates at 256 MiB keeping one .old. About an hour of history at the first epoch's volume."
+    },
+    "fullnode": {
+      "state_ttl": 86400,
+      "archive_ttl": 604800
+    }
+  },
+  "elections": {
+    "note": "What testnet-elections.py onboard moves for each genesis validator. The staking account, and so the validator id genesis records, is a single-nominator pool whose owner is an offline wallet on the coordinator and whose validator is the operator wallet on the host. The stake principal never passes through the operator wallet: the bootstrap wallet funds the owner (pool_tos + pool_owner_reserve_tos), the owner sends pool_tos to the pool, and the operator wallet gets only fee money (the pool deployment, and for every election the stake order's fees and a recovery message). The bootstrap wallet holds 80,151 TOS (memo STATUS 13.155/13.254, BOOTSTRAP-AMOUNT.md): four validators at 10 + 20,015 = 20,025 use 80,100 and leave 51 for its own transfer fees, the 50 TOS margin and whole-TOS rounding. Once ConfigParam 34 and 32 are both elected sets holding the four stakes, `sweep` sends what is left (send mode 160) to the ConfigParam 5 blackhole and deletes the wallet; after that operator fee money and load funding come from the pool owners (`top-up`, `load --funding-owner`), never from the bootstrap wallet. Each pool holds two fixed stakes of 10,002 (the Elector subtracts 1 TOS before it compares with the 10,000 minimum), for the first and the overlapping second election.",
+    "stake_order_nanotos": 1200000000,
+    "stake_order_note": "The value the election task attaches to a stake order it sends from the operator wallet to the pool: ELECTOR_STAKE_FEE (1 TOS) + NPOOL_COMPUTE_FEE (0.2 TOS), tos tosctl/src/node-control/elections/src/runner.rs send_stake; the pool forwards the stake itself. The history gate explains exactly one outbound internal message to the recorded operator pool: new-stake (at most this value), recover-stake, update-validator-set, validator-deposit or process-withdraw-requests, each with its decoded body and documented value limit (CEREMONY.md, Election task history). Only new-stake carries an election id and requires its transaction time inside that election window, using current ConfigParam 15 on both validators only when it equals genesis. No historical state read is needed.",
+    "operator_funding_tos": 10,
+    "operator_funding_note": "Epoch 5 measured at most 5.933747311 TOS of operator cash through the first stake recovery and the third stake order, and 1.442093644 TOS for one stake order and recovery, the allowance for one failed submission (BOOTSTRAP-AMOUNT.md); 10 TOS leaves about 2.6 spare. Later fee money comes from the pool owner (`top-up`).",
+    "bootstrap_wallet_tos": 80151,
+    "bootstrap_margin_tos": 50,
+    "pool_deploy_tos": 2,
+    "pool_tos": 20010,
+    "pool_owner_reserve_tos": 5,
+    "stake_tos": 10002,
+    "max_factor": "1.0"
+  },
+  "paths": {
+    "global_config": "/etc/tos/global-config.json",
+    "db_root": "/var/lib/tos",
+    "log_root": "/var/log/tos",
+    "bin": "/usr/local/bin"
+  },
+  "dht": {
+    "k": 6,
+    "a": 3,
+    "network_id": -1
+  },
+  "host_requirements": {
+    "note": "Testnet floors checked by scripts/preflight.py before a host is prepared. Measured on 12 GB / 6-core VMs: a running validator holds about 6 GB RSS, and build-node-binaries.sh peaked at 8.4 GB with 4 jobs (3.2 GB for a DHT build with 2). A 12 GB VM reports about 11.6 GiB MemTotal. Full nodes with a 1 GiB cache cap hold about 2.5-3 GB RSS (3.0 GB peak under load); an 8 GB VM reports about 7.7 GiB MemTotal and uses a 7 GiB floor. Production requirements are production/Hardware-and-Hosting.md, not these.",
+    "os": {
+      "id": "ubuntu",
+      "version_id": "24.04"
+    },
+    "architectures": [
+      "x86_64",
+      "aarch64"
+    ],
+    "roles": {
+      "validator": {
+        "min_cpus": 4,
+        "min_memory_gib": 11,
+        "min_disk_free_gib": 60
+      },
+      "fullnode": {
+        "min_cpus": 4,
+        "min_memory_gib": 7,
+        "min_disk_free_gib": 60
+      },
+      "dht": {
+        "min_cpus": 2,
+        "min_memory_gib": 3,
+        "min_disk_free_gib": 20
+      }
+    }
+  }
+}
