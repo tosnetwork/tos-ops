@@ -870,7 +870,12 @@ python3 $S/testnet-elections.py record --ceremony ./ceremony \
 # Review the two-validator evidence, then repeat without --dry-run.
 ```
 
-This applies only to unsigned planned `fund` operations. Any signing evidence,
+This applies only to unsigned planned `fund` operations (bootstrap wallet) and
+`owner-fund` operations (a pool owner's `top-up` or `load` funding); never to a
+sweep. Such a plan is what a real run refused before signing leaves behind, for
+example a `load` whose `--deploy-amount` the owner cannot pay (its dry run does
+not check that): while the plan is open the gate refuses every other operation
+of that wallet, so close it before the owner's next `top-up` or `withdraw`. Any signing evidence,
 a matching transfer or external funding intent since the plan's creation time,
 unavailable/incomplete history, or disagreement refuses the operation. The
 check reads signing-wallet history back through a decoded transaction older

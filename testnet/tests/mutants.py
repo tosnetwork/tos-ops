@@ -409,8 +409,14 @@ M = [
     (
         "O39 nonfund plan abandoned",
         OPS,
-        'if state_of(record) != "planned" or record.get("kind") != "fund":',
+        'if state_of(record) != "planned" or record.get("kind") not in ABANDONABLE_KINDS:',
         "if False:",
+    ),
+    (
+        "O39b owner-fund plan cannot be abandoned",
+        OPS,
+        'ABANDONABLE_KINDS = ("fund", "owner-fund")',
+        'ABANDONABLE_KINDS = ("fund",)',
     ),
     (
         "O40 stale validators accepted for abandonment",

@@ -73,6 +73,9 @@ WALLET_V3_MODE = 3
 # The bootstrap wallet's final transfer: carry the whole remaining balance (128)
 # and delete the account once it is empty (32), to the ConfigParam 5 blackhole.
 SWEEP_MODE = 128 + 32
+# The funding plans record_abandoned may close: signed on the coordinator through
+# run(), so an unsigned plan was never broadcast.
+ABANDONABLE_KINDS = ("fund", "owner-fund")
 BLACKHOLE = lib.BLACKHOLE
 EMPTY_BODY_HASH = lib.cell_from_bits("").hash().hex()
 # Search envelope for the transaction that ran a sweep, from the masterchain head
@@ -2227,15 +2230,23 @@ class Operations:
     def record_abandoned(self, op_id: str, dry_run: bool = False) -> dict:
         """Close only an unsigned coordinator funding plan, after two-node absence checks.
 
-        The funding signer returns bytes from a removed temporary directory. run()
-        fsyncs those bytes as signed before sendBoc; no planned fund can broadcast
-        through that path, including a crash between signing and the journal write.
+        A funding plan is a `fund` from the bootstrap wallet or an `owner-fund` from
+        a pool owner (top-up, load funding): both are signed here, on the
+        coordinator, through run(). The signer returns bytes from a removed
+        temporary directory, and run() fsyncs those bytes as signed before sendBoc;
+        no planned funding can broadcast through that path, including a crash
+        between signing and the journal write. A run refused before signing (a
+        prerequisite such as the owner's balance) leaves such a plan, and while it
+        is open the gate refuses every other operation of its wallet; this closes
+        it. A sweep is never abandoned here.
         """
         with self.journal.lock():
             lines = self.journal.lines(op_id)
             record = self.journal.record(op_id)
-            if state_of(record) != "planned" or record.get("kind") != "fund":
-                raise OperationRefused("abandonment requires an unsigned planned fund")
+            if state_of(record) != "planned" or record.get("kind") not in ABANDONABLE_KINDS:
+                raise OperationRefused(
+                    "abandonment requires an unsigned planned fund or owner-fund"
+                )
             signed_fields = ("boc", "external_hash", "seqno", "valid_until", "boundary", "identity")
             if any(
                 line["state"] != "planned"

@@ -2969,7 +2969,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     outcome.add_argument("--failed", choices=("a", "b", "c", "d"))
     outcome.add_argument(
-        "--abandoned", action="store_true", help="Close a verified unsigned planned fund"
+        "--abandoned",
+        action="store_true",
+        help="Close a verified unsigned planned fund or owner-fund",
     )
     p_record.add_argument(
         "--dry-run",

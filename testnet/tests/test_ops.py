@@ -3122,3 +3122,67 @@ def test_an_owner_fund_settles_like_a_funding(world):
     )
     assert record["state"] == "settled"
     assert chain.account(OTHER)["balance"] == 5 * NANO
+
+
+def planned_owner_fund(world):
+    """An owner-fund plan refused before signing, as a `load` the owner cannot
+    afford leaves it: the record is planned and the gate holds the owner."""
+    chain, operations, _ = world
+    chain.wallet(OWNER, 50 * NANO, public_key="0e" * 32, subwallet=0x504F4F4C)
+    chain.now = int(time.time()) + 10
+    with operations.journal.lock():
+        record = operations.begin(
+            "load-wallet-plan", params(wallet=OWNER, kind="owner-fund", destination=OTHER)
+        )
+    with operations.journal.lock(), pytest.raises(ops.OperationRefused, match="open"):
+        operations.gate(OWNER, "top-up-next")
+    return chain, operations, record
+
+
+def test_abandon_an_unsigned_owner_fund_then_the_owner_works_again(world):
+    chain, operations, record = planned_owner_fund(world)
+    preview = operations.record_abandoned(record["id"], dry_run=True)
+    assert preview["state"] == "planned" and preview["dry_run"]
+    result = operations.record_abandoned(record["id"])
+    assert result["state"] == "failed"
+    assert result["evidence"]["form"] == "unsigned-fund-plan-abandoned"
+    assert result["evidence"]["wallet"] == OWNER
+    assert chain.sent == []
+    # The owner's next operation is admitted, and it settles.
+    with operations.journal.lock():
+        operations.gate(OWNER, "top-up-next")
+    settled = run(
+        operations,
+        "top-up-next",
+        p=params(wallet=OWNER, kind="owner-fund", destination=OTHER),
+        sign=signer(chain, wallet=OWNER, destination=OTHER),
+    )
+    assert settled["state"] == "settled"
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"state": "planned", "boc": "bytes"},
+        {"state": "planned", "external_hash": "ab" * 32},
+        {"state": "signed"},
+        {"state": "broadcast"},
+    ],
+)
+def test_a_signed_or_broadcast_owner_fund_is_never_abandoned(world, entry):
+    _, operations, record = planned_owner_fund(world)
+    operations.journal.append(record["id"], entry)
+    before = operations.journal.lines(record["id"])
+    with pytest.raises(ops.OperationRefused, match="signing evidence|unsigned planned"):
+        operations.record_abandoned(record["id"])
+    assert operations.journal.lines(record["id"]) == before
+
+
+@pytest.mark.parametrize("kind", ["sweep", "withdraw", "change-validator", "principal"])
+def test_only_funding_plans_are_abandoned(world, kind):
+    _, operations, record = planned_owner_fund(world)
+    operations.journal.append(record["id"], {"state": "planned", "kind": kind})
+    before = operations.journal.lines(record["id"])
+    with pytest.raises(ops.OperationRefused, match="unsigned planned fund or owner-fund"):
+        operations.record_abandoned(record["id"])
+    assert operations.journal.lines(record["id"]) == before
