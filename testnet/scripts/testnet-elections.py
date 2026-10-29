@@ -894,10 +894,13 @@ def owner_transfer(
             init=init,
             body=body,
         )
+        return boc
+
+    def export(boc: bytes, seqno: int) -> None:
+        # The operator copy, written by run() only after the signed journal line.
         sent = lib.private_dir(ceremony / "sent")
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
         lib.write_new(sent / f"{stamp}-owner-{name}-seq{seqno}-{op_id}.boc", boc, 0o600)
-        return boc
 
     params = {
         "kind": kind,
@@ -911,7 +914,9 @@ def owner_transfer(
         "subwallet": POOL_OWNER_SUBWALLET,
     }
     params.update(extra or {})
-    return operations.run(op_id, params, sign, lambda decoded: None, prerequisites, expect)
+    return operations.run(
+        op_id, params, sign, lambda decoded: None, prerequisites, expect, export=export
+    )
 
 
 def owner_role_check(operations: ops.Operations, tos_root, pool: str, owner: str) -> None:

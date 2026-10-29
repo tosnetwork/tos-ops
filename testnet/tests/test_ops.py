@@ -12,7 +12,7 @@ import fakechain
 import pytest
 import testnet_lib as lib
 import testnet_ops as ops
-from conftest import DATA
+from conftest import DATA, SCRIPTS
 from fakechain import NANO, build_external, internal_message
 
 BOOT = "-1:" + "11" * 32
@@ -3186,3 +3186,101 @@ def test_only_funding_plans_are_abandoned(world, kind):
     with pytest.raises(ops.OperationRefused, match="unsigned planned fund or owner-fund"):
         operations.record_abandoned(record["id"])
     assert operations.journal.lines(record["id"]) == before
+
+
+# ---------------------------------------------------------------- the signing crash window
+
+
+def signed_artifact(chain, operations, name, ttl=300, **kw):
+    """A signed copy of the plan's message in ceremony/sent/, as a crash between
+    signing and the signed journal line could leave (earlier tool versions wrote
+    the operator copy first) or as a fund dry run writes."""
+    sent = operations.ceremony / "sent"
+    sent.mkdir(exist_ok=True)
+    boc = signer(chain, wallet=OWNER, destination=OTHER, ttl=ttl, **kw)(
+        chain.account(OWNER)["seqno"]
+    )
+    (sent / name).write_bytes(boc)
+    return boc
+
+
+@pytest.mark.parametrize(
+    "name", ["20261029T000000Z-owner-a-seq1-load-wallet-plan.boc", "unrelated-name.boc"]
+)
+def test_a_signed_artifact_blocks_abandonment_until_it_expires(world, name):
+    chain, operations, record = planned_owner_fund(world)
+    signed_artifact(chain, operations, name)
+    before = operations.journal.lines(record["id"])
+    for dry_run in (True, False):
+        with pytest.raises(ops.OperationRefused, match="a signed message for this plan exists"):
+            operations.record_abandoned(record["id"], dry_run=dry_run)
+    assert operations.journal.lines(record["id"]) == before
+    # Expired on both validators: it can no longer be accepted, and it never was.
+    chain.now += 400
+    result = operations.record_abandoned(record["id"])
+    assert result["state"] == "failed"
+    assert [a["file"] for a in result["evidence"]["signed_artifacts"]] == [name]
+
+
+def test_an_artifact_of_another_transfer_does_not_block(world):
+    chain, operations, record = planned_owner_fund(world)
+    signed_artifact(chain, operations, "other.boc", value=7 * NANO)
+    assert operations.record_abandoned(record["id"])["evidence"]["signed_artifacts"] == []
+
+
+def test_an_unreadable_artifact_named_for_the_plan_refuses(world):
+    _, operations, record = planned_owner_fund(world)
+    sent = operations.ceremony / "sent"
+    sent.mkdir()
+    (sent / "x-load-wallet-plan.boc").write_bytes(b"not a boc")
+    with pytest.raises(ops.OperationRefused, match="cannot read signed artifact"):
+        operations.record_abandoned(record["id"])
+
+
+def test_the_operator_copy_is_written_only_after_the_signed_journal_line(world, monkeypatch):
+    chain, operations, _ = world
+    chain.wallet(OWNER, 50 * NANO, public_key="0e" * 32, subwallet=0x504F4F4C)
+    exported = []
+    current = {"id": "owner-fund-x"}
+
+    def export(boc, seqno):
+        assert operations.journal.record(current["id"])["state"] == "signed"
+        exported.append(seqno)
+
+    original = operations.journal.append
+
+    def fail_signed(op_id, entry):
+        if entry["state"] == "signed":
+            raise OSError("signed journal fsync failed")
+        return original(op_id, entry)
+
+    monkeypatch.setattr(operations.journal, "append", fail_signed)
+    with pytest.raises(OSError, match="fsync"):
+        run(
+            operations,
+            "owner-fund-x",
+            p=params(wallet=OWNER, kind="owner-fund", destination=OTHER),
+            sign=signer(chain, wallet=OWNER, destination=OTHER),
+            export=export,
+        )
+    assert exported == [] and chain.sent == []
+    monkeypatch.setattr(operations.journal, "append", original)
+    assert operations.record_abandoned("owner-fund-x")["state"] == "failed"
+    current["id"] = "owner-fund-y"
+    record = run(
+        operations,
+        "owner-fund-y",
+        p=params(wallet=OWNER, kind="owner-fund", destination=OTHER),
+        sign=signer(chain, wallet=OWNER, destination=OTHER),
+        export=export,
+    )
+    assert record["state"] == "settled" and len(exported) == 1
+
+
+def test_owner_transfer_exports_through_run():
+    source = (SCRIPTS / "testnet-elections.py").read_text()
+    start = source.index("def owner_transfer(")
+    body = source[start : source.index("\ndef ", start + 1)]
+    sign = body[body.index("    def sign(") : body.index("    def export(")]
+    assert "write_new" not in sign and "sent" not in sign
+    assert "export=export" in body

@@ -875,7 +875,13 @@ This applies only to unsigned planned `fund` operations (bootstrap wallet) and
 sweep. Such a plan is what a real run refused before signing leaves behind, for
 example a `load` whose `--deploy-amount` the owner cannot pay (its dry run does
 not check that): while the plan is open the gate refuses every other operation
-of that wallet, so close it before the owner's next `top-up` or `withdraw`. Any signing evidence,
+of that wallet, so close it before the owner's next `top-up` or `withdraw`. A
+signed copy of the plan's message outside the journal (`ceremony/sent/`, found by
+its name or by its wallet, destination, value and body; a fund dry run writes one)
+refuses abandonment until its `valid_until` has passed on both validators: before
+that it could still be accepted. The operator copy of an owner transfer is written
+only after the signed journal line is durable, so a crash while signing leaves no
+such copy next to a planned record. Any signing evidence,
 a matching transfer or external funding intent since the plan's creation time,
 unavailable/incomplete history, or disagreement refuses the operation. The
 check reads signing-wallet history back through a decoded transaction older

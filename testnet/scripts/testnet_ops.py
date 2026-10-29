@@ -1693,7 +1693,9 @@ class Operations:
             raise OperationRefused(f"operation {op_id} exists with other parameters: {mismatch}")
         return record
 
-    def run(self, step: str, params: dict, sign, validate, prerequisites=None, expect=None) -> dict:
+    def run(
+        self, step: str, params: dict, sign, validate, prerequisites=None, expect=None, export=None
+    ) -> dict:
         """Gate, sign once, journal, broadcast once, watch for settlement, all decided
         with the journal lock held and the record re-read under it.
 
@@ -1753,6 +1755,11 @@ class Operations:
                 },
             )
             crash_point(op_id, "signed")
+            # A copy of the signed message for the operator (ceremony/sent/) is written
+            # only now, after the signed journal line is durable: a crash before it
+            # leaves no signed bytes outside the journal next to a planned record.
+            if export is not None:
+                export(boc, decoded["seqno"])
             self.nodes[0].call("sendBoc", boc=base64.b64encode(boc).decode())
             self.journal.append(op_id, {"state": "broadcast"})
             crash_point(op_id, "broadcast")
@@ -2264,13 +2271,70 @@ class Operations:
                 )
             except (ValueError, KeyError) as exc:
                 raise OperationRefused("the plan has no valid creation time") from exc
+            artifacts = self.signed_artifacts(record, op_id)
             evidence = self.fund_plan_absence(record, since)
+            evidence["signed_artifacts"] = artifacts
             if dry_run:
                 return {"id": op_id, "state": "planned", "dry_run": True, "evidence": evidence}
             # Recheck both validators immediately before the terminal append.
+            artifacts = self.signed_artifacts(record, op_id)
             evidence = self.fund_plan_absence(record, since)
+            evidence["signed_artifacts"] = artifacts
             self.append_terminal(record, "failed", evidence, by="record")
             return self.journal.record(op_id)
+
+    def signed_artifacts(self, record: dict, op_id: str) -> list[dict]:
+        """Signed messages for this plan outside the journal (ceremony/sent/: the
+        operator copies, a fund dry run's), found by name or by content: an external
+        to the plan's wallet whose transfer has the plan's destination, value and
+        body. The plan is abandoned only if each has expired on both validators
+        (valid_until in the past), so none can still be accepted; whether one was
+        accepted before is what the absence check then decides. Unreadable files
+        refuse."""
+        sent = self.ceremony / "sent"
+        if not sent.is_dir():
+            return []
+        found = []
+        for path in sorted(sent.iterdir()):
+            if not path.is_file():
+                continue
+            try:
+                decoded = decode_external(path.read_bytes())
+            except (OSError, lib.TestnetError, ValueError, IndexError) as exc:
+                if op_id in path.name:
+                    raise OperationRefused(
+                        f"cannot read signed artifact {path.name}: {exc}"
+                    ) from exc
+                continue
+            internal = decoded.get("internal") or {}
+            matches = decoded.get("destination") == record["wallet"] and (
+                op_id in path.name
+                or (
+                    internal.get("destination") == record["destination"]
+                    and internal.get("value") == record["value"]
+                    and internal.get("body_hash") == record["body_hash"]
+                )
+            )
+            if matches:
+                found.append(
+                    {
+                        "file": path.name,
+                        "external_hash": decoded["external_hash"],
+                        "seqno": decoded["seqno"],
+                        "valid_until": decoded["valid_until"],
+                    }
+                )
+        if found:
+            times = self.utimes()
+            for artifact in found:
+                if not all(now > artifact["valid_until"] for now in times):
+                    raise OperationRefused(
+                        f"a signed message for this plan exists ({artifact['file']}, seqno "
+                        f"{artifact['seqno']}, valid until {artifact['valid_until']}); it may "
+                        "still be accepted, so the plan is not abandoned before it has expired "
+                        "on both validators"
+                    )
+        return found
 
     def fund_plan_absence(self, record: dict, since: int) -> dict:
         chain_times = self.utimes()

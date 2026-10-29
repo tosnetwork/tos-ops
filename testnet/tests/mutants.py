@@ -419,6 +419,18 @@ M = [
         'ABANDONABLE_KINDS = ("fund",)',
     ),
     (
+        "O39c an unexpired signed artifact does not block abandonment",
+        OPS,
+        '                if not all(now > artifact["valid_until"] for now in times):',
+        "                if False:",
+    ),
+    (
+        "O39d the operator copy is exported before the signed journal line",
+        EL,
+        "        op_id, params, sign, lambda decoded: None, prerequisites, expect, export=export\n",
+        "        op_id, params, lambda seqno: (lambda b: (export(b, seqno), b)[1])(sign(seqno)), lambda decoded: None, prerequisites, expect\n",
+    ),
+    (
         "O40 stale validators accepted for abandonment",
         OPS,
         "if any(now < since for now in chain_times):",
