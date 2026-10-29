@@ -4,7 +4,7 @@
 #   install-node.sh prepare  --role validator|fullnode|dht --public-ip IP [--release DIR --rev COMMIT]
 #   install-node.sh prepare  --role rpc [--release DIR --rev COMMIT]
 #   install-node.sh activate --role validator|fullnode|rpc|dht --global-config FILE --sha256 HEX
-#                            [--genesis DIR] [--validator-id HEX] [--no-start]
+#                            [--genesis DIR [--genesis-ceremony]] [--validator-id HEX] [--no-start]
 #   install-node.sh binaries --role validator|fullnode|rpc|dht --release DIR --rev COMMIT
 #
 # The release DIR is what build-node-binaries.sh wrote on this host: each host
@@ -30,6 +30,10 @@
 #   places the zero state and base state where the engine finds them (genesis
 #   validators and early full nodes), binds the consensus key on a validator
 #   to its staking account (--validator-id: the pool genesis names),
+#   on a genesis validator (--genesis-ceremony) creates its signing ledger as
+#   one that has never signed, starting at this zero state (the node signs
+#   nothing without a signing ledger until a fence block, which a new chain
+#   whose validators all wait cannot produce),
 #   adds the console on 30002/tcp (on every address; the host firewall keeps it
 #   closed) and a lite server on a full node, installs the
 #   unit and starts it.
@@ -81,7 +85,7 @@ profile() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); [d:=d[k
 [ "$(id -u)" = 0 ] || die "run as root"
 [ $# -ge 1 ] || die "usage: install-node.sh prepare|activate|binaries --role ROLE ..."
 STEP=$1; shift
-ROLE="" PUBLIC_IP="" RELEASE="" REV="" GLOBAL_CONFIG="" SHA256="" GENESIS="" VALIDATOR_ID="" NO_START=""
+ROLE="" PUBLIC_IP="" RELEASE="" REV="" GLOBAL_CONFIG="" SHA256="" GENESIS="" VALIDATOR_ID="" NO_START="" CEREMONY=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --role) ROLE=$2; shift 2 ;;
@@ -93,11 +97,16 @@ while [ $# -gt 0 ]; do
     --genesis) GENESIS=$2; shift 2 ;;
     --validator-id) VALIDATOR_ID=$2; shift 2 ;;
     --no-start) NO_START=1; shift ;;
+    --genesis-ceremony) CEREMONY=1; shift ;;
     *) die "unknown option $1" ;;
   esac
 done
 case "$ROLE" in validator|fullnode|rpc|dht) ;; *) die "--role must be validator, fullnode, rpc or dht" ;; esac
 [ -z "$NO_START" ] || [ "$STEP" = activate ] || die "--no-start applies only to activate"
+if [ -n "$CEREMONY" ]; then
+  [ "$STEP" = activate ] && [ "$ROLE" = validator ] || die "--genesis-ceremony applies only to activate --role validator"
+  [ -n "$GENESIS" ] || die "--genesis-ceremony needs --genesis: the ledger starts at that zero state"
+fi
 DB="$DB_ROOT/$ROLE"
 LOG="$LOG_ROOT/$ROLE"
 UNIT="tos-testnet-$ROLE.service"
@@ -235,6 +244,24 @@ prepare() {
   fi
 }
 
+genesis_ceremony() {
+  # A genesis validator's identity was created for this zero state and has never
+  # signed. The ceremony records that in a complete signing ledger before the
+  # first start. Run only for such an identity: never for a key that signed
+  # before, on any network. A ledger already there (activate run again, or a
+  # node that has run) is left as it is; the tool refuses to overwrite one.
+  local genesis=$1 root file
+  if [ -e "$DB/consensus/signing-ledger/ledger" ]; then
+    echo "install-node: $DB already has a signing ledger; genesis ceremony not repeated"
+    return
+  fi
+  [ -f "$genesis/zerostate.rhash" ] && [ -f "$genesis/zerostate.fhash" ] \
+    || die "$genesis/zerostate.rhash and zerostate.fhash are required for the genesis ceremony"
+  root=$(od -An -tx1 -v "$genesis/zerostate.rhash" | tr -d ' \n')
+  file=$(od -An -tx1 -v "$genesis/zerostate.fhash" | tr -d ' \n')
+  as_tos "$BIN/tos-pq-consensus-key" init-signing-ledger --genesis-ceremony "$DB" "$VALIDATOR_ID" "$root" "$file"
+}
+
 place_static() {
   # The engine reads the zero state and base state from <db>/static/<FILE HASH HEX>.
   local genesis=$1 name hash
@@ -310,6 +337,7 @@ activate() {
     if [ "$ROLE" = validator ]; then
       [ -n "$VALIDATOR_ID" ] || die "--validator-id (the staking pool's id) is required for a validator"
       as_tos "$BIN/tos-pq-consensus-key" bind-node "$DB" "$DB/keys/pq-consensus.seed" "$VALIDATOR_ID"
+      if [ -n "$CEREMONY" ]; then genesis_ceremony "$GENESIS"; fi
     fi
     if ! has_console; then
       install -d -m 0700 -o tos -g tos "$DB/console-client"
