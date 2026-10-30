@@ -290,12 +290,22 @@ Validator (operator), with the pool's validator id from step 2:
 ```bash
 sudo /opt/tos-testnet/scripts/install-node.sh activate --role validator \
   --global-config global-config.json --sha256 <PUBLISHED_SHA256> \
-  --genesis ./published --validator-id <VALIDATOR_ID>
+  --genesis ./published --genesis-ceremony --validator-id <VALIDATOR_ID>
 ```
 
 This installs `/etc/tos/global-config.json` only on a matching digest. It
 places the zero state in `/var/lib/tos/validator/static/` and runs
-`tos-pq-consensus-key bind-node` with the node stopped. It adds a console on
+`tos-pq-consensus-key bind-node` with the node stopped. `--genesis-ceremony`
+then runs `tos-pq-consensus-key init-signing-ledger --genesis-ceremony` for
+the same validator id and this zero state: the node's signing ledger records
+that the identity has never signed. **This step is required for every genesis
+validator.** A validator without a signing ledger treats its earlier signing as
+unknown and signs nothing until a masterchain block generated at least 91 s
+after it took custody of its key; if every genesis validator waits, no block is
+ever produced and the chain does not start. The node then logs, at the
+zerostate, `no signing ledger at genesis`. Pass `--genesis-ceremony` only for a
+consensus key generated for this epoch in step 2 that has never signed. A
+validator that joins after genesis never runs it. It adds a console on
 30002/tcp, with its client keys in `/var/lib/tos/validator/console-client/`,
 and then starts `tos-testnet-validator`. Check the custody line; its
 `validator_id` must be the pool's:

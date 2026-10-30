@@ -494,6 +494,28 @@ async def prepare(args):
                 },
             )
         zs = network._get_or_generate_zerostate()
+        # The genesis ceremony: each genesis validator's identity was made for this
+        # zerostate and has never signed, so its signing ledger starts complete.
+        # Without it every validator waits for a fence block no one can produce.
+        # The election candidate (node 7) joins later and never runs it.
+        for node in nodes[:VALIDATOR_COUNT]:
+            held = node.pq_initial_validator
+            ceremony = subprocess.run(
+                [
+                    str(network.install.pq_consensus_key_exe),
+                    "init-signing-ledger",
+                    "--genesis-ceremony",
+                    str(node._directory),
+                    held.validator_id.hex(),
+                    zs.masterchain.root_hash.hex(),
+                    zs.masterchain.file_hash.hex(),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if ceremony.returncode != 0:
+                raise RuntimeError(f"genesis ceremony failed: {ceremony.stderr.strip()}")
         ports = []
         for i, node in enumerate(nodes, 1):
             static = node._directory / "static"
