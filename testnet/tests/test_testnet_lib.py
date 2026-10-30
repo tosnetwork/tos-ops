@@ -67,51 +67,107 @@ def _restricted():
     return copy.deepcopy(lib.load_profile())
 
 
+def _rec(p):
+    return p["features"]["shielded_pool_record"]
+
+
+def _set(path, value):
+    def change(p):
+        *parents, last = path.split(".")
+        node = _rec(p)
+        for key in parents:
+            node = node[int(key)] if isinstance(node, list) else node[key]
+        node[last] = value
+
+    return change
+
+
+def _drop(path):
+    def change(p):
+        *parents, last = path.split(".")
+        node = _rec(p)
+        for key in parents:
+            node = node[int(key)] if isinstance(node, list) else node[key]
+        del node[last]
+
+    return change
+
+
+# Each case is written to a profile file and refused by load_profile itself.
+MALFORMED_RECORDS = [
+    # The three cases of the review: a dropped hash, a foreign version, a non-list.
+    (
+        "dropped code_boc_sha256",
+        _drop("pool.code_boc_sha256"),
+        "missing keys \\['code_boc_sha256'\\]",
+    ),
+    ("global_version 999", _set("network.global_version", 999), "global version 999"),
+    ("gate_decisions a string", _set("gate_decisions", "approved"), "must be a non-empty list"),
+    # Keys.
+    ("unknown top-level key", _set("extra", 1), "unknown keys \\['extra'\\]"),
+    ("unknown pool key", _set("pool.owner", "x"), "unknown keys \\['owner'\\]"),
+    ("missing network name", _drop("network.name"), "missing keys \\['name'\\]"),
+    ("missing gas ceiling", _drop("pool.gas_ceilings.bounce"), "missing keys \\['bounce'\\]"),
+    ("gate decision without by", _drop("gate_decisions.0.by"), "missing keys \\['by'\\]"),
+    ("gate decision extra key", _set("gate_decisions.0.extra", "x"), "unknown keys"),
+    # Types and formats.
+    ("short hex", _set("pool.data_hash", "ab" * 31), "pool.data_hash must be 64"),
+    ("upper-case hex", _set("pool.code_hash", "AB" * 32), "pool.code_hash must be 64"),
+    ("commit not 40 hex", _set("network.runtime_commit", "ab" * 32), "runtime_commit must be 40"),
+    ("address format", _set("pool.address", "-1:" + "60" * 32), "workchain-0 raw address"),
+    ("address not the StateInit", _set("pool.address", "0:" + "11" * 32), "StateInit hash"),
+    ("bool as integer", _set("network.global_id", True), "global_id must be a positive"),
+    ("string as integer", _set("pool.withdrawal_fee_nanotos", "20000000"), "positive integer"),
+    ("denominations unsorted", _set("pool.denominations_tos", [10, 1]), "increasing"),
+    ("denominations empty", _set("pool.denominations_tos", []), "increasing"),
+    ("gas ceilings not an object", _set("pool.gas_ceilings", [1, 2, 3, 4]), "must be an object"),
+    ("empty gate decisions", _set("gate_decisions", []), "non-empty list"),
+    ("gate decision not an object", _set("gate_decisions", ["approved"]), "must be an object"),
+    ("gate decision date", _set("gate_decisions.0.date", "yesterday"), "YYYY-MM-DD"),
+    ("empty scope", _set("scope", " "), "scope must be a non-empty string"),
+    ("vk_bytes", _set("groth16.vk_bytes", 1247), "vk_bytes must be 1248"),
+    ("recovery slot", _set("profile.recovery_payload_slot", 1), "recovery_payload_slot must be 2"),
+    ("floor above endowment", _set("pool.immutable_reserve_floor_tos", 101), "floor exceeds"),
+    # Bindings to the enclosing profile.
+    ("network name", _set("network.name", "tos-local-dev"), "network name"),
+    ("global id", _set("network.global_id", 3), "global id 3"),
+    ("epoch", _set("network.epoch", 5), "epoch 5"),
+    ("AUTH tag", _set("network.auth_network_tag", "00" * 32), "AUTH tag"),
+    ("record status", _set("status", "disabled"), "needs a record with the same status"),
+]
+
+
+@pytest.mark.parametrize(
+    "change, message", [c[1:] for c in MALFORMED_RECORDS], ids=[c[0] for c in MALFORMED_RECORDS]
+)
+def test_load_profile_refuses_a_malformed_shielded_pool_record(tmp_path, change, message):
+    profile = _restricted()
+    change(profile)
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps(profile))
+    with pytest.raises(lib.TestnetError, match=message):
+        lib.load_profile(path)
+
+
 @pytest.mark.parametrize(
     "change, message",
     [
         (lambda p: p["features"].update(shielded_pool="enabled"), "unknown shielded pool status"),
-        (
-            lambda p: p["features"].update(shielded_pool="disabled"),
-            "present while the feature is disabled",
-        ),
+        (lambda p: p["features"].update(shielded_pool="disabled"), "present while"),
         (lambda p: p["features"].pop("shielded_pool_record"), "needs a record"),
-        (
-            lambda p: p["features"]["shielded_pool_record"]["network"].update(global_id=3),
-            "global id",
-        ),
-        (
-            lambda p: p["features"]["shielded_pool_record"]["network"].update(epoch=5),
-            "epoch 6 only",
-        ),
-        (lambda p: p["genesis"]["auth_network_tag"].update(campaign_epoch=7), "epoch 6 only"),
-        (
-            lambda p: p["features"]["shielded_pool_record"]["network"].update(
-                auth_network_tag="00" * 32
-            ),
-            "AUTH tag",
-        ),
-        (
-            lambda p: p["features"]["shielded_pool_record"]["pool"].update(
-                address="0:" + "11" * 32
-            ),
-            "StateInit hash",
-        ),
-        (
-            lambda p: p["features"]["shielded_pool_record"]["pool"].update(code_hash="xyz"),
-            "code_hash",
-        ),
-        (
-            lambda p: p["features"]["shielded_pool_record"].update(gate_decisions=[]),
-            "no gate decision",
-        ),
+        (lambda p: p["features"].update(energy="enabled"), "unknown energy status"),
+        (lambda p: p["features"].update(privacy="on"), "unknown keys"),
+        (lambda p: p["genesis"]["auth_network_tag"].update(campaign_epoch=7), "epoch"),
+        (lambda p: p["genesis"].update(global_version=17), "global version"),
     ],
 )
-def test_a_malformed_shielded_pool_record_is_refused(change, message):
+def test_load_profile_refuses_an_inconsistent_feature_block(tmp_path, change, message):
     profile = _restricted()
     change(profile)
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps(profile))
     with pytest.raises(lib.TestnetError, match=message):
-        lib.shielded_pool_record(profile)
+        lib.load_profile(path)
 
 
 def test_a_disabled_pool_without_a_record_loads(tmp_path):
@@ -121,6 +177,13 @@ def test_a_disabled_pool_without_a_record_loads(tmp_path):
     path = tmp_path / "profile.json"
     path.write_text(json.dumps(profile))
     assert lib.shielded_pool_record(lib.load_profile(path)) is None
+
+
+def test_both_repository_profiles_load():
+    # Every script loads one of these whether or not it touches the pool.
+    for name in ("profile.json", "profile-production-timing.json"):
+        profile = lib.load_profile(lib.PROFILE_PATH.with_name(name))
+        assert lib.shielded_pool_record(profile)["pool"]["address"].startswith("0:60b33d9d")
 
 
 @pytest.mark.parametrize("value", [1, 3, 0, True, 2**31, -(2**31) - 1, "2", None])

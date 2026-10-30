@@ -132,61 +132,187 @@ SHIELDED_POOL_RESTRICTED = "restricted-epoch-6-test"
 SHIELDED_POOL_EPOCH = 6
 
 
-def _hex64(value: Any, name: str) -> str:
-    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
-        raise TestnetError(f"shielded pool record: {name} must be 64 lowercase hex digits")
-    return value
+SHIELDED_POOL_VK_BYTES = 1248
+SHIELDED_POOL_RECOVERY_SLOT = 2
+FEATURE_KEYS = {"shielded_pool", "energy", "note", "shielded_pool_record"}
+
+
+def _hex(n: int):
+    pattern = re.compile(f"[0-9a-f]{{{n}}}")
+
+    def check(value: Any, where: str) -> None:
+        if not isinstance(value, str) or not pattern.fullmatch(value):
+            raise TestnetError(f"shielded pool record: {where} must be {n} lowercase hex digits")
+
+    return check
+
+
+def _text(value: Any, where: str) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise TestnetError(f"shielded pool record: {where} must be a non-empty string")
+
+
+def _positive(value: Any, where: str) -> None:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise TestnetError(f"shielded pool record: {where} must be a positive integer")
+
+
+def _date(value: Any, where: str) -> None:
+    if not isinstance(value, str) or not re.fullmatch(r"20[0-9]{2}-[01][0-9]-[0-3][0-9]", value):
+        raise TestnetError(f"shielded pool record: {where} must be a YYYY-MM-DD date")
+
+
+def _address(value: Any, where: str) -> None:
+    if not isinstance(value, str) or not re.fullmatch(r"0:[0-9a-f]{64}", value):
+        raise TestnetError(f"shielded pool record: {where} must be a workchain-0 raw address")
+
+
+def _denominations(value: Any, where: str) -> None:
+    if (
+        not isinstance(value, list)
+        or not value
+        or any(not isinstance(v, int) or isinstance(v, bool) or v <= 0 for v in value)
+        or value != sorted(set(value))
+    ):
+        raise TestnetError(f"shielded pool record: {where} must be increasing positive integers")
+
+
+_HEX64, _HEX40 = _hex(64), _hex(40)
+_GAS = {"topup": _positive, "deposit": _positive, "transact": _positive, "bounce": _positive}
+_DECISION = {"item": _text, "decision": _text, "by": _text, "date": _date, "record": _text}
+SHIELDED_POOL_SCHEMA: dict[str, Any] = {
+    "status": _text,
+    "scope": _text,
+    "metadata_only": _text,
+    "network": {
+        "name": _text,
+        "epoch": _positive,
+        "global_id": _positive,
+        "global_version": _positive,
+        "zero_state_root_hash": _HEX64,
+        "zero_state_file_hash": _HEX64,
+        "auth_network_tag": _HEX64,
+        "config_param_48_hash": _HEX64,
+        "runtime_commit": _HEX40,
+    },
+    "pool": {
+        "address": _address,
+        "code_hash": _HEX64,
+        "data_hash": _HEX64,
+        "state_init_hash": _HEX64,
+        "state_init_boc_sha256": _HEX64,
+        "code_boc_sha256": _HEX64,
+        "data_boc_sha256": _HEX64,
+        "manifest_sha256": _HEX64,
+        "execution_domain": _HEX64,
+        "initial_endowment_tos": _positive,
+        "immutable_reserve_floor_tos": _positive,
+        "withdrawal_fee_nanotos": _positive,
+        "denominations_tos": _denominations,
+        "gas_ceilings": _GAS,
+        "note": _text,
+    },
+    "profile": {
+        "path": _text,
+        "source_commit": _HEX40,
+        "source_blob": _HEX40,
+        "file_sha256": _HEX64,
+        "profile_hash": _HEX64,
+        "poseidon2_manifest_sha256": _HEX64,
+        "recovery_payload_slot": lambda v, w: None,  # bound below
+    },
+    "groth16": {
+        "ceremony": _text,
+        "vk_sha256": _HEX64,
+        "vk_bytes": _positive,
+        "proving_key_sha256": _HEX64,
+        "transcript": _HEX64,
+        "trust_assumption": _text,
+    },
+    "gate_decisions": [_DECISION],
+    "plan": _text,
+}
+
+
+def _check_shape(value: Any, schema: Any, where: str) -> None:
+    """Exactly the schema's keys, each of its type and format; lists of one shape."""
+    if isinstance(schema, dict):
+        if not isinstance(value, dict):
+            raise TestnetError(f"shielded pool record: {where} must be an object")
+        missing, unknown = set(schema) - set(value), set(value) - set(schema)
+        if missing or unknown:
+            raise TestnetError(
+                f"shielded pool record: {where} has missing keys {sorted(missing)} "
+                f"and unknown keys {sorted(unknown)}"
+            )
+        for key, sub in schema.items():
+            _check_shape(value[key], sub, f"{where}.{key}")
+    elif isinstance(schema, list):
+        if not isinstance(value, list) or not value:
+            raise TestnetError(f"shielded pool record: {where} must be a non-empty list")
+        for i, item in enumerate(value):
+            _check_shape(item, schema[0], f"{where}[{i}]")
+    else:
+        schema(value, where)
 
 
 def shielded_pool_record(profile: dict[str, Any]) -> dict[str, Any] | None:
     """The shielded pool's activation record, or None while the feature is disabled.
 
     The flag is metadata: it deploys and protects nothing. A restricted status
-    must carry a record bound to this profile's network: its global id, the
-    AUTH tag of the same epoch, and an address that is the StateInit hash. Any
-    other status, or a record without that status, is refused.
+    must carry a record of exactly the schema's keys, types and formats, bound
+    to this profile: its network name, global id, global version, the AUTH tag
+    of the same epoch, and an address that is the StateInit hash. Any other
+    status, a record without that status, or a record while disabled is refused.
     """
     features = profile.get("features", {})
+    if not isinstance(features, dict) or set(features) - FEATURE_KEYS:
+        raise TestnetError(
+            f"profile features has unknown keys {sorted(set(features) - FEATURE_KEYS)}"
+        )
+    if features.get("energy") != "disabled":
+        raise TestnetError(f"unknown energy status {features.get('energy')!r}")
     status = features.get("shielded_pool")
     record = features.get("shielded_pool_record")
     if status == SHIELDED_POOL_DISABLED:
-        if record is not None:
+        if "shielded_pool_record" in features:
             raise TestnetError("shielded pool record present while the feature is disabled")
         return None
     if status != SHIELDED_POOL_RESTRICTED:
         raise TestnetError(f"unknown shielded pool status {status!r}")
     if not isinstance(record, dict) or record.get("status") != status:
         raise TestnetError("a restricted shielded pool needs a record with the same status")
-    network = record.get("network", {})
-    pool = record.get("pool", {})
-    tag = profile.get("genesis", {}).get("auth_network_tag", {})
-    if network.get("global_id") != profile.get("global_id", {}).get("value"):
-        raise TestnetError("shielded pool record: global id differs from the profile")
-    if (
-        network.get("epoch") != SHIELDED_POOL_EPOCH
-        or tag.get("campaign_epoch") != SHIELDED_POOL_EPOCH
-    ):
+    _check_shape(record, SHIELDED_POOL_SCHEMA, "record")
+    network, pool = record["network"], record["pool"]
+    genesis = profile.get("genesis", {})
+    tag = genesis.get("auth_network_tag", {})
+    bindings = (
+        ("network name", network["name"], profile.get("network")),
+        ("global id", network["global_id"], profile.get("global_id", {}).get("value")),
+        ("global version", network["global_version"], genesis.get("global_version")),
+        ("AUTH tag", network["auth_network_tag"], tag.get("value")),
+        ("epoch", network["epoch"], tag.get("campaign_epoch")),
+    )
+    for what, ours, theirs in bindings:
+        if ours != theirs:
+            raise TestnetError(
+                f"shielded pool record: {what} {ours!r} differs from the profile's {theirs!r}"
+            )
+    if network["epoch"] != SHIELDED_POOL_EPOCH:
         raise TestnetError("shielded pool record: the restricted test is for epoch 6 only")
-    if _hex64(network.get("auth_network_tag"), "auth_network_tag") != tag.get("value"):
-        raise TestnetError("shielded pool record: AUTH tag differs from the profile's epoch tag")
-    for name in ("zero_state_root_hash", "zero_state_file_hash", "config_param_48_hash"):
-        _hex64(network.get(name), name)
-    for name in (
-        "code_hash",
-        "data_hash",
-        "state_init_hash",
-        "state_init_boc_sha256",
-        "execution_domain",
-    ):
-        _hex64(pool.get(name), name)
-    if pool.get("address") != "0:" + pool["state_init_hash"]:
+    if pool["address"] != "0:" + pool["state_init_hash"]:
         raise TestnetError("shielded pool record: the address is not 0:<StateInit hash>")
-    groth16 = record.get("groth16", {})
-    for name in ("vk_sha256", "transcript"):
-        _hex64(groth16.get(name), name)
-    _hex64(record.get("profile", {}).get("profile_hash"), "profile_hash")
-    if not record.get("gate_decisions"):
-        raise TestnetError("shielded pool record: no gate decision recorded")
+    if not 0 < pool["immutable_reserve_floor_tos"] <= pool["initial_endowment_tos"]:
+        raise TestnetError("shielded pool record: the reserve floor exceeds the endowment")
+    if record["groth16"]["vk_bytes"] != SHIELDED_POOL_VK_BYTES:
+        raise TestnetError(
+            f"shielded pool record: groth16.vk_bytes must be {SHIELDED_POOL_VK_BYTES}"
+        )
+    slot = record["profile"]["recovery_payload_slot"]
+    if slot != SHIELDED_POOL_RECOVERY_SLOT or isinstance(slot, bool):
+        raise TestnetError(
+            f"shielded pool record: profile.recovery_payload_slot must be {SHIELDED_POOL_RECOVERY_SLOT}"
+        )
     return record
 
 
