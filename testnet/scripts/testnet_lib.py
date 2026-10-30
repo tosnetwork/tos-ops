@@ -494,7 +494,8 @@ FIFT_PUBLIC_PROGRAM = (
 def check_raw_address(address: str) -> str:
     """A raw `workchain:hex` address, lower-cased; anything else is refused."""
     address = str(address).lower()
-    if not RAW_ADDRESS.match(address):
+    # fullmatch: `$` would also accept a trailing newline.
+    if not RAW_ADDRESS.fullmatch(address):
         raise TestnetError(f"not a raw workchain:hex address: {address!r}")
     return address
 

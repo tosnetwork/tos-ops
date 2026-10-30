@@ -571,3 +571,119 @@ def test_the_sweep_mode_reaches_the_wallet_script(tmp_path):
     assert sweep_argv[sweep_argv.index("-m") + 1] == "160" and "-n" in sweep_argv
     assert sweep_argv[sweep_argv.index("signer") + 4] == "0"
     assert "-m" not in plain_argv
+
+
+# ---------------------------------------------------------------- owner-fund to a named destination
+
+PRI = "0:" + "a1" * 32
+
+
+def owner_fund_args(world, **changes):
+    base = dict(
+        vars(world.args),
+        name="node-1",
+        id="pri-e6-sender-b",
+        new=True,
+        to=PRI,
+        amount="2",
+        purpose="pri e6 sender-b",
+        dry_run=False,
+    )
+    base.update(changes)
+    return argparse.Namespace(**base)
+
+
+def test_an_owner_funds_a_named_undeployed_wallet(world):
+    before = world.chain.account(owner_of("node-1"))["balance"]
+    assert elections.owner_fund(owner_fund_args(world, dry_run=True), world.operations, 2) == {
+        "dry_run": True
+    }
+    assert not world.operations.journal.path("pri-e6-sender-b").exists()
+    assert world.signed == []
+    result = elections.owner_fund(owner_fund_args(world), world.operations, 2)
+    record = world.operations.journal.record("pri-e6-sender-b")
+    assert record["kind"] == "owner-fund" and record["wallet"] == owner_of("node-1")
+    assert record["destination"] == PRI and record["value"] == 2 * NANO
+    assert record["purpose"] == "pri e6 sender-b" and record["label"] == "owner-fund-node-1"
+    assert record["bounce"] is False and record["state"] == "settled"
+    assert world.signed == [{"to": PRI, "amount": "2.000000000", "bounce": False, "mode": 3}]
+    assert world.chain.account(PRI)["balance"] == 2 * NANO
+    assert world.chain.account(owner_of("node-1"))["balance"] < before - 2 * NANO
+    assert result["destination_tx"] == record["evidence"]["destination_tx"]
+    # The same id reports and never funds twice; --new on it is refused.
+    elections.owner_fund(owner_fund_args(world, new=False), world.operations, 2)
+    assert world.chain.account(PRI)["balance"] == 2 * NANO and len(world.signed) == 1
+    with pytest.raises(lib.TestnetError, match="exists"):
+        elections.owner_fund(owner_fund_args(world), world.operations, 2)
+    # Another transfer under the same id is refused, not merged.
+    with pytest.raises(lib.TestnetError, match="another transfer"):
+        elections.owner_fund(owner_fund_args(world, new=False, amount="3"), world.operations, 2)
+
+
+@pytest.mark.parametrize(
+    "change, message",
+    [
+        ({"amount": "0"}, "positive"),
+        ({"amount": "-1"}, "TOS|positive|amount"),
+        ({"amount": "4"}, "cannot pay"),  # 5 TOS: 4 + a 1 TOS withdrawal message + fee
+        # 3.9 + this transfer's 0.1 fee + the 1.1 TOS withdrawal reserve > 5 TOS.
+        ({"amount": "3.9"}, "cannot pay"),
+        ({"to": PRI + "\n"}, "not a raw"),
+        ({"to": owner_of("node-1")}, "node-1's owner"),
+        ({"to": owner_of("node-2")}, "node-2's owner"),
+        ({"to": pool_of("node-1")}, "node-1's pool"),
+        ({"to": BLACK}, "the blackhole"),
+        ({"to": elections.ELECTOR}, "the Elector"),
+        ({"to": operator_of("node-1")}, "not a workchain-0 address"),
+        ({"to": "0:12"}, "not a raw"),
+        ({"purpose": ""}, "--purpose"),
+        ({"purpose": "Bad\nlabel"}, "--purpose"),
+        ({"name": "node-9"}, "records no pool"),
+        ({"id": "../x"}, "not an operation id"),
+        ({"new": False}, "create a transfer with --new"),
+    ],
+)
+def test_an_owner_fund_is_refused_before_signing_and_leaves_no_record(world, change, message):
+    for dry_run in (True, False):
+        with pytest.raises(lib.TestnetError, match=message):
+            elections.owner_fund(
+                owner_fund_args(world, dry_run=dry_run, **change), world.operations, 2
+            )
+    assert world.signed == []
+    assert not world.operations.journal.path("pri-e6-sender-b").exists()
+    # Nothing is left open: the owner's other operations still run.
+    elections.top_up(top_up_args(world), world.operations, 2)
+    assert world.operations.journal.record("top-up-node-1-1")["state"] == "settled"
+
+
+def test_an_owner_fund_is_refused_while_another_operation_of_the_owner_is_open(world):
+    world.operations.journal.append(
+        "withdraw-node-1-x", {"state": "signed", "kind": "withdraw", "wallet": owner_of("node-1")}
+    )
+    with pytest.raises(lib.TestnetError, match="withdraw-node-1-x"):
+        elections.owner_fund(owner_fund_args(world), world.operations, 2)
+    assert world.signed == []
+    assert not world.operations.journal.path("pri-e6-sender-b").exists()
+
+
+def test_an_owner_fund_with_an_unknown_outcome_is_reconciled_never_resent(world, monkeypatch):
+    def lost(boc):
+        raise lib.TestnetError("connection reset after the request was written")
+
+    monkeypatch.setattr(world.chain, "send", lost)
+    with pytest.raises(lib.TestnetError):
+        elections.owner_fund(owner_fund_args(world), world.operations, 2)
+    record = world.operations.journal.record("pri-e6-sender-b")
+    assert record["state"] == "signed" and record.get("external_hash")
+    assert len(world.signed) == 1
+    # Running it again neither signs nor sends: the open record sends the operator to reconcile.
+    with pytest.raises(lib.TestnetError, match="reconcile"):
+        elections.owner_fund(owner_fund_args(world, new=False), world.operations, 2)
+    assert len(world.signed) == 1
+    # It also fences every other operation of the owner.
+    with pytest.raises(lib.TestnetError, match="pri-e6-sender-b"):
+        elections.top_up(top_up_args(world), world.operations, 2)
+    # And it cannot be abandoned: a signed copy exists.
+    with pytest.raises(lib.TestnetError, match="unsigned planned"):
+        world.operations.record_abandoned("pri-e6-sender-b")
+    assert world.chain.account(PRI)["balance"] == 0

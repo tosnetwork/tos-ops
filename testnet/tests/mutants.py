@@ -166,8 +166,63 @@ M = [
     (
         "S22 top-up spends the owner's withdrawal money",
         EL,
-        "if balance < value + OWNER_MESSAGE_NANOTOS + ops.FEE_ALLOWANCE_NANOTOS // 10:",
+        "if balance < value + transfer_fee + OWNER_MESSAGE_NANOTOS + ops.FEE_ALLOWANCE_NANOTOS // 10:",
         "if False:",
+    ),
+    # owner-fund to a named destination.
+    (
+        "OF1 owner-fund destination refusals ignored",
+        EL,
+        "    if destination in refused:",
+        "    if False:",
+    ),
+    (
+        "OF2 owner-fund accepts another workchain",
+        EL,
+        '    if not destination.startswith("0:"):',
+        "    if False:",
+    ),
+    (
+        "OF3 a zero amount passes parse_tos",
+        EL,
+        '    if nanotos <= 0:\n        raise lib.TestnetError(f"{what} must be positive: {value!r}")',
+        "    pass",
+    ),
+    (
+        "OF10 owner_keeps leaves out the transfer's own fee",
+        EL,
+        "    transfer_fee = ops.FEE_ALLOWANCE_NANOTOS // 10\n",
+        "    transfer_fee = 0\n",
+    ),
+    (
+        "OF4 owner-fund checks only after the record exists",
+        EL,
+        "        with operations.journal.lock(owner):\n            operations.gate(owner, args.id)\n        prerequisites()",
+        "        pass",
+    ),
+    (
+        "OF5 owner-fund bounceable",
+        EL,
+        '        {"label": f"owner-fund-{name}", "purpose": purpose},\n        bounce=False,',
+        '        {"label": f"owner-fund-{name}", "purpose": purpose},\n        bounce=True,',
+    ),
+    (
+        "OF6 owner-fund purpose unchecked",
+        EL,
+        "    if not PURPOSE.fullmatch(purpose):",
+        "    if False:",
+    ),
+    (
+        "OF7 owner-fund merges another transfer under an id",
+        EL,
+        '    if existing is not None and (\n        existing.get("kind") != "owner-fund"',
+        '    if False and (\n        existing.get("kind") != "owner-fund"',
+    ),
+    (
+        "OF8 owner-fund purpose not recorded",
+        EL,
+        '{"label": f"owner-fund-{name}", "purpose": purpose}',
+        '{"label": f"owner-fund-{name}"}',
     ),
     (
         "S23 genesis check not called",
