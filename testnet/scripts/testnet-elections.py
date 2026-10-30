@@ -43,6 +43,20 @@ and drive load through a post-quantum high-volume wallet.
       the operator wallet is active and the owner keeps the value, a withdrawal
       message and its fee. --dry-run checks and signs nothing.
 
+  owner-fund --name NAME --id ID [--new] --to ADDRESS --amount TOS --purpose LABEL
+          --ceremony DIR --tos-root DIR --fift PATH --rpc URL --confirm-rpc URL [--dry-run]
+      TOS from NAME's pool owner to a named workchain-0 address, as operation ID
+      of kind owner-fund: the top-up's transfer (non-bounce, signed here with the
+      owner's offline key, settled when the destination's credit equals the
+      value, also for an undeployed wallet) with --purpose written into the
+      record. Refused unless the amount is positive and the destination is a
+      workchain-0 address that is not a recorded pool or pool owner, the
+      blackhole or the Elector, and unless the owner keeps the value, a
+      withdrawal message and its fee. These checks, and the gate (no other
+      operation of the owner open, its history explained), run before the
+      record is created, so a refused run leaves nothing open. --dry-run checks
+      and signs nothing.
+
   pool    --name NAME --operator ADDRESS --ceremony DIR --tos-root DIR --fift PATH
           [--previous-ceremony DIR]...
       Before genesis, for one genesis validator: record ADDRESS, the operator
@@ -1174,10 +1188,12 @@ def change_validator(args: argparse.Namespace, operations: ops.Operations, globa
 
 
 def owner_keeps(operations: ops.Operations, owner: str, value: int) -> None:
-    """The owner must keep, after `value`, one withdrawal message and its fee: it is
-    the only wallet that can take principal and rewards out of its pool."""
+    """The owner must pay `value` and this transfer's own fee, and keep one withdrawal
+    message and its fee: it is the only wallet that can take principal and rewards
+    out of its pool."""
     balance = operations.balance(owner)
-    if balance < value + OWNER_MESSAGE_NANOTOS + ops.FEE_ALLOWANCE_NANOTOS // 10:
+    transfer_fee = ops.FEE_ALLOWANCE_NANOTOS // 10
+    if balance < value + transfer_fee + OWNER_MESSAGE_NANOTOS + ops.FEE_ALLOWANCE_NANOTOS // 10:
         raise lib.TestnetError(
             f"the pool owner {owner} holds {balance / NANO:.9f} TOS: it cannot pay "
             f"{value / NANO:.9f} TOS and keep a withdrawal message and its fee; withdraw "
@@ -1243,6 +1259,110 @@ def top_up(args: argparse.Namespace, operations: ops.Operations, global_id: int)
         "nanotos": value,
         "owner_tx": record["evidence"]["wallet_tx"],
         "operator_tx": record["evidence"]["destination_tx"],
+    }
+    print(json.dumps(result, indent=2))
+    return result
+
+
+PURPOSE = re.compile(r"[a-z0-9][a-z0-9 ._-]{0,79}")
+
+
+def owner_fund_destination(ceremony: Path, to: str) -> str:
+    """A workchain-0 destination for an owner's transfer, never a pool, a pool
+    owner, the blackhole or the Elector."""
+    destination = lib.check_raw_address(to)
+    refused = {ops.BLACKHOLE: "the blackhole", ELECTOR: "the Elector"}
+    for name, record in read_pools(ceremony).items():
+        for role in ("pool", "owner"):
+            if record.get(role):
+                refused[record[role]] = f"{name}'s {role}"
+    if destination in refused:
+        raise lib.TestnetError(f"{destination} is {refused[destination]}, not a destination")
+    if not destination.startswith("0:"):
+        raise lib.TestnetError(f"{destination} is not a workchain-0 address")
+    return destination
+
+
+def owner_fund(args: argparse.Namespace, operations: ops.Operations, global_id: int) -> dict:
+    """TOS from NAME's pool owner to a named workchain-0 address, as operation --id."""
+    name = args.name
+    ceremony = Path(args.ceremony)
+    pool_record = read_pools(ceremony).get(name)
+    if not pool_record or not pool_record.get("pool"):
+        raise lib.TestnetError(f"{ceremony / POOLS_FILE} records no pool for {name}")
+    owner = address_from_file(pool_owner_paths(ceremony, name)["addr"])
+    if pool_record["owner"] != owner:
+        raise lib.TestnetError(f"the pool's recorded owner {pool_record['owner']} is not {owner}")
+    if not ops.SAFE_ID.match(args.id or ""):
+        raise lib.TestnetError(f"not an operation id: {args.id!r}")
+    purpose = str(args.purpose or "")
+    if not PURPOSE.fullmatch(purpose):
+        raise lib.TestnetError(
+            f"--purpose must be a short lower-case label (a-z 0-9 space . _ -): {purpose!r}"
+        )
+    destination = owner_fund_destination(ceremony, args.to)
+    if destination == owner:
+        raise lib.TestnetError(f"{destination} is the owner itself")
+    value = parse_tos(str(args.amount), "--amount")
+    if value <= 0:
+        raise lib.TestnetError(f"--amount must be positive: {args.amount!r}")
+    existing = operations.journal.record(args.id)
+    if args.new and existing is not None:
+        raise lib.TestnetError(f"operation {args.id} exists; --new needs a new id")
+    if not args.new and existing is None:
+        raise lib.TestnetError(f"no operation {args.id}; create a transfer with --new")
+    if existing is not None and (
+        existing.get("kind") != "owner-fund"
+        or existing.get("wallet") != owner
+        or existing.get("destination") != destination
+        or existing.get("value") != value
+        or existing.get("purpose") != purpose
+    ):
+        raise lib.TestnetError(
+            f"operation {args.id} is another transfer ({existing.get('kind')} of "
+            f"{existing.get('value')} to {existing.get('destination')}, {existing.get('purpose')!r})"
+        )
+
+    def prerequisites() -> None:
+        operations.check_network()
+        owner_keeps(operations, owner, value)
+
+    if args.dry_run:
+        prerequisites()
+        print(
+            f"dry run: {args.id}: {value / NANO:.9f} TOS from {owner} to {destination} "
+            f"({purpose}); nothing signed"
+        )
+        return {"dry_run": True}
+    if existing is None:
+        # Refuse before the record exists: a plan refused after begin() stays open
+        # and fences the owner's other operations until it is abandoned.
+        with operations.journal.lock(owner):
+            operations.gate(owner, args.id)
+        prerequisites()
+    record = owner_transfer(
+        args,
+        operations,
+        global_id,
+        name,
+        args.id,
+        "owner-fund",
+        destination,
+        value,
+        None,
+        prerequisites,
+        {"label": f"owner-fund-{name}", "purpose": purpose},
+        bounce=False,
+    )
+    result = {
+        "id": args.id,
+        "name": name,
+        "owner": owner,
+        "destination": destination,
+        "purpose": purpose,
+        "nanotos": value,
+        "owner_tx": record["evidence"]["wallet_tx"],
+        "destination_tx": record["evidence"]["destination_tx"],
     }
     print(json.dumps(result, indent=2))
     return result
@@ -2941,6 +3061,14 @@ def main(argv: list[str] | None = None) -> int:
     p_top_up.add_argument("--new", action="store_true", help="create the operation --id")
     p_top_up.add_argument("--amount", required=True)
     p_top_up.add_argument("--dry-run", action="store_true")
+    p_owner_fund = sub.add_parser("owner-fund", parents=[common])
+    p_owner_fund.add_argument("--name", required=True)
+    p_owner_fund.add_argument("--id", required=True, help="the transfer's operation id")
+    p_owner_fund.add_argument("--new", action="store_true", help="create the operation --id")
+    p_owner_fund.add_argument("--to", required=True, help="the workchain-0 destination")
+    p_owner_fund.add_argument("--amount", required=True)
+    p_owner_fund.add_argument("--purpose", required=True, help="a label for the journal record")
+    p_owner_fund.add_argument("--dry-run", action="store_true")
     p_pool = sub.add_parser("pool")
     for flag in ("--name", "--operator", "--ceremony", "--tos-root", "--fift"):
         p_pool.add_argument(flag, required=True)
@@ -3049,6 +3177,8 @@ def main(argv: list[str] | None = None) -> int:
                 sweep(args, operations, global_id)
             elif args.command == "top-up":
                 top_up(args, operations, global_id)
+            elif args.command == "owner-fund":
+                owner_fund(args, operations, global_id)
             elif args.command in ("reconcile", "record", "resubmit", "baseline", "retry"):
                 manual(args, operations)
             else:
