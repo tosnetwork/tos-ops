@@ -34,9 +34,69 @@
     }
   },
   "features": {
-    "shielded_pool": "disabled",
+    "shielded_pool": "restricted-epoch-6-test",
     "energy": "disabled",
-    "note": "Neither may be activated on the public testnet until its own acceptance gate passes (memo public-testnet/README.md section 3.2)."
+    "note": "Neither may be activated on the public testnet until its own acceptance gate passes (memo public-testnet/README.md section 3.2). The shielded pool's gate passed for one bounded test on epoch 6 only (shielded_pool_record); Energy stays disabled.",
+    "shielded_pool_record": {
+      "status": "restricted-epoch-6-test",
+      "scope": "PRI-01..03 on public testnet epoch 6 only, run by the test lead from three fresh test wallets (sender A 130, sender B 15, workchain-0 recipient 5 TOS; 150 TOS budget, no replenishment without a new approval). Not a mainnet activation and not a privacy product: sender, pool, recipient, amounts and timing stay public.",
+      "metadata_only": "This record neither deploys nor protects anything: the pool is an ordinary workchain-0 contract that needs no ConfigParam, capability vote, node rebuild or validator restart. Deployment and every send are separate journaled steps under the go points below.",
+      "network": {
+        "name": "tos-public-testnet",
+        "epoch": 6,
+        "global_id": 2,
+        "global_version": 16,
+        "zero_state_root_hash": "ff60459cb8a51708548290afa16fd4df80d16775bf3c13392146a6d1b5662d57",
+        "zero_state_file_hash": "3b374df5ebd18368d4bf0eb374704771daf8dacd85175605f3bfd1c7a922a039",
+        "auth_network_tag": "99d8ae3469661895b820b4c41b6ad21acc448370e814c68d52ee3a12ae2c407a",
+        "config_param_48_hash": "1ea82a3c23b84f1bdd9b102d95ea7ecc7d817ed547f8346fc6b666242d14a28d",
+        "runtime_commit": "5d8b4d3adc4e5c6acae4a600545965816e67ffe3"
+      },
+      "pool": {
+        "address": "0:60b33d9dbd3e6e4a45a6cf3f3693106186c3911cd75c8c26cb6a679294c29a34",
+        "code_hash": "ce3b21bc64e392e14065e68665228bcb10e40dd83836ef00574dd90e5ce057cd",
+        "data_hash": "af121ba3f8b8d8461802c852b65d6c9b17c48cdcc1f215cbcd2f353dff2a521b",
+        "state_init_hash": "60b33d9dbd3e6e4a45a6cf3f3693106186c3911cd75c8c26cb6a679294c29a34",
+        "state_init_boc_sha256": "c006c6c4c5d7657cbec77ec77f46ca823d3b7613f396524391ed7c805d6b4143",
+        "code_boc_sha256": "1f903d6c87a4044c0452e475646ddc22722b95de8795d356ab2c4d8a784c697e",
+        "data_boc_sha256": "6356c7946b743f933f5944e96a1b8771f94c995f286da5db3e9d22bd891e2c82",
+        "manifest_sha256": "ac140d2fee75d3cf627ce094709bf0392434ddeb39fbe02b57d103f5f6804fed",
+        "execution_domain": "58ecf8e51c7ae7fe5238b08d8074552786d442dcbe7154dbaa48cee57470d1aa",
+        "initial_endowment_tos": 100,
+        "immutable_reserve_floor_tos": 50,
+        "withdrawal_fee_nanotos": 20000000,
+        "denominations_tos": [1, 10, 100, 1000],
+        "gas_ceilings": {"topup": 10000, "deposit": 230000, "transact": 1380000, "bounce": 240000},
+        "note": "Frozen by tos tools/shielded-pool-circuit/crosscheck prepare_public_pool at the runtime commit from two independent checkouts and builds; code, data, StateInit and manifest were byte-identical. The address is the StateInit hash. The StateInit binds global id 2 through the execution domain, not the AUTH tag, so the same profile and key give the same address on every epoch (accepted limitation E5-13; a fresh pool refuses another pool's anchors with 152/153/154). Before deployment, read the address from two validators: it must be absent or uninitialized; after deployment, its code and data must hash to these values on both."
+      },
+      "profile": {
+        "path": "artifacts/shielded-pool/PROFILE.md",
+        "source_commit": "bdec9230c183eec49ececba10a467a21ad1c3cda",
+        "source_blob": "dd61b133f9a7baa1ea0b851afab036cee9be1dcb",
+        "file_sha256": "7f04fb70837f4e398d0b677a1844f496b049045794eed30d4f3050d3b2086bad",
+        "profile_hash": "4de5d5c81406f9ce973dd2b7e4026a72750330b757ba7f4c32bdb9edd07ccbec",
+        "poseidon2_manifest_sha256": "57ed3c8ac13652a1bdeced6b82a53f20db32d4b02338354178ec160a68e6804c",
+        "recovery_payload_slot": 2
+      },
+      "groth16": {
+        "ceremony": "artifacts/phase2-ceremony-2",
+        "vk_sha256": "49696f52f361817869f68c3ba68d0d5a854737a4133ae4616255ac4a3846778c",
+        "vk_bytes": 1248,
+        "proving_key_sha256": "b49b4ee7cc4feadcc72b3e10d8b4f0485ffc7ed223e693e27db17864e481dc8c",
+        "transcript": "03e67eb4b1cff48c9bc5952992a46d37ae0c32d6ba2f76910f785daca8704579",
+        "trust_assumption": "1-of-N honest contributor; destruction of randomness is a declaration, not a proof"
+      },
+      "gate_decisions": [
+        {"item": "candidate address moves with the merged recovery-slot profile", "decision": "accepted", "by": "owner", "date": "2026-10-28", "record": "memo STATUS 13.250"},
+        {"item": "P1 independent acceptance of ceremony 2", "decision": "passed", "by": "owner", "date": "2026-10-29", "record": "memo STATUS 13.267"},
+        {"item": "go points B (fund, 150 TOS), C (deploy), D (positive cases), E (negative, concurrency, recovery schedule)", "decision": "approved in advance, executed in order after P4 and P6, under the plan's stop conditions", "by": "owner", "date": "2026-10-29", "record": "memo STATUS 13.268"},
+        {"item": "funding source (pool-owner reward withdrawals to fresh wallets), go A (report, no wait), pre-deploy read of the final candidate by a codex reviewer", "decision": "agreed", "by": "owner", "date": "2026-10-29", "record": "memo STATUS 13.269"},
+        {"item": "P4 price check and re-freeze at the live epoch-6 configuration", "decision": "done offline; both validators agreed on every configuration cell at masterchain block 40769; two independent generations byte-identical", "by": "test lead", "date": "2026-10-29", "record": "tos-testnet-deploy privacy-epoch6/P4"},
+        {"item": "pre-deploy read of the final candidate (plan section 6)", "decision": "accept with changes: the candidate is acceptable; the live transport and signing adapter must be reviewed before any send, and the sender-side envelope is priced once the wallet type is chosen", "by": "codex reviewer 青鸟", "date": "2026-10-29", "record": "tos-testnet-deploy privacy-epoch6/P4/QINGNIAO-VERDICT.md"},
+        {"item": "funding wallet type (WalletV1, signing unchanged) and the epoch-6 transport adapter (JSON-RPC to two validators, reviewed driver loaded byte-identical, journaled wallet-init)", "decision": "accept with changes, then accept after the post-deploy readback was made to require the exact initial data; the go-B funding route from pool owners stays a separate prerequisite", "by": "codex reviewer 青鸟", "date": "2026-10-29", "record": "tos-testnet-deploy privacy-epoch6/P4/QINGNIAO-VERDICT-2.md, QINGNIAO-VERDICT-3.md"}
+      ],
+      "plan": "memo public-testnet/EPOCH-6-PRI-PLAN.md"
+    }
   },
   "ports": {
     "adnl_udp": 30001,
