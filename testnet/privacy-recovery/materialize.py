@@ -107,6 +107,8 @@ text = manifest.read_text()
 for line in text.splitlines():
     if 'path = "' in line:
         old = line.split('path = "', 1)[1].split('"', 1)[0]
+        if not old.startswith("/datax/pri-e6-20261027/src/"):
+            continue
         new = str(a.tos_source.resolve()) + old.removeprefix("/datax/pri-e6-20261027/src")
         text = text.replace(json.dumps(old), json.dumps(new, ensure_ascii=False))
 text = text.replace('name = "pri-core"', 'name = "pri-e6-core"').replace(

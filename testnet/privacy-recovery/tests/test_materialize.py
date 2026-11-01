@@ -54,6 +54,35 @@ with tempfile.TemporaryDirectory() as directory:
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout.splitlines()[-1])["result"] == "MATERIALIZED-NO-SEND"
     cargo = tomllib.loads((output / "Cargo.toml").read_text())
+    assert {entry["path"] for entry in cargo["bin"]} == {
+        "src/bin/pri-core.rs",
+        "src/bin/pri-sandbox.rs",
+    }
+    metadata = json.loads(
+        subprocess.check_output(
+            [
+                "cargo",
+                "metadata",
+                "--manifest-path",
+                str(output / "Cargo.toml"),
+                "--format-version",
+                "1",
+                "--no-deps",
+                "--offline",
+                "--locked",
+            ],
+            text=True,
+        )
+    )
+    binary_paths = {
+        target["name"]: target["src_path"]
+        for target in metadata["packages"][0]["targets"]
+        if "bin" in target["kind"]
+    }
+    assert binary_paths == {
+        "pri-e6-core": str(output / "src/bin/pri-core.rs"),
+        "pri-e6-sandbox": str(output / "src/bin/pri-sandbox.rs"),
+    }
     assert cargo["dependencies"]["shielded-pool-circuit"]["path"] == str(
         source / "tools/shielded-pool-circuit"
     )
