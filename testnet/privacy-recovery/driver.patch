@@ -1,0 +1,503 @@
+--- original/src/lib.rs
++++ candidate/src/lib.rs
+@@ -264,7 +264,21 @@
+ }
+
+ #[derive(Clone)]
++pub struct PendingRecovery {
++    pub minted_amount: u128,
++    pub minted_leaf: Option<u64>,
++    pub body_hash: String,
++    pub recipient: String,
++    pub owner: Fr,
++    pub payload: Vec<u8>,
++    pub payout_value: u128,
++    pub consumed: bool,
++}
++
++#[derive(Clone)]
+ pub struct Model {
++    pub recovery_charge: Option<u128>,
++    pub pending_recoveries: Vec<PendingRecovery>,
+     pub leaves: Vec<Fr>,
+     pub frontier: Frontier,
+     pub imt: imt::State,
+@@ -358,6 +372,8 @@
+ impl Model {
+     pub fn new() -> Self {
+         Model {
++            recovery_charge: None,
++            pending_recoveries: Vec::new(),
+             leaves: Vec::new(),
+             frontier: Frontier::new(),
+             imt: imt::State::genesis(),
+@@ -481,6 +497,66 @@
+                     });
+                 }
+             }
++        }
++        Ok(())
++    }
++
++    /// Match a protocol bounce to an authenticated earlier outbound payout.
++    /// Current-price charge is explicit; complete replay must still equal all getters.
++    pub fn apply_recovery(
++        &mut self,
++        original_hash: &str,
++        sender: &str,
++        returned: u128,
++        utime: u32,
++    ) -> Result<()> {
++        let index = self
++            .pending_recoveries
++            .iter()
++            .position(|p| p.body_hash == original_hash)
++            .ok_or("bounce has no authenticated original payout")?;
++        let pending = self.pending_recoveries[index].clone();
++        if pending.consumed || pending.recipient != sender || returned > pending.payout_value {
++            return Err("replayed bounce, wrong sender or excessive returned value".into());
++        }
++        let charge = self.recovery_charge.ok_or("recovery charge not supplied")?;
++        if charge == 0 {
++            return Err("zero recovery charge".into());
++        }
++        self.reserved_recovery = self
++            .reserved_recovery
++            .checked_sub(1)
++            .ok_or("no recovery reservation")?;
++        self.pending_recoveries[index].consumed = true;
++        if returned <= charge {
++            return Ok(());
++        }
++        self.outputs
++            .retain(|o| !(o.leaf.is_none() && o.observed.output_data == pending.payload));
++        let amount = returned - charge;
++        let data_hash = wire::output_data_hash(&pending.payload);
++        let note_body = notes::note_body_commitment(pending.owner, Fr::from(amount), data_hash);
++        self.preserve(utime);
++        let leaf = self.append(note_body)?;
++        self.liability = self
++            .liability
++            .checked_add(amount)
++            .ok_or("recovery liability overflow")?;
++        self.pending_recoveries[index].minted_amount = amount;
++        self.pending_recoveries[index].minted_leaf = Some(leaf);
++        for slot in 0..3u8 {
++            self.outputs.push(Output {
++                leaf: Some(leaf),
++                observed: ObservedOutput {
++                    slot,
++                    output_data: pending.payload.clone(),
++                    chain: ChainSlot {
++                        output_data_hash: data_hash,
++                        note_body,
++                        recovered: Some(amount),
++                    },
++                },
++            });
+         }
+         Ok(())
+     }
+@@ -557,9 +633,12 @@
+         if bounced {
+             event.kind = "bounce";
+             if applied {
+-                // A recovery mint is not modelled. If one happened the
+-                // getter comparison fails and the driver stops.
+-                self.unmodelled.push(format!("bounce at lt {lt}"));
++                if body.remaining_bits() >= 32 && take_u(&mut body, 32)? == 0xffff_fffe {
++                    let original = take_ref(&mut body)?;
++                    let original_hash = original.repr_hash().to_hex_string();
++                    let sender = message.int_header().ok_or("bounce header")?.src.to_string();
++                    self.apply_recovery(&original_hash, &sender, event.in_value, utime)?;
++                }
+             }
+             self.events.push(event);
+             return Ok(());
+@@ -587,6 +666,38 @@
+                         "transfer"
+                     };
+                     self.apply_transact(&t, utime)?;
++                    if t.public_amount_out > 0 {
++                        let payload = t
++                            .recovery_payload
++                            .clone()
++                            .ok_or("withdrawal without recovery payload")?;
++                        let mut payouts = Vec::new();
++                        tx.iterate_out_msgs(|m| {
++                            if let (Some(h), Some(body)) = (m.int_header(), m.body()) {
++                                payouts.push((
++                                    h.dst.to_string(),
++                                    h.value.coins.as_u128(),
++                                    body.clone().into_cell()?.repr_hash().to_hex_string(),
++                                ));
++                            }
++                            Ok(true)
++                        })
++                        .map_err(err("withdrawal payout"))?;
++                        if payouts.len() != 1 || payouts[0].1 != t.public_amount_out {
++                            return Err("withdrawal did not emit its single exact payout".into());
++                        }
++                        let (recipient, payout_value, body_hash) = payouts.remove(0);
++                        self.pending_recoveries.push(PendingRecovery {
++                            body_hash,
++                            recipient,
++                            owner: t.recovery_owner,
++                            payload,
++                            payout_value,
++                            consumed: false,
++                            minted_amount: 0,
++                            minted_leaf: None,
++                        });
++                    }
+                 }
+             }
+             Some(OP_RESERVE_TOPUP) => event.kind = "topup",
+@@ -608,6 +719,7 @@
+             "nullifier_root",
+             "nullifier_next_index",
+             "native_liability",
++            "reserved_recovery_leaves",
+         ] {
+             let chain = match &getters[field] {
+                 Value::String(s) => s.clone(),
+@@ -634,6 +746,7 @@
+             "nullifier_root": fr_dec(self.imt.root()),
+             "nullifier_next_index": self.imt.next_index.to_string(),
+             "native_liability": self.liability.to_string(),
++            "reserved_recovery_leaves": self.reserved_recovery.to_string(),
+         })
+     }
+
+@@ -644,6 +757,10 @@
+             "applied_mutations": self.mutations.len(),
+             "reserved_recovery_leaves": self.reserved_recovery,
+             "unmodelled": self.unmodelled,
++            "recoveries": self.pending_recoveries.iter().map(|p| json!({
++                "original_body_hash": p.body_hash, "recipient": p.recipient,
++                "consumed": p.consumed, "minted_amount": p.minted_amount.to_string(), "minted_leaf": p.minted_leaf
++            })).collect::<Vec<_>>(),
+             "last_lt": self.last_lt,
+         })
+     }
+--- original/src/bin/pri-core.rs
++++ candidate/src/bin/pri-core.rs
+@@ -104,6 +104,12 @@
+                     return Err("an empty transaction list".into());
+                 }
+                 let mut model = Model::new();
++                if !v["cp21_boc_hex"].is_null() {
++                    model.recovery_charge = Some(compute_fee_from_cp21(
++                        &cp21(&v)?,
++                        ceiling("bounce_gas_ceiling")?,
++                    )?);
++                }
+                 let mut previous: Option<(u64, String)> = None;
+                 let mut used = BTreeSet::new();
+                 for (i, entry) in listed.iter().enumerate() {
+--- original/src/bin/pri-sandbox.rs
++++ candidate/src/bin/pri-sandbox.rs
+@@ -133,7 +133,7 @@
+             return Err("the sandbox address differs from the candidate".into());
+         }
+         let opening_balance = u128::from(pool.balance().map_err(fail("balance"))?);
+-        let instance = Instance {
++        let mut instance = Instance {
+             name: name.into(),
+             pool,
+             model: Model::new(),
+@@ -142,6 +142,8 @@
+             deposit_fee,
+             transact_fee,
+         };
++        instance.model.recovery_charge =
++            Some(compute_fee(&prices, ceiling("bounce_gas_ceiling")?)?);
+         instance.check()?;
+         Ok(instance)
+     }
+@@ -154,6 +156,7 @@
+             "nullifier_root",
+             "nullifier_next_index",
+             "native_liability",
++            "reserved_recovery_leaves",
+         ] {
+             out.insert(f.into(), json!(self.pool.get(f).map_err(fail("getter"))?));
+         }
+@@ -442,6 +445,131 @@
+     planner.identity.domain()
+ }
+
++fn recovery_rehearse(
++    root: &Path,
++    ceremony: &Path,
++    private: &Path,
++    global_id: i32,
++) -> Result<Value> {
++    let (directory, audited) = audit_ceremony(ceremony, VK, TRANSCRIPT)?;
++    let c = candidate(root, &audited)?;
++    let planner = Planner::with_audit(
++        &directory,
++        &audited,
++        Identity {
++            global_id,
++            pool: c.account,
++        },
++    )?;
++    private_dir(private)?;
++    let seed = new_seed(private, "sender")?;
++    let mut p = Instance::deploy("recovery", &c, global_id, T0)?;
++    let mut receipts = Vec::new();
++    let mut w = wallet(&seed, &planner, &p.model)?;
++    let deposit = planner.deposit(&p.model, &mut w, 10 * TOS, p.deposit_fee)?;
++    expect(
++        &p.send("deposit", deposit.value, deposit.body)?,
++        0,
++        true,
++        &mut receipts,
++    )?;
++    p.advance(5);
++    // Use the existing frozen recipient, with exactly the published StateInit.
++    let artifact = PathBuf::from("FROZEN_RECIPIENT_PATH");
++    let code = chain_block::read_single_root_boc(
++        std::fs::read(artifact.join("code.boc")).map_err(fail("recipient code"))?,
++    )
++    .map_err(fail("recipient boc"))?;
++    let data = chain_block::read_single_root_boc(
++        std::fs::read(artifact.join("data.boc")).map_err(fail("recipient data"))?,
++    )
++    .map_err(fail("recipient boc"))?;
++    let si = chain_block::StateInit::with_code_and_data(code, data);
++    let hash = si
++        .write_to_new_cell()
++        .and_then(|b| b.into_cell())
++        .map_err(fail("recipient init"))?
++        .hash(0);
++    if hash.to_hex_string() != "c3a3c27df46f83e58959b217be4e2fee5f4070fe1119fc34f2035b2e64b470c2" {
++        return Err("rehearsal recipient StateInit differs from frozen address".into());
++    }
++    let addr =
++        chain_block::MsgAddressInt::with_params(0, hash).map_err(fail("recipient address"))?;
++    let payer = p
++        .pool
++        .bc
++        .treasury("refuser-deploy", 100 * TOS as u64)
++        .map_err(fail("payer"))?;
++    p.pool
++        .bc
++        .send_message(
++            tos_sandbox::MessageBuilder::internal(payer.address(), &addr, 5 * TOS as u64)
++                .bounce(false)
++                .state_init(si)
++                .body(Cell::default())
++                .build(),
++        )
++        .map_err(fail("deploy refuser"))?
++        .expect_success();
++    let recipient: [u8; 32] = addr
++        .address()
++        .get_bytestring(0)
++        .try_into()
++        .map_err(|_| "recipient account")?;
++    let mut w = wallet(&seed, &planner, &p.model)?;
++    let mut req = spend_request(p.now(), TOS, p.transact_fee);
++    req.withdraw_to = Some(recipient);
++    let withdrawal = planner.spend(&p.model, &mut w, &req)?;
++    let before = p.model.leaves.len();
++    p.send("withdraw-refused", withdrawal.value, withdrawal.body)?;
++    if p.model.leaves.len() != before + 4 || p.model.reserved_recovery != 0 {
++        return Err("recovery mint/reservation mismatch".into());
++    }
++    let leaf = (p.model.leaves.len() - 1) as u64;
++    let w = wallet(&seed, &planner, &p.model)?;
++    let total_before = w.recovered.balance();
++    let amount = p
++        .model
++        .outputs
++        .iter()
++        .find(|o| o.leaf == Some(leaf))
++        .and_then(|o| o.observed.chain.recovered)
++        .ok_or("missing minted recovery amount")?;
++    if amount == 0 || amount >= TOS {
++        return Err("incorrect recovery amount".into());
++    }
++    p.advance(5);
++    let mut w = wallet(&seed, &planner, &p.model)?;
++    let mut req = spend_request(p.now(), amount, p.transact_fee);
++    req.inputs = Some(vec![leaf]);
++    let spend = planner.spend(&p.model, &mut w, &req)?;
++    expect(
++        &p.send("spend-recovered-note", spend.value, spend.body)?,
++        0,
++        true,
++        &mut receipts,
++    )?;
++    let mut rebuilt = Model::new();
++    rebuilt.recovery_charge = p.model.recovery_charge;
++    for bytes in &p.bocs {
++        let (tx, hash) = transaction_from_boc(bytes)?;
++        rebuilt.apply_transaction(&tx, hash)?;
++    }
++    rebuilt.verify(&p.getters()?)?;
++    let w = wallet(&seed, &planner, &rebuilt)?;
++    if w.recovered.balance() != rebuilt.liability || w.recovered.balance() != total_before {
++        return Err("wallet liability mismatch".into());
++    }
++    let ledger = ledger_balance(&rebuilt.events)?
++        + i128::try_from(p.opening_balance).map_err(fail("opening balance"))?;
++    if ledger != i128::try_from(p.balance()?).map_err(fail("actual balance"))? {
++        return Err("ledger mismatch".into());
++    }
++    Ok(
++        json!({"result":"PASS-LOCAL-RECOVERY-RESPEND","global_version":16,"global_id":global_id,"recovered_note_spent":true,"reserved_recovery_leaves":rebuilt.reserved_recovery,"ledger_difference":0,"state":rebuilt.expected(),"events":rebuilt.events.iter().map(Event::to_json).collect::<Vec<_>>()}),
++    )
++}
++
+ /// The driver's whole flow, offline, against one candidate instance.
+ fn rehearse(root: &Path, ceremony: &Path, private: &Path, global_id: i32) -> Result<Value> {
+     let (directory, audited) = audit_ceremony(ceremony, VK, TRANSCRIPT)?;
+@@ -750,6 +878,11 @@
+                 candidate_files(Path::new(&args[1]), Path::new(&args[2]), &PathBuf::from(&args[5]),
+                                 &PathBuf::from(&args[3]), gid)
+             }
++            Some("recovery") if args.len() == 6 => {
++                let gid: i32 = args[5].parse().map_err(fail("global id"))?;
++                if gid == 2 {return Err("local rehearsal refuses public global id".into());}
++                recovery_rehearse(Path::new(&args[1]),Path::new(&args[2]),&PathBuf::from(&args[3]),gid)
++            }
+             Some("rehearse") if args.len() == 6 => {
+                 let gid: i32 = args[5].parse().map_err(fail("global id"))?;
+                 if gid == 2 {
+--- original/pri-driver.py
++++ candidate/pri-driver.py
+@@ -45,6 +45,7 @@
+ import base64
+ import datetime
+ import fcntl
++import hashlib
+ import json
+ import os
+ import re
+@@ -78,7 +79,7 @@
+
+ NANO = 10**9
+ LITE_CLIENT = Path("/usr/local/bin/tos-lite-client")
+-GETTERS = ("commitment_root", "commitment_next_index", "nullifier_root", "nullifier_next_index", "native_liability")
++GETTERS = ("commitment_root", "commitment_next_index", "nullifier_root", "nullifier_next_index", "native_liability", "reserved_recovery_leaves")
+ FINAL = {"delivered", "refused-on-chain", "planned-only", "superseded-seqno-consumed"}
+ CONFIRM_TIMEOUT = 120
+
+@@ -364,7 +365,7 @@
+     getters = [e.getters(pool) for e in endpoints]
+     require(getters[0] == getters[1], f"the endpoints' getters differ: {getters}")
+     result = core.call({"op": "rebuild", "transactions_dir": str(tx_dir), "transactions": listed,
+-                        "getters": getters[0]})
++                        "getters": getters[0], "cp21_boc_hex": await cp21_hex(endpoints)})
+     require(result.get("replayed") == len(listed), "the core did not replay exactly the authenticated list")
+     if result.get("unlisted_ignored"):
+         print("note: unlisted files ignored by the replay:", len(result["unlisted_ignored"]), flush=True)
+@@ -538,6 +539,45 @@
+     return {"kind": kind, ("version" if kind == "recent" else "epoch"): int(value)}
+
+
++def recipient_artifact(directory):
++    cand = Path(directory)
++    raw = (cand / "state-init.boc").read_bytes()
++    require(hashlib.sha256(raw).hexdigest() == "62684fd4c83ba5ace8b3521ee5a2cdcf616e46467af029adda2bbe77ea1ce531", "recipient artifact differs from frozen reviewed candidate")
++    init = Cell.one_from_boc(raw)
++    si = StateInit.deserialize(init.begin_parse())
++    addr = f"0:{init.hash.hex()}"
++    require(addr == "0:c3a3c27df46f83e58959b217be4e2fee5f4070fe1119fc34f2035b2e64b470c2", "recipient address differs")
++    return addr, si, init
++
++
++def recovery_post_matches(before, after, planned, result, recipient):
++    """Accept exactly one authenticated, successful withdrawal+bounce pair.
++
++    Root correctness comes from core replay of original outbound body, inbound
++    bounce and note append, checked against both peers' complete getters.
++    Here pin that recovery to THIS action and check all state deltas.
++    """
++    events = after["events"][len(before["events"]):]
++    if len(events) != 2 or events[0]["hash"] != result.get("pool_tx", next(iter(result.get("delivered", {}).values()), {}).get("pool_tx")):
++        return False
++    if [e["kind"] for e in events] != ["withdraw", "bounce"] or not all(e["applied"] for e in events):
++        return False
++    previous = before["summary"]["recoveries"]
++    recoveries = after["summary"]["recoveries"]
++    if len(recoveries) != len(previous)+1 or recoveries[:-1] != previous:
++        return False
++    recovered = recoveries[-1]
++    amount = int(recovered["minted_amount"])
++    state = after["verified_state"]
++    minted = int(amount > 0)
++    return (recovered["recipient"] == recipient and recovered["consumed"] is True
++            and amount >= 0 and (recovered["minted_leaf"] == int(planned["commitment_next_index"]) if minted else recovered["minted_leaf"] is None)
++            and int(state["commitment_next_index"]) == int(planned["commitment_next_index"])+minted
++            and int(state["native_liability"]) == int(planned["native_liability"])+amount
++            and int(state["reserved_recovery_leaves"]) == int(planned["reserved_recovery_leaves"])-1
++            and all(state[k] == planned[k] for k in ("nullifier_root", "nullifier_next_index")))
++
++
+ async def plan_spend(args, run, core, endpoints):
+     req = {"op": "spend", "seed": owner_seed(run, args.owner), "reserved": run.reserved(args.owner),
+            "amount": str(args.amount), "now": int(time.time()), "validity": args.validity,
+@@ -553,6 +593,10 @@
+                    {"owner": args.to_owner, "reserved": d["reserved"], "descriptor_file": dfile,
+                     "dry_run": False})
+         req["to_descriptor"] = dfile
++    if getattr(args, "recipient", None) is not None:
++        require(args.cmd == "withdraw" and args.recipient_wallet is None, "raw recipient is withdrawal-only and exclusive with wallet index")
++        require(re.fullmatch(r"0:[0-9a-f]{64}", args.recipient) is not None, "recipient must be canonical workchain-0 address")
++        req["withdraw_to"] = args.recipient
+     if getattr(args, "recipient_wallet", None) is not None:
+         req["withdraw_to"] = funding_wallets(args)[args.recipient_wallet].address.to_str(is_user_friendly=False)
+     req["out_body"] = run.private_file("bodies", f"spend-{int(time.time())}-{secrets.token_hex(4)}.boc")
+@@ -573,6 +617,17 @@
+         wallets = funding_wallets(args)
+         if args.cmd == "reconcile":
+             await reconcile(args, run, endpoints)
++            return
++        if args.cmd == "recipient-deploy":
++            addr, si, init = recipient_artifact(args.recipient_artifact)
++            require(0 < args.value <= 5*NANO, "recipient deploy requires explicit value, capped at 5 TOS")
++            for endpoint in endpoints:
++                acct = await endpoint.client.raw_get_account_state(Address(addr))
++                require(not acct.code, "recipient already active; refusing redeploy")
++            result = await submit(args, run, endpoints, wallets, "recipient-deploy", args.sender, addr,
++                                  args.value, begin_cell().end_cell(),
++                                  {"state_init_hash": init.hash.hex()}, {}, init=si, bounce=False, interrupt=args.interrupt)
++            say({"recipient_deploy": result})
+             return
+         if args.cmd == "deploy":
+             cand = Path(args.candidate)
+@@ -634,6 +689,8 @@
+                 after, _ = await rebuild(run, core, endpoints, args.pool)
+                 matches = after["verified_state"] == plan["expected"] if result["state"] == "delivered" else \
+                     after["verified_state"] == model["verified_state"]
++                if not matches and args.cmd == "withdraw" and getattr(args, "recipient", None) and result["state"] == "delivered":
++                    matches = recovery_post_matches(model, after, plan["expected"], result, args.recipient)
+                 run.append({"id": result["id"], "state": result["state"], "post_state": after["verified_state"],
+                             "post_state_as_planned": matches})
+                 require(matches, "the pool state after the action is not the planned one")
+@@ -763,7 +820,7 @@
+
+ def main():
+     p = argparse.ArgumentParser()
+-    p.add_argument("cmd", choices=["identity", "deploy", "owner-init", "deposit", "transfer", "withdraw",
++    p.add_argument("cmd", choices=["identity", "deploy", "recipient-deploy", "owner-init", "deposit", "transfer", "withdraw",
+                                    "duplicate-pair", "resend-body", "scan", "reconcile"])
+     for name in ("--run-dir", "--zero-state", "--pool", "--endpoints", "--funding-dir", "--funding-config",
+                  "--core", "--ceremony", "--vk", "--transcript"):
+@@ -776,10 +833,12 @@
+     p.add_argument("--owner")
+     p.add_argument("--to-owner")
+     p.add_argument("--recipient-wallet", type=int)
++    p.add_argument("--recipient")
+     p.add_argument("--amount", type=int, default=0)
+     p.add_argument("--value", type=int, default=0)
+     p.add_argument("--value-tos", type=int, default=100)
+     p.add_argument("--candidate")
++    p.add_argument("--recipient-artifact")
+     p.add_argument("--body")
+     p.add_argument("--anchor", default="current")
+     p.add_argument("--imt", default="head", choices=["head", "anchor"])
