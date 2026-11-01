@@ -223,7 +223,7 @@
          ] {
              out.insert(f.into(), json!(self.pool.get(f).map_err(fail("getter"))?));
          }
-@@ -442,6 +445,128 @@
+@@ -442,6 +445,131 @@
      planner.identity.domain()
  }
 
@@ -272,6 +272,9 @@
 +        .and_then(|b| b.into_cell())
 +        .map_err(fail("recipient init"))?
 +        .hash(0);
++    if hash.to_hex_string() != "c3a3c27df46f83e58959b217be4e2fee5f4070fe1119fc34f2035b2e64b470c2" {
++        return Err("rehearsal recipient StateInit differs from frozen address".into());
++    }
 +    let addr =
 +        chain_block::MsgAddressInt::with_params(0, hash).map_err(fail("recipient address"))?;
 +    let payer = p
@@ -352,7 +355,7 @@
  /// The driver's whole flow, offline, against one candidate instance.
  fn rehearse(root: &Path, ceremony: &Path, private: &Path, global_id: i32) -> Result<Value> {
      let (directory, audited) = audit_ceremony(ceremony, VK, TRANSCRIPT)?;
-@@ -750,6 +875,11 @@
+@@ -750,6 +878,11 @@
                  candidate_files(Path::new(&args[1]), Path::new(&args[2]), &PathBuf::from(&args[5]),
                                  &PathBuf::from(&args[3]), gid)
              }
