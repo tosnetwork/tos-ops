@@ -6,7 +6,9 @@ raw withdrawal destination, and a deploy entry for the existing frozen refuser.
 It changes test tooling only; it does not change pool or consensus code.
 
 `materialize.py` checks SHA-256 of all six reviewed driver source inputs, the
-original transport and the frozen recipient StateInit, then writes a **new**
+original transport, all 3,728 files of the frozen tosctl/tools/Func-source
+subtrees (content checked against c1cb3b8d), and recipient StateInit/code/data,
+then writes a **new**
 candidate directory. Rust sources are normalized first with the pinned rustfmt
 1.8.0-stable (e408947bfd 2026-03-25), keeping the behavioral patch reviewable;
 pass `--rustfmt` if it is not on PATH. It never copies any run, seed or private journal, never
@@ -85,3 +87,9 @@ pool/PRI-driver counterpart. This is TOS-specific test tooling. The frozen
 contract is unchanged; the difference between its handler and tos main
 `d5114fea3afe231e5b7df5cc4dec4bbac3d8edcf` is comments. Wallet API additions in
 main are outside the frozen driver profile.
+
+Materializer regression controls additionally reject changed dependency source,
+changed refuser code with unchanged StateInit, and pre-existing output. Quoted
+source/recipient paths are preserved as valid TOML/Rust strings. Success is
+reported only after adapter and tests have been written. Source trees must have
+no symlinks or added build output; build with an external CARGO_TARGET_DIR.
