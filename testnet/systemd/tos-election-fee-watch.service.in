@@ -1,0 +1,10 @@
+[Unit]
+Description=Read-only two-observer election fee reserve alert
+[Service]
+Type=oneshot
+UMask=0077
+Nice=10
+MemoryMax=128M
+TimeoutStartSec=120
+ExecStartPre=/usr/bin/git -C @CHECKOUT@ diff --exit-code @REVISION@ -- production/con01_history
+ExecStart=/usr/bin/env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=@CHECKOUT@/production /usr/bin/python3 -m con01_history.election_fees --rpc @RPC_A@ --rpc @RPC_B@ --wallets @WALLETS@ --genesis @GENESIS@ --out @STATUS@
