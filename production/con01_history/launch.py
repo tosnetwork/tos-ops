@@ -96,6 +96,14 @@ def main():
             sha(package / worker_files[name]) == digest,
             "worker revision changed before resume: " + name,
         )
+    worker_config = json.loads(approved.read_bytes())
+    worker_config["evidence"] = str(args.out)
+    worker_config["cpu_fraction"] = 0.5
+    expected_worker_config = (json.dumps(worker_config, indent=2) + "\n").encode()
+    require(
+        expected_worker_config == (args.out / "REPLAY-CONFIG.json").read_bytes(),
+        "resume config representation changed before worker invocation",
+    )
     os.execv(
         sys.executable,
         [

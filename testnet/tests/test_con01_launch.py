@@ -1,6 +1,7 @@
 """Freeze/resume metadata only; no crypto execution or chain claim."""
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -80,6 +81,15 @@ class LaunchMetadata(unittest.TestCase):
             self.invoke(True)
         except Refused as error:
             self.fail(f"exact historical worker alias refused before resume: {error}")
+
+    def test_relative_output_alias_refuses_before_worker(self):
+        self.argv[self.argv.index("--out") + 1] = "frozen"
+        prior = Path.cwd()
+        os.chdir(self.root)
+        try:
+            self.refuse("resume config representation changed")
+        finally:
+            os.chdir(prior)
 
     def test_changed_approved_config_refuses_before_worker(self):
         self.config.write_bytes(self.config.read_bytes() + b" ")

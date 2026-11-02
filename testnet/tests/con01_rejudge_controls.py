@@ -198,6 +198,15 @@ LAUNCH_MUTATIONS.append(
     )
 )
 
+LAUNCH_MUTATIONS.append(
+    (
+        "launch-worker-config-bytes",
+        'expected_worker_config == (args.out / "REPLAY-CONFIG.json").read_bytes()',
+        "True",
+        "test_relative_output_alias_refuses_before_worker",
+    )
+)
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

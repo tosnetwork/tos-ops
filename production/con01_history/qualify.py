@@ -21,7 +21,7 @@ WORKER_MODULES = {
     "audit.py",
     "formats.py",
 }
-CONTROL_GUARDS = 31
+CONTROL_GUARDS = 32
 CONTROL_TESTS = {
     "source-key-file-binding": "test_cached_key_file_hash_is_bound_before_verification",
     "expired-term-regression": "test_expired_schedule_passes_full_observer",
@@ -54,6 +54,7 @@ CONTROL_TESTS = {
     "launch-worker-revision": "test_changed_worker_revision_refuses_before_worker",
     "legacy-worker-alias": "test_historical_worker_name_is_exact_byte_alias",
     "launch-legacy-worker-alias": "test_historical_worker_name_resumes_exact_same_bytes",
+    "launch-worker-config-bytes": "test_relative_output_alias_refuses_before_worker",
 }
 
 
