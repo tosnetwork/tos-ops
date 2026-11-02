@@ -50,7 +50,58 @@ class FeeWatch(unittest.TestCase):
         self.wallets = {"node-1": "-1:" + "aa" * 32}
 
     def observe(self):
-        return fees.observe(self.sources, self.wallets, block(), 1000)
+        return fees.observe(self.sources, self.wallets, block(), lambda: 1000)
+
+    def cli_after_slow_wallet_reads(self, delay):
+        clock = [1000]
+
+        class Slow(Fake):
+            def call(self, method, params):
+                answer = super().call(method, params)
+                if method == "getAddressInformation":
+                    clock[0] = 1000 + delay
+                return answer
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "wallets.json").write_text(json.dumps(self.wallets))
+            (root / "genesis.json").write_text(json.dumps(block()))
+            status = root / "STATUS.json"
+            status.write_text(json.dumps({"status": "HEALTHY_FEE_RESERVE"}))
+            argv = [
+                "fees",
+                "--rpc",
+                "http://127.0.0.1:1/jsonRPC",
+                "--rpc",
+                "http://127.0.0.1:2/jsonRPC",
+                "--wallets",
+                str(root / "wallets.json"),
+                "--genesis",
+                str(root / "genesis.json"),
+                "--out",
+                str(status),
+            ]
+            with (
+                mock.patch.object(sys, "argv", argv),
+                mock.patch.object(fees, "FeeRpc", side_effect=[Slow("a"), Slow("b")]),
+                mock.patch.object(fees.time, "time", side_effect=lambda: clock[0]),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                code = fees.main()
+            return code, json.loads(status.read_bytes())
+
+    def test_slow_successful_reads_replace_health_with_unknown(self):
+        code, report = self.cli_after_slow_wallet_reads(61)
+        self.assertEqual(code, 2)
+        self.assertEqual(report["status"], "INDETERMINATE")
+        self.assertIn("stale or future", report["reason"])
+
+    def test_healthy_report_timestamp_is_observation_completion(self):
+        code, report = self.cli_after_slow_wallet_reads(5)
+        self.assertEqual(code, 0)
+        self.assertEqual(report["status"], "HEALTHY_FEE_RESERVE")
+        self.assertEqual(report["checked_utc"], 1005)
+        self.assertEqual(report["valid_until_utc"], 1605)
 
     def test_early_warning_before_stake_exhaustion(self):
         for source in self.sources:

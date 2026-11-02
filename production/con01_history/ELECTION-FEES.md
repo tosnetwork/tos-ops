@@ -53,3 +53,7 @@ Every ordinary observation exception, including truncated HTTP protocol replies 
 unexpected reader failures, writes INDETERMINATE/exit2 with its exception class.
 Filesystem failure to replace the report remains a failed service; consumers must
 check service failures and report TTL as described above.
+
+## Completion-time freshness
+
+Freshness is checked both after selecting the common header and after every wallet reply has completed. If a successful but slow round leaves its checkpoint older than60seconds, publish INDETERMINATE/exit2, replacing prior health. A successful report records checked_utc at observation completion and sets its10minute validity from that point. The timestamp describes observation completion; consumers still check report age, service success and checkpoint identity. It is not funding authorization.19tests/19 runtime guard controls and retained receipts are indexed in FEE-FRESHNESS-EVIDENCE.json.
