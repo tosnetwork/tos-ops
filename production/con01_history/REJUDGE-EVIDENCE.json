@@ -1,0 +1,170 @@
+{
+  "result": "PASS",
+  "files": {
+    "production/con01_history/__init__.py": "2669032d72511e45b4145efe98af062bd0f6cd5eee5b0e5f4fd25d4b37e33a8d",
+    "production/con01_history/audit.py": "cc9850c26a58c37b4f14c5d866e8e41928aed4deb5518f66ff6979a5107b4c91",
+    "production/con01_history/certificate.py": "439e11ca7eedd0ab11a61dd020eb7de0f3dd40c371a717bb3690a88598e83d0e",
+    "production/con01_history/formats.py": "df2ebfd9e585f7e4d54b020a24819c8b87f4d47e098ee4e7ad12230694c08519",
+    "production/con01_history/observer.py": "1eaa8e1a45c72de4579eb7fd4a2b98fa614b5586643295a74aae36001c53c62d",
+    "production/con01_history/qualify.py": "bb76b77ba427ec95ef0b27da57a57df996f2fb90029ff42866800a787db86720",
+    "production/con01_history/rejudge.py": "89095f3ff9d65e6b2622bacb8d65ed5d61a501067159dc7f2383c43c5082a988",
+    "testnet/tests/test_con01_rejudge.py": "ee6786acc9a7a3c1c254dace3655bf2ae6c20ba70991b5b01ede477786cf6fb2",
+    "testnet/tests/test_con01_observer_crypto.py": "1cbf82f9591b4360b7ef7db352d3acfb8a4f8afd8726c71f11a4c4b7c7e1cc67",
+    "testnet/tests/test_con01_qualification.py": "085c416f67ad947ba891057e95da8b845476d0ca33e93a0d0cc1279132d1d411",
+    "testnet/tests/test_con01_history.py": "c20b5b40eaef9c78c37109534b623a18efeacfcd1c2fef235b102d554052c522",
+    "testnet/tests/data/con01-history/MANIFEST.json": "cddef13cbeb6de46e3663af160de3f92cbb88c1d80f85139e435e80ffe7d0e55",
+    "testnet/tests/data/con01-history/anchor.json": "de7ef0a3ea157a3426504bcb254d50584014def52b0632ca23edfde7c02067af",
+    "testnet/tests/data/con01-history/expired-current-set.tl": "99d4a705a247ca155d9220664ec3e2070bc5c19beb28f35b953be3069a8736f2",
+    "testnet/tests/data/con01-history/genesis-partial.tl": "6fc0a533593febecefe753e9de6ac2ca701640f2cec5a2036b219ff65d526085",
+    "testnet/tests/data/con01-history/genesis.json": "30b39614e085477f33580ed2ad9fa8f6b7fbeb85d4e0ce7e8f013babe4057a3a",
+    "testnet/tests/data/con01-history/request.json": "cb578b711035c0a7ee642e24ed2db8cd32ac203e2a44efb68b7b8347e3fc2634",
+    "testnet/tests/data/con01-history/target.json": "b8d938c95053598898553b1a7fb4875ed98a5a3a7390edf0831da025c78ed33e",
+    "testnet/tests/con01_rejudge_controls.py": "874a4064728231ab16224942b852651bbde20eaaf6f50a7304488544a4555883"
+  },
+  "rows": [
+    {
+      "name": "baseline",
+      "test": null,
+      "exit": 0,
+      "sha256": "2e52ce33be886951ebeb7a278061432fac8aed2a43b1c74cf0dfabd6222c6f2a",
+      "bytes": 138
+    },
+    {
+      "name": "source-key-file-binding",
+      "test": "test_cached_key_file_hash_is_bound_before_verification",
+      "exit": 1,
+      "sha256": "3dd6ff4557f4cd0967b88b8f46518618451d73dae0ef3540737d1cef60cc3f31",
+      "bytes": 1354
+    },
+    {
+      "name": "expired-term-regression",
+      "test": "test_expired_schedule_passes_full_observer",
+      "exit": 1,
+      "sha256": "113a754b61e64163a4120f3954b125b9fd100351ca7a4d8e6c21e58476a6b888",
+      "bytes": 913
+    },
+    {
+      "name": "rejected",
+      "test": "test_rejection_is_not_overwritten_by_later_success",
+      "exit": 1,
+      "sha256": "192abe3a8d069cd32d33cd143a4f6cfa1355ceac35d9b33bd89c982f94c11551",
+      "bytes": 2333
+    },
+    {
+      "name": "stream-integrity",
+      "test": "test_integrity_break",
+      "exit": 1,
+      "sha256": "c185ee53bf91f72d3145ab4c24b0de73b2106b7a42fa537aaedb2e86362e9b23",
+      "bytes": 2306
+    },
+    {
+      "name": "uncertified-key",
+      "test": "test_uncertified_source_key_cannot_enter_trust_chain",
+      "exit": 1,
+      "sha256": "3795f5816e22e8c4022828b2dc6e7015732235eb6ea09c5eb0507affb7caf57b",
+      "bytes": 2298
+    },
+    {
+      "name": "third-boundary-certificate",
+      "test": "test_boundary_requires_three_certificates",
+      "exit": 1,
+      "sha256": "ae6876680f2f47c693d056d03db024330d5fe237190724da11c326d63f94760a",
+      "bytes": 2272
+    },
+    {
+      "name": "two-window-certificates",
+      "test": "test_window_requires_two_sources",
+      "exit": 1,
+      "sha256": "08b8559ec1bb0b2dd5ad5ab751cb52ca8de5ae15925e4c33eccda3679c71c9c2",
+      "bytes": 2291
+    },
+    {
+      "name": "three-full-ids",
+      "test": "test_full_ids_require_three_sources",
+      "exit": 1,
+      "sha256": "dce2ed99aa184a8d120e9807ad43f6034df3dab3a97516ead1d8be0622422ee6",
+      "bytes": 2238
+    },
+    {
+      "name": "shard-inclusion",
+      "test": "test_shard_inclusion_requires_two_sources",
+      "exit": 1,
+      "sha256": "1195cd4e2089672164f6fb730ba57426d1bd6e3d4407b0a9683cece92f91603c",
+      "bytes": 2243
+    },
+    {
+      "name": "live-observation",
+      "test": "test_missing_live_heads",
+      "exit": 1,
+      "sha256": "f5195de45d35fa3ceb116bb6766b6acf2ce92d62f4636f10e2400afa75ee5746",
+      "bytes": 2290
+    },
+    {
+      "name": "outgoing-boundary-set",
+      "test": "test_outgoing_boundary_set_must_match",
+      "exit": 1,
+      "sha256": "389087fbb11d1458116efe687dec7bb68a91a68cfbeff53fcd94fdd02e7f1d5d",
+      "bytes": 2279
+    },
+    {
+      "name": "incoming-next-set",
+      "test": "test_incoming_set_must_certify_following_block",
+      "exit": 1,
+      "sha256": "c9d9824a1576262ecb984118e5bb0173fe87d461f541491fd74ec06845e80026",
+      "bytes": 2297
+    },
+    {
+      "name": "incomplete-replay",
+      "test": "test_incomplete_replay_cannot_qualify",
+      "exit": 1,
+      "sha256": "dc0033dcd874549bf6832379634104921e91c7b5e3186bb7b389f8ecde7b31c4",
+      "bytes": 611
+    },
+    {
+      "name": "replay-revision",
+      "test": "test_changed_source_cannot_qualify",
+      "exit": 1,
+      "sha256": "6001766d4dd5b2d3c32cf221aabf08b93dcd6394167abe427684690c7184fa7d",
+      "bytes": 611
+    },
+    {
+      "name": "control-revision",
+      "test": "test_changed_control_revision_cannot_qualify",
+      "exit": 1,
+      "sha256": "ec71b70df68c19e9fa292b72f1d19f511d775b4f2073fb7bd22f9baa80348153",
+      "bytes": 625
+    },
+    {
+      "name": "all-controls-required",
+      "test": "test_missing_controls_cannot_qualify",
+      "exit": 1,
+      "sha256": "4fe447e54459f2893aa4d2cf50b79e2e5a73f671571f6933acafdf4e860cea93",
+      "bytes": 608
+    },
+    {
+      "name": "snapshot-size",
+      "test": "test_frozen_size_change_cannot_qualify",
+      "exit": 1,
+      "sha256": "bed7a71ba5455bda0f228cf920e98da27c31e9c4aedcca53ef7885f7635dfc61",
+      "bytes": 616
+    },
+    {
+      "name": "three-source-inventory",
+      "test": "test_missing_third_source_cannot_qualify",
+      "exit": 1,
+      "sha256": "3a2cfd474ff1130d2cc6642f6033f5b5a196ba7f607f5a6376d231b54fc07dde",
+      "bytes": 621
+    },
+    {
+      "name": "restored",
+      "test": null,
+      "exit": 0,
+      "sha256": "61284d37ba9d85b16ebadbdefc8afc276ff52b63adc3c9d72164023a7532adbd",
+      "bytes": 138
+    }
+  ],
+  "raw_location": "/tos/build/con01-rejudge-20261102/judge-controls-r4",
+  "retained_until_utc": "2027-02-01",
+  "access": "Existing authorized toserver SSH account",
+  "scope": "39 tests (14 real certificate regressions,2 real observer adapter tests,16 synthetic judge rules,7 synthetic qualification metadata gates);18 intended runtime guard removals. This is not a completed full-stream replay verdict."
+}
