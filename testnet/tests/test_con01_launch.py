@@ -132,6 +132,14 @@ class LaunchMetadata(unittest.TestCase):
         (self.out / "src-node1/seg-fixture.jsonl").write_bytes(b"[]\n")
         self.refuse("frozen segment digest changed")
 
+    def test_unlisted_worker_segment_refuses_before_worker(self):
+        (self.out / "src-node1/seg-extra.jsonl").write_bytes(b"{}\n")
+        self.refuse("complete worker input inventory")
+
+    def test_extra_source_directory_refuses_before_worker(self):
+        (self.out / "src-unapproved").mkdir()
+        self.refuse("exact original source directories")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -240,6 +240,35 @@ FROZEN_MUTATIONS = [
     )
 ]
 
+FROZEN_MUTATIONS.extend(
+    [
+        (
+            "qualification-extra-worker-segment",
+            'actual == {row["path"] for row in inventory}',
+            "True",
+            "test_unlisted_worker_segment_cannot_qualify",
+        ),
+        (
+            "launch-extra-worker-segment",
+            'actual == {row["path"] for row in inventory}',
+            "True",
+            "test_unlisted_worker_segment_refuses_before_worker",
+        ),
+        (
+            "qualification-extra-source-directory",
+            'set(source_dirs) == {"src-node1", "src-node3", "src-node5"}',
+            "True",
+            "test_extra_source_directory_cannot_qualify",
+        ),
+        (
+            "launch-extra-source-directory",
+            'set(source_dirs) == {"src-node1", "src-node3", "src-node5"}',
+            "True",
+            "test_extra_source_directory_refuses_before_worker",
+        ),
+    ]
+)
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

@@ -21,7 +21,7 @@ WORKER_MODULES = {
     "audit.py",
     "formats.py",
 }
-CONTROL_GUARDS = 36
+CONTROL_GUARDS = 40
 CONTROL_TESTS = {
     "source-key-file-binding": "test_cached_key_file_hash_is_bound_before_verification",
     "expired-term-regression": "test_expired_schedule_passes_full_observer",
@@ -59,6 +59,10 @@ CONTROL_TESTS = {
     "complete-segment-digests": "test_extra_segment_digest_cannot_qualify",
     "launch-frozen-segment-content": "test_same_length_frozen_segment_change_refuses_before_worker",
     "launch-segment-manifest-pin": "test_unchanged_frozen_inputs_resume",
+    "qualification-extra-worker-segment": "test_unlisted_worker_segment_cannot_qualify",
+    "qualification-extra-source-directory": "test_extra_source_directory_cannot_qualify",
+    "launch-extra-worker-segment": "test_unlisted_worker_segment_refuses_before_worker",
+    "launch-extra-source-directory": "test_extra_source_directory_refuses_before_worker",
 }
 
 

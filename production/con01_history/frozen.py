@@ -18,6 +18,23 @@ def sha(path):
 def segments(root):
     inventory = json.loads((root / "SNAPSHOT.json").read_bytes())["segments"]
     require(0 < len(inventory) <= 4096, "bounded frozen segment inventory required")
+    source_dirs = {path.name: path for path in root.glob("src-*")}
+    require(
+        set(source_dirs) == {"src-node1", "src-node3", "src-node5"}
+        and all(
+            path.is_dir() and not path.is_symlink() for path in source_dirs.values()
+        ),
+        "exact original source directories required",
+    )
+    actual = {
+        str(path.relative_to(root))
+        for folder in source_dirs.values()
+        for path in folder.glob("seg-*.jsonl")
+    }
+    require(
+        actual == {row["path"] for row in inventory},
+        "snapshot must cover complete worker input inventory",
+    )
     paths = {}
     for row in inventory:
         name = row["path"]

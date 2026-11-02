@@ -229,6 +229,16 @@ class QualificationMetadata(unittest.TestCase):
         with self.assertRaisesRegex(Refused, "complete frozen segment digest inventory"):
             self.run_qualification()
 
+    def test_unlisted_worker_segment_cannot_qualify(self):
+        (self.replay / "src-node1/seg-extra.jsonl").write_bytes(b"{}\n")
+        with self.assertRaisesRegex(Refused, "complete worker input inventory"):
+            self.run_qualification()
+
+    def test_extra_source_directory_cannot_qualify(self):
+        (self.replay / "src-unapproved").mkdir()
+        with self.assertRaisesRegex(Refused, "exact original source directories"):
+            self.run_qualification()
+
 
 if __name__ == "__main__":
     unittest.main()
