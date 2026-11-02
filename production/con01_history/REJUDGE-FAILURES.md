@@ -41,7 +41,7 @@ Exit 1; SHA-256 `6ba935c8efeb795222b7478412588ed5b264264ac26f3044aec05670ab0d03b
 
 ```text
 FAIL: test_integrity_break (test_con01_rejudge.JudgeControls)
-AssertionError: 'PASS' == 'PASS' : {'bounds': {'window_s': 1, 'max_block_gap_s': 10, 'min_rate_bps': 1.5, 'live_lag_s': 30, 'min_live_fraction': 0.99, 'max_head_record_gap_s': 30, 'max_head_staleness_s': 15, 'min_sources_cert': 2, 'all_sources': 3, 'min_handovers': 1}, 'sources': ['node1', 'node3', 'node5'], 'fail': [], 'inconclusive': [], 'notes': [], 'self_conflicts': [], 'unsupported_shape': [], 'unsupported_count': 0, 'integrity': {'breaks': [{'t': 'chain', 'src': 'node1', 'ok': False}], 'torn': []}, 'rejected': [], 'rejected_count': 0, 'conflicts': [], 'parent_breaks': [], 'continuously_verified_runs': [{'lo': 1, 'hi': 8, 'blocks': 8}], 
+AssertionError: 'PASS' == 'PASS' : {'bounds': {'window_s': 1, 'max_block_gap_s': 10, 'min_rate_bps': 1.5, 'live_lag_s': 30, 'min_live_fraction': 0.99, 'max_head_record_gap_s': 30, 'max_head_staleness_s': 15, 'min_sources_cert': 2, 'all_sources': 3, 'min_handovers': 1}, 'sources': ['node1', 'node3', 'node5'], 'fail': [], 'inconclusive': [], 'notes': [], 'self_conflicts': [], 'unsupported_shape': [], 'unsupported_count': 0, 'integrity': {'breaks': [{'t': 'chain', 'src': 'node1', 'ok': False}], 'torn': []}, 'rejected': [], 'rejected_count': 0, 'conflicts': [], 'parent_breaks': [], 'continuously_verified_runs': [{'lo': 1, 'hi': 8, 'blocks': 8}],
 Ran 1 test in 0.002s
 FAILED (failures=1)
 ```
