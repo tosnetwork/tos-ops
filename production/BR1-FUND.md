@@ -1,0 +1,102 @@
+# Epoch-6 fixed pilot initialization
+
+`br1_fund.py` is an operator wrapper for exactly one 5 TOS transfer, including
+canonical V3 StateInit, from approved PRI wallet0 to a fresh native provider's
+funding wallet on public Epoch-6 (global ID2, global version16). It reuses the
+frozen approved PRI driver/transport and existing private journal. This tool is
+not an approval, faucet, refill mechanism, Bond bootstrap or client-proof driver.
+No public transfer is part of its tests.
+
+Before any signing, retain explicit operator authorization for that network,
+source, destination and bounded allocation. The allocation is inside the existing
+150 TOS PRI budget; validator fees and other identities have separate budgets.
+Do not substitute disposable local keys or the legacy fixed-term batch wrapper.
+
+## Inputs and execution
+
+Use the wallet Python environment with `pytosiq_core` and PyNaCl. Run as a module
+with `PYTHONPATH=production`; quiet-window proofs run separately with host
+`/usr/bin/python3` and its sealed-descriptor support. There is no service installer.
+
+The private policy is JSON, schema `tos.br1.public-pilot-policy.v1`. Supply its
+SHA256 explicitly. Required fields:
+
+| Field | Meaning |
+| --- | --- |
+| `source_pins` | Absolute source-file path to SHA256 mapping, covering the reviewed driver dependencies/local scripts and configured helpers; never seed/key paths |
+| `driver`, `transport`, `funding_config` | Frozen PRI components; additional fixed expected hashes are embedded in the wrapper |
+| `tos_root`, `local_scripts` | Existing approved PRI library roots |
+| `funding_dir` | Existing approved PRI custody directory; no key copying |
+| `run_dir` | Existing canonical PRI run with delivered anchor entry and locked private journal |
+| `provider_state` | Fresh, independently generated public native state containing provider.json, funding-init.boc and funding.seed |
+| `resource_gate`, `history_gate`, `upgrade_gate` | Objects `{path, sha256}` for independently reviewed qualification reports |
+| `window` | Existing proof inputs: `anchor`, `verifier`, `verifier_sha256`, `archive`, `join_key`, and three `rpc` name=URL strings; see BR1-WINDOW.md |
+
+Policy/source hashes bind operator-reviewed inputs; they do not authenticate an
+arbitrary newly written PASS report. Resource report requires actual complete
+24h measurements of four nodes on the original engine/CLI identities, measured
+resource limits and identity checks. History input is independent qualification,
+not a worker's provisional verdict. Upgrade report covers four nodes, reviewed
+CLI395 SHA and unchanged engine PIDs. Preserve original reports and raw records.
+No sample report supplied here should be used as operational acceptance.
+
+Every invocation needs a new private output directory:
+
+```sh
+PYTHONPATH=production "$WALLET_PYTHON" -B -m br1_fund \
+  --policy "$POLICY" --policy-sha256 "$POLICY_SHA" \
+  --mode inspect --out "$NEW_INSPECT"
+```
+
+Inspect writes only UNSIGNED.json and does not load keys, sign or submit. Review
+its source, destination, 5 TOS amount, nonce and StateInit hash. After all gates,
+repeat with `--mode dry-run --out "$NEW_DRY"`. This wrapper's pinned legacy dry
+path loads approved keys but does not sign or send; it journals planned-only.
+Unlike generic `fund --dry-run`, this specific path has tested no-sign semantics.
+
+Hash the resulting RESULT.json and pass it to one authorized fund invocation:
+
+```sh
+PYTHONPATH=production "$WALLET_PYTHON" -B -m br1_fund \
+  --policy "$POLICY" --policy-sha256 "$POLICY_SHA" \
+  --mode fund --plan "$DRY_RESULT" --plan-sha256 "$DRY_SHA" --out "$NEW_FUND"
+```
+
+The same plan must still match the two-peer nonce, address, amount and initialization,
+be at most300s old, and obtain a new valid quiet-window proof. Checks precede
+key loading/signing. A durable, fsynced one-attempt marker precedes signing;
+legacy signed bytes are journaled before transport. Native StateInit code/data,
+public-key derivation, fresh empty destination, peer balances and genesis are
+checked independently. A signer nonce/window fence and separate pre-broadcast
+window fence prevent an expired proof from authorizing transport.
+
+Any refusal or unknown result stops value operations. Never remove the marker,
+lock or journal, re-sign, change operation ID or generate a replacement identity
+to retry this allocation. `--mode reconcile --out "$NEW_RECONCILE"` only checks
+original journaled bytes using the existing readonly reconciliation path;
+rebroadcast is hard-disabled. Even a terminal failed attempt consumes this tool's
+allocation fence. A pre-sign crash may therefore need operator investigation;
+availability is deliberately subordinate to preventing a second payment.
+
+## Verification and limits
+
+```sh
+"$WALLET_PYTHON" -B -m unittest discover -s testnet/tests -p test_br1_fund.py -v
+"$WALLET_PYTHON" -B testnet/tests/br1_fund_controls.py --out "$NEW_CONTROLS"
+```
+
+26 tests include real V3 cell serialization/Ed25519 public-key matching and mock
+orchestration for fixed initialization, marker-before-keys, dry/no-sign,
+post-sign expiry, and unknown reconciliation. Eleven individually removed guards
+must cause assertion failures, with complete baseline/restoration passes.
+Orchestration mocks are not live acceptance. The bounded evidence index records
+exact source/raw hashes and retention; no seeds, signed BOCs or journals are in Git.
+
+Inputs are bounded (policy128KiB, normal JSON1MiB, StateInit64KiB, journal16MiB,
+pinned source256MiB per file); subprocess quiet proof has180s timeout and each
+control30s. Inherited PRI RPC semantics remain unchanged. No daemon, persistent
+cache, consensus or C++ changes. Later native Bond operations and private client
+proof/finality/fee-import/full-rescan evidence remain separate pilot requirements.
+
+Upstream comparison: this deployment path is absent in upstream TON at
+857b8a57a178e6ae0fe7fa86e7d81c5233de8560. No inherited implementation changed.

@@ -31,3 +31,7 @@ before running it. Its [recorded evidence](evidence/README.md) identifies the
 verifier build and the historical Config32 proof availability limitation.
 Fixture tests and mutation controls live in `testnet/tests`; this tooling does
 not establish mainnet readiness or replace deployment acceptance.
+
+The Epoch-6 pilot has a [read-only dynamic window check](BR1-WINDOW.md)
+and a [fixed, journaled initialization wrapper](BR1-FUND.md). Their acceptance
+gates and bounded authorization are specific to that public testnet, not mainnet.

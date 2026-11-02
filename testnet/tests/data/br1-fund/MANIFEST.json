@@ -1,0 +1,12 @@
+{
+  "schema": "tos.public-test-fixture.v1",
+  "purpose": "Canonical TOS V3 public code cell only; no data, address, key or seed",
+  "origin": "Public WalletV3 code used by native funding StateInit; code-cell hash checked independently in tests",
+  "cell_hash": "5829bd66ea5884eef70788d0609acad76af5c418aed2fc17709def2224cf9164",
+  "files": {
+    "v3-code.boc": {
+      "sha256": "9cea4958800cdaae9040aa1985750ba36df410181c4b508ea527a7048395677c",
+      "bytes": 346
+    }
+  }
+}
