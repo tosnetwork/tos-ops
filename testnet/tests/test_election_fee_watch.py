@@ -1,6 +1,7 @@
 """Fail-closed observational fee alerts, independent of any signing workflow."""
 
 import contextlib
+import http.client
 import io
 import json
 import sys
@@ -177,6 +178,47 @@ class FeeWatch(unittest.TestCase):
                 ):
                     self.assertEqual(fees.main(), 2)
                 self.assertEqual(json.loads(status.read_bytes())["status"], "INDETERMINATE")
+                self.assertTrue(
+                    json.loads(status.read_bytes())["reason"].startswith(
+                        "Refused: bounded masterchain fee wallet manifest required"
+                    )
+                )
+
+    def test_protocol_or_unexpected_read_failure_replaces_previous_health(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "wallets.json"
+            genesis = root / "genesis.json"
+            status = root / "STATUS.json"
+            manifest.write_text(json.dumps(self.wallets))
+            genesis.write_text(json.dumps(block()))
+            argv = [
+                "fees",
+                "--rpc",
+                "http://127.0.0.1:1/jsonRPC",
+                "--rpc",
+                "http://127.0.0.1:2/jsonRPC",
+                "--wallets",
+                str(manifest),
+                "--genesis",
+                str(genesis),
+                "--out",
+                str(status),
+            ]
+            for error in [
+                http.client.IncompleteRead(b"partial chunk"),
+                RuntimeError("unexpected reader failure"),
+            ]:
+                status.write_text(json.dumps({"status": "HEALTHY_FEE_RESERVE"}))
+                with (
+                    mock.patch.object(sys, "argv", argv),
+                    mock.patch.object(fees.FeeRpc, "call", side_effect=error),
+                    contextlib.redirect_stdout(io.StringIO()),
+                ):
+                    self.assertEqual(fees.main(), 2)
+                report = json.loads(status.read_bytes())
+                self.assertEqual(report["status"], "INDETERMINATE")
+                self.assertIn(type(error).__name__, report["reason"])
 
 
 if __name__ == "__main__":

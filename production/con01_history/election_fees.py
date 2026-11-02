@@ -171,11 +171,11 @@ def main():
             [FeeRpc(url) for url in args.rpc], wallets, genesis, time.time()
         )
         code = 1 if report["status"] == "LOW_FEE_RUNWAY" else 0
-    except (ValueError, KeyError, TypeError, OSError) as error:
+    except Exception as error:
         report = dict(
             status="INDETERMINATE",
             checked_utc=time.time(),
-            reason=str(error)[:300],
+            reason=(type(error).__name__ + ": " + str(error))[:300],
             automatic_top_up=False,
         )
         code = 2

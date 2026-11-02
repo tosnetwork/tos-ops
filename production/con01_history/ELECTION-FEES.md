@@ -40,7 +40,7 @@ TOS-specific, absent from fetched ton-blockchain/ton857b8a57. No inherited core
 or consensus implementation is changed. Checklist: OB-1 (existed / not applied:
 previous monitoring observed chain heads but did not warn on election fee runway).
 
-Validation:16 regressions GREEN and16 matching disposable guard removals RED;
+Validation:17 regressions GREEN and17 matching disposable guard removals RED;
 `testnet/tests/election_fee_controls.py` plus `election-fee-controls.json` reproduce
 those controls. Exact bounded failure excerpts and receipt hashes are retained
 in ELECTION-FEE-EVIDENCE.md. A real two-source read on Epoch-6 found all four fee
@@ -48,3 +48,8 @@ wallets at about8.11TOS. This is an observation, not authorization to top up.
 
 A malformed non-object wallet manifest also writes INDETERMINATE; the full CLI
 regression covers arrays, strings, null and numeric inputs before any RPC call.
+
+Every ordinary observation exception, including truncated HTTP protocol replies and
+unexpected reader failures, writes INDETERMINATE/exit2 with its exception class.
+Filesystem failure to replace the report remains a failed service; consumers must
+check service failures and report TTL as described above.

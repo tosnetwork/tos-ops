@@ -95,6 +95,12 @@
       "before": "isinstance(wallets, dict)",
       "after": "True",
       "test": "test_cli_nonobject_manifest_replaces_health_with_unknown"
+    },
+    {
+      "name": "read_failure_class",
+      "before": "except Exception as error:",
+      "after": "except (ValueError, KeyError, TypeError, OSError) as error:",
+      "test": "test_protocol_or_unexpected_read_failure_replaces_previous_health"
     }
   ]
 }
