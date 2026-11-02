@@ -199,4 +199,3 @@ AssertionError: Refused not raised
 Ran 1 test in 0.007s
 FAILED (failures=1)
 ```
-
