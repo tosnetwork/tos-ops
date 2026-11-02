@@ -13,6 +13,12 @@ from pathlib import Path
 
 MUTATIONS = [
     (
+        "election-row-shape",
+        "len(stack[0]) == 2",
+        "True",
+        "test_extra_or_malformed_getter_fields_refuse",
+    ),
+    (
         "legacy-fixed-since",
         'since, until = current["since"], current["until"]',
         'since, until = current["since"], current["until"]\n    require(since == 1793541840, "legacy pinned term")',
@@ -135,7 +141,7 @@ def main():
                     or b"ERROR" in raw
                 ):
                     raise RuntimeError("intended runtime assertion did not fail: " + name)
-            elif result.returncode != 0 or b"Ran 15 tests" not in raw or b"\nOK\n" not in raw:
+            elif result.returncode != 0 or b"Ran 17 tests" not in raw or b"\nOK\n" not in raw:
                 raise RuntimeError("complete baseline/restoration failed: " + name)
             rows.append(
                 {

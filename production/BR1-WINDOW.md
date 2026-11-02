@@ -42,8 +42,8 @@ proof collector. Its fixed3sources,64proof-packet/64MiB-per-chain limits,512link
 Elector getters fixed at2 with8192-byte/10-second caps. Global Cell caches clear
 on completion and the sealed helper closes on failures as well as success.
 
-Validation:15tests including a real public config proof and full root/file ID
-negative;16guard removals each fail their designated runtime assertion, with a
+Validation:17tests including a real public config proof and full root/file ID
+negative;17guard removals each fail their designated runtime assertion, with a
 complete green baseline/restoration. The test metadata fixture is explicitly
 synthetic and is not a signature claim. The retained config fixture contains only
 public consensus parameters/proofs, not transaction or custody data. Reproduce:
@@ -64,6 +64,8 @@ Upstream comparison: this TOS public-testnet operator timing/proof orchestration
 is absent at fetched ton master857b8a57a178e6ae0fe7fa86e7d81c5233de8560.
 No inherited validator, consensus or contract code changes.
 
-A third live probe at09:41:27UTC, after settlement, observed a quiet term and returned0; its proved-header expiry was09:41:45UTC. This is a retained historical observation, already expired, not a reusable authorization. All three stages (handover-margin wait, post-handover settlement wait, then quiet observation) used only reads.
+A final live probe at09:51:56UTC, after settlement, observed a quiet term and returned0; its proved-header expiry was09:52:14UTC. This is a retained historical observation, already expired, not a reusable authorization. All three stages (handover-margin wait, post-handover settlement wait, then quiet observation) used only reads.
 
 An additional runtime regression control restores the old fixed-since1793541840 guard; the dynamic-term test then fails its intended assertion. This directly exercises the original stale-window assumption rather than only testing the new margins.
+
+The final getter decoder requires one two-field numeric stack row and integer exit0. Extra row fields, non-list stacks and boolean/float exit codes refuse. Its row-shape guard has a runtime removal control; the final live quiet probe reran after this decoder change. Earlier timing probes retain their original module-source hashes in the index.

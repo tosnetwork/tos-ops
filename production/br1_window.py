@@ -154,7 +154,12 @@ def election(rpc, path):
     )
     stack = value["stack"]
     require(
-        len(stack) == 1 and stack[0][0] == "num" and type(stack[0][1]) is str,
+        type(stack) is list
+        and len(stack) == 1
+        and type(stack[0]) is list
+        and len(stack[0]) == 2
+        and stack[0][0] == "num"
+        and type(stack[0][1]) is str,
         "election stack",
     )
     return int(stack[0][1], 0)

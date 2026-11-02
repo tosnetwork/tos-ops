@@ -4,8 +4,10 @@ import base64
 import copy
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "production"))
 import br1_window as window
@@ -154,6 +156,44 @@ class RealConfig(unittest.TestCase):
             wrong[field] = base64.b64encode(bytes(32)).decode()
             with self.assertRaisesRegex(Refused, "differs from certified key"):
                 window.config(self.rpc, wrong, None)
+
+
+class ElectionGetter(unittest.TestCase):
+    def invoke(self, value):
+        raw = json.dumps(value).encode()
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def read(self, maximum):
+                return raw[:maximum]
+
+        class Opener:
+            def open(self, request, timeout):
+                if json.loads(request.data)["method"] != "runGetMethod":
+                    raise RuntimeError("not a read-only getter")
+                return Response()
+
+        with tempfile.TemporaryDirectory() as directory:
+            return window.election(
+                SimpleNamespace(url="http://127.0.0.1:48081/jsonRPC", opener=Opener()),
+                Path(directory) / "reply.json",
+            )
+
+    def test_single_numeric_getter_is_decoded(self):
+        self.assertEqual(self.invoke({"result": {"exit_code": 0, "stack": [["num", "0x0"]]}}), 0)
+
+    def test_extra_or_malformed_getter_fields_refuse(self):
+        for stack in ([["num", "0x0", "extra"]], [], [["num"]], ["num"], {"0": ["num", "0x0"]}):
+            with self.assertRaises(Refused):
+                self.invoke({"result": {"exit_code": 0, "stack": stack}})
+        for status in (False, 0.0):
+            with self.assertRaises(Refused):
+                self.invoke({"result": {"exit_code": status, "stack": [["num", "0x0"]]}})
 
 
 if __name__ == "__main__":
