@@ -21,7 +21,7 @@ WORKER_MODULES = {
     "audit.py",
     "formats.py",
 }
-CONTROL_GUARDS = 40
+CONTROL_GUARDS = 50
 CONTROL_TESTS = {
     "source-key-file-binding": "test_cached_key_file_hash_is_bound_before_verification",
     "expired-term-regression": "test_expired_schedule_passes_full_observer",
@@ -63,6 +63,16 @@ CONTROL_TESTS = {
     "qualification-extra-source-directory": "test_extra_source_directory_cannot_qualify",
     "launch-extra-worker-segment": "test_unlisted_worker_segment_refuses_before_worker",
     "launch-extra-source-directory": "test_extra_source_directory_refuses_before_worker",
+    "missing-certificate-classification": "test_known_missing_certificate_remains_unaccepted_and_explicit",
+    "unknown-rpc-remains-rejected": "test_unknown_rpc_errors_are_not_reclassified",
+    "result-not-hidden-by-error": "test_result_plus_error_cannot_hide_a_malformed_certificate",
+    "missing-envelope-canonical": "test_incomplete_unavailability_envelope_is_not_reclassified",
+    "bounded-timeout-retry": "test_timeout_then_success_reverifies_exact_bytes",
+    "timeout-exhaustion-bound": "test_timeout_exhaustion_is_refused_after_three_attempts",
+    "crypto-rejection-no-retry": "test_cryptographic_rejection_is_never_retried",
+    "missing-envelope-code-type": "test_float_error_code_is_not_canonical_missing_data",
+    "missing-envelope-retryable-type": "test_numeric_retryable_is_not_canonical_missing_data",
+    "missing-data-target-binding": "test_wrong_routed_target_is_rejected_before_missing_certificate",
 }
 
 

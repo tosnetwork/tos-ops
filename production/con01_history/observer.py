@@ -144,8 +144,28 @@ def routed_proof(data):
     return links[0], dst, virtual(dest)
 
 
+class CertificateUnavailable(ValueError):
+    """An explicit missing RPC response supplies no certificate to reject."""
+
+
+MISSING_CERTIFICATE = {
+    "code": -32004,
+    "message": "BLOCK_UNAVAILABLE",
+    "data": {"schema_version": 1, "reason": "BLOCK_UNAVAILABLE", "retryable": False},
+}
+
+
 def cert_from_sigs(raw):
     r = json.loads(raw)
+    error = r.get("error")
+    if (
+        "result" not in r
+        and error == MISSING_CERTIFICATE
+        and type(error["code"]) is int
+        and type(error["data"]["schema_version"]) is int
+        and error["data"]["retryable"] is False
+    ):
+        raise CertificateUnavailable("BLOCK_UNAVAILABLE")
     assert "result" in r, "signature set error " + json.dumps(r.get("error"))[:200]
     r = r["result"]
     return dict(
@@ -249,6 +269,9 @@ class StageA:
                 if str(e) != "expected forward-only proof":
                     raise
                 fwd, dst, dest = routed_proof(raw)
+                assert identity(dst) == identity(h["id"]), (
+                    "routed proof target differs from header id"
+                )
                 sigs = rec.get("sigs") or (sigs_override or {}).get(rec["seqno"])
                 if not sigs:
                     raise AssertionError(UNSUPPORTED)
@@ -300,6 +323,12 @@ class StageA:
             )
             if pk == 0 and not self.st.get("genesis_set"):
                 self.st["genesis_set"] = set_summary(params, 34)
+        except CertificateUnavailable as e:
+            res.update(
+                unsupported=True,
+                availability=str(e),
+                reason="certificate unavailable: " + str(e),
+            )
         except AssertionError as e:
             res["reason"] = str(e) or "assertion"
         except Exception as e:

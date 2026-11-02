@@ -22,5 +22,9 @@
   "expired-current-set.tl": {
     "bytes": 15204,
     "sha256": "99d4a705a247ca155d9220664ec3e2070bc5c19beb28f35b953be3069a8736f2"
+  },
+  "unavailable-signatures.json": {
+    "bytes": 26332,
+    "sha256": "badc928de1b209c0b6487356c7ef8ae4c7dfa022cfe92091befcfd39634b29d8"
   }
 }

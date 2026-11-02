@@ -231,6 +231,77 @@ LAUNCH_MUTATIONS.extend(
         ),
     ]
 )
+MUTATIONS.extend(
+    [
+        (
+            "missing-certificate-classification",
+            'raise CertificateUnavailable("BLOCK_UNAVAILABLE")',
+            'raise AssertionError("BLOCK_UNAVAILABLE")',
+            "test_known_missing_certificate_remains_unaccepted_and_explicit",
+        ),
+        (
+            "unknown-rpc-remains-rejected",
+            "error == MISSING_CERTIFICATE",
+            "True",
+            "test_unknown_rpc_errors_are_not_reclassified",
+        ),
+        (
+            "result-not-hidden-by-error",
+            '"result" not in r',
+            "True",
+            "test_result_plus_error_cannot_hide_a_malformed_certificate",
+        ),
+        (
+            "missing-envelope-canonical",
+            'and type(error["data"]["schema_version"]) is int',
+            "",
+            "test_incomplete_unavailability_envelope_is_not_reclassified",
+        ),
+    ]
+)
+MUTATIONS.extend(
+    [
+        (
+            "missing-envelope-code-type",
+            'and type(error["code"]) is int',
+            "",
+            "test_float_error_code_is_not_canonical_missing_data",
+        ),
+        (
+            "missing-envelope-retryable-type",
+            'and error["data"]["retryable"] is False',
+            "",
+            "test_numeric_retryable_is_not_canonical_missing_data",
+        ),
+        (
+            "missing-data-target-binding",
+            'assert identity(dst) == identity(h["id"]), (\n                    "routed proof target differs from header id"\n                )',
+            "pass",
+            "test_wrong_routed_target_is_rejected_before_missing_certificate",
+        ),
+    ]
+)
+CERTIFICATE_MUTATIONS = [
+    (
+        "bounded-timeout-retry",
+        "continue",
+        "return",
+        "test_timeout_then_success_reverifies_exact_bytes",
+    ),
+    (
+        "timeout-exhaustion-bound",
+        "attempt < 2",
+        "attempt < 1",
+        "test_timeout_exhaustion_is_refused_after_three_attempts",
+    ),
+    (
+        "crypto-rejection-no-retry",
+        'require(result.returncode == 0, "ML-DSA-44 verification rejected")',
+        "pass",
+        "test_cryptographic_rejection_is_never_retried",
+    ),
+]
+
 FROZEN_MUTATIONS = [
     (
         "complete-segment-digests",
@@ -368,6 +439,14 @@ def main():
             frozen.write_text(original_frozen.replace(before, after))
             run(name, selected, red=True)
             frozen.write_text(original_frozen)
+        certificate = private / "production/con01_history/certificate.py"
+        original_certificate = certificate.read_text()
+        for name, before, after, selected in CERTIFICATE_MUTATIONS:
+            if original_certificate.count(before) != 1:
+                raise RuntimeError(f"{name}: certificate anchor changed")
+            certificate.write_text(original_certificate.replace(before, after))
+            run(name, selected, red=True)
+            certificate.write_text(original_certificate)
         run("restored")
     files = {
         str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
