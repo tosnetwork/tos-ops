@@ -13,7 +13,48 @@ from . import observer
 from .certificate import require
 
 
-CONTROL_GUARDS = 18
+WORKER_MODULES = {
+    "__init__.py",
+    "observer.py",
+    "_replay.py",
+    "certificate.py",
+    "audit.py",
+    "formats.py",
+}
+CONTROL_GUARDS = 31
+CONTROL_TESTS = {
+    "source-key-file-binding": "test_cached_key_file_hash_is_bound_before_verification",
+    "expired-term-regression": "test_expired_schedule_passes_full_observer",
+    "rejected": "test_rejection_is_not_overwritten_by_later_success",
+    "stream-integrity": "test_integrity_break",
+    "uncertified-key": "test_uncertified_source_key_cannot_enter_trust_chain",
+    "third-boundary-certificate": "test_boundary_requires_three_certificates",
+    "two-window-certificates": "test_window_requires_two_sources",
+    "three-full-ids": "test_full_ids_require_three_sources",
+    "shard-inclusion": "test_shard_inclusion_requires_two_sources",
+    "live-observation": "test_missing_live_heads",
+    "outgoing-boundary-set": "test_outgoing_boundary_set_must_match",
+    "incoming-next-set": "test_incoming_set_must_certify_following_block",
+    "incomplete-replay": "test_incomplete_replay_cannot_qualify",
+    "replay-revision": "test_changed_source_cannot_qualify",
+    "control-revision": "test_changed_control_revision_cannot_qualify",
+    "all-controls-required": "test_missing_controls_cannot_qualify",
+    "snapshot-size": "test_frozen_size_change_cannot_qualify",
+    "three-source-inventory": "test_missing_third_source_cannot_qualify",
+    "complete-control-inventory": "test_incomplete_control_inventory_cannot_qualify",
+    "complete-worker-inventory": "test_incomplete_replay_inventory_cannot_qualify",
+    "unique-guard-identities": "test_duplicate_guard_identities_cannot_qualify",
+    "frozen-input-identities": "test_changed_frozen_inputs_cannot_qualify",
+    "launch-approved-config": "test_changed_approved_config_refuses_before_worker",
+    "launch-frozen-inputs": "test_changed_frozen_input_refuses_before_worker",
+    "launch-verifier": "test_changed_verifier_refuses_before_worker",
+    "launch-source": "test_changed_source_refuses_before_worker",
+    "launch-input-inventory": "test_incomplete_input_inventory_refuses_before_worker",
+    "launch-worker-inventory": "test_incomplete_worker_inventory_refuses_before_worker",
+    "launch-worker-revision": "test_changed_worker_revision_refuses_before_worker",
+    "legacy-worker-alias": "test_historical_worker_name_is_exact_byte_alias",
+    "launch-legacy-worker-alias": "test_historical_worker_name_resumes_exact_same_bytes",
+}
 
 
 def sha(path):
@@ -50,6 +91,29 @@ def main():
         all(row["exit"] == 1 and row["test"] for row in rows[1:-1]),
         "runtime guard removals required",
     )
+    require(
+        len({(row["name"], row["test"]) for row in rows[1:-1]}) == CONTROL_GUARDS
+        and {(row["name"], row["test"]) for row in rows[1:-1]}
+        == set(CONTROL_TESTS.items()),
+        "exact unique guard identities required",
+    )
+    expected_files = {
+        str(path.relative_to(root)) for path in Path(__file__).parent.glob("*.py")
+    }
+    tests = root / "testnet/tests"
+    expected_files.update(
+        str(path.relative_to(root)) for path in tests.glob("test_con01*.py")
+    )
+    expected_files.update(
+        str(path.relative_to(root))
+        for path in (tests / "data/con01-history").glob("*")
+        if path.is_file()
+    )
+    expected_files.add("testnet/tests/con01_rejudge_controls.py")
+    require(
+        set(control["files"]) == expected_files,
+        "complete control revision inventory required",
+    )
     for name, digest in control["files"].items():
         path = root / name
         require(
@@ -58,9 +122,20 @@ def main():
         )
         require(sha(path) == digest, "control revision changed: " + name)
     provenance = json.loads((args.replay / "REPLAY-PROVENANCE.json").read_bytes())
+    # The already-running frozen worker was named rejudge.py before the safe
+    # frontend was introduced. _replay.py preserves those exact source bytes.
+    worker_files = {
+        name: ("_replay.py" if name == "rejudge.py" else name)
+        for name in provenance["source_sha256"]
+    }
+    require(
+        len(worker_files) == len(WORKER_MODULES)
+        and set(worker_files.values()) == WORKER_MODULES,
+        "complete worker revision inventory required",
+    )
     for name, digest in provenance["source_sha256"].items():
         require(
-            sha(Path(__file__).with_name(name)) == digest,
+            sha(Path(__file__).with_name(worker_files[name])) == digest,
             "replay source revision changed: " + name,
         )
     require(
@@ -85,6 +160,23 @@ def main():
             state["offsets"].get(segment["path"]) == segment["bytes"],
             "incomplete frozen replay: " + segment["path"],
         )
+    pins = json.loads((args.replay / "REPLAY-INPUTS.json").read_bytes())
+    require(
+        set(pins["files"])
+        == {
+            "APPROVED-CONFIG.json",
+            "REPLAY-CONFIG.json",
+            "SNAPSHOT.json",
+            "SEALS.jsonl",
+        },
+        "complete frozen input inventory required",
+    )
+    require(
+        all(
+            sha(args.replay / name) == digest for name, digest in pins["files"].items()
+        ),
+        "frozen replay input identity changed",
+    )
     cfg = json.loads((args.replay / "REPLAY-CONFIG.json").read_bytes())
     cfg["_genesis_set"] = state.get("genesis_set")
     verdict = observer.judge(observer.load_results(args.replay), cfg)
@@ -92,6 +184,8 @@ def main():
     if verdict["seals"]["mismatches"]:
         verdict["inconclusive"].append("sealed segment hash mismatch")
         verdict["verdict"] = "INCONCLUSIVE" if verdict["verdict"] != "FAIL" else "FAIL"
+    verdict["worker_source_files"] = worker_files
+    verdict["frozen_inputs_sha256"] = sha(args.replay / "REPLAY-INPUTS.json")
     verdict["controls_sha256"] = sha(args.controls)
     verdict["replay_provenance_sha256"] = sha(args.replay / "REPLAY-PROVENANCE.json")
     verdict["verified_result_files"] = {

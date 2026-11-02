@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -75,7 +76,7 @@ QUALIFICATION_MUTATIONS = [
     ),
     (
         "replay-revision",
-        "sha(Path(__file__).with_name(name)) == digest",
+        "sha(Path(__file__).with_name(worker_files[name])) == digest",
         "True",
         "test_changed_source_cannot_qualify",
     ),
@@ -105,6 +106,98 @@ QUALIFICATION_MUTATIONS = [
     ),
 ]
 
+QUALIFICATION_MUTATIONS.extend(
+    [
+        (
+            "complete-control-inventory",
+            'set(control["files"]) == expected_files',
+            "True",
+            "test_incomplete_control_inventory_cannot_qualify",
+        ),
+        (
+            "complete-worker-inventory",
+            "len(worker_files) == len(WORKER_MODULES)\n        and set(worker_files.values()) == WORKER_MODULES",
+            "True",
+            "test_incomplete_replay_inventory_cannot_qualify",
+        ),
+        (
+            "unique-guard-identities",
+            'len({(row["name"], row["test"]) for row in rows[1:-1]}) == CONTROL_GUARDS\n        and {(row["name"], row["test"]) for row in rows[1:-1]}\n        == set(CONTROL_TESTS.items())',
+            "True",
+            "test_duplicate_guard_identities_cannot_qualify",
+        ),
+        (
+            "frozen-input-identities",
+            "sha(args.replay / name) == digest",
+            "True",
+            "test_changed_frozen_inputs_cannot_qualify",
+        ),
+    ]
+)
+
+
+LAUNCH_MUTATIONS = [
+    (
+        "launch-approved-config",
+        "sha(approved) == sha(args.config)",
+        "True",
+        "test_changed_approved_config_refuses_before_worker",
+    ),
+    (
+        "launch-frozen-inputs",
+        "sha(args.out / name) == digest",
+        "True",
+        "test_changed_frozen_input_refuses_before_worker",
+    ),
+    (
+        "launch-verifier",
+        'pins["verifier_sha256"] == args.verifier_sha256',
+        "True",
+        "test_changed_verifier_refuses_before_worker",
+    ),
+    (
+        "launch-source",
+        'Path(inventory["original"]).resolve() == args.source.resolve()',
+        "True",
+        "test_changed_source_refuses_before_worker",
+    ),
+    (
+        "launch-input-inventory",
+        'set(pins["files"]) == INPUT_FILES',
+        "True",
+        "test_incomplete_input_inventory_refuses_before_worker",
+    ),
+    (
+        "launch-worker-inventory",
+        "len(worker_files) == len(WORKER_MODULES)\n        and set(worker_files.values()) == WORKER_MODULES",
+        "True",
+        "test_incomplete_worker_inventory_refuses_before_worker",
+    ),
+    (
+        "launch-worker-revision",
+        "sha(package / worker_files[name]) == digest",
+        "True",
+        "test_changed_worker_revision_refuses_before_worker",
+    ),
+]
+
+QUALIFICATION_MUTATIONS.append(
+    (
+        "legacy-worker-alias",
+        '("_replay.py" if name == "rejudge.py" else name)',
+        "name",
+        "test_historical_worker_name_is_exact_byte_alias",
+    )
+)
+LAUNCH_MUTATIONS.append(
+    (
+        "launch-legacy-worker-alias",
+        '("_replay.py" if name == "rejudge.py" else name)',
+        "name",
+        "test_historical_worker_name_resumes_exact_same_bytes",
+    )
+)
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -127,6 +220,7 @@ def main():
         for source in test.parent.glob("test_con01*.py"):
             shutil.copyfile(source, tests / source.name)
         shutil.copytree(test.parent / "data", tests / "data")
+        shutil.copyfile(Path(__file__), tests / Path(__file__).name)
         observer = private / "production/con01_history/observer.py"
         original = observer.read_text()
 
@@ -156,7 +250,7 @@ def main():
                 if (
                     not result.returncode
                     or b"AssertionError" not in raw
-                    or b"FAILED (failures=1)" not in raw
+                    or not re.search(rb"FAILED \(failures=[1-9][0-9]*\)", raw)
                     or b"ERROR" in raw
                 ):
                     raise RuntimeError(f"{name}: intended runtime assertion did not fail")
@@ -187,6 +281,14 @@ def main():
             qualification.write_text(original_qualification.replace(before, after))
             run(name, selected, red=True)
             qualification.write_text(original_qualification)
+        launcher = private / "production/con01_history/launch.py"
+        original_launcher = launcher.read_text()
+        for name, before, after, selected in LAUNCH_MUTATIONS:
+            if original_launcher.count(before) != 1:
+                raise RuntimeError(f"{name}: launch anchor changed")
+            launcher.write_text(original_launcher.replace(before, after))
+            run(name, selected, red=True)
+            launcher.write_text(original_launcher)
         run("restored")
     files = {
         str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()

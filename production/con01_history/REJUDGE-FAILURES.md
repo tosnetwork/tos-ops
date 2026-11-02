@@ -1,201 +1,354 @@
 # Rejudge sensitivity receipts
 
-The baseline and restored39tests pass;18 guard removals fail in intended test bodies. Real ML-DSA certificate tests use the retained public expired-schedule packet and the pinned verifier. Judge/qualification metadata fixtures are explicitly synthetic and are not cryptographic or live observation evidence. Raw output is retained through2027-02-01 UTC on authorized toserver via existing SSH access; REJUDGE-EVIDENCE.json records sizes/digests and code hashes.
+Baseline/restored53tests PASS;31 guard removals fail in intended runtime test bodies. Real certificates use retained public data and the pinned verifier. Judge/qualification/launch fixtures are explicitly synthetic metadata, not live cryptographic evidence. Raw output retained through2027-02-01UTC via existing authorized toserver SSH; JSON index binds code/runner/fixture hashes and raw sizes/digests.
 
 ## source-key-file-binding
 
-Exit 1; SHA-256 `3dd6ff4557f4cd0967b88b8f46518618451d73dae0ef3540737d1cef60cc3f31`.
+Exit 1; SHA-256 `a0263f3496fca61525f27be3aa9734ef32c1b9b49baf84a8289dd71dc625a388`.
 
 ```text
 FAIL: test_cached_key_file_hash_is_bound_before_verification (test_con01_observer_crypto.ObserverCrypto)
-AssertionError: True is not false : {'t': 'blk', 'src': 'node1', 'seq': 264347, 'utc': 1793404801.1, 'mode': None, 'ok': True, 'rid': ['jKuDpY+l/44DBpzm1JSHkptDBQJJ1Ux3KJK75kOb05c=', 'L8189znCk959aKJOBKKY21C8+ZjZn3AhSX9BGh2Vt34='], 'prevkey': 246589, 'gu_claim': 1793404801, 'key_claim': False, 'path': 'forward', 'cid': ['jKuDpY+l/44DBpzm1JSHkptDBQJJ1Ux3KJK75kOb05c=', 'L8189znCk959aKJOBKKY21C8+ZjZn3AhSX9BGh2Vt34='], 'parent': ['fPm39q4XcZorbKHVIIom4TrOlnaRlZZyy7uIu6UsNeo=', 'AtPwcPsYY34THc56PIOrbXusiLDzvJQYVKNmSs7aGeA='], 'parent_seq': 264346, 'gu': 1793404801, 'key': False, 'cc': 451, 'signers': 3, 'w': 864691128455135232, 'tw': 1152921504606846976, 'set': 'bd0052f670f782def5e1f0506b0b938fb6
-Ran 1 test in 0.107s
+AssertionError: True is not false : {'t': 'blk', 'src': 'node1', 'seq': 264347, 'utc': 1793404801.1, 'mode': None, 'ok': True, 'rid': ['jKuDpY+l/44DBpzm1JSHkptDBQJJ1Ux3KJK75kOb05c=', 'L8189znCk959aKJOBKKY21C8+ZjZn3AhSX9BGh2Vt34='], 'prevkey': 246589, 'gu_claim': 1793404801, 'key_claim': False, 'path': 'forward', 'cid': ['jKuDpY+l/44DBpzm1JSHkptDBQJJ1Ux3KJK75kOb05c=', 'L8189znCk959aKJOBKKY21C8+ZjZn3AhSX9BGh2Vt34='], 'parent': ['fPm39q4XcZorbKHVIIom4TrOlnaRlZZyy7uIu6UsNeo=', 'AtPwcPsYY34THc56PIOrbXusiLDzvJQYVKNmSs7aGeA='], 'parent_seq': 264346, 'gu': 1793404801, 'key': False, 'cc': 451, 'signers': 3, 'w': 864691128455135232, 'tw': 1152921504606
+Ran 1 test in 0.101s
 FAILED (failures=1)
 ```
 
 ## expired-term-regression
 
-Exit 1; SHA-256 `113a754b61e64163a4120f3954b125b9fd100351ca7a4d8e6c21e58476a6b888`.
+Exit 1; SHA-256 `d55de53005c87472ffb0ea050bfa4657c95768d55567519218fbfab39aec4d4a`.
 
 ```text
 FAIL: test_expired_schedule_passes_full_observer (test_con01_observer_crypto.ObserverCrypto)
 AssertionError: False is not true : {'t': 'blk', 'src': 'node1', 'seq': 264347, 'utc': 1793404801.1, 'mode': None, 'ok': False, 'rid': ['jKuDpY+l/44DBpzm1JSHkptDBQJJ1Ux3KJK75kOb05c=', 'L8189znCk959aKJOBKKY21C8+ZjZn3AhSX9BGh2Vt34='], 'prevkey': 246589, 'gu_claim': 1793404801, 'key_claim': False, 'path': 'forward', 'reason': 'term outside validity interval'}
-Ran 1 test in 0.052s
+Ran 1 test in 0.050s
 FAILED (failures=1)
 ```
 
 ## rejected
 
-Exit 1; SHA-256 `192abe3a8d069cd32d33cd143a4f6cfa1355ceac35d9b33bd89c982f94c11551`.
+Exit 1; SHA-256 `661bd5a96e7cf0de8ef8621a56777dc00ba39af75216360eb17071df12c71b73`.
 
 ```text
 FAIL: test_rejection_is_not_overwritten_by_later_success (test_con01_rejudge.JudgeControls)
-AssertionError: 'PASS' == 'PASS' : {'bounds': {'window_s': 1, 'max_block_gap_s': 10, 'min_rate_bps': 1.5, 'live_lag_s': 30, 'min_live_fraction': 0.99, 'max_head_record_gap_s': 30, 'max_head_staleness_s': 15, 'min_sources_cert': 2, 'all_sources': 3, 'min_handovers': 1}, 'sources': ['node1', 'node3', 'node5'], 'fail': [], 'inconclusive': [], 'notes': [], 'self_conflicts': [], 'unsupported_shape': [], 'unsupported_count': 0, 'integrity': {'breaks': [], 'torn': []}, 'rejected': [{'src': 'node1', 'seq': 1, 'reason': 'invalid signature'}], 'rejected_count': 1, 'conflicts': [], 'parent_breaks': [], 'continuously_verified_runs': [{'lo': 1, 'hi': 8, 'blocks': 8}], 'coverage': {'lo': 1, 'hi': 8, 'cert
+AssertionError: 'PASS' == 'PASS' : {'bounds': {'window_s': 1, 'max_block_gap_s': 10, 'min_rate_bps': 1.5, 'live_lag_s': 30, 'min_live_fraction': 0.99, 'max_head_record_gap_s': 30, 'max_head_staleness_s': 15, 'min_sources_cert': 2, 'all_sources': 3, 'min_handovers': 1}, 'sources': ['node1', 'node3', 'node5'], 'fail': [], 'inconclusive': [], 'notes': [], 'self_conflicts': [], 'unsupported_shape': [], 'unsupported_count': 0, 'integrity': {'breaks': [], 'torn': []}, 'rejected': [{'src': 'node1', 'seq': 1, 'reason': 'invalid signature'}], 'rejected_count': 1, 'conflicts': [], 'parent_breaks': [], 'continuously_verified_runs': [{'lo': 1, 'hi': 8, '
 Ran 1 test in 0.002s
 FAILED (failures=1)
 ```
 
 ## stream-integrity
 
-Exit 1; SHA-256 `c185ee53bf91f72d3145ab4c24b0de73b2106b7a42fa537aaedb2e86362e9b23`.
+Exit 1; SHA-256 `6ba935c8efeb795222b7478412588ed5b264264ac26f3044aec05670ab0d03b2`.
 
 ```text
 FAIL: test_integrity_break (test_con01_rejudge.JudgeControls)
-AssertionError: 'PASS' == 'PASS' : {'bounds': {'window_s': 1, 'max_block_gap_s': 10, 'min_rate_bps': 1.5, 'live_lag_s': 30, 'min_live_fraction': 0.99, 'max_head_record_gap_s': 30, 'max_head_staleness_s': 15, 'min_sources_cert': 2, 'all_sources': 3, 'min_handovers': 1}, 'sources': ['node1', 'node3', 'node5'], 'fail': [], 'inconclusive': [], 'notes': [], 'self_conflicts': [], 'unsupported_shape': [], 'unsupported_count': 0, 'integrity': {'breaks': [{'t': 'chain', 'src': 'node1', 'ok': False}], 'torn': []}, 'rejected': [], 'rejected_count': 0, 'conflicts': [], 'parent_breaks': [], 'continuously_verified_runs': [{'lo': 1, 'hi': 8, 'blocks': 8}], 'coverage': {'lo': 1, 'hi': 8, 'certified': 8, 'un
+AssertionError: 'PASS' == 'PASS' : {'bounds': {'window_s': 1, 'max_block_gap_s': 10, 'min_rate_bps': 1.5, 'live_lag_s': 30, 'min_live_fraction': 0.99, 'max_head_record_gap_s': 30, 'max_head_staleness_s': 15, 'min_sources_cert': 2, 'all_sources': 3, 'min_handovers': 1}, 'sources': ['node1', 'node3', 'node5'], 'fail': [], 'inconclusive': [], 'notes': [], 'self_conflicts': [], 'unsupported_shape': [], 'unsupported_count': 0, 'integrity': {'breaks': [{'t': 'chain', 'src': 'node1', 'ok': False}], 'torn': []}, 'rejected': [], 'rejected_count': 0, 'conflicts': [], 'parent_breaks': [], 'continuously_verified_runs': [{'lo': 1, 'hi': 8, 'blocks': 8}], 
 Ran 1 test in 0.002s
 FAILED (failures=1)
 ```
 
 ## uncertified-key
 
-Exit 1; SHA-256 `3795f5816e22e8c4022828b2dc6e7015732235eb6ea09c5eb0507affb7caf57b`.
+Exit 1; SHA-256 `c3a22fd153b15969244c6763813a7758b3cd0d450afbf304dbee10e3004d5a35`.
 
 ```text
 FAIL: test_uncertified_source_key_cannot_enter_trust_chain (test_con01_rejudge.JudgeControls)
-AssertionError: 'PASS' == 'PASS' : {'bounds': {'window_s': 1, 'max_block_gap_s': 10, 'min_rate_bps': 1.5, 'live_lag_s': 30, 'min_live_fraction': 0.99, 'max_head_record_gap_s': 30, 'max_head_staleness_s': 15, 'min_sources_cert': 2, 'all_sources': 3, 'min_handovers': 1}, 'sources': ['node1', 'node3', 'node5'], 'fail': [], 'inconclusive': [], 'notes': [], 'self_conflicts': [], 'unsupported_shape': [], 'unsupported_count': 0, 'integrity': {'breaks': [], 'torn': []}, 'rejected': [], 'rejected_count': 0, 'conflicts': [], 'parent_breaks': [], 'continuously_verified_runs': [{'lo': 1, 'hi': 8, 'blocks': 8}], 'coverage': {'lo': 1, 'hi': 8, 'certified': 8, 'uncovered': 0, 'uncovered_sample': [], 'unexp
+AssertionError: 'PASS' == 'PASS' : {'bounds': {'window_s': 1, 'max_block_gap_s': 10, 'min_rate_bps': 1.5, 'live_lag_s': 30, 'min_live_fraction': 0.99, 'max_head_record_gap_s': 30, 'max_head_staleness_s': 15, 'min_sources_cert': 2, 'all_sources': 3, 'min_handovers': 1}, 'sources': ['node1', 'node3', 'node5'], 'fail': [], 'inconclusive': [], 'notes': [], 'self_conflicts': [], 'unsupported_shape': [], 'unsupported_count': 0, 'integrity': {'breaks': [], 'torn': []}, 'rejected': [], 'rejected_count': 0, 'conflicts': [], 'parent_breaks': [], 'continuously_verified_runs': [{'lo': 1, 'hi': 8, 'blocks': 8}], 'coverage': {'lo': 1, 'hi': 8, 'certified':
 Ran 1 test in 0.002s
 FAILED (failures=1)
 ```
 
 ## third-boundary-certificate
 
-Exit 1; SHA-256 `ae6876680f2f47c693d056d03db024330d5fe237190724da11c326d63f94760a`.
+Exit 1; SHA-256 `c86ecab068e4dc390a738872fa3b4ac881cf1dfa1fdbdf65e4cbf698da36f86a`.
 
 ```text
 FAIL: test_boundary_requires_three_certificates (test_con01_rejudge.JudgeControls)
-AssertionError: 'PASS' == 'PASS' : {'bounds': {'window_s': 1, 'max_block_gap_s': 10, 'min_rate_bps': 1.5, 'live_lag_s': 30, 'min_live_fraction': 0.99, 'max_head_record_gap_s': 30, 'max_head_staleness_s': 15, 'min_sources_cert': 2, 'all_sources': 3, 'min_handovers': 1}, 'sources': ['node1', 'node3', 'node5'], 'fail': [], 'inconclusive': [], 'notes': [], 'self_conflicts': [], 'unsupported_shape': [{'src': 'node5', 'seq': 4}], 'unsupported_count': 1, 'integrity': {'breaks': [], 'torn': []}, 'rejected': [], 'rejected_count': 0, 'conflicts': [], 'parent_breaks': [], 'continuously_verified_runs': [{'lo': 1, 'hi': 8, 'blocks': 8}], 'coverage': {'lo': 1, 'hi': 8, 'certified': 8, 'uncovered': 0, 'unc
+AssertionError: 'PASS' == 'PASS' : {'bounds': {'window_s': 1, 'max_block_gap_s': 10, 'min_rate_bps': 1.5, 'live_lag_s': 30, 'min_live_fraction': 0.99, 'max_head_record_gap_s': 30, 'max_head_staleness_s': 15, 'min_sources_cert': 2, 'all_sources': 3, 'min_handovers': 1}, 'sources': ['node1', 'node3', 'node5'], 'fail': [], 'inconclusive': [], 'notes': [], 'self_conflicts': [], 'unsupported_shape': [{'src': 'node5', 'seq': 4}], 'unsupported_count': 1, 'integrity': {'breaks': [], 'torn': []}, 'rejected': [], 'rejected_count': 0, 'conflicts': [], 'parent_breaks': [], 'continuously_verified_runs': [{'lo': 1, 'hi': 8, 'blocks': 8}], 'coverage': {'lo'
 Ran 1 test in 0.002s
 FAILED (failures=1)
 ```
 
 ## two-window-certificates
 
-Exit 1; SHA-256 `08b8559ec1bb0b2dd5ad5ab751cb52ca8de5ae15925e4c33eccda3679c71c9c2`.
+Exit 1; SHA-256 `06a9c189f396e249efb08fcecd56efdcc8c0e221bed3164c23544456b21eb857`.
 
 ```text
 FAIL: test_window_requires_two_sources (test_con01_rejudge.JudgeControls)
-AssertionError: 'PASS' == 'PASS' : {'bounds': {'window_s': 1, 'max_block_gap_s': 10, 'min_rate_bps': 1.5, 'live_lag_s': 30, 'min_live_fraction': 0.8, 'max_head_record_gap_s': 30, 'max_head_staleness_s': 15, 'min_sources_cert': 2, 'all_sources': 3, 'min_handovers': 1}, 'sources': ['node1', 'node3', 'node5'], 'fail': [], 'inconclusive': [], 'notes': [], 'self_conflicts': [], 'unsupported_shape': [{'src': 'node3', 'seq': 2}, {'src': 'node5', 'seq': 2}], 'unsupported_count': 2, 'integrity': {'breaks': [], 'torn': []}, 'rejected': [], 'rejected_count': 0, 'conflicts': [], 'parent_breaks': [], 'continuously_verified_runs': [{'lo': 1, 'hi': 8, 'blocks': 8}], 'coverage': {'lo': 1, 'hi': 8, 'certifie
+AssertionError: 'PASS' == 'PASS' : {'bounds': {'window_s': 1, 'max_block_gap_s': 10, 'min_rate_bps': 1.5, 'live_lag_s': 30, 'min_live_fraction': 0.8, 'max_head_record_gap_s': 30, 'max_head_staleness_s': 15, 'min_sources_cert': 2, 'all_sources': 3, 'min_handovers': 1}, 'sources': ['node1', 'node3', 'node5'], 'fail': [], 'inconclusive': [], 'notes': [], 'self_conflicts': [], 'unsupported_shape': [{'src': 'node3', 'seq': 2}, {'src': 'node5', 'seq': 2}], 'unsupported_count': 2, 'integrity': {'breaks': [], 'torn': []}, 'rejected': [], 'rejected_count': 0, 'conflicts': [], 'parent_breaks': [], 'continuously_verified_runs': [{'lo': 1, 'hi': 8, 'bloc
 Ran 1 test in 0.002s
 FAILED (failures=1)
 ```
 
 ## three-full-ids
 
-Exit 1; SHA-256 `dce2ed99aa184a8d120e9807ad43f6034df3dab3a97516ead1d8be0622422ee6`.
+Exit 1; SHA-256 `d9672eee1f6f065ebce656d8305627f8258e5fa54d214b12bed1208c3c31f0a7`.
 
 ```text
 FAIL: test_full_ids_require_three_sources (test_con01_rejudge.JudgeControls)
-AssertionError: 'PASS' == 'PASS' : {'bounds': {'window_s': 1, 'max_block_gap_s': 10, 'min_rate_bps': 1.5, 'live_lag_s': 30, 'min_live_fraction': 0.99, 'max_head_record_gap_s': 30, 'max_head_staleness_s': 15, 'min_sources_cert': 2, 'all_sources': 3, 'min_handovers': 1}, 'sources': ['node1', 'node3', 'node5'], 'fail': [], 'inconclusive': [], 'notes': [], 'self_conflicts': [], 'unsupported_shape': [], 'unsupported_count': 0, 'integrity': {'breaks': [], 'torn': []}, 'rejected': [], 'rejected_count': 0, 'conflicts': [], 'parent_breaks': [], 'continuously_verified_runs': [{'lo': 1, 'hi': 8, 'blocks': 8}], 'coverage': {'lo': 1, 'hi': 8, 'certified': 8, 'uncovered': 0, 'uncovered_sample': [], 'unexp
+AssertionError: 'PASS' == 'PASS' : {'bounds': {'window_s': 1, 'max_block_gap_s': 10, 'min_rate_bps': 1.5, 'live_lag_s': 30, 'min_live_fraction': 0.99, 'max_head_record_gap_s': 30, 'max_head_staleness_s': 15, 'min_sources_cert': 2, 'all_sources': 3, 'min_handovers': 1}, 'sources': ['node1', 'node3', 'node5'], 'fail': [], 'inconclusive': [], 'notes': [], 'self_conflicts': [], 'unsupported_shape': [], 'unsupported_count': 0, 'integrity': {'breaks': [], 'torn': []}, 'rejected': [], 'rejected_count': 0, 'conflicts': [], 'parent_breaks': [], 'continuously_verified_runs': [{'lo': 1, 'hi': 8, 'blocks': 8}], 'coverage': {'lo': 1, 'hi': 8, 'certified':
 Ran 1 test in 0.002s
 FAILED (failures=1)
 ```
 
 ## shard-inclusion
 
-Exit 1; SHA-256 `1195cd4e2089672164f6fb730ba57426d1bd6e3d4407b0a9683cece92f91603c`.
+Exit 1; SHA-256 `b81e88b6d69ab581cf8e39dd90647a3f3accd7ce50aed2753008a3cdc398377f`.
 
 ```text
 FAIL: test_shard_inclusion_requires_two_sources (test_con01_rejudge.JudgeControls)
-AssertionError: 'PASS' == 'PASS' : {'bounds': {'window_s': 1, 'max_block_gap_s': 10, 'min_rate_bps': 1.5, 'live_lag_s': 30, 'min_live_fraction': 0.99, 'max_head_record_gap_s': 30, 'max_head_staleness_s': 15, 'min_sources_cert': 2, 'all_sources': 3, 'min_handovers': 1}, 'sources': ['node1', 'node3', 'node5'], 'fail': [], 'inconclusive': [], 'notes': [], 'self_conflicts': [], 'unsupported_shape': [], 'unsupported_count': 0, 'integrity': {'breaks': [], 'torn': []}, 'rejected': [], 'rejected_count': 0, 'conflicts': [], 'parent_breaks': [], 'continuously_verified_runs': [{'lo': 1, 'hi': 8, 'blocks': 8}], 'coverage': {'lo': 1, 'hi': 8, 'certified': 8, 'uncovered': 0, 'uncovered_sample': [], 'unexp
+AssertionError: 'PASS' == 'PASS' : {'bounds': {'window_s': 1, 'max_block_gap_s': 10, 'min_rate_bps': 1.5, 'live_lag_s': 30, 'min_live_fraction': 0.99, 'max_head_record_gap_s': 30, 'max_head_staleness_s': 15, 'min_sources_cert': 2, 'all_sources': 3, 'min_handovers': 1}, 'sources': ['node1', 'node3', 'node5'], 'fail': [], 'inconclusive': [], 'notes': [], 'self_conflicts': [], 'unsupported_shape': [], 'unsupported_count': 0, 'integrity': {'breaks': [], 'torn': []}, 'rejected': [], 'rejected_count': 0, 'conflicts': [], 'parent_breaks': [], 'continuously_verified_runs': [{'lo': 1, 'hi': 8, 'blocks': 8}], 'coverage': {'lo': 1, 'hi': 8, 'certified':
 Ran 1 test in 0.002s
 FAILED (failures=1)
 ```
 
 ## live-observation
 
-Exit 1; SHA-256 `f5195de45d35fa3ceb116bb6766b6acf2ce92d62f4636f10e2400afa75ee5746`.
+Exit 1; SHA-256 `a112fb21454bd06d322ae8046ed61027be6e57ce0454cbff0d9eb2e861d16ac8`.
 
 ```text
 FAIL: test_missing_live_heads (test_con01_rejudge.JudgeControls)
-AssertionError: 'PASS' == 'PASS' : {'bounds': {'window_s': 1, 'max_block_gap_s': 10, 'min_rate_bps': 1.5, 'live_lag_s': 30, 'min_live_fraction': 0.99, 'max_head_record_gap_s': 30, 'max_head_staleness_s': 15, 'min_sources_cert': 2, 'all_sources': 3, 'min_handovers': 1}, 'sources': ['node1', 'node3', 'node5'], 'fail': [], 'inconclusive': [], 'notes': [], 'self_conflicts': [], 'unsupported_shape': [], 'unsupported_count': 0, 'integrity': {'breaks': [], 'torn': []}, 'rejected': [], 'rejected_count': 0, 'conflicts': [], 'parent_breaks': [], 'continuously_verified_runs': [{'lo': 1, 'hi': 8, 'blocks': 8}], 'coverage': {'lo': 1, 'hi': 8, 'certified': 8, 'uncovered': 0, 'uncovered_sample': [], 'unexp
+AssertionError: 'PASS' == 'PASS' : {'bounds': {'window_s': 1, 'max_block_gap_s': 10, 'min_rate_bps': 1.5, 'live_lag_s': 30, 'min_live_fraction': 0.99, 'max_head_record_gap_s': 30, 'max_head_staleness_s': 15, 'min_sources_cert': 2, 'all_sources': 3, 'min_handovers': 1}, 'sources': ['node1', 'node3', 'node5'], 'fail': [], 'inconclusive': [], 'notes': [], 'self_conflicts': [], 'unsupported_shape': [], 'unsupported_count': 0, 'integrity': {'breaks': [], 'torn': []}, 'rejected': [], 'rejected_count': 0, 'conflicts': [], 'parent_breaks': [], 'continuously_verified_runs': [{'lo': 1, 'hi': 8, 'blocks': 8}], 'coverage': {'lo': 1, 'hi': 8, 'certified':
 Ran 1 test in 0.002s
 FAILED (failures=1)
 ```
 
 ## outgoing-boundary-set
 
-Exit 1; SHA-256 `389087fbb11d1458116efe687dec7bb68a91a68cfbeff53fcd94fdd02e7f1d5d`.
+Exit 1; SHA-256 `0c9578d1a75a3ad8f638cb8a8b7173a727622964a956cc658c2d033927e334ee`.
 
 ```text
 FAIL: test_outgoing_boundary_set_must_match (test_con01_rejudge.JudgeControls)
-AssertionError: 'PASS' == 'PASS' : {'bounds': {'window_s': 1, 'max_block_gap_s': 10, 'min_rate_bps': 1.5, 'live_lag_s': 30, 'min_live_fraction': 0.99, 'max_head_record_gap_s': 30, 'max_head_staleness_s': 15, 'min_sources_cert': 2, 'all_sources': 3, 'min_handovers': 1}, 'sources': ['node1', 'node3', 'node5'], 'fail': [], 'inconclusive': [], 'notes': [], 'self_conflicts': [], 'unsupported_shape': [], 'unsupported_count': 0, 'integrity': {'breaks': [], 'torn': []}, 'rejected': [], 'rejected_count': 0, 'conflicts': [], 'parent_breaks': [], 'continuously_verified_runs': [{'lo': 1, 'hi': 8, 'blocks': 8}], 'coverage': {'lo': 1, 'hi': 8, 'certified': 8, 'uncovered': 0, 'uncovered_sample': [], 'unexp
+AssertionError: 'PASS' == 'PASS' : {'bounds': {'window_s': 1, 'max_block_gap_s': 10, 'min_rate_bps': 1.5, 'live_lag_s': 30, 'min_live_fraction': 0.99, 'max_head_record_gap_s': 30, 'max_head_staleness_s': 15, 'min_sources_cert': 2, 'all_sources': 3, 'min_handovers': 1}, 'sources': ['node1', 'node3', 'node5'], 'fail': [], 'inconclusive': [], 'notes': [], 'self_conflicts': [], 'unsupported_shape': [], 'unsupported_count': 0, 'integrity': {'breaks': [], 'torn': []}, 'rejected': [], 'rejected_count': 0, 'conflicts': [], 'parent_breaks': [], 'continuously_verified_runs': [{'lo': 1, 'hi': 8, 'blocks': 8}], 'coverage': {'lo': 1, 'hi': 8, 'certified':
 Ran 1 test in 0.002s
 FAILED (failures=1)
 ```
 
 ## incoming-next-set
 
-Exit 1; SHA-256 `c9d9824a1576262ecb984118e5bb0173fe87d461f541491fd74ec06845e80026`.
+Exit 1; SHA-256 `954aebc760eab0b48f1d39a6081da47dfc4b86ee7ad7e98fa80adc3650d9e98e`.
 
 ```text
 FAIL: test_incoming_set_must_certify_following_block (test_con01_rejudge.JudgeControls)
-AssertionError: 'PASS' == 'PASS' : {'bounds': {'window_s': 1, 'max_block_gap_s': 10, 'min_rate_bps': 1.5, 'live_lag_s': 30, 'min_live_fraction': 0.99, 'max_head_record_gap_s': 30, 'max_head_staleness_s': 15, 'min_sources_cert': 2, 'all_sources': 3, 'min_handovers': 1}, 'sources': ['node1', 'node3', 'node5'], 'fail': [], 'inconclusive': [], 'notes': [], 'self_conflicts': [], 'unsupported_shape': [], 'unsupported_count': 0, 'integrity': {'breaks': [], 'torn': []}, 'rejected': [], 'rejected_count': 0, 'conflicts': [], 'parent_breaks': [], 'continuously_verified_runs': [{'lo': 1, 'hi': 8, 'blocks': 8}], 'coverage': {'lo': 1, 'hi': 8, 'certified': 8, 'uncovered': 0, 'uncovered_sample': [], 'unexp
+AssertionError: 'PASS' == 'PASS' : {'bounds': {'window_s': 1, 'max_block_gap_s': 10, 'min_rate_bps': 1.5, 'live_lag_s': 30, 'min_live_fraction': 0.99, 'max_head_record_gap_s': 30, 'max_head_staleness_s': 15, 'min_sources_cert': 2, 'all_sources': 3, 'min_handovers': 1}, 'sources': ['node1', 'node3', 'node5'], 'fail': [], 'inconclusive': [], 'notes': [], 'self_conflicts': [], 'unsupported_shape': [], 'unsupported_count': 0, 'integrity': {'breaks': [], 'torn': []}, 'rejected': [], 'rejected_count': 0, 'conflicts': [], 'parent_breaks': [], 'continuously_verified_runs': [{'lo': 1, 'hi': 8, 'blocks': 8}], 'coverage': {'lo': 1, 'hi': 8, 'certified':
 Ran 1 test in 0.002s
 FAILED (failures=1)
 ```
 
 ## incomplete-replay
 
-Exit 1; SHA-256 `dc0033dcd874549bf6832379634104921e91c7b5e3186bb7b389f8ecde7b31c4`.
+Exit 1; SHA-256 `3c481ef06ab7ad5f363024217737c38b739e74e2ca5176d98b9dc5eacfa6aa7d`.
 
 ```text
 FAIL: test_incomplete_replay_cannot_qualify (test_con01_qualification.QualificationMetadata)
 AssertionError: Refused not raised
-Ran 1 test in 0.010s
+Ran 1 test in 0.012s
 FAILED (failures=1)
 ```
 
 ## replay-revision
 
-Exit 1; SHA-256 `6001766d4dd5b2d3c32cf221aabf08b93dcd6394167abe427684690c7184fa7d`.
+Exit 1; SHA-256 `f34790c7f81a3193d9b7a849c46d856535ddb8f419340fc87e69e195865a8b06`.
 
 ```text
 FAIL: test_changed_source_cannot_qualify (test_con01_qualification.QualificationMetadata)
 AssertionError: Refused not raised
-Ran 1 test in 0.007s
+Ran 1 test in 0.012s
 FAILED (failures=1)
 ```
 
 ## control-revision
 
-Exit 1; SHA-256 `ec71b70df68c19e9fa292b72f1d19f511d775b4f2073fb7bd22f9baa80348153`.
+Exit 1; SHA-256 `85448daad767f93a2eb68513d4cfb2be55801062f11cf4a64c63a122beb4421e`.
 
 ```text
 FAIL: test_changed_control_revision_cannot_qualify (test_con01_qualification.QualificationMetadata)
 AssertionError: Refused not raised
-Ran 1 test in 0.007s
+Ran 1 test in 0.011s
 FAILED (failures=1)
 ```
 
 ## all-controls-required
 
-Exit 1; SHA-256 `4fe447e54459f2893aa4d2cf50b79e2e5a73f671571f6933acafdf4e860cea93`.
+Exit 1; SHA-256 `3582ce21b001eb02f639f7bfd95704f024dc6e7718e882a8e1ef808f9c13a5aa`.
 
 ```text
 FAIL: test_missing_controls_cannot_qualify (test_con01_qualification.QualificationMetadata)
-AssertionError: Refused not raised
+AssertionError: "complete guard controls" does not match "exact unique guard identities required"
 Ran 1 test in 0.007s
 FAILED (failures=1)
 ```
 
 ## snapshot-size
 
-Exit 1; SHA-256 `bed7a71ba5455bda0f228cf920e98da27c31e9c4aedcca53ef7885f7635dfc61`.
+Exit 1; SHA-256 `5bbfc4268a83b43942f0fc93efa6d6b3d87e8b93b0da0eaedec6c7f864fc6c73`.
 
 ```text
 FAIL: test_frozen_size_change_cannot_qualify (test_con01_qualification.QualificationMetadata)
 AssertionError: Refused not raised
-Ran 1 test in 0.007s
+Ran 1 test in 0.012s
 FAILED (failures=1)
 ```
 
 ## three-source-inventory
 
-Exit 1; SHA-256 `3a2cfd474ff1130d2cc6642f6033f5b5a196ba7f607f5a6376d231b54fc07dde`.
+Exit 1; SHA-256 `d60d766c8935dbceb37c59c4c98fea5261abe420937464684315e3cadee9aff1`.
 
 ```text
 FAIL: test_missing_third_source_cannot_qualify (test_con01_qualification.QualificationMetadata)
+AssertionError: "three frozen original source" does not match "frozen replay input identity changed"
+Ran 1 test in 0.011s
+FAILED (failures=1)
+```
+
+## complete-control-inventory
+
+Exit 1; SHA-256 `95e62d4410147faff88d9ba65c640604ce36c4e3835c32077f1318de5520cda8`.
+
+```text
+FAIL: test_incomplete_control_inventory_cannot_qualify (test_con01_qualification.QualificationMetadata) (entries=0)
+AssertionError: Refused not raised
+FAIL: test_incomplete_control_inventory_cannot_qualify (test_con01_qualification.QualificationMetadata) (entries=21)
+AssertionError: "complete control revision inventory" does not match "new qualification output required"
+Ran 1 test in 0.012s
+FAILED (failures=2)
+```
+
+## complete-worker-inventory
+
+Exit 1; SHA-256 `7cefccd0f8876d9d52387be32d4848b7d38cfdf59b72c80a66196096b0bd74fa`.
+
+```text
+FAIL: test_incomplete_replay_inventory_cannot_qualify (test_con01_qualification.QualificationMetadata) (entries=0)
+AssertionError: Refused not raised
+FAIL: test_incomplete_replay_inventory_cannot_qualify (test_con01_qualification.QualificationMetadata) (entries=5)
+AssertionError: "complete worker revision inventory" does not match "new qualification output required"
+Ran 1 test in 0.014s
+FAILED (failures=2)
+```
+
+## unique-guard-identities
+
+Exit 1; SHA-256 `fcc35f282397dcabe68362d822179063ac7b128b54a737d19a8cad6910da69c0`.
+
+```text
+FAIL: test_duplicate_guard_identities_cannot_qualify (test_con01_qualification.QualificationMetadata)
+AssertionError: Refused not raised
+Ran 1 test in 0.011s
+FAILED (failures=1)
+```
+
+## frozen-input-identities
+
+Exit 1; SHA-256 `fcde22a26379e697fcf8a0047d4f6d122b220f52c4966139ddf04e7bcdb5082d`.
+
+```text
+FAIL: test_changed_frozen_inputs_cannot_qualify (test_con01_qualification.QualificationMetadata) (input='APPROVED-CONFIG.json')
+AssertionError: Refused not raised
+FAIL: test_changed_frozen_inputs_cannot_qualify (test_con01_qualification.QualificationMetadata) (input='REPLAY-CONFIG.json')
+AssertionError: "frozen replay input identity" does not match "new qualification output required"
+FAIL: test_changed_frozen_inputs_cannot_qualify (test_con01_qualification.QualificationMetadata) (input='SNAPSHOT.json')
+AssertionError: "frozen replay input identity" does not match "new qualification output required"
+FAIL: test_changed_frozen_inputs_cannot_qualify (test_con01_qualification.QualificationMetadata) (input='SEALS.jsonl')
+AssertionError: "frozen replay input identity" does not match "new qualification output required"
+Ran 1 test in 0.019s
+FAILED (failures=4)
+```
+
+## legacy-worker-alias
+
+Exit 1; SHA-256 `a0eb71f2120bd68649bfffe4c54223c3a45b17a2c9dd5f3889136efad22013f3`.
+
+```text
+FAIL: test_historical_worker_name_is_exact_byte_alias (test_con01_qualification.QualificationMetadata)
+AssertionError: exact historical worker alias refused: complete worker revision inventory required
+Ran 1 test in 0.010s
+FAILED (failures=1)
+```
+
+## launch-approved-config
+
+Exit 1; SHA-256 `b3973839a38e364c8ef97d6ca436f3c7ac1254b6cebc79f1d67092fc2e6085ac`.
+
+```text
+FAIL: test_changed_approved_config_refuses_before_worker (test_con01_launch.LaunchMetadata)
+AssertionError: Refused not raised
+Ran 1 test in 0.008s
+FAILED (failures=1)
+```
+
+## launch-frozen-inputs
+
+Exit 1; SHA-256 `3c47cf9f6c72054009a7ae42d53d3eaae6e06f499d12d108a3d43adc798a39b4`.
+
+```text
+FAIL: test_changed_frozen_input_refuses_before_worker (test_con01_launch.LaunchMetadata)
 AssertionError: Refused not raised
 Ran 1 test in 0.007s
+FAILED (failures=1)
+```
+
+## launch-verifier
+
+Exit 1; SHA-256 `be79a8b8eed3cc3961a5592810537b548364fc6b5a19efc8679003fb353930da`.
+
+```text
+FAIL: test_changed_verifier_refuses_before_worker (test_con01_launch.LaunchMetadata)
+AssertionError: Refused not raised
+Ran 1 test in 0.004s
+FAILED (failures=1)
+```
+
+## launch-source
+
+Exit 1; SHA-256 `47b943898dfaea5bc110e5edfc5f33a8fe5266d785d0bd6d75d871b374106751`.
+
+```text
+FAIL: test_changed_source_refuses_before_worker (test_con01_launch.LaunchMetadata)
+AssertionError: Refused not raised
+Ran 1 test in 0.004s
+FAILED (failures=1)
+```
+
+## launch-input-inventory
+
+Exit 1; SHA-256 `3d66fda9092f732a85383239cbcf757c903dc5503316b6ad7335346555a0b03b`.
+
+```text
+FAIL: test_incomplete_input_inventory_refuses_before_worker (test_con01_launch.LaunchMetadata)
+AssertionError: Refused not raised
+Ran 1 test in 0.004s
+FAILED (failures=1)
+```
+
+## launch-worker-inventory
+
+Exit 1; SHA-256 `716f6a3356555980ce5ad42c160d1fed44fac6f15251239b7326542c4d647f93`.
+
+```text
+FAIL: test_incomplete_worker_inventory_refuses_before_worker (test_con01_launch.LaunchMetadata)
+AssertionError: Refused not raised
+Ran 1 test in 0.004s
+FAILED (failures=1)
+```
+
+## launch-worker-revision
+
+Exit 1; SHA-256 `c7cf68479fb14ea5a66d94b89d4814680e69c8eb4cb9731d8a501cc5b0fb887f`.
+
+```text
+FAIL: test_changed_worker_revision_refuses_before_worker (test_con01_launch.LaunchMetadata)
+AssertionError: Refused not raised
+Ran 1 test in 0.006s
+FAILED (failures=1)
+```
+
+## launch-legacy-worker-alias
+
+Exit 1; SHA-256 `bf0f5f36b34a60171605d421f316fbeba41b6a415f25e87e942bfb9ff7fd37cb`.
+
+```text
+FAIL: test_historical_worker_name_resumes_exact_same_bytes (test_con01_launch.LaunchMetadata)
+AssertionError: exact historical worker alias refused before resume: complete worker revision inventory required
+Ran 1 test in 0.003s
 FAILED (failures=1)
 ```

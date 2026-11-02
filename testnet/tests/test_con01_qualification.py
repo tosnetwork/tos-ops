@@ -38,21 +38,42 @@ class QualificationMetadata(unittest.TestCase):
         self.snapshot = dict(segments=sources)
         self.state = dict(offsets=offsets, genesis_set=cfg["_genesis_set"])
         package = Path(qualify.__file__).parent
-        self.provenance = dict(source_sha256={"observer.py": qualify.sha(package / "observer.py")})
-        files = {"production/con01_history/observer.py": qualify.sha(package / "observer.py")}
+        self.provenance = dict(
+            source_sha256={name: qualify.sha(package / name) for name in qualify.WORKER_MODULES}
+        )
+        repo = package.parents[1]
+        tests = repo / "testnet/tests"
+        paths = (
+            list(package.glob("*.py"))
+            + list(tests.glob("test_con01*.py"))
+            + list((tests / "data/con01-history").glob("*"))
+            + [tests / "con01_rejudge_controls.py"]
+        )
+        files = {str(path.relative_to(repo)): qualify.sha(path) for path in paths if path.is_file()}
         self.controls = dict(
             result="PASS",
             files=files,
             rows=[dict(name="baseline", exit=0, test=None)]
-            + [
-                dict(name=f"guard-{n}", exit=1, test="explicit-test")
-                for n in range(qualify.CONTROL_GUARDS)
-            ]
+            + [dict(name=name, exit=1, test=test) for name, test in qualify.CONTROL_TESTS.items()]
             + [dict(name="restored", exit=0, test=None)],
         )
         (self.replay / "REPLAY-CONFIG.json").write_text(json.dumps(cfg))
         (self.replay / "VERDICT.json").write_text("{}")
         self.write()
+        (self.replay / "APPROVED-CONFIG.json").write_text(json.dumps(cfg))
+        (self.replay / "SEALS.jsonl").write_bytes(b"")
+        inputs = {
+            "files": {
+                name: qualify.sha(self.replay / name)
+                for name in (
+                    "APPROVED-CONFIG.json",
+                    "REPLAY-CONFIG.json",
+                    "SNAPSHOT.json",
+                    "SEALS.jsonl",
+                )
+            }
+        }
+        (self.replay / "REPLAY-INPUTS.json").write_text(json.dumps(inputs))
 
     def write(self):
         for name, value in [
@@ -94,6 +115,18 @@ class QualificationMetadata(unittest.TestCase):
         self.assertEqual(json.loads(self.output.read_text())["verdict"], "PASS")
         self.assertEqual((self.replay / "VERDICT.json").read_text(), "{}")
 
+    def test_historical_worker_name_is_exact_byte_alias(self):
+        files = self.provenance["source_sha256"]
+        files["rejudge.py"] = files.pop("_replay.py")
+        self.write()
+        try:
+            self.run_qualification()
+        except Refused as error:
+            self.fail(f"exact historical worker alias refused: {error}")
+        result = json.loads(self.output.read_bytes())
+        self.assertEqual(result["worker_source_files"]["rejudge.py"], "_replay.py")
+        self.assertEqual(result["verdict"], "PASS")
+
     def test_incomplete_replay_cannot_qualify(self):
         self.state["offsets"]["src-node1/seg-test.jsonl"] = 0
         self.write()
@@ -130,6 +163,46 @@ class QualificationMetadata(unittest.TestCase):
         self.write()
         with self.assertRaisesRegex(Refused, "three frozen original source"):
             self.run_qualification()
+
+    def test_incomplete_control_inventory_cannot_qualify(self):
+        original = copy.deepcopy(self.controls["files"])
+        for files in (
+            {},
+            {key: value for key, value in original.items() if not key.endswith("observer.py")},
+        ):
+            with self.subTest(entries=len(files)):
+                self.controls["files"] = files
+                self.write()
+                with self.assertRaisesRegex(Refused, "complete control revision inventory"):
+                    self.run_qualification()
+
+    def test_incomplete_replay_inventory_cannot_qualify(self):
+        original = copy.deepcopy(self.provenance["source_sha256"])
+        for files in ({}, {key: value for key, value in original.items() if key != "observer.py"}):
+            with self.subTest(entries=len(files)):
+                self.provenance["source_sha256"] = files
+                self.write()
+                with self.assertRaisesRegex(Refused, "complete worker revision inventory"):
+                    self.run_qualification()
+
+    def test_duplicate_guard_identities_cannot_qualify(self):
+        row = copy.deepcopy(self.controls["rows"][1])
+        self.controls["rows"][1:-1] = [row] * qualify.CONTROL_GUARDS
+        self.write()
+        with self.assertRaisesRegex(Refused, "exact unique guard identities"):
+            self.run_qualification()
+
+    def test_changed_frozen_inputs_cannot_qualify(self):
+        for name in ("APPROVED-CONFIG.json", "REPLAY-CONFIG.json", "SNAPSHOT.json", "SEALS.jsonl"):
+            with self.subTest(input=name):
+                path = self.replay / name
+                original = path.read_bytes()
+                path.write_bytes(original + b" ")
+                try:
+                    with self.assertRaisesRegex(Refused, "frozen replay input identity"):
+                        self.run_qualification()
+                finally:
+                    path.write_bytes(original)
 
 
 if __name__ == "__main__":
