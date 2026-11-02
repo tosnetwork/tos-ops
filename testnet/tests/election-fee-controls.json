@@ -89,6 +89,12 @@
       "before": "os.replace(name, path)",
       "after": "pass  # mutant: omit health update",
       "test": "test_status_replaces_previous_health_on_unknown_read"
+    },
+    {
+      "name": "manifest_type",
+      "before": "isinstance(wallets, dict)",
+      "after": "True",
+      "test": "test_cli_nonobject_manifest_replaces_health_with_unknown"
     }
   ]
 }

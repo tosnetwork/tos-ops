@@ -64,7 +64,8 @@ def observe(sources, wallets, genesis, now):
     )
     require(identity(genesis)[2] == 0, "pinned genesis required")
     require(
-        0 < len(wallets) <= 16
+        isinstance(wallets, dict)
+        and 0 < len(wallets) <= 16
         and all(
             re.fullmatch(r"[A-Za-z0-9_-]{1,32}", name)
             and re.fullmatch(r"-1:[0-9a-f]{64}", address)

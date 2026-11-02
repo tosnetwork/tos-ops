@@ -1,10 +1,13 @@
 """Fail-closed observational fee alerts, independent of any signing workflow."""
 
+import contextlib
+import io
 import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "production"))
 from con01_history import election_fees as fees  # noqa: E402
@@ -144,6 +147,36 @@ class FeeWatch(unittest.TestCase):
             fees.write_status(path, {"status": "HEALTHY_FEE_RESERVE"})
             fees.write_status(path, {"status": "INDETERMINATE"})
             self.assertEqual(json.loads(path.read_bytes())["status"], "INDETERMINATE")
+
+    def test_cli_nonobject_manifest_replaces_health_with_unknown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "wallets.json"
+            genesis = root / "genesis.json"
+            status = root / "STATUS.json"
+            genesis.write_text(json.dumps(block()))
+            for value in [["node-1"], "node-1", None, 42]:
+                manifest.write_text(json.dumps(value))
+                status.write_text(json.dumps({"status": "HEALTHY_FEE_RESERVE"}))
+                argv = [
+                    "fees",
+                    "--rpc",
+                    "http://127.0.0.1:1/jsonRPC",
+                    "--rpc",
+                    "http://127.0.0.1:2/jsonRPC",
+                    "--wallets",
+                    str(manifest),
+                    "--genesis",
+                    str(genesis),
+                    "--out",
+                    str(status),
+                ]
+                with (
+                    mock.patch.object(sys, "argv", argv),
+                    contextlib.redirect_stdout(io.StringIO()),
+                ):
+                    self.assertEqual(fees.main(), 2)
+                self.assertEqual(json.loads(status.read_bytes())["status"], "INDETERMINATE")
 
 
 if __name__ == "__main__":
