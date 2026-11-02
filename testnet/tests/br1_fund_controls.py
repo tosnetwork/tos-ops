@@ -1,0 +1,156 @@
+"""Run fixed funding assertions with individual guards removed in a private copy."""
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+MUTATIONS = [
+    ("duration", "now >= EARLIEST", "True", "test_wall_clock_cannot_replace_resource_bound"),
+    (
+        "actual24h",
+        'resource["observed_seconds"] >= 86400',
+        "True",
+        "test_short_nonfinite_or_boolean_soak_refuses",
+    ),
+    (
+        "history-verdict",
+        'history["verdict"] == "PASS"',
+        "True",
+        "test_inconclusive_history_refuses",
+    ),
+    (
+        "handover-count",
+        'for row in history["handovers"]) >= 3',
+        'for row in history["handovers"]) >= 0',
+        "test_insufficient_windows_refuse",
+    ),
+    (
+        "input-sha",
+        "expected is None or hashlib.sha256(raw).hexdigest() == expected",
+        "True",
+        "test_report_digest_is_checked",
+    ),
+    (
+        "budget",
+        "spent == 0",
+        "True",
+        "test_any_existing_signed_or_terminal_funding_fences_new_funding",
+    ),
+    ("nonce", "seqno == expected", "True", "test_changed_nonce_refuses_before_signing"),
+    ("sign-window", "time.time() < deadline", "True", "test_expired_window_refuses_before_signing"),
+    (
+        "custody-public",
+        "bytes(nacl.signing.SigningKey(seed).verify_key) == public",
+        "True",
+        "test_wrong_custody_key_or_mode_refuses",
+    ),
+    (
+        "native-address",
+        'config["funding_wallet"] == "0:" + cell.hash.hex()',
+        "True",
+        "test_target_address_is_not_an_arbitrary_destination",
+    ),
+    (
+        "broadcast-window",
+        'writes == 0 and time.time() < window["valid_until_utc"]',
+        "writes == 0",
+        "test_window_expiring_after_signing_has_zero_broadcast",
+    ),
+]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--out", type=Path, required=True)
+    args = parser.parse_args()
+    os.umask(0o077)
+    args.out.mkdir(mode=0o700, exist_ok=False)
+    root = Path(__file__).resolve().parents[2]
+    rows = []
+    with tempfile.TemporaryDirectory() as folder:
+        private = Path(folder)
+        (private / "production").mkdir()
+        shutil.copytree(
+            root / "production/con01_history",
+            private / "production/con01_history",
+            ignore=shutil.ignore_patterns("__pycache__"),
+        )
+        target = private / "production/br1_fund.py"
+        shutil.copyfile(root / "production/br1_fund.py", target)
+        tests = private / "testnet/tests"
+        tests.mkdir(parents=True)
+        shutil.copyfile(root / "testnet/tests/test_br1_fund.py", tests / "test_br1_fund.py")
+        shutil.copytree(root / "testnet/tests/data/br1-fund", tests / "data/br1-fund")
+        original = target.read_text()
+
+        def run(name, selected=None, red=False):
+            command = [
+                sys.executable,
+                "-B",
+                "-m",
+                "unittest",
+                "discover",
+                "-s",
+                str(tests),
+                "-p",
+                "test_br1_fund.py",
+            ]
+            if selected:
+                command += ["-k", selected]
+            result = subprocess.run(command, capture_output=True, timeout=30)
+            raw = result.stdout + result.stderr
+            (args.out / (name + ".log")).write_bytes(raw)
+            if red:
+                if (
+                    result.returncode != 1
+                    or b"AssertionError" not in raw
+                    or not re.search(rb"FAILED \(failures=[1-9][0-9]*\)", raw)
+                    or b"ERROR" in raw
+                ):
+                    raise RuntimeError("intended runtime assertion did not fail: " + name)
+            elif result.returncode != 0 or b"Ran 26 tests" not in raw or b"\nOK\n" not in raw:
+                raise RuntimeError("complete baseline/restoration failed: " + name)
+            rows.append(
+                {
+                    "name": name,
+                    "test": selected,
+                    "exit": result.returncode,
+                    "sha256": hashlib.sha256(raw).hexdigest(),
+                    "bytes": len(raw),
+                }
+            )
+
+        run("baseline")
+        for name, before, after, selected in MUTATIONS:
+            if original.count(before) != 1:
+                raise RuntimeError("guard anchor drift: " + name)
+            target.write_text(original.replace(before, after))
+            run(name, selected, True)
+            target.write_text(original)
+        run("restored")
+    paths = [
+        root / "production/br1_fund.py",
+        root / "testnet/tests/test_br1_fund.py",
+        Path(__file__),
+    ]
+    paths += list((root / "production/con01_history").glob("*.py"))
+    paths += list((root / "testnet/tests/data/br1-fund").glob("*"))
+    files = {
+        str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in paths
+        if p.is_file()
+    }
+    (args.out / "REPORT.json").write_text(
+        json.dumps({"result": "PASS", "sources": files, "rows": rows}, indent=2) + "\n"
+    )
+
+
+if __name__ == "__main__":
+    main()
