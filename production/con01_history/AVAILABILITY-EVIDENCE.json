@@ -1,0 +1,51 @@
+{
+  "result": "PASS",
+  "scope": "tool regression and negative controls; full frozen replay not yet rerun",
+  "tests": 69,
+  "runtime_guard_controls": 47,
+  "report_sha256": "3598bb22ec77600a48a100953edc010156e94c4ce22cb3ecf23c834556fefe42",
+  "source_files": {
+    "production/con01_history/__init__.py": "2669032d72511e45b4145efe98af062bd0f6cd5eee5b0e5f4fd25d4b37e33a8d",
+    "production/con01_history/_replay.py": "89095f3ff9d65e6b2622bacb8d65ed5d61a501067159dc7f2383c43c5082a988",
+    "production/con01_history/audit.py": "cc9850c26a58c37b4f14c5d866e8e41928aed4deb5518f66ff6979a5107b4c91",
+    "production/con01_history/certificate.py": "cd853372bb2f82cda1866618e60f3c94a1cbf85374a803852733cb4278a18b66",
+    "production/con01_history/election_fees.py": "50e81201735397cb66021e50ee2afac4cb1d92ce0fb646c643e929c0face1d94",
+    "production/con01_history/formats.py": "df2ebfd9e585f7e4d54b020a24819c8b87f4d47e098ee4e7ad12230694c08519",
+    "production/con01_history/frozen.py": "7d1961d005edb6010ec47ddf16380d166ff0e052223cb506cb568e9916f2e26a",
+    "production/con01_history/launch.py": "cb800fcefc1c852f4352704ce546a0671df213cf0ddd12c79883c1c5312f60cf",
+    "production/con01_history/observer.py": "fd9d336695133f4d5fd46a4308bdc02b106af18debe586cf3a7f5c0e708918d9",
+    "production/con01_history/qualify.py": "74a7f38295e07251197705df614d5d306bff92f34fa55b9446efc1ab24d94d7d",
+    "production/con01_history/rejudge.py": "d564e922726a735f61cbaa8dbf26f5dc21e034bdb2e17fdf182500d6d75e8866",
+    "testnet/tests/test_con01_rejudge.py": "ee6786acc9a7a3c1c254dace3655bf2ae6c20ba70991b5b01ede477786cf6fb2",
+    "testnet/tests/test_con01_availability.py": "c2f3fde716abab493aea15c1bd0b0b11efe9ac0d4165806e6adbea176d818e03",
+    "testnet/tests/test_con01_launch.py": "7b8b7a7557c6a02f9f1358d4da58aa31798aa7b22269f80b35d173e5cda93d7a",
+    "testnet/tests/test_con01_observer_crypto.py": "1cbf82f9591b4360b7ef7db352d3acfb8a4f8afd8726c71f11a4c4b7c7e1cc67",
+    "testnet/tests/test_con01_qualification.py": "2efb8548c19b295aebba44f1d9c3d91b024d47f0e100c72ec9bd607568bf9e8c",
+    "testnet/tests/test_con01_history.py": "c20b5b40eaef9c78c37109534b623a18efeacfcd1c2fef235b102d554052c522",
+    "testnet/tests/data/con01-history/MANIFEST.json": "a47f624774589361626b11362c33859cd1f70474c401f25e1bf4567240085d10",
+    "testnet/tests/data/con01-history/anchor.json": "de7ef0a3ea157a3426504bcb254d50584014def52b0632ca23edfde7c02067af",
+    "testnet/tests/data/con01-history/expired-current-set.tl": "99d4a705a247ca155d9220664ec3e2070bc5c19beb28f35b953be3069a8736f2",
+    "testnet/tests/data/con01-history/genesis-partial.tl": "6fc0a533593febecefe753e9de6ac2ca701640f2cec5a2036b219ff65d526085",
+    "testnet/tests/data/con01-history/genesis.json": "30b39614e085477f33580ed2ad9fa8f6b7fbeb85d4e0ce7e8f013babe4057a3a",
+    "testnet/tests/data/con01-history/request.json": "cb578b711035c0a7ee642e24ed2db8cd32ac203e2a44efb68b7b8347e3fc2634",
+    "testnet/tests/data/con01-history/target.json": "b8d938c95053598898553b1a7fb4875ed98a5a3a7390edf0831da025c78ed33e",
+    "testnet/tests/data/con01-history/unavailable-signatures.json": "badc928de1b209c0b6487356c7ef8ae4c7dfa022cfe92091befcfd39634b29d8",
+    "testnet/tests/con01_rejudge_controls.py": "ed8897bffe1e7a03e88a19e466733ae23abac0fb7114c65682feb3d77ba18a91"
+  },
+  "original_diagnostic": {
+    "qualification": "INCONCLUSIVE",
+    "rejected_records": 2972,
+    "missing_rpc_certificate_responses": 2969,
+    "local_signature_helper_timeouts": 3,
+    "retry_same_packets_passed": 3
+  },
+  "fixture_provenance": {
+    "source": "original-r2/src-node1/seg-20261101T090004-b6c8ebed.jsonl",
+    "seqno": 300950,
+    "original_raw_line_sha256": "4a6dc4ba825c004a3459caf1200af881954d022e4516cc8db23fea6a99c1edb5"
+  },
+  "upstream": {
+    "comparison": "absent upstream: TOS-specific observer/RPC tooling",
+    "commit": "857b8a57a178e6ae0fe7fa86e7d81c5233de8560"
+  }
+}

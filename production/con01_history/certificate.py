@@ -118,15 +118,21 @@ class SignatureVerifier:
             and len(message) <= 4096,
             "signature input bound",
         )
-        result = subprocess.run(
-            [f"/proc/self/fd/{self.fd}"],
-            input=public + signature + message,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            pass_fds=(self.fd,),
-            timeout=5,
-        )
-        require(result.returncode == 0, "ML-DSA-44 verification rejected")
+        for attempt in range(3):
+            try:
+                result = subprocess.run(
+                    [f"/proc/self/fd/{self.fd}"],
+                    input=public + signature + message,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    pass_fds=(self.fd,),
+                    timeout=5,
+                )
+            except subprocess.TimeoutExpired:
+                require(attempt < 2, "signature verifier timeout after three attempts")
+                continue
+            require(result.returncode == 0, "ML-DSA-44 verification rejected")
+            return
 
     def close(self):
         if self.fd >= 0:
