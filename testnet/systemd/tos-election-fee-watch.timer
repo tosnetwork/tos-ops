@@ -1,0 +1,9 @@
+[Unit]
+Description=Check election fee reserves every five minutes
+[Timer]
+OnCalendar=*-*-* *:0/5:00 UTC
+AccuracySec=5s
+Persistent=true
+Unit=tos-election-fee-watch.service
+[Install]
+WantedBy=timers.target

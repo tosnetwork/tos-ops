@@ -1,0 +1,106 @@
+{
+  "mutations": [
+    {
+      "name": "early_warning",
+      "before": "warning=balance < WARNING",
+      "after": "warning=balance < MINIMUM",
+      "test": "test_early_warning_before_stake_exhaustion"
+    },
+    {
+      "name": "exact_threshold",
+      "before": "WARNING = 5_200_000_000",
+      "after": "WARNING = 5_200_000_001",
+      "test": "test_exact_threshold_is_healthy"
+    },
+    {
+      "name": "critical_fee",
+      "before": "cannot_afford_next_stake=balance < MINIMUM",
+      "after": "cannot_afford_next_stake=False",
+      "test": "test_low_balance_is_critical"
+    },
+    {
+      "name": "balance_agreement",
+      "before": "balances[0] == balances[1]",
+      "after": "True",
+      "test": "test_disagreement_never_reports_health"
+    },
+    {
+      "name": "freshness",
+      "before": "type(header[\"gen_utime\"]) is int and 0 <= now - header[\"gen_utime\"] <= 60",
+      "after": "True",
+      "test": "test_stale_or_future_sources_refuse"
+    },
+    {
+      "name": "genesis",
+      "before": "identity(head[\"init\"]) == identity(genesis)",
+      "after": "True",
+      "test": "test_wrong_genesis_refuses"
+    },
+    {
+      "name": "full_checkpoint",
+      "before": "identity(headers[0][\"id\"]) == identity(headers[1][\"id\"])",
+      "after": "True",
+      "test": "test_wrong_checkpoint_refuses"
+    },
+    {
+      "name": "account_checkpoint",
+      "before": "identity(answer[\"block_id\"]) == identity(headers[0][\"id\"])",
+      "after": "True",
+      "test": "test_account_checkpoint_is_not_just_height"
+    },
+    {
+      "name": "balance_encoding",
+      "before": "isinstance(value, str)\n        and value.isascii()\n        and value.isdecimal()\n        and len(value) <= 20",
+      "after": "True",
+      "test": "test_malformed_amount_cannot_be_a_healthy_reserve"
+    },
+    {
+      "name": "distinct_sources",
+      "before": "len(sources) == 2 and len({source.url for source in sources}) == 2",
+      "after": "True",
+      "test": "test_one_rpc_cannot_masquerade_as_two"
+    },
+    {
+      "name": "distinct_wallets",
+      "before": "len(set(wallets.values())) == len(wallets)",
+      "after": "True",
+      "test": "test_duplicate_wallets_refuse"
+    },
+    {
+      "name": "read_only",
+      "before": "method in {\"getMasterchainInfo\", \"getBlockHeader\", \"getAddressInformation\"}",
+      "after": "True",
+      "test": "test_non_read_method_refuses_before_network"
+    },
+    {
+      "name": "response_bound",
+      "before": "len(raw) <= MAX_REPLY",
+      "after": "True",
+      "test": "test_reply_byte_bound_is_checked_before_json"
+    },
+    {
+      "name": "manifest_bound",
+      "before": "0 < len(wallets) <= 16",
+      "after": "0 < len(wallets)",
+      "test": "test_manifest_population_is_bounded_before_reads"
+    },
+    {
+      "name": "replace_health",
+      "before": "os.replace(name, path)",
+      "after": "pass  # mutant: omit health update",
+      "test": "test_status_replaces_previous_health_on_unknown_read"
+    },
+    {
+      "name": "manifest_type",
+      "before": "isinstance(wallets, dict)",
+      "after": "True",
+      "test": "test_cli_nonobject_manifest_replaces_health_with_unknown"
+    },
+    {
+      "name": "read_failure_class",
+      "before": "except Exception as error:",
+      "after": "except (ValueError, KeyError, TypeError, OSError) as error:",
+      "test": "test_protocol_or_unexpected_read_failure_replaces_previous_health"
+    }
+  ]
+}
