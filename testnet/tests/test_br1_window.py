@@ -53,7 +53,10 @@ class Window(unittest.TestCase):
 
     def test_dynamic_term_and_expiring_nonapproval(self):
         for now in (10000, 900000):
-            result = window.assess(*fixture(now, now - 2000, now + 5000))
+            try:
+                result = window.assess(*fixture(now, now - 2000, now + 5000))
+            except Refused as error:
+                self.fail("dynamic term refused: " + str(error))
             self.assertTrue(result["quiet"])
             self.assertLessEqual(result["valid_until_utc"] - now, 30)
             self.assertFalse(result["public_activation_approved"])

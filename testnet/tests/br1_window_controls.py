@@ -12,6 +12,12 @@ import tempfile
 from pathlib import Path
 
 MUTATIONS = [
+    (
+        "legacy-fixed-since",
+        'since, until = current["since"], current["until"]',
+        'since, until = current["since"], current["until"]\n    require(since == 1793541840, "legacy pinned term")',
+        "test_dynamic_term_and_expiring_nonapproval",
+    ),
     ("settlement", "SETTLE_SECONDS = 905", "SETTLE_SECONDS = 0", "test_settlement_boundary"),
     ("handover", "MIN_REMAINING = 1800", "MIN_REMAINING = 0", "test_handover_boundary"),
     ("freshness", "MAX_AGE = 30", "MAX_AGE = 300", "test_stale_or_future_signed_target_refuses"),
