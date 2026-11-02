@@ -1,0 +1,128 @@
+{
+  "status": "PASS",
+  "controls": [
+    {
+      "test": "test_early_warning_before_stake_exhaustion",
+      "detected": true,
+      "returncode": 1,
+      "excerpt_sha256": "10f791f132c8bcb4cdd9d900472549e8dc67da7e7c28a32569126cd82d5d2fe7"
+    },
+    {
+      "test": "test_exact_threshold_is_healthy",
+      "detected": true,
+      "returncode": 1,
+      "excerpt_sha256": "8712ac93c955e593b2b0ea7fb9a2133d7165e3f0f84f14f43a73e7e65216eb88"
+    },
+    {
+      "test": "test_low_balance_is_critical",
+      "detected": true,
+      "returncode": 1,
+      "excerpt_sha256": "6a1d2ae5f255cef7034361de9a065aeb981b3867c1c9d8c588bbb8888318c95c"
+    },
+    {
+      "test": "test_disagreement_never_reports_health",
+      "detected": true,
+      "returncode": 1,
+      "excerpt_sha256": "d52e70e0e2568990e11feb65f2c8089893098c1d37fc3d68a1ea3377c502decb"
+    },
+    {
+      "test": "test_stale_or_future_sources_refuse",
+      "detected": true,
+      "returncode": 1,
+      "excerpt_sha256": "f08086d1bd23aa38b734e3a19d337087b204538054f6f2f4b5992921fccf694b"
+    },
+    {
+      "test": "test_wrong_genesis_refuses",
+      "detected": true,
+      "returncode": 1,
+      "excerpt_sha256": "68ef654a0f70b18109b2480f18b702442ca97b987c42e24b695adaeb8818e2eb"
+    },
+    {
+      "test": "test_wrong_checkpoint_refuses",
+      "detected": true,
+      "returncode": 1,
+      "excerpt_sha256": "5ab5c197be42c6dd5c2a6e5561e49bf3cfec8746b71403c4d15ceabf38a08a3a"
+    },
+    {
+      "test": "test_account_checkpoint_is_not_just_height",
+      "detected": true,
+      "returncode": 1,
+      "excerpt_sha256": "ba754fa8801e6e9c76f548ec7df1d2f28d885d56b6ba0841176730e3c38296fc"
+    },
+    {
+      "test": "test_malformed_amount_cannot_be_a_healthy_reserve",
+      "detected": true,
+      "returncode": 1,
+      "excerpt_sha256": "22540648602fbad4cd7118464a8867b641d87b36c5fccfab1c1f28a2551c75d2"
+    },
+    {
+      "test": "test_one_rpc_cannot_masquerade_as_two",
+      "detected": true,
+      "returncode": 1,
+      "excerpt_sha256": "34720d44a05d96a1c72f3466977fe2a737c69a7f9578b78afc339823550cbf1e"
+    },
+    {
+      "test": "test_duplicate_wallets_refuse",
+      "detected": true,
+      "returncode": 1,
+      "excerpt_sha256": "08246df3a275b26080210aca902715dd8ebac86976120724350c431415b20f51"
+    },
+    {
+      "test": "test_non_read_method_refuses_before_network",
+      "detected": true,
+      "returncode": 1,
+      "excerpt_sha256": "66612390351bce1354d47cfd027d7c9755de8fb6c0925fe8553f2581f8741a86"
+    },
+    {
+      "test": "test_reply_byte_bound_is_checked_before_json",
+      "detected": true,
+      "returncode": 1,
+      "excerpt_sha256": "583c916ffb1c56dce8748187cd553ce167e7319618e6c0139dc3bb54f003dfa7"
+    },
+    {
+      "test": "test_manifest_population_is_bounded_before_reads",
+      "detected": true,
+      "returncode": 1,
+      "excerpt_sha256": "4fd5474edaa4011b0bfff448f531d3cdca0fae0e4b93768d193aabd31f07ea95"
+    },
+    {
+      "test": "test_status_replaces_previous_health_on_unknown_read",
+      "detected": true,
+      "returncode": 1,
+      "excerpt_sha256": "a4f8a1116c9093e35f440b5399f0af5607d54cc9ba2c7d4a06cbf0c1c2484e03"
+    },
+    {
+      "test": "test_cli_nonobject_manifest_replaces_health_with_unknown",
+      "detected": true,
+      "returncode": 1,
+      "excerpt_sha256": "15f9329cff207b3d60680b8ebc0df3109268ef897b2c0c9b21454ecd34797e02"
+    },
+    {
+      "test": "test_protocol_or_unexpected_read_failure_replaces_previous_health",
+      "detected": true,
+      "returncode": 1,
+      "excerpt_sha256": "3389aa1c6eb9099080278c46a5cdc3ad7d8d55174e58a155c36b513afa225b9f"
+    },
+    {
+      "test": "test_slow_successful_reads_replace_health_with_unknown",
+      "detected": true,
+      "returncode": 1,
+      "excerpt_sha256": "3f02535e2735c5cb7e57f37157a04de06b696e0b46e062dee9d0f985da6e5cef"
+    },
+    {
+      "test": "test_healthy_report_timestamp_is_observation_completion",
+      "detected": true,
+      "returncode": 1,
+      "excerpt_sha256": "4a997a1ba2ea680f030862fd709461f074e01b749b09da268b39b751185d7d13"
+    }
+  ],
+  "raw_location": "/tos/build/e6-election-lifecycle/fee-watch/freshness/controls-r1",
+  "retained_until_utc": "2027-02-01",
+  "access": "Existing authorized toserver SSH account",
+  "files": {
+    "production/con01_history/election_fees.py": "50e81201735397cb66021e50ee2afac4cb1d92ce0fb646c643e929c0face1d94",
+    "testnet/tests/test_election_fee_watch.py": "41545e3acae9784e110ad5d8794132a4439179fa546961e2c4ce1d089a4ac9dd",
+    "testnet/tests/election-fee-controls.json": "b0994ddefcfaff4196c968b4683954fd640e26d2c04cde0b7c28f3858517c417",
+    "testnet/tests/election_fee_controls.py": "1b6fb520634e0f7dfa95c4d04be8d0be9f3c1e08ae6845d192d0307c7ecd9dbe"
+  }
+}

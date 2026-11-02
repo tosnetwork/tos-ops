@@ -57,7 +57,18 @@ def amount(value):
     return result
 
 
-def observe(sources, wallets, genesis, now):
+def require_fresh(headers, now):
+    require(
+        all(
+            type(header["gen_utime"]) is int and 0 <= now - header["gen_utime"] <= 60
+            for header in headers
+        ),
+        "stale or future fee observation",
+    )
+
+
+def observe(sources, wallets, genesis, clock=time.time):
+    now = clock()
     require(
         len(sources) == 2 and len({source.url for source in sources}) == 2,
         "two distinct RPC observers required",
@@ -99,13 +110,7 @@ def observe(sources, wallets, genesis, now):
         identity(headers[0]["id"]) == identity(headers[1]["id"]),
         "checkpoint full-id disagreement",
     )
-    require(
-        all(
-            type(header["gen_utime"]) is int and 0 <= now - header["gen_utime"] <= 60
-            for header in headers
-        ),
-        "stale or future fee observation",
-    )
+    require_fresh(headers, now)
     rows = {}
     for name, address in sorted(wallets.items()):
         answers = [
@@ -127,12 +132,14 @@ def observe(sources, wallets, genesis, now):
             warning=balance < WARNING,
             cannot_afford_next_stake=balance < MINIMUM,
         )
+    completed = clock()
+    require_fresh(headers, completed)
     return dict(
         status="LOW_FEE_RUNWAY"
         if any(row["warning"] for row in rows.values())
         else "HEALTHY_FEE_RESERVE",
-        checked_utc=now,
-        valid_until_utc=now + 600,
+        checked_utc=completed,
+        valid_until_utc=completed + 600,
         checkpoint=wire(headers[0]["id"]),
         wallets=rows,
         next_stake_fee_nanotos=MINIMUM,
@@ -167,9 +174,7 @@ def main():
     try:
         wallets = json.loads(read(args.wallets, 16384))
         genesis = json.loads(read(args.genesis, 16384))
-        report = observe(
-            [FeeRpc(url) for url in args.rpc], wallets, genesis, time.time()
-        )
+        report = observe([FeeRpc(url) for url in args.rpc], wallets, genesis, time.time)
         code = 1 if report["status"] == "LOW_FEE_RUNWAY" else 0
     except Exception as error:
         report = dict(

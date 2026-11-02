@@ -101,6 +101,18 @@
       "before": "except Exception as error:",
       "after": "except (ValueError, KeyError, TypeError, OSError) as error:",
       "test": "test_protocol_or_unexpected_read_failure_replaces_previous_health"
+    },
+    {
+      "name": "end_freshness",
+      "before": "require_fresh(headers, completed)",
+      "after": "pass",
+      "test": "test_slow_successful_reads_replace_health_with_unknown"
+    },
+    {
+      "name": "completion_timestamp",
+      "before": "checked_utc=completed",
+      "after": "checked_utc=now",
+      "test": "test_healthy_report_timestamp_is_observation_completion"
     }
   ]
 }
