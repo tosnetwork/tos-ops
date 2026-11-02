@@ -62,6 +62,14 @@ class QualificationMetadata(unittest.TestCase):
         self.write()
         (self.replay / "APPROVED-CONFIG.json").write_text(json.dumps(cfg))
         (self.replay / "SEALS.jsonl").write_bytes(b"")
+        (self.replay / "SEGMENT-HASHES.json").write_text(
+            json.dumps(
+                {
+                    row["path"]: qualify.sha(self.replay / row["path"])
+                    for row in self.snapshot["segments"]
+                }
+            )
+        )
         inputs = {
             "files": {
                 name: qualify.sha(self.replay / name)
@@ -70,6 +78,7 @@ class QualificationMetadata(unittest.TestCase):
                     "REPLAY-CONFIG.json",
                     "SNAPSHOT.json",
                     "SEALS.jsonl",
+                    "SEGMENT-HASHES.json",
                 )
             }
         }
@@ -203,6 +212,22 @@ class QualificationMetadata(unittest.TestCase):
                         self.run_qualification()
                 finally:
                     path.write_bytes(original)
+
+    def test_same_length_frozen_segment_change_cannot_qualify(self):
+        (self.replay / self.snapshot["segments"][0]["path"]).write_bytes(b"[]\n")
+        with self.assertRaisesRegex(Refused, "frozen segment digest changed"):
+            self.run_qualification()
+
+    def test_extra_segment_digest_cannot_qualify(self):
+        path = self.replay / "SEGMENT-HASHES.json"
+        digests = json.loads(path.read_bytes())
+        digests["src-node1/seg-unlisted.jsonl"] = "00" * 32
+        path.write_text(json.dumps(digests))
+        pins = json.loads((self.replay / "REPLAY-INPUTS.json").read_bytes())
+        pins["files"]["SEGMENT-HASHES.json"] = qualify.sha(path)
+        (self.replay / "REPLAY-INPUTS.json").write_text(json.dumps(pins))
+        with self.assertRaisesRegex(Refused, "complete frozen segment digest inventory"):
+            self.run_qualification()
 
 
 if __name__ == "__main__":

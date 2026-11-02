@@ -207,6 +207,39 @@ LAUNCH_MUTATIONS.append(
     )
 )
 
+QUALIFICATION_MUTATIONS.append(
+    (
+        "frozen-segment-content",
+        "validate_segments(args.replay)",
+        "pass",
+        "test_same_length_frozen_segment_change_cannot_qualify",
+    )
+)
+LAUNCH_MUTATIONS.extend(
+    [
+        (
+            "launch-frozen-segment-content",
+            "validate_segments(args.out)",
+            "pass",
+            "test_same_length_frozen_segment_change_refuses_before_worker",
+        ),
+        (
+            "launch-segment-manifest-pin",
+            '    "SEGMENT-HASHES.json",\n',
+            "",
+            "test_unchanged_frozen_inputs_resume",
+        ),
+    ]
+)
+FROZEN_MUTATIONS = [
+    (
+        "complete-segment-digests",
+        "set(pinned) == set(paths)",
+        "True",
+        "test_extra_segment_digest_cannot_qualify",
+    )
+]
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -298,6 +331,14 @@ def main():
             launcher.write_text(original_launcher.replace(before, after))
             run(name, selected, red=True)
             launcher.write_text(original_launcher)
+        frozen = private / "production/con01_history/frozen.py"
+        original_frozen = frozen.read_text()
+        for name, before, after, selected in FROZEN_MUTATIONS:
+            if original_frozen.count(before) != 1:
+                raise RuntimeError(f"{name}: frozen anchor changed")
+            frozen.write_text(original_frozen.replace(before, after))
+            run(name, selected, red=True)
+            frozen.write_text(original_frozen)
         run("restored")
     files = {
         str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()

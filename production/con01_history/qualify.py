@@ -5,12 +5,12 @@ This is a technical evidence gate, not approval to enable a public service.
 """
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 
 from . import observer
 from .certificate import require
+from .frozen import sha, validate_segments
 
 
 WORKER_MODULES = {
@@ -21,7 +21,7 @@ WORKER_MODULES = {
     "audit.py",
     "formats.py",
 }
-CONTROL_GUARDS = 32
+CONTROL_GUARDS = 36
 CONTROL_TESTS = {
     "source-key-file-binding": "test_cached_key_file_hash_is_bound_before_verification",
     "expired-term-regression": "test_expired_schedule_passes_full_observer",
@@ -55,15 +55,11 @@ CONTROL_TESTS = {
     "legacy-worker-alias": "test_historical_worker_name_is_exact_byte_alias",
     "launch-legacy-worker-alias": "test_historical_worker_name_resumes_exact_same_bytes",
     "launch-worker-config-bytes": "test_relative_output_alias_refuses_before_worker",
+    "frozen-segment-content": "test_same_length_frozen_segment_change_cannot_qualify",
+    "complete-segment-digests": "test_extra_segment_digest_cannot_qualify",
+    "launch-frozen-segment-content": "test_same_length_frozen_segment_change_refuses_before_worker",
+    "launch-segment-manifest-pin": "test_unchanged_frozen_inputs_resume",
 }
-
-
-def sha(path):
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for part in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(part)
-    return digest.hexdigest()
 
 
 def main():
@@ -169,6 +165,7 @@ def main():
             "REPLAY-CONFIG.json",
             "SNAPSHOT.json",
             "SEALS.jsonl",
+            "SEGMENT-HASHES.json",
         },
         "complete frozen input inventory required",
     )
@@ -178,6 +175,7 @@ def main():
         ),
         "frozen replay input identity changed",
     )
+    validate_segments(args.replay)
     cfg = json.loads((args.replay / "REPLAY-CONFIG.json").read_bytes())
     cfg["_genesis_set"] = state.get("genesis_set")
     verdict = observer.judge(observer.load_results(args.replay), cfg)

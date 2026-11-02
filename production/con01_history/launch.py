@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 
 from .certificate import require
+from .frozen import pin_segments, validate_segments
 from .qualify import WORKER_MODULES, sha
 from ._replay import snapshot
 
@@ -16,6 +17,7 @@ INPUT_FILES = {
     "REPLAY-CONFIG.json",
     "SNAPSHOT.json",
     "SEALS.jsonl",
+    "SEGMENT-HASHES.json",
 }
 
 
@@ -49,6 +51,9 @@ def main():
             )
             + "\n"
         )
+        (args.out / "SEGMENT-HASHES.json").write_text(
+            json.dumps(pin_segments(args.out), indent=2) + "\n"
+        )
         manifest.write_text(
             json.dumps(
                 dict(
@@ -72,6 +77,7 @@ def main():
             sha(args.out / name) == digest,
             "frozen input changed before resume: " + name,
         )
+    validate_segments(args.out)
     require(
         sha(approved) == sha(args.config),
         "approved configuration changed before resume",

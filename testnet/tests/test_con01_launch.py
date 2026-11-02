@@ -69,6 +69,11 @@ class LaunchMetadata(unittest.TestCase):
         self.assertEqual((self.out / "REPLAY-CONFIG.json").read_bytes(), before)
 
     def test_unchanged_frozen_inputs_resume(self):
+        pins = json.loads((self.out / "REPLAY-INPUTS.json").read_bytes())
+        self.assertIn("SEGMENT-HASHES.json", pins["files"])
+        self.assertEqual(
+            pins["files"]["SEGMENT-HASHES.json"], launch.sha(self.out / "SEGMENT-HASHES.json")
+        )
         self.invoke(True)
 
     def test_historical_worker_name_resumes_exact_same_bytes(self):
@@ -122,6 +127,10 @@ class LaunchMetadata(unittest.TestCase):
             lambda obj: obj["source_sha256"].__setitem__("observer.py", "00" * 32),
         )
         self.refuse("worker revision changed")
+
+    def test_same_length_frozen_segment_change_refuses_before_worker(self):
+        (self.out / "src-node1/seg-fixture.jsonl").write_bytes(b"[]\n")
+        self.refuse("frozen segment digest changed")
 
 
 if __name__ == "__main__":
