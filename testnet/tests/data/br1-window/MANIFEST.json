@@ -1,0 +1,14 @@
+{
+  "scope": "public consensus config proof only; no transaction/custody payload",
+  "source": "verified genesis-chain probe live-r1",
+  "files": {
+    "config.json": {
+      "bytes": 10326,
+      "sha256": "ed4eab8a93a7b7fd9349157445bb92f9e5d0e81314b7b4762d4b21e55e3b5217"
+    },
+    "key.json": {
+      "bytes": 202,
+      "sha256": "10e801e6a77669dd0adf68fd67a197897dc645899a5dbc775f98a6f0884ec3e0"
+    }
+  }
+}
