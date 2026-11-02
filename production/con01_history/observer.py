@@ -161,7 +161,9 @@ def cert_from_sigs(raw):
     if (
         "result" not in r
         and error == MISSING_CERTIFICATE
+        and type(error["code"]) is int
         and type(error["data"]["schema_version"]) is int
+        and error["data"]["retryable"] is False
     ):
         raise CertificateUnavailable("BLOCK_UNAVAILABLE")
     assert "result" in r, "signature set error " + json.dumps(r.get("error"))[:200]
@@ -267,6 +269,9 @@ class StageA:
                 if str(e) != "expected forward-only proof":
                     raise
                 fwd, dst, dest = routed_proof(raw)
+                assert identity(dst) == identity(h["id"]), (
+                    "routed proof target differs from header id"
+                )
                 sigs = rec.get("sigs") or (sigs_override or {}).get(rec["seqno"])
                 if not sigs:
                     raise AssertionError(UNSUPPORTED)

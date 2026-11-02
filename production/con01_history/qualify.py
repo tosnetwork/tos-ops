@@ -21,7 +21,7 @@ WORKER_MODULES = {
     "audit.py",
     "formats.py",
 }
-CONTROL_GUARDS = 47
+CONTROL_GUARDS = 50
 CONTROL_TESTS = {
     "source-key-file-binding": "test_cached_key_file_hash_is_bound_before_verification",
     "expired-term-regression": "test_expired_schedule_passes_full_observer",
@@ -70,6 +70,9 @@ CONTROL_TESTS = {
     "bounded-timeout-retry": "test_timeout_then_success_reverifies_exact_bytes",
     "timeout-exhaustion-bound": "test_timeout_exhaustion_is_refused_after_three_attempts",
     "crypto-rejection-no-retry": "test_cryptographic_rejection_is_never_retried",
+    "missing-envelope-code-type": "test_float_error_code_is_not_canonical_missing_data",
+    "missing-envelope-retryable-type": "test_numeric_retryable_is_not_canonical_missing_data",
+    "missing-data-target-binding": "test_wrong_routed_target_is_rejected_before_missing_certificate",
 }
 
 

@@ -259,6 +259,28 @@ MUTATIONS.extend(
         ),
     ]
 )
+MUTATIONS.extend(
+    [
+        (
+            "missing-envelope-code-type",
+            'and type(error["code"]) is int',
+            "",
+            "test_float_error_code_is_not_canonical_missing_data",
+        ),
+        (
+            "missing-envelope-retryable-type",
+            'and error["data"]["retryable"] is False',
+            "",
+            "test_numeric_retryable_is_not_canonical_missing_data",
+        ),
+        (
+            "missing-data-target-binding",
+            'assert identity(dst) == identity(h["id"]), (\n                    "routed proof target differs from header id"\n                )',
+            "pass",
+            "test_wrong_routed_target_is_rejected_before_missing_certificate",
+        ),
+    ]
+)
 CERTIFICATE_MUTATIONS = [
     (
         "bounded-timeout-retry",

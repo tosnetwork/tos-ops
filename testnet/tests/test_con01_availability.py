@@ -68,6 +68,29 @@ class Availability(unittest.TestCase):
         result = observer.judge(records, config, bounds)
         self.assertNotEqual(result["verdict"], "PASS")
 
+    def test_float_error_code_is_not_canonical_missing_data(self):
+        value = json.loads(self.record["sigs"])
+        value["error"]["code"] = -32004.0
+        self.record["sigs"] = json.dumps(value)
+        self.assertFalse(self.stage.verify_block(self.record).get("unsupported"))
+
+    def test_numeric_retryable_is_not_canonical_missing_data(self):
+        original = json.loads(self.record["sigs"])
+        for numeric in (0, 0.0):
+            value = copy.deepcopy(original)
+            value["error"]["data"]["retryable"] = numeric
+            self.record["sigs"] = json.dumps(value)
+            self.assertFalse(self.stage.verify_block(self.record).get("unsupported"))
+
+    def test_wrong_routed_target_is_rejected_before_missing_certificate(self):
+        value = json.loads(self.record["hdr"])
+        value["result"]["id"]["root_hash"] = observer.formats.B(bytes(32))
+        self.record["hdr"] = json.dumps(value)
+        result = self.stage.verify_block(self.record)
+        self.assertFalse(result["ok"])
+        self.assertFalse(result.get("unsupported"), result)
+        self.assertIn("routed proof target differs", result["reason"])
+
 
 class BoundedTimeout(unittest.TestCase):
     def setUp(self):
