@@ -149,5 +149,52 @@ class Recovery(unittest.TestCase):
             self.assertEqual(path.stat().st_mode & 0o777, 0o644)
 
 
+class Installer(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location(
+            "monitor_installer",
+            Path(__file__).resolve().parents[1] / "host-monitor/install.py",
+        )
+        self.installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.installer)
+
+    def test_verified_snapshot_is_installed_after_source_path_changes(self):
+        import hashlib
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source"
+            target = Path(directory) / "target"
+            source.write_bytes(b"reviewed bytes")
+            data = self.installer.verified_bytes(
+                source, hashlib.sha256(b"reviewed bytes").hexdigest()
+            )
+            source.write_bytes(b"changed after approval")
+            self.installer.install_bytes(target, data, 0o755)
+            self.assertEqual(target.read_bytes(), b"reviewed bytes")
+
+    def test_install_refuses_existing_file_or_symlink(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "existing"
+            source.write_bytes(b"keep")
+            link = Path(directory) / "link"
+            link.symlink_to(source)
+            for path in (source, link):
+                with self.assertRaises(FileExistsError):
+                    self.installer.install_bytes(path, b"replace", 0o755)
+            self.assertEqual(source.read_bytes(), b"keep")
+
+    def test_unreviewed_input_bytes_refuse(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source"
+            source.write_bytes(b"changed")
+            with self.assertRaisesRegex(AssertionError, "SHA mismatch"):
+                self.installer.verified_bytes(source, "0" * 64)
+
+
 if __name__ == "__main__":
     unittest.main()

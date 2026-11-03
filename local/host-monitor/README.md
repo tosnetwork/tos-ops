@@ -30,8 +30,21 @@ units. It does not edit their templates or reset failed payment units.
 After reviewing exact source/template hashes and non-author review:
 
 ```sh
-sudo /usr/bin/python3 -I local/host-monitor/install.py --user "$HOST_USER" \
-  --source-sha256 "$REVIEWED_SOURCE_SHA" --unit-sha256 "$REVIEWED_UNIT_SHA"
+sudo /usr/bin/python3 -I -c '
+import hashlib, os, stat, sys
+path, expected, *arguments = sys.argv[1:]
+fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+try:
+    assert stat.S_ISREG(os.fstat(fd).st_mode)
+    data = os.read(fd, 131073)
+finally:
+    os.close(fd)
+assert len(data) <= 131072 and hashlib.sha256(data).hexdigest() == expected
+sys.argv = [path, *arguments]
+exec(compile(data, path, "exec"), {"__name__": "__main__", "__file__": path})
+' "$CHECKOUT/local/host-monitor/install.py" "$REVIEWED_INSTALLER_SHA" \
+  --user "$HOST_USER" --source-sha256 "$REVIEWED_SOURCE_SHA" \
+  --unit-sha256 "$REVIEWED_UNIT_SHA"
 systemctl is-enabled tos-host-monitor.service
 systemctl is-active tos-host-monitor.service
 cat /var/lib/tos-host-monitor/status.json
@@ -53,3 +66,12 @@ sudo /usr/bin/python3 -I local/host-monitor/host-monitor.py --user "$HOST_USER" 
 Upstream comparison: this TOS-specific host deployment/configuration path is
 absent in TON master857b8a57a178e6ae0fe7fa86e7d81c5233de8560. Existing Linux,
 networking and NIC watchdog implementations remain unchanged.
+
+
+The fixed inline privileged bootstrap snapshots and hashes the installer itself
+before executing exactly those bytes. The installer similarly snapshots each
+source/template input once, verifies its approved hash, and writes exactly those
+bytes through exclusive no-follow root-owned files with readback and fsync.
+Deployment directories must be root-owned and not group/other writable. A
+concurrently changed user worktree path cannot substitute different root code
+after its approved digest was checked.

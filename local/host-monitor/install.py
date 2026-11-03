@@ -5,13 +5,61 @@ import argparse
 import hashlib
 import os
 import pwd
-import shutil
+import stat
 import subprocess
 from pathlib import Path
 
 
 def run(*args):
     subprocess.run(list(args), check=True)
+
+
+def verified_bytes(path, expected):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        info = os.fstat(fd)
+        assert stat.S_ISREG(info.st_mode) and info.st_size <= 1024 * 1024
+        data = os.read(fd, 1024 * 1024 + 1)
+    finally:
+        os.close(fd)
+    assert hashlib.sha256(data).hexdigest() == expected, "reviewed source SHA mismatch"
+    return data
+
+
+def secure_directory(path, uid):
+    path.mkdir(mode=0o755, exist_ok=True)
+    info = path.lstat()
+    assert (
+        stat.S_ISDIR(info.st_mode) and info.st_uid == uid and not info.st_mode & 0o022
+    ), "unsafe deployment directory"
+
+
+def install_bytes(path, data, mode):
+    fd = os.open(
+        path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, mode
+    )
+    try:
+        info = os.fstat(fd)
+        assert (
+            stat.S_ISREG(info.st_mode)
+            and info.st_uid == os.geteuid()
+            and info.st_nlink == 1
+        )
+        os.fchmod(fd, mode)
+        view = memoryview(data)
+        while view:
+            written = os.write(fd, view)
+            assert written > 0
+            view = view[written:]
+        os.fsync(fd)
+        assert os.pread(fd, len(data) + 1, 0) == data, "installed bytes differ"
+    finally:
+        os.close(fd)
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def main():
@@ -24,24 +72,20 @@ def main():
     account = pwd.getpwnam(a.user)
     assert account.pw_uid > 0 and a.user.replace("-", "").replace("_", "").isalnum()
     root = Path(__file__).resolve().parent
-    source = root / "host-monitor.py"
-    unit = root / "tos-host-monitor.service"
-    assert hashlib.sha256(source.read_bytes()).hexdigest() == a.source_sha256
-    assert hashlib.sha256(unit.read_bytes()).hexdigest() == a.unit_sha256
+    source = verified_bytes(root / "host-monitor.py", a.source_sha256)
+    unit = verified_bytes(root / "tos-host-monitor.service", a.unit_sha256)
     target = Path("/usr/local/lib/tos-host-monitor")
-    target.mkdir(mode=0o755, exist_ok=True)
+    secure_directory(target, 0)
     installed = target / "host-monitor.py"
     system_unit = Path("/etc/systemd/system/tos-host-monitor.service")
     assert not installed.exists() and not system_unit.exists(), (
         "existing deployment: review upgrade separately"
     )
-    shutil.copyfile(source, installed)
-    installed.chmod(0o755)
-    with system_unit.open("x") as output:
-        output.write(unit.read_text().replace("@USER@", a.user))
-    system_unit.chmod(0o644)
+    secure_directory(system_unit.parent, 0)
     state = Path("/var/lib/tos-host-monitor")
-    state.mkdir(mode=0o755, exist_ok=True)
+    secure_directory(state, 0)
+    install_bytes(installed, source, 0o755)
+    install_bytes(system_unit, unit.replace(b"@USER@", a.user.encode()), 0o644)
     run("loginctl", "enable-linger", a.user)
     run(
         "systemctl",
