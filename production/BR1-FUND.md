@@ -85,9 +85,9 @@ availability is deliberately subordinate to preventing a second payment.
 "$WALLET_PYTHON" -B testnet/tests/br1_fund_controls.py --out "$NEW_CONTROLS"
 ```
 
-26 tests include real V3 cell serialization/Ed25519 public-key matching and mock
+48 tests include real V3 cell serialization/Ed25519 public-key matching and mock
 orchestration for fixed initialization, marker-before-keys, dry/no-sign,
-post-sign expiry, and unknown reconciliation. Eleven individually removed guards
+post-sign expiry, and unknown reconciliation. Twenty individually removed guards
 must cause assertion failures, with complete baseline/restoration passes.
 Orchestration mocks are not live acceptance. The bounded evidence index records
 exact source/raw hashes and retention; no seeds, signed BOCs or journals are in Git.
@@ -100,3 +100,42 @@ proof/finality/fee-import/full-rescan evidence remain separate pilot requirement
 
 Upstream comparison: this deployment path is absent in upstream TON at
 857b8a57a178e6ae0fe7fa86e7d81c5233de8560. No inherited implementation changed.
+
+
+## Separate official-CLI client allocation
+
+The original operator policy and fixed5TOS allocation are unchanged. A separate
+`tos.br1.public-client-policy.v1` policy selects exactly2TOS for one fresh V3R2
+carrier owned by the official CLI. This new allocation requires explicit operator
+authorization; the original operator5TOS approval does not authorize it. There is
+no custom amount option. Both roles use the same approved PRI journal and overall
+budget, with distinct operation IDs and durable attempt markers. Changing a role
+or policy is never a retry mechanism for an unknown attempt.
+
+The client policy retains all original gate/source/window fields and adds
+`client`: `manifest`, `manifest_sha256`, `state_init`, `state_init_sha256`, `cli`,
+`cli_sha256`, `config`, `config_sha256` and `vault_env`. The public manifest schema
+is `tos.br1.public-client.v1`, with `global_id`, `genesis_root`, `genesis_file`,
+`wallet`, `wallet_address`, `wallet_version`, `subwallet_id`, `public_key_hex`.
+Only the approved Epoch6 identity, canonical TOS V3 code, zero initial sequence,
+subwallet3 and exact manifest public key are accepted. Neither manifest nor policy
+contains a private key. The private mode0600 environment file contains only the
+local file `VAULT_URL`; never hash or display it.
+
+Before source-key loading, the pinned CLI's offline wallet/key lists must bind the
+manifest to the configured carrier and Vault public key. No private export is
+used. Inspect has no Vault/key access; dry-run verifies custody but never signs
+or broadcasts. After reviewing the unsigned packet and receiving the separate
+client authorization, fund also requires `--acknowledge-client-2-tos`. Absence of
+this flag refuses before loading any wallet runtime. The acknowledgement flag
+records intent; it cannot supply human authorization by itself.
+
+Client operation ID is `br1-pilot-client-fund-v1`; its persistent marker is
+`br1-public-client-funding-v1.marker.json`. Every signing/unknown/terminal attempt
+consumes the client allocation. Reconcile checks the same original destination,
+amount and StateInit without source keys or rebroadcast. Never remove a marker,
+change identity, or reset a journal to retry. Mock orchestration tests cover both
+fixed roles independently; they do not claim public-chain acceptance.
+
+Upstream comparison: these TOS deployment and official-CLI paths are absent in
+TON master857b8a57a178e6ae0fe7fa86e7d81c5233de8560; no inherited code changes.

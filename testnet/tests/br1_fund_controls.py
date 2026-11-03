@@ -63,6 +63,56 @@ MUTATIONS = [
         "writes == 0",
         "test_window_expiring_after_signing_has_zero_broadcast",
     ),
+    (
+        "client-ack",
+        'getattr(args, "acknowledge_client_2_tos", False) is True',
+        "True",
+        "test_missing_new_allocation_ack_refuses_before_keys",
+    ),
+    ("client-network", 'manifest["global_id"] == 2', "True", "test_client_network_refused"),
+    (
+        "client-key",
+        "data.load_bytes(32) == public",
+        "len(data.load_bytes(32)) == 32",
+        "test_client_public_key_refused",
+    ),
+    (
+        "client-address",
+        'manifest["wallet_address"] == "0:" + cell.hash.hex()',
+        "True",
+        "test_client_address_refused",
+    ),
+    (
+        "client-private-check",
+        "        client_vault_identity(client, manifest, drv)",
+        "        None",
+        "test_client_private_check_calls_vault_identity",
+    ),
+    (
+        "fixed-role-pair",
+        "(operation, amount) in ((OP, AMOUNT), (CLIENT_OP, CLIENT_AMOUNT))",
+        "True",
+        "test_arbitrary_amount_and_role_pairs_refused",
+    ),
+    (
+        "client-vault-key-name",
+        "line.split()[0] == key_name",
+        "True",
+        "test_offline_key_name_binding_refuses",
+    ),
+    (
+        "client-vault-wallet-address",
+        """drv.Address(matches[0]["address"]).to_str(is_user_friendly=False)
+        == manifest["wallet_address"]""",
+        "True",
+        "test_offline_wrong_carrier_address_refuses",
+    ),
+    (
+        "client-wallet-version",
+        'configured["version"] == "V3R2"',
+        "True",
+        "test_offline_wrong_configured_version_refuses_before_cli",
+    ),
 ]
 
 
@@ -115,7 +165,7 @@ def main():
                     or b"ERROR" in raw
                 ):
                     raise RuntimeError("intended runtime assertion did not fail: " + name)
-            elif result.returncode != 0 or b"Ran 26 tests" not in raw or b"\nOK\n" not in raw:
+            elif result.returncode != 0 or b"Ran 48 tests" not in raw or b"\nOK\n" not in raw:
                 raise RuntimeError("complete baseline/restoration failed: " + name)
             rows.append(
                 {
