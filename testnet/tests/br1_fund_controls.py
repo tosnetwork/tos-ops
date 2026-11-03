@@ -113,6 +113,48 @@ MUTATIONS = [
         "True",
         "test_offline_wrong_configured_version_refuses_before_cli",
     ),
+    (
+        "resume-attestation",
+        'receipt["trusted_operator_attestation"] is True',
+        "True",
+        "test_unreviewed_attestation_refuses",
+    ),
+    (
+        "resume-plan",
+        'original["plan"] == plan',
+        "True",
+        "test_old_plan_cannot_change_destination_or_nonce",
+    ),
+    (
+        "resume-log",
+        'log.count("Traceback (most recent call last):") == 1\n        and frame in log\n        and log.rstrip().endswith(\n            "con01_history.certificate.Refused: window expired before signing"\n        )\n        and "COMPLETE client fund" not in log',
+        "True",
+        "test_wrong_guard_failure_is_not_an_unsent_attestation",
+    ),
+    (
+        "resume-source-nonce",
+        'all(\n            type(row.get("seqno")) is int and row["seqno"] != plan["seqno"]\n            for row in prior\n        )',
+        "True",
+        "test_old_nonce_conflict_in_other_operation_refuses",
+    ),
+    (
+        "resume-signing-fence",
+        'not (\n            marker.parent / "br1-public-client-presign-resume-v1.signing-started.json"\n        ).exists()',
+        "True",
+        "test_started_signature_is_irrevocable_fence",
+    ),
+    (
+        "resume-dry-nosign",
+        'dry_run=args.mode in {"dry-run", "resume-dry-run"}',
+        'dry_run=args.mode == "dry-run"',
+        "test_resume_dry_never_signs_or_consumes_original_marker",
+    ),
+    (
+        "resume-before-crypto",
+        "                    before_sign()",
+        "                    pass",
+        "test_signing_fence_exists_before_underlying_crypto",
+    ),
 ]
 
 
@@ -137,6 +179,9 @@ def main():
         tests = private / "testnet/tests"
         tests.mkdir(parents=True)
         shutil.copyfile(root / "testnet/tests/test_br1_fund.py", tests / "test_br1_fund.py")
+        shutil.copyfile(
+            root / "testnet/tests/test_br1_fund_resume.py", tests / "test_br1_fund_resume.py"
+        )
         shutil.copytree(root / "testnet/tests/data/br1-fund", tests / "data/br1-fund")
         original = target.read_text()
 
@@ -150,7 +195,7 @@ def main():
                 "-s",
                 str(tests),
                 "-p",
-                "test_br1_fund.py",
+                "test_br1_fund*.py",
             ]
             if selected:
                 command += ["-k", selected]
@@ -165,7 +210,7 @@ def main():
                     or b"ERROR" in raw
                 ):
                     raise RuntimeError("intended runtime assertion did not fail: " + name)
-            elif result.returncode != 0 or b"Ran 48 tests" not in raw or b"\nOK\n" not in raw:
+            elif result.returncode != 0 or b"Ran 67 tests" not in raw or b"\nOK\n" not in raw:
                 raise RuntimeError("complete baseline/restoration failed: " + name)
             rows.append(
                 {
@@ -188,6 +233,7 @@ def main():
     paths = [
         root / "production/br1_fund.py",
         root / "testnet/tests/test_br1_fund.py",
+        root / "testnet/tests/test_br1_fund_resume.py",
         Path(__file__),
     ]
     paths += list((root / "production/con01_history").glob("*.py"))

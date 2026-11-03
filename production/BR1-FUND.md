@@ -85,11 +85,11 @@ availability is deliberately subordinate to preventing a second payment.
 "$WALLET_PYTHON" -B testnet/tests/br1_fund_controls.py --out "$NEW_CONTROLS"
 ```
 
-48 tests include real V3 cell serialization/Ed25519 public-key matching and mock
+The original48 tests include real V3 cell serialization/Ed25519 public-key matching and mock
 orchestration for fixed initialization, marker-before-keys, dry/no-sign,
 post-sign expiry, and unknown reconciliation. Twenty individually removed guards
 must cause assertion failures, with complete baseline/restoration passes.
-Orchestration mocks are not live acceptance. The [client evidence index](evidence/br1-client-fund.json) records current
+Orchestration mocks are not live acceptance. The [client evidence index](evidence/br1-client-fund.json) records historical
 48/20 source and raw hashes with retention. The [original operator index](evidence/br1-fund.json)
 remains historical26/11 evidence for its recorded source, not the new head; no seeds, signed BOCs or journals are in Git.
 
@@ -140,3 +140,45 @@ fixed roles independently; they do not claim public-chain acceptance.
 
 Upstream comparison: these TOS deployment and official-CLI paths are absent in
 TON master857b8a57a178e6ae0fe7fa86e7d81c5233de8560; no inherited code changes.
+
+
+## Once-only recovery of the reviewed legacy pre-sign incident
+
+`resume-dry-run` and `resume-before-sign` are client2TOS-only modes. They require
+`--recovery`, its explicit `--recovery-sha256`, and
+`--acknowledge-reviewed-presign-refusal`; funding also retains the existing
+client2TOS acknowledgement and fresh dry-plan requirements. They never remove,
+replace or edit the original allocation marker.
+
+The receipt schema `tos.br1.reviewed-presign-incident.v1` is a **trusted operator
+incident attestation**, not cryptographic evidence that a signature cannot exist.
+Under the operator's standing technical-decision authorization, the test lead
+must accept and record that trust scope after reviewing the complete local
+incident. It is limited to the exact pinned legacy wrapper source whose guard
+at line416 raised before the underlying signature. The receipt pins the original
+marker SHA, original policy, original source, complete failure-log SHA and
+`trusted_operator_attestation: true`. Log provenance is trusted local evidence;
+a copied/truncated log from an untrusted party must never authorize recovery.
+
+Current policy, source/destination/2TOS/nonce/StateInit plan must equal the
+original exactly. Both peers must still prove the same unchanged source nonce
+and a fresh empty target. Any unresolved PRI action, any non-dry entry for that
+wallet/nonce regardless of operation, or malformed source-sequence metadata
+refuses. The canonical PRI lock covers inspection, fencing and submission.
+
+A separate exclusive, fsynced `br1-public-client-presign-resume-v1.marker.json`
+precedes source-key loading. A second exclusive, fsynced
+`br1-public-client-presign-resume-v1.signing-started.json` precedes underlying
+crypto. A signing-start fence or resume marker is irrevocable: failures after
+either do not authorize another resume. Any signed/ambiguous state only permits
+readonly reconciliation of original bytes. The ordinary fund path still
+refuses the retained original marker. No repeated nonce/identity/amount route
+is provided. The additional mode is not a generic timeout/rebroadcast recovery.
+
+Current67tests/27removed guards, including marker/fence/sign/journal/send cuts,
+no-sign dry-run, other-operation/nonce conflicts and concurrent exclusive marker
+creation, are in `evidence/br1-presign-resume.json`. Original26/11 and48/20 indices
+remain historical at their own source pins. Source hashes and raw receipts are
+retained; no secrets or private journals are committed. Mock tests are not a
+live transfer claim. No C++/persistent daemon changes; one bounded incident JSON
+16KiB and existing1MiB inputs plus two small durable fences.

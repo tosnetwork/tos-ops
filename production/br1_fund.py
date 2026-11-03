@@ -366,6 +366,77 @@ def checked_client_init(policy, drv, private_check):
     return manifest["wallet_address"], init, hashlib.sha256(raw).hexdigest()
 
 
+LEGACY_PRESIGN_SOURCE_SHA = (
+    "9f9118bde244b1a56837f6a50b48b8a17acb9c631ed40d9c79cd646db94e8922"
+)
+
+
+def checked_presign_recovery(args, policy, marker, plan, entries):
+    """A trusted operator incident attestation, never a proof of signature absence."""
+    require(
+        getattr(args, "acknowledge_reviewed_presign_refusal", False) is True,
+        "reviewed pre-sign incident acknowledgement required",
+    )
+    require(
+        policy.get("schema") == CLIENT_SCHEMA, "pre-sign recovery only for client2TOS"
+    )
+    receipt = json.loads(read(args.recovery, args.recovery_sha256, 16384))
+    require(
+        receipt["schema"] == "tos.br1.reviewed-presign-incident.v1"
+        and receipt["trusted_operator_attestation"] is True,
+        "trusted reviewed incident required",
+    )
+    original = json.loads(read(marker, receipt["marker_sha256"], 16384))
+    require(
+        original["plan"] == plan and original["policy_sha256"] == args.policy_sha256,
+        "pre-sign original plan/nonce changed",
+    )
+    old_policy = json.loads(
+        read(receipt["original_policy"], args.policy_sha256, 128 * 1024)
+    )
+    require(old_policy == policy, "pre-sign original policy changed")
+    source = read(receipt["original_source"], LEGACY_PRESIGN_SOURCE_SHA, 1024 * 1024)
+    lines = source.decode().splitlines()
+    require(
+        lines[415].strip()
+        == "require(time.time() < " + 'deadline, "window expired before signing")'
+        and lines[417].strip() == "return wallet.sign(message, seqno)",
+        "reviewed original pre-sign ordering",
+    )
+    log = read(
+        receipt["failure_log"], receipt["failure_log_sha256"], 1024 * 1024
+    ).decode()
+    frame = f'File "{Path(__file__).resolve()}", line 416, in sign'
+    require(
+        log.count("Traceback (most recent call last):") == 1
+        and frame in log
+        and log.rstrip().endswith(
+            "con01_history.certificate.Refused: window expired before signing"
+        )
+        and "COMPLETE client fund" not in log,
+        "not the reviewed pre-sign guard failure",
+    )
+    prior = [
+        row
+        for row in entries.values()
+        if not row.get("dry_run") and row.get("wallet") == plan["source"]
+    ]
+    require(
+        all(
+            type(row.get("seqno")) is int and row["seqno"] != plan["seqno"]
+            for row in prior
+        ),
+        "source nonce already signed or journaled",
+    )
+    require(
+        not (
+            marker.parent / "br1-public-client-presign-resume-v1.signing-started.json"
+        ).exists(),
+        "resume signing already started: reconcile only",
+    )
+    return receipt
+
+
 def fresh_window(policy, out):
     # The legacy wallet client uses the configured venv; sealed native proofs
     # require the host Python's memfd API on this deployment.
@@ -397,14 +468,16 @@ def fresh_window(policy, out):
 
 
 class GuardedBlueprint:
-    def __init__(self, original, seqno, valid_until):
+    def __init__(self, original, seqno, valid_until, before_sign=None):
         self.original, self.seqno, self.valid_until = original, seqno, valid_until
         self.address = original.address
+        self.before_sign = before_sign
 
     def materialize(self, client):
         wallet = self.original.materialize(client)
         expected, deadline = self.seqno, self.valid_until
         claimed = False
+        before_sign = self.before_sign
 
         class Wallet:
             address = wallet.address
@@ -415,23 +488,35 @@ class GuardedBlueprint:
                 require(seqno == expected, "funding nonce changed before signing")
                 require(time.time() < deadline, "window expired before signing")
                 claimed = True
+                if before_sign is not None:
+                    before_sign()
                 return wallet.sign(message, seqno)
 
         return Wallet()
 
 
 async def work(args, policy):
+    funding = args.mode in {"fund", "resume-before-sign"}
+    resuming = args.mode in {"resume-dry-run", "resume-before-sign"}
     client_allocation = policy.get("schema") == CLIENT_SCHEMA
     operation, amount = (
         (CLIENT_OP, CLIENT_AMOUNT) if client_allocation else (OP, AMOUNT)
     )
-    if client_allocation and args.mode == "fund":
+    if client_allocation and funding:
         require(
             getattr(args, "acknowledge_client_2_tos", False) is True,
             "explicit new client2TOS allocation acknowledgement required",
         )
-    guarded = args.mode in {"dry-run", "fund"}
-    if args.mode == "fund":
+    if resuming:
+        require(client_allocation, "pre-sign recovery only for client2TOS")
+        require(
+            getattr(args, "recovery", None) is not None
+            and getattr(args, "recovery_sha256", None) is not None
+            and getattr(args, "acknowledge_reviewed_presign_refusal", False) is True,
+            "pinned reviewed pre-sign incident required",
+        )
+    guarded = args.mode in {"dry-run", "fund", "resume-dry-run", "resume-before-sign"}
+    if funding:
         require(
             args.plan is not None and args.plan_sha256 is not None,
             "fresh dry plan required",
@@ -462,7 +547,7 @@ async def work(args, policy):
         endpoints="node-1,node-3",
         funding_dir=policy["funding_dir"],
         funding_config=policy["funding_config"],
-        dry_run=args.mode == "dry-run",
+        dry_run=args.mode in {"dry-run", "resume-dry-run"},
         rebroadcast=False,
     )
     async with AsyncExitStack() as stack:
@@ -489,7 +574,9 @@ async def work(args, policy):
             if client_allocation
             else "br1-public-pilot-funding-v1.marker.json"
         )
-        require(not marker.exists(), "funding marker exists: reconcile only")
+        require(
+            resuming or not marker.exists(), "funding marker exists: reconcile only"
+        )
         states = [
             await peer.client.raw_get_account_state(drv.Address(target))
             for peer in endpoints
@@ -521,6 +608,12 @@ async def work(args, policy):
             seqno=seqno,
             state_init_sha256=init_sha,
         )
+        if resuming:
+            checked_presign_recovery(args, policy, marker, plan, run.entries())
+            marker = run.private / "br1-public-client-presign-resume-v1.marker.json"
+            require(
+                not marker.exists(), "pre-sign resume already attempted: reconcile only"
+            )
         if args.mode == "inspect":
             write_new(args.out / "UNSIGNED.json", plan)
             return
@@ -530,7 +623,7 @@ async def work(args, policy):
             (checked_target, checked_sha) == (target, init_sha),
             "native initialization changed",
         )
-        if args.mode == "fund":
+        if funding:
             expected = json.loads(read(args.plan, args.plan_sha256))
             require(
                 expected["plan"] == plan and expected["dry_run"] is True,
@@ -541,13 +634,39 @@ async def work(args, policy):
                 and 0 <= time.time() - expected["checked_utc"] <= 300,
                 "fresh dry run required",
             )
-            write_new(marker, {"policy_sha256": args.policy_sha256, "plan": plan})
+            write_new(
+                marker,
+                {
+                    "policy_sha256": args.policy_sha256,
+                    "plan": plan,
+                    "reviewed_presign_recovery_sha256": args.recovery_sha256
+                    if resuming
+                    else None,
+                },
+            )
         wallets = drv.funding_wallets(common)
         require(
             wallets[0].address.to_str(is_user_friendly=False) == source,
             "approved source wallet mismatch",
         )
-        wallets[0] = GuardedBlueprint(wallets[0], seqno, window["valid_until_utc"])
+
+        def signing_fence():
+            write_new(
+                run.private
+                / "br1-public-client-presign-resume-v1.signing-started.json",
+                {
+                    "policy_sha256": args.policy_sha256,
+                    "plan": plan,
+                    "recovery_sha256": args.recovery_sha256,
+                },
+            )
+
+        wallets[0] = GuardedBlueprint(
+            wallets[0],
+            seqno,
+            window["valid_until_utc"],
+            signing_fence if resuming and funding else None,
+        )
         original_send = drv.send_bytes
         writes = 0
 
@@ -576,7 +695,7 @@ async def work(args, policy):
             init=init,
             bounce=False,
         )
-        if args.mode == "fund":
+        if funding:
             require(result.get("state") == "delivered", "original funding not settled")
         write_new(
             args.out / "RESULT.json",
@@ -594,7 +713,16 @@ def main():
     parser.add_argument("--policy", type=Path, required=True)
     parser.add_argument("--policy-sha256", required=True)
     parser.add_argument(
-        "--mode", choices=("inspect", "dry-run", "fund", "reconcile"), required=True
+        "--mode",
+        choices=(
+            "inspect",
+            "dry-run",
+            "fund",
+            "reconcile",
+            "resume-dry-run",
+            "resume-before-sign",
+        ),
+        required=True,
     )
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--plan", type=Path)
@@ -604,6 +732,9 @@ def main():
         action="store_true",
         help="explicitly acknowledge the separate fixed2TOS client allocation, only after operator authorization",
     )
+    parser.add_argument("--recovery", type=Path)
+    parser.add_argument("--recovery-sha256")
+    parser.add_argument("--acknowledge-reviewed-presign-refusal", action="store_true")
     args = parser.parse_args()
     os.umask(0o077)
     policy = json.loads(read(args.policy, args.policy_sha256, 128 * 1024))

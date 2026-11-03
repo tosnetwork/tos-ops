@@ -320,6 +320,8 @@ class Orchestration(unittest.TestCase):
 
                     def sign(self, message, seqno):
                         outer.calls["signs"] += 1
+                        if getattr(outer, "fail_after_sign", False):
+                            raise OSError("TEST-ONLY cut after signature")
                         if outer.expire_after_sign:
                             outer.now = outer.deadline
                         return b"TEST-ONLY fake signed message"
@@ -339,7 +341,7 @@ class Orchestration(unittest.TestCase):
 
         def wallets(args):
             self.calls["keys"] += 1
-            if self.mode == "fund":
+            if self.mode in {"fund", "resume-before-sign"}:
                 self.assertTrue((private / self.marker).exists())
             return [Blueprint()]
 
@@ -399,9 +401,12 @@ class Orchestration(unittest.TestCase):
         out.mkdir()
         args = SimpleNamespace(
             mode=mode,
+            recovery=getattr(self, "recovery", None),
+            recovery_sha256=getattr(self, "recovery_sha256", None),
+            acknowledge_reviewed_presign_refusal=getattr(self, "reviewed_refusal", False),
             acknowledge_client_2_tos=self.acknowledge,
             out=out,
-            policy_sha256="a" * 64,
+            policy_sha256=getattr(self, "policy_sha256", "a" * 64),
             plan=plan,
             plan_sha256=hashlib.sha256(plan.read_bytes()).hexdigest() if plan else None,
         )
