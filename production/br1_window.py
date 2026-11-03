@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import io
 import json
 import struct
@@ -165,6 +166,75 @@ def election(rpc, path):
     return int(stack[0][1], 0)
 
 
+def refresh_target(args, prefix, verifier):
+    """Authenticate a new target after slow genesis acquisition, without a cache."""
+    archive = prefix["sources"][args.archive]
+    require(
+        prefix["status"] == "VERIFIED_GENESIS_CHAIN_AND_THREE_SOURCE_SUFFIX"
+        and archive["from_genesis"] is True
+        and identity(archive["anchor"]) == identity(prefix["anchor"])
+        and identity(archive["target"]) == identity(prefix["target"]),
+        "refresh needs verified genesis prefix",
+    )
+    join = archive["keys"][str(max(map(int, archive["keys"])))]
+    require(identity(join)[2] > 0, "refresh needs certified key")
+    out = args.out / "fresh"
+    out.mkdir(mode=0o700)
+    sources = {
+        name: audit.Rpc(url) for name, url in (item.split("=", 1) for item in args.rpc)
+    }
+    require(len(sources) == 3 and args.archive in sources, "refresh source population")
+    heads = {}
+    for name, rpc in sources.items():
+        info = rpc.call("getMasterchainInfo", {}, out / f"head-{name}.json")
+        require(
+            identity(info["init"]) == identity(prefix["anchor"]),
+            "refresh genesis mismatch",
+        )
+        heads[name] = info["last"]
+    seqno = min(identity(head)[2] for head in heads.values())
+    require(seqno >= identity(prefix["target"])[2], "refresh target went backwards")
+    target = None
+    for name, rpc in sources.items():
+        header = rpc.call(
+            "getBlockHeader",
+            dict(workchain=-1, shard=str(-9223372036854775808), seqno=seqno),
+            out / f"target-{name}.json",
+        )
+        require(header["global_id"] == 2, "refresh public network")
+        require(
+            target is None or identity(header["id"]) == identity(target),
+            "refresh full target disagreement",
+        )
+        target = header["id"]
+    reports = {
+        name: audit.acquire(rpc, join, target, out / f"suffix-{name}", verifier)
+        for name, rpc in sources.items()
+    }
+    reference = reports[args.archive]
+    require(
+        all(row["keys"] == reference["keys"] for row in reports.values()),
+        "refresh key chain disagreement",
+    )
+    result = dict(
+        status="VERIFIED_GENESIS_CHAIN_AND_THREE_SOURCE_SUFFIX",
+        anchor=prefix["anchor"],
+        target=audit.wire(target),
+        join_key=audit.wire(join),
+        archive=args.archive,
+        sources=reports,
+        genesis_prefix=dict(
+            path=str(args.out / "chain/REPORT.json"),
+            sha256=hashlib.sha256(
+                (args.out / "chain/REPORT.json").read_bytes()
+            ).hexdigest(),
+        ),
+        claim="Same-run genesis prefix authenticates refresh join; three sources independently prove the new target; all freshness checks remain unchanged.",
+    )
+    audit.write_new(out / "REPORT.json", result)
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("anchor", "verifier", "out"):
@@ -181,6 +251,7 @@ def main():
         with contextlib.redirect_stdout(io.StringIO()):
             audit.collect(options, verifier)
         chain = json.loads((options.out / "REPORT.json").read_bytes())
+        chain = refresh_target(args, chain, verifier)
         archive = chain["sources"][args.archive]
         key = archive["keys"][str(max(map(int, archive["keys"])))]
         configs, elections = [], []

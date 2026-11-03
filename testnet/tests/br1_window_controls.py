@@ -89,6 +89,37 @@ MUTATIONS = [
         "",
         "test_validity_never_outlives_oldest_proved_header",
     ),
+    (
+        "refresh-genesis-prefix",
+        'archive["from_genesis"] is True',
+        "True",
+        "test_non_genesis_prefix_refused",
+    ),
+    (
+        "refresh-genesis",
+        'identity(info["init"]) == identity(prefix["anchor"])',
+        "True",
+        "test_substituted_genesis_refused",
+    ),
+    (
+        "refresh-monotonic",
+        'seqno >= identity(prefix["target"])[2]',
+        "True",
+        "test_backward_target_refused",
+    ),
+    (
+        "refresh-full-target",
+        'target is None or identity(header["id"]) == identity(target)',
+        "True",
+        "test_full_target_mismatch_refused",
+    ),
+    (
+        "refresh-keys",
+        'all(row["keys"] == reference["keys"] for row in reports.values())',
+        "True",
+        "test_key_chain_disagreement_refused",
+    ),
+    ("refresh-network", 'header["global_id"] == 2', "True", "test_wrong_network_refused"),
 ]
 
 
@@ -114,6 +145,9 @@ def main():
         tests.mkdir(parents=True)
         shutil.copyfile(root / "testnet/tests/test_br1_window.py", tests / "test_br1_window.py")
         shutil.copytree(root / "testnet/tests/data/br1-window", tests / "data/br1-window")
+        shutil.copyfile(
+            root / "testnet/tests/test_br1_window_refresh.py", tests / "test_br1_window_refresh.py"
+        )
         original = target.read_text()
 
         def run(name, selected=None, red=False):
@@ -126,7 +160,7 @@ def main():
                 "-s",
                 str(tests),
                 "-p",
-                "test_br1_window.py",
+                "test_br1_window*.py",
             ]
             if selected:
                 command += ["-k", selected]
@@ -141,7 +175,7 @@ def main():
                     or b"ERROR" in raw
                 ):
                     raise RuntimeError("intended runtime assertion did not fail: " + name)
-            elif result.returncode != 0 or b"Ran 17 tests" not in raw or b"\nOK\n" not in raw:
+            elif result.returncode != 0 or b"Ran 24 tests" not in raw or b"\nOK\n" not in raw:
                 raise RuntimeError("complete baseline/restoration failed: " + name)
             rows.append(
                 {
@@ -164,6 +198,7 @@ def main():
     paths = [
         root / "production/br1_window.py",
         root / "testnet/tests/test_br1_window.py",
+        root / "testnet/tests/test_br1_window_refresh.py",
         Path(__file__),
     ]
     paths += list((root / "production/con01_history").glob("*.py"))

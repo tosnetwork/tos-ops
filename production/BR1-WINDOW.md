@@ -69,3 +69,27 @@ A final live probe at09:51:56UTC, after settlement, observed a quiet term and re
 An additional runtime regression control restores the old fixed-since1793541840 guard; the dynamic-term test then fails its intended assertion. This directly exercises the original stale-window assumption rather than only testing the new margins.
 
 The final getter decoder requires one two-field numeric stack row and integer exit0. Extra row fields, non-list stacks and boolean/float exit codes refuse. Its row-shape guard has a runtime removal control; the final live quiet probe reran after this decoder change. Earlier timing probes retain their original module-source hashes in the index.
+
+
+## Fresh target after genesis verification
+
+A long genesis/suffix collection may leave its originally selected target too
+old to sign safely. Keep that verified collection as the same-run trust prefix,
+then choose the newest common target and prove it independently on all three
+sources from the prefix's latest certified full key-block identity. Compare the
+new full target IDs and key chains, fetch configuration for the new certified key,
+and apply the unchanged30s header freshness and validity checks. No previous-run
+cache or standalone untrusted checkpoint can authorize the refresh.
+
+The retained `chain/REPORT.json` remains genesis-authenticated historical evidence;
+`fresh/REPORT.json` contains the fresh three-source suffixes and pins its same-run
+prefix path/SHA. A fixed second three-source phase adds bounded head/header reads
+and bounded suffix acquisition under the existing per-chain packet/byte/link
+limits. This trades a few current proofs for a useful signing interval; it never
+extends a header's expiry or skips final sign/broadcast fences.
+
+Current validation24tests and23removed runtime guards is indexed separately in
+`evidence/br1-window-refresh.json`. The older17/17 index remains historical for
+its recorded source and must not be used as current-head evidence. No chain sends
+are part of these tests; refresh tests use mocked RPCs and do not claim signature
+verification. Upstream: this TOS ops orchestration is absent at857b8a57a178e6ae0fe7fa86e7d81c5233de8560.
