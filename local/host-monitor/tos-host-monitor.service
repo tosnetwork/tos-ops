@@ -1,0 +1,25 @@
+[Unit]
+Description=Keep test host contact services and read-only tunnels available across reboot
+After=network-online.target ssh.service tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -I /usr/local/lib/tos-host-monitor/host-monitor.py --user @USER@
+Restart=always
+RestartSec=10
+UMask=0022
+OOMScoreAdjust=-800
+MemoryMax=128M
+CPUQuota=10%
+TimeoutStopSec=30
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/var/lib/tos-host-monitor
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
