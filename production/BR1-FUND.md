@@ -175,10 +175,12 @@ readonly reconciliation of original bytes. The ordinary fund path still
 refuses the retained original marker. No repeated nonce/identity/amount route
 is provided. The additional mode is not a generic timeout/rebroadcast recovery.
 
-Current67tests/27removed guards, including marker/fence/sign/journal/send cuts,
+Current68tests/28removed guards, including marker/fence/sign/journal/send cuts,
 no-sign dry-run, other-operation/nonce conflicts and concurrent exclusive marker
 creation, are in `evidence/br1-presign-resume.json`. Original26/11 and48/20 indices
 remain historical at their own source pins. Source hashes and raw receipts are
 retained; no secrets or private journals are committed. Mock tests are not a
 live transfer claim. No C++/persistent daemon changes; one bounded incident JSON
 16KiB and existing1MiB inputs plus two small durable fences.
+
+The resumed signer rechecks its deadline after signing-start fsync and before underlying crypto. A late fsync leaves both fences intact and cannot be retried.

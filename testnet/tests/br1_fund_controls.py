@@ -155,6 +155,12 @@ MUTATIONS = [
         "                    pass",
         "test_signing_fence_exists_before_underlying_crypto",
     ),
+    (
+        "resume-post-fsync-deadline",
+        "deadline > time.time()",
+        "True",
+        "test_slow_signing_fence_expiry_never_calls_crypto",
+    ),
 ]
 
 
@@ -210,7 +216,7 @@ def main():
                     or b"ERROR" in raw
                 ):
                     raise RuntimeError("intended runtime assertion did not fail: " + name)
-            elif result.returncode != 0 or b"Ran 67 tests" not in raw or b"\nOK\n" not in raw:
+            elif result.returncode != 0 or b"Ran 68 tests" not in raw or b"\nOK\n" not in raw:
                 raise RuntimeError("complete baseline/restoration failed: " + name)
             rows.append(
                 {

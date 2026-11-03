@@ -490,6 +490,9 @@ class GuardedBlueprint:
                 claimed = True
                 if before_sign is not None:
                     before_sign()
+                    require(
+                        deadline > time.time(), "window expired after signing fence"
+                    )
                 return wallet.sign(message, seqno)
 
         return Wallet()

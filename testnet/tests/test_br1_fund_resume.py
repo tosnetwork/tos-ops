@@ -264,3 +264,31 @@ class Resume(unittest.TestCase):
         self.h.data["malformed"] = dict(op="other", state="delivered", wallet="source", seqno="3")
         with self.assertRaisesRegex(Refused, "nonce already"):
             self.invoke("resume-dry-run")
+
+    def test_slow_signing_fence_expiry_never_calls_crypto(self):
+        clock = [99]
+        calls = []
+
+        class Wallet:
+            address = "source"
+
+            def sign(self, *args):
+                calls.append("crypto")
+
+        class Blueprint:
+            address = "source"
+
+            def materialize(self, client):
+                return Wallet()
+
+        def fence():
+            clock[0] = 101
+
+        wallet = fund.GuardedBlueprint(Blueprint(), 3, 100, fence).materialize(None)
+        with patch.object(fund.time, "time", side_effect=lambda: clock[0]):
+            with self.assertRaisesRegex(Refused, "after signing fence"):
+                wallet.sign(b"msg", 3)
+            clock[0] = 99
+            with self.assertRaisesRegex(Refused, "already claimed"):
+                wallet.sign(b"msg", 3)
+        self.assertEqual(calls, [])
