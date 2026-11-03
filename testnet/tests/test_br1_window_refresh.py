@@ -130,3 +130,8 @@ class Refresh(unittest.TestCase):
         self.network = 3
         with self.assertRaisesRegex(Refused, "public network"):
             self.invoke()
+
+    def test_reply_height_must_match_requested_common_head(self):
+        self.new = {**self.new, "seqno": 19}
+        with self.assertRaisesRegex(Refused, "header height"):
+            self.invoke()

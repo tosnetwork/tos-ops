@@ -120,6 +120,12 @@ MUTATIONS = [
         "test_key_chain_disagreement_refused",
     ),
     ("refresh-network", 'header["global_id"] == 2', "True", "test_wrong_network_refused"),
+    (
+        "refresh-reply-height",
+        'identity(header["id"])[2] == seqno',
+        "True",
+        "test_reply_height_must_match_requested_common_head",
+    ),
 ]
 
 
@@ -175,7 +181,7 @@ def main():
                     or b"ERROR" in raw
                 ):
                     raise RuntimeError("intended runtime assertion did not fail: " + name)
-            elif result.returncode != 0 or b"Ran 24 tests" not in raw or b"\nOK\n" not in raw:
+            elif result.returncode != 0 or b"Ran 25 tests" not in raw or b"\nOK\n" not in raw:
                 raise RuntimeError("complete baseline/restoration failed: " + name)
             rows.append(
                 {

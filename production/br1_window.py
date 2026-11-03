@@ -202,6 +202,7 @@ def refresh_target(args, prefix, verifier):
             out / f"target-{name}.json",
         )
         require(header["global_id"] == 2, "refresh public network")
+        require(identity(header["id"])[2] == seqno, "refresh header height differs")
         require(
             target is None or identity(header["id"]) == identity(target),
             "refresh full target disagreement",

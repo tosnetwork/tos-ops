@@ -88,8 +88,10 @@ and bounded suffix acquisition under the existing per-chain packet/byte/link
 limits. This trades a few current proofs for a useful signing interval; it never
 extends a header's expiry or skips final sign/broadcast fences.
 
-Current validation24tests and23removed runtime guards is indexed separately in
+Current validation25tests and24removed runtime guards is indexed separately in
 `evidence/br1-window-refresh.json`. The older17/17 index remains historical for
 its recorded source and must not be used as current-head evidence. No chain sends
 are part of these tests; refresh tests use mocked RPCs and do not claim signature
 verification. Upstream: this TOS ops orchestration is absent at857b8a57a178e6ae0fe7fa86e7d81c5233de8560.
+
+Refresh header replies must also contain exactly the requested common head height; agreement on an older substituted reply does not satisfy the new-target invariant.
