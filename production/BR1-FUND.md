@@ -1,8 +1,8 @@
 # Epoch-6 fixed pilot initialization
 
-`br1_fund.py` is an operator wrapper for exactly one 5 TOS transfer, including
-canonical V3 StateInit, from approved PRI wallet0 to a fresh native provider's
-funding wallet on public Epoch-6 (global ID2, global version16). It reuses the
+`br1_fund.py` provides one fixed allocation per role, including canonical V3
+StateInit, from approved PRI wallet0:5TOS to a fresh native provider funding
+wallet, or separately authorized2TOS to an official CLI carrier wallet on public Epoch-6 (global ID2, global version16). It reuses the
 frozen approved PRI driver/transport and existing private journal. This tool is
 not an approval, faucet, refill mechanism, Bond bootstrap or client-proof driver.
 No public transfer is part of its tests.
@@ -28,7 +28,7 @@ SHA256 explicitly. Required fields:
 | `tos_root`, `local_scripts` | Existing approved PRI library roots |
 | `funding_dir` | Existing approved PRI custody directory; no key copying |
 | `run_dir` | Existing canonical PRI run with delivered anchor entry and locked private journal |
-| `provider_state` | Fresh, independently generated public native state containing provider.json, funding-init.boc and funding.seed |
+| `provider_state` | Operator policy only: fresh, independently generated public native state containing provider.json, funding-init.boc and funding.seed |
 | `resource_gate`, `history_gate`, `upgrade_gate` | Objects `{path, sha256}` for independently reviewed qualification reports |
 | `window` | Existing proof inputs: `anchor`, `verifier`, `verifier_sha256`, `archive`, `join_key`, and three `rpc` name=URL strings; see BR1-WINDOW.md |
 
@@ -89,8 +89,9 @@ availability is deliberately subordinate to preventing a second payment.
 orchestration for fixed initialization, marker-before-keys, dry/no-sign,
 post-sign expiry, and unknown reconciliation. Twenty individually removed guards
 must cause assertion failures, with complete baseline/restoration passes.
-Orchestration mocks are not live acceptance. The bounded evidence index records
-exact source/raw hashes and retention; no seeds, signed BOCs or journals are in Git.
+Orchestration mocks are not live acceptance. The [client evidence index](evidence/br1-client-fund.json) records current
+48/20 source and raw hashes with retention. The [original operator index](evidence/br1-fund.json)
+remains historical26/11 evidence for its recorded source, not the new head; no seeds, signed BOCs or journals are in Git.
 
 Inputs are bounded (policy128KiB, normal JSON1MiB, StateInit64KiB, journal16MiB,
 pinned source256MiB per file); subprocess quiet proof has180s timeout and each

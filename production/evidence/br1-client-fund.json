@@ -1,0 +1,189 @@
+{
+  "result": "PASS",
+  "sources": {
+    "production/br1_fund.py": "9f9118bde244b1a56837f6a50b48b8a17acb9c631ed40d9c79cd646db94e8922",
+    "testnet/tests/test_br1_fund.py": "ddf5d86095ae32af838bbd1d7a91caaf0564017306f3e0e649b2e187f0532da1",
+    "testnet/tests/br1_fund_controls.py": "3ed3db730da178b8a9ca6750ae70c38a11f1d72e1ad265ce2d479efa860cff72",
+    "production/con01_history/__init__.py": "2669032d72511e45b4145efe98af062bd0f6cd5eee5b0e5f4fd25d4b37e33a8d",
+    "production/con01_history/observer.py": "093dcabafc946575412fe354e85562a840190a057f920da28fa786c0e6fc72f9",
+    "production/con01_history/certificate.py": "cd853372bb2f82cda1866618e60f3c94a1cbf85374a803852733cb4278a18b66",
+    "production/con01_history/frozen.py": "7d1961d005edb6010ec47ddf16380d166ff0e052223cb506cb568e9916f2e26a",
+    "production/con01_history/launch.py": "cb800fcefc1c852f4352704ce546a0671df213cf0ddd12c79883c1c5312f60cf",
+    "production/con01_history/audit.py": "cc9850c26a58c37b4f14c5d866e8e41928aed4deb5518f66ff6979a5107b4c91",
+    "production/con01_history/election_fees.py": "50e81201735397cb66021e50ee2afac4cb1d92ce0fb646c643e929c0face1d94",
+    "production/con01_history/qualify.py": "79199de6841b2161bf100a7fcb3fe16d4dff8977bc5f0ef3f8659d48d352f9a0",
+    "production/con01_history/formats.py": "df2ebfd9e585f7e4d54b020a24819c8b87f4d47e098ee4e7ad12230694c08519",
+    "production/con01_history/rejudge.py": "d564e922726a735f61cbaa8dbf26f5dc21e034bdb2e17fdf182500d6d75e8866",
+    "production/con01_history/_replay.py": "89095f3ff9d65e6b2622bacb8d65ed5d61a501067159dc7f2383c43c5082a988",
+    "testnet/tests/data/br1-fund/v3-code.boc": "9cea4958800cdaae9040aa1985750ba36df410181c4b508ea527a7048395677c",
+    "testnet/tests/data/br1-fund/MANIFEST.json": "dc616961fa2a9317bb43c4c32d68a5925865b0db2bb81f43724da5ee8276fd44"
+  },
+  "rows": [
+    {
+      "name": "baseline",
+      "test": null,
+      "exit": 0,
+      "sha256": "098d5f7614370119aa0d2af0b4b82d55955eeaa9df67228aff49919d5a35811b",
+      "bytes": 147
+    },
+    {
+      "name": "duration",
+      "test": "test_wall_clock_cannot_replace_resource_bound",
+      "exit": 1,
+      "sha256": "7913982b57725af67371ef797c8d4465243f7b03e38f400a18915865b99532c2",
+      "bytes": 675
+    },
+    {
+      "name": "actual24h",
+      "test": "test_short_nonfinite_or_boolean_soak_refuses",
+      "exit": 1,
+      "sha256": "62bccbcc211480f7c6dccd920327f3561a19283977edee8882b711ad668d7533",
+      "bytes": 674
+    },
+    {
+      "name": "history-verdict",
+      "test": "test_inconclusive_history_refuses",
+      "exit": 1,
+      "sha256": "d6263d0caf940585352364bbc9af1606f80267e605cbb5a290ea52db61f7bc76",
+      "bytes": 643
+    },
+    {
+      "name": "handover-count",
+      "test": "test_insufficient_windows_refuse",
+      "exit": 1,
+      "sha256": "8947cfb1458b3c59d85ee60c5fbb31ea3324473932b0ba6f44d8c524b74f4e85",
+      "bytes": 637
+    },
+    {
+      "name": "input-sha",
+      "test": "test_report_digest_is_checked",
+      "exit": 1,
+      "sha256": "9ef6d6309a9d0778c388eb6490378357b5835bf8088be718ab4acb5daf58c995",
+      "bytes": 618
+    },
+    {
+      "name": "budget",
+      "test": "test_any_existing_signed_or_terminal_funding_fences_new_funding",
+      "exit": 1,
+      "sha256": "e29925e775e9426150cac3c2e9f5395f61651a94a5a18370e6c1ab40a7d4a770",
+      "bytes": 745
+    },
+    {
+      "name": "nonce",
+      "test": "test_changed_nonce_refuses_before_signing",
+      "exit": 1,
+      "sha256": "e617ac79e74f5e3bcdeb439dc7d8a4dd888698dd01cd6ee6f651455ece366da4",
+      "bytes": 671
+    },
+    {
+      "name": "sign-window",
+      "test": "test_expired_window_refuses_before_signing",
+      "exit": 1,
+      "sha256": "f6d8b35dc20494123871bfbd2ad4c27500be2a862ab1df868cd47537576f72d4",
+      "bytes": 676
+    },
+    {
+      "name": "custody-public",
+      "test": "test_wrong_custody_key_or_mode_refuses",
+      "exit": 1,
+      "sha256": "12e8cdb5020844488b954a0b399c244adb3e3ecf7f57ef22c0545744ad71c062",
+      "bytes": 1243
+    },
+    {
+      "name": "native-address",
+      "test": "test_target_address_is_not_an_arbitrary_destination",
+      "exit": 1,
+      "sha256": "3e365e13f4ab7a381ca3cbb2a717ed9323d6a4eecb02d8f0b85eadcaa9f25ba4",
+      "bytes": 1313
+    },
+    {
+      "name": "broadcast-window",
+      "test": "test_window_expiring_after_signing_has_zero_broadcast",
+      "exit": 1,
+      "sha256": "7af089f1d43f2e4566c6c095da4b5b1a944a5aca1ed84df65d412b9b8d36f274",
+      "bytes": 1325
+    },
+    {
+      "name": "client-ack",
+      "test": "test_missing_new_allocation_ack_refuses_before_keys",
+      "exit": 1,
+      "sha256": "45d6c912c24333bed0ac3b12fb97f466c289003b8bfafd25d507c3e7c9c3f61c",
+      "bytes": 718
+    },
+    {
+      "name": "client-network",
+      "test": "test_client_network_refused",
+      "exit": 1,
+      "sha256": "0cf794cc32f2baa15b5d0bb198f193e47e33353c9eacfaccb05f9c32b5875be7",
+      "bytes": 617
+    },
+    {
+      "name": "client-key",
+      "test": "test_client_public_key_refused",
+      "exit": 1,
+      "sha256": "5d292fb0845555ba906b26752aff91305e3b83f7010aaa7d4fcd16d200159cde",
+      "bytes": 636
+    },
+    {
+      "name": "client-address",
+      "test": "test_client_address_refused",
+      "exit": 1,
+      "sha256": "39c751c7f7145dfbd001be04db0992d624ccd2c2cd0f150df43c366fcb464ece",
+      "bytes": 621
+    },
+    {
+      "name": "client-private-check",
+      "test": "test_client_private_check_calls_vault_identity",
+      "exit": 1,
+      "sha256": "236adeafa4ade6f69229e4d4c94824db6f7177d0669940a05c337cf5ed139ef2",
+      "bytes": 686
+    },
+    {
+      "name": "fixed-role-pair",
+      "test": "test_arbitrary_amount_and_role_pairs_refused",
+      "exit": 1,
+      "sha256": "f68655a11957bdb20594ed71f6c2d8c7b2a5cd7b3ff346ccb186de478c489fce",
+      "bytes": 647
+    },
+    {
+      "name": "client-vault-key-name",
+      "test": "test_offline_key_name_binding_refuses",
+      "exit": 1,
+      "sha256": "d83d26c40faee114bf195e3045a0069c7c9316e7d525aa42d608061f6d2281b0",
+      "bytes": 669
+    },
+    {
+      "name": "client-vault-wallet-address",
+      "test": "test_offline_wrong_carrier_address_refuses",
+      "exit": 1,
+      "sha256": "add585c97bebdfab739b60cc96c939d4c321c9dbc12fa7029a8503702378ebb6",
+      "bytes": 704
+    },
+    {
+      "name": "client-wallet-version",
+      "test": "test_offline_wrong_configured_version_refuses_before_cli",
+      "exit": 1,
+      "sha256": "2e02c52ab3abf072b15e4f2fd0b3b22f7dd5e696f4482282c18ed77f1a6efcc6",
+      "bytes": 911
+    },
+    {
+      "name": "restored",
+      "test": null,
+      "exit": 0,
+      "sha256": "6e7027b2696a238dc75d26d1e0de958e9fa76173f71e7de45eb44103f21b2f6e",
+      "bytes": 147
+    }
+  ],
+  "schema": "tos.br1.client-funding-evidence.v1",
+  "scope": "48 offline tests covering both fixed roles;20 removed runtime guards; no public signing or transfers",
+  "source_commit": "bcf8a52c0b48f03f3ef95c8744cecd1a92205725",
+  "raw_location": "toserver:/tos/build/e6-public-transfer-20261103/funder-controls-r5",
+  "retained_through": "2027-02-01T00:00:00Z",
+  "access": "Existing authorized toserver access",
+  "command": "$WALLET_PYTHON -B testnet/tests/br1_fund_controls.py --out \"$NEW_CONTROLS\"",
+  "limits": [
+    "Mock transport tests do not claim live acceptance",
+    "Separate new2TOS allocation still requires owner authorization",
+    "Older26/11 operator evidence remains historical at its own recorded sources"
+  ]
+}
