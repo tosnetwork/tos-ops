@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
@@ -50,6 +51,12 @@ METRICS = {
     "shard_client_age_seconds": "tos_shard_client_age_seconds",
     "net_failures_total": "tos_wait_block_data_net_failures_total",
     "refusal_answers_total": "tos_full_node_refusal_answers_total",
+    "mempool_eligible": 'tos_mempool_ext_messages{state="eligible"}',
+    "mempool_postponed": 'tos_mempool_ext_messages{state="postponed"}',
+    "mempool_oldest_age_seconds": "tos_mempool_oldest_ext_message_age_seconds",
+    "jsonrpc_active_requests": "tos_jsonrpc_active_requests",
+    "metrics_snapshot_timestamp": "tos_exporter_snapshot_completed_timestamp_seconds",
+    "metrics_generation": "tos_exporter_snapshot_generation",
 }
 
 
@@ -72,10 +79,14 @@ def parse_metrics(text: str) -> dict:
             continue
         name, _, rest = line.partition(" ")
         base = name.partition("{")[0]
-        if base in values:
+        if name in values:
             continue
         try:
-            values[base] = float(rest.split()[0])
+            value = float(rest.split()[0])
+            if not math.isfinite(value) or value < 0:
+                continue
+            values[name] = value
+            values.setdefault(base, value)
         except (IndexError, ValueError):
             continue
     return {field: values.get(series) for field, series in METRICS.items()}

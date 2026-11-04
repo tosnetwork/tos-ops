@@ -14,6 +14,8 @@ need nothing installed, and appends one TSV row per host to --out:
   utc  host  reachable  unit_active  unit_restarts  head_seqno  head_age_s
   shard_client_age_s  net_failures  refusal_answers  rss_mb  consensus_mb
   consensus_sessions  free_gib  cpu_busy_pct  cpu_iowait_pct
+  mempool_eligible  mempool_postponed  mempool_oldest_age_s
+  jsonrpc_active_requests  metrics_snapshot_age_s  metrics_generation
 
 An unobserved value is written as `-`. On stdout it prints one line per event,
 for a person or a monitor to read:
@@ -33,13 +35,20 @@ once HOST's shard client age falls below 60 s, printing the time since the
 watch started (start it right after the restart), or exits 1 after
 --duration.
 
-Exit status: 0 when --once or --duration ends, 1 on a bad inventory.
+--require-load-metrics requires --cpu-sample > 0, reports every missing resource
+sample and stale/over-limit queues, and exits 1 if any anomaly occurred during
+the run. Without it, ordinary alert debounce and exit behavior are unchanged.
+Use a new TSV when its header differs; old files are never silently migrated.
+
+Exit status: 0 when --once or --duration ends (except strict anomalies),
+1 on a bad inventory or mismatched TSV header.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import subprocess
 import sys
 import time
@@ -73,6 +82,31 @@ COLUMNS = (
     "free_gib",
     "cpu_busy_pct",
     "cpu_iowait_pct",
+    "mempool_eligible",
+    "mempool_postponed",
+    "mempool_oldest_age_s",
+    "jsonrpc_active_requests",
+    "metrics_snapshot_age_s",
+    "metrics_generation",
+)
+
+LOAD_FIELDS = (
+    "unit_restarts",
+    "head_seqno",
+    "head_age_s",
+    "shard_client_age_s",
+    "rss_mb",
+    "consensus_mb",
+    "consensus_sessions",
+    "free_gib",
+    "cpu_busy_pct",
+    "cpu_iowait_pct",
+    "mempool_eligible",
+    "mempool_postponed",
+    "mempool_oldest_age_s",
+    "jsonrpc_active_requests",
+    "metrics_snapshot_age_s",
+    "metrics_generation",
 )
 
 
@@ -150,6 +184,16 @@ def row(now: float, name: str, report: dict | None) -> dict:
         free_gib=scaled("free_bytes", GIB),
         cpu_busy_pct=report.get("cpu_busy_pct"),
         cpu_iowait_pct=report.get("cpu_iowait_pct"),
+        mempool_eligible=report.get("mempool_eligible"),
+        mempool_postponed=report.get("mempool_postponed"),
+        mempool_oldest_age_s=report.get("mempool_oldest_age_seconds"),
+        jsonrpc_active_requests=report.get("jsonrpc_active_requests"),
+        metrics_snapshot_age_s=(
+            None
+            if report.get("metrics_snapshot_timestamp") is None
+            else now - report["metrics_snapshot_timestamp"]
+        ),
+        metrics_generation=report.get("metrics_generation"),
     )
     return out
 
@@ -167,13 +211,31 @@ class Judge:
         args, found = self.args, []
         name, before = current["host"], self.previous.get(current["host"])
         if not current["reachable"]:
-            # One unreadable sample is not evidence of a fault (see probe());
-            # the host must stay unreadable for --unreachable-samples rounds.
+            # Ordinary alerts debounce SSH failures; strict load observation
+            # records every missing sample, even if a later round recovers.
             self.unreachable[name] = self.unreachable.get(name, 0) + 1
-            if self.unreachable[name] >= args.unreachable_samples:
+            if (
+                getattr(args, "require_load_metrics", False)
+                or self.unreachable[name] >= args.unreachable_samples
+            ):
                 found.append(f"{name}:unreachable")
         else:
             self.unreachable[name] = 0
+            if getattr(args, "require_load_metrics", False):
+                for key in LOAD_FIELDS:
+                    value = current[key]
+                    if value is None or not math.isfinite(value) or value < 0:
+                        found.append(f"{name}:unobserved={key}")
+                age = current["metrics_snapshot_age_s"]
+                if age is not None and age > args.max_metrics_age:
+                    found.append(f"{name}:metrics_stale={age:.1f}s")
+                oldest = current["mempool_oldest_age_s"]
+                if oldest is not None and oldest > args.max_mempool_age:
+                    found.append(f"{name}:mempool_age={oldest}s")
+                eligible, postponed = current["mempool_eligible"], current["mempool_postponed"]
+                if eligible is not None and postponed is not None:
+                    if eligible + postponed > args.max_mempool_messages:
+                        found.append(f"{name}:mempool_messages={eligible + postponed}")
             if current["unit_active"] != "active":
                 found.append(f"{name}:unit={current['unit_active']}")
             if (
@@ -205,6 +267,10 @@ class Judge:
 
 def append_rows(path: Path, rows: list[dict]) -> None:
     new = not path.exists() or path.stat().st_size == 0
+    if not new:
+        with path.open() as previous:
+            if previous.readline().rstrip("\n") != "\t".join(COLUMNS):
+                raise lib.TestnetError("TSV header differs; use a new observation file")
     with path.open("a") as out:
         if new:
             out.write("\t".join(COLUMNS) + "\n")
@@ -233,14 +299,19 @@ def watch(
     if args.until_current and args.until_current not in {h.name for h in hosts}:
         raise lib.TestnetError(f"--until-current {args.until_current} is not a watched host")
     judge = Judge(args)
+    observed_anomaly = False
     started = now()
     last_summary = None
     last_anomalies: list[str] = []
     while True:
         round_start = now()
-        rows = [row(now(), h.name, probe(h, args.cpu_sample)) for h in hosts]
+        rows = []
+        for h in hosts:
+            report = probe(h, args.cpu_sample)
+            rows.append(row(now(), h.name, report))
         append_rows(args.out, rows)
         anomalies = [a for r in rows for a in judge(r)]
+        observed_anomaly |= bool(anomalies)
         stamp = utc(round_start)
         if anomalies != last_anomalies:
             if anomalies:
@@ -262,12 +333,12 @@ def watch(
                 )
                 return 0
         if args.once:
-            return 0
+            return int(getattr(args, "require_load_metrics", False) and observed_anomaly)
         if args.duration is not None and now() - started >= args.duration:
             if args.until_current:
                 emit(f"NOT CURRENT {stamp} {args.until_current} after {args.duration} s")
                 return 1
-            return 0
+            return int(getattr(args, "require_load_metrics", False) and observed_anomaly)
         sleep(max(0.0, args.interval - (now() - round_start)))
 
 
@@ -280,6 +351,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--interval", type=float, default=60.0)
     parser.add_argument("--hosts")
     parser.add_argument("--cpu-sample", type=float, default=0.0)
+    parser.add_argument("--require-load-metrics", action="store_true")
+    parser.add_argument("--max-metrics-age", type=float, default=120.0)
+    parser.add_argument("--max-mempool-age", type=float, default=30.0)
+    parser.add_argument("--max-mempool-messages", type=int, default=10000)
     stop = parser.add_mutually_exclusive_group()
     stop.add_argument("--duration", type=float)
     stop.add_argument("--once", action="store_true")
@@ -295,6 +370,13 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--interval must be at least 1 second")
     if not 0 <= args.cpu_sample <= 60:
         parser.error("--cpu-sample must be between 0 and 60 seconds")
+    if args.require_load_metrics and (args.cpu_sample <= 0 or args.until_current):
+        parser.error("load observation requires positive --cpu-sample and no --until-current")
+    if any(
+        not math.isfinite(v) or v <= 0
+        for v in (args.max_metrics_age, args.max_mempool_age, args.max_mempool_messages)
+    ):
+        parser.error("load observation thresholds must be finite and positive")
     if args.duration is not None and args.duration <= 0:
         parser.error("--duration must be positive")
     if (

@@ -109,6 +109,93 @@ def test_healthy_rounds_write_rows_and_one_summary(tmp_path):
     assert first["cpu_busy_pct"] == "-"
 
 
+def load_report(**changes):
+    r = report()
+    r.update(
+        cpu_busy_pct=20,
+        cpu_iowait_pct=1,
+        mempool_eligible=7,
+        mempool_postponed=11,
+        mempool_oldest_age_seconds=2,
+        jsonrpc_active_requests=1,
+        metrics_snapshot_timestamp=0,
+        metrics_generation=3,
+    )
+    r.update(changes)
+    return r
+
+
+def load_args(tmp_path, **changes):
+    return make_args(
+        tmp_path,
+        require_load_metrics=True,
+        max_metrics_age=120,
+        max_mempool_age=30,
+        max_mempool_messages=10000,
+        **changes,
+    )
+
+
+def test_strict_load_observation_accepts_zero_and_fresh_snapshot(tmp_path):
+    judge = watch_testnet.Judge(load_args(tmp_path))
+    row = watch_testnet.row(1, "node-1", load_report(mempool_eligible=0))
+    assert judge(row) == []
+    assert row["mempool_eligible"] == 0 and row["mempool_postponed"] == 11
+    assert row["metrics_snapshot_age_s"] == 1
+
+
+@pytest.mark.parametrize("key", watch_testnet.LOAD_FIELDS)
+def test_strict_load_observation_refuses_each_missing_field(tmp_path, key):
+    row = watch_testnet.row(1, "node-1", load_report())
+    row[key] = None
+    assert f"node-1:unobserved={key}" in watch_testnet.Judge(load_args(tmp_path))(row)
+
+
+def test_strict_load_observation_reports_stale_future_and_queue_limits(tmp_path):
+    judge = watch_testnet.Judge(load_args(tmp_path))
+    row = watch_testnet.row(
+        121,
+        "node-1",
+        load_report(mempool_eligible=10000, mempool_postponed=1, mempool_oldest_age_seconds=31),
+    )
+    reasons = judge(row)
+    assert any("metrics_stale=" in s for s in reasons)
+    assert any("mempool_age=" in s for s in reasons)
+    assert any("mempool_messages=" in s for s in reasons)
+    row = watch_testnet.row(1, "node-1", load_report(metrics_snapshot_timestamp=2))
+    assert "node-1:unobserved=metrics_snapshot_age_s" in judge(row)
+
+
+def test_strict_load_observation_remembers_anomaly_after_recovery(tmp_path):
+    rounds = [
+        {"node-1": None, "node-2": load_report(metrics_snapshot_timestamp=1_800_000_000)},
+        {
+            "node-1": load_report(metrics_snapshot_timestamp=1_800_000_060),
+            "node-2": load_report(metrics_snapshot_timestamp=1_800_000_060),
+        },
+    ]
+    status, events, _ = run(
+        tmp_path,
+        rounds,
+        require_load_metrics=True,
+        max_metrics_age=120,
+        max_mempool_age=30,
+        max_mempool_messages=10000,
+    )
+    assert status == 1
+    assert any("node-1:unreachable" in e for e in events)
+    assert any(e.startswith("RECOVERED") for e in events)
+
+
+def test_tsv_schema_mismatch_does_not_append(tmp_path):
+    p = tmp_path / "old.tsv"
+    p.write_text("utc\thost\nold\tnode-1\n")
+    original = p.read_bytes()
+    with pytest.raises(lib.TestnetError, match="TSV header differs"):
+        watch_testnet.append_rows(p, [watch_testnet.row(1, "node-1", load_report())])
+    assert p.read_bytes() == original
+
+
 def test_unreachable_host_is_an_anomaly_and_its_return_recovers(tmp_path):
     rounds = [
         {"node-1": report(100), "node-2": report(100)},
