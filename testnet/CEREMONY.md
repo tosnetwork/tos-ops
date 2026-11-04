@@ -18,8 +18,9 @@ operator's wallet on the host. The pool's address is the validator id genesis
 records, the node is bound to it, and the node signs stake authorizations only
 for it. The pool derives from the two wallets, so both exist before genesis.
 
-For host tasks and failure handling, use [OPERATOR.md](OPERATOR.md). All live
-changes and signing require explicit human approval under [AGENTS.md](../AGENTS.md).
+For host tasks and failure handling, use [OPERATOR.md](OPERATOR.md). Follow the
+standing testnet fee authority and other live-operation approval boundaries in
+[AGENTS.md](../AGENTS.md); delegated operational fee top-ups need no per-payment approval.
 Commands here are templates, not permission to execute. The reference tos build
 is `85c679c3454f306eb867e25b1960ae3d757bd3dd`; pin the approved ceremony commit.
 
