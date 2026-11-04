@@ -3238,6 +3238,12 @@ def check_load_args(args: argparse.Namespace) -> None:
         raise lib.TestnetError("--wallet-timeout must be 1..4194303 s")
     if args.transfer_nanotos < 0:
         raise lib.TestnetError("--transfer-nanotos cannot be negative")
+    relayer_target = parse_tos(getattr(args, "relayer_amount", "50"), "--relayer-amount")
+    relayer_floor = parse_tos(getattr(args, "relayer_floor", "2"), "--relayer-floor")
+    if relayer_target // 3 <= relayer_floor:
+        raise lib.TestnetError(
+            "relayer refill threshold (--relayer-amount / 3) must exceed --relayer-floor"
+        )
     batch_gas(args.actions_per_batch)
 
 

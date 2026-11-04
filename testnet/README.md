@@ -549,3 +549,9 @@ qualified CLI run returns failure unless its declared monotonic offering window
 completed, every offered query was observed executed, all funding was settled,
 and failed/refused/unconfirmed counts are zero. The retained summary still
 exposes the narrower RPC-observation and net-burn scopes above.
+
+The relayer refill trigger is one third of `--relayer-amount`. It must exceed
+`--relayer-floor`: for example, a 10 TOS target with a 2 TOS stop floor is
+accepted, while a 3 TOS target with that floor is refused before key creation or
+signing. This ordering check is necessary, not a funding-latency guarantee;
+leave headroom for the five-second refill check and transfer settlement.
