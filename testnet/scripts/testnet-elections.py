@@ -2888,6 +2888,10 @@ class LoadDriver:
         self.links(work)
         started = time.time()
         started_monotonic = time.monotonic()
+        if getattr(self, "native_observer", None) is not None and (
+            getattr(self.args, "native_slo_population", None) == "fixed-stage"
+        ):
+            started_monotonic = self.native_observer.begin_stage(self.args.duration)
         stop_reason = "duration reached"
         old_handler = signal.signal(signal.SIGINT, self.on_sigint)
         refill_done = threading.Event()
@@ -3287,7 +3291,11 @@ class LoadDriver:
             max_captures=max_captures,
         )
         self.native_observer = NativeObserver(
-            collector, record, self.qualification.halt, interval=interval
+            collector,
+            record,
+            self.qualification.halt,
+            interval=interval,
+            slo_population=getattr(self.args, "native_slo_population", None) or "completion-prefix",
         )
         self.native_observer.bootstrap()
         self.qualification.attach_native(self.native_observer)
@@ -3380,6 +3388,7 @@ def check_load_args(args: argparse.Namespace) -> None:
     elif (
         any(getattr(args, field, None) for field in native_fields)
         or getattr(args, "native_poll_seconds", None) is not None
+        or getattr(args, "native_slo_population", None) is not None
     ):
         raise lib.TestnetError("native options require --native-finality")
     if getattr(args, "qualify_load", False):
@@ -3543,6 +3552,11 @@ def main(argv: list[str] | None = None) -> int:
         "--native-poll-seconds",
         type=float,
         help="native capture start spacing (0.1..10 seconds, default 2); slow captures never overlap",
+    )
+    p_load.add_argument(
+        "--native-slo-population",
+        choices=("completion-prefix", "fixed-stage"),
+        help="explicit percentile admission policy; default completion-prefix",
     )
     p_load.add_argument("--native-verifier")
     p_load.add_argument("--native-verifier-sha256")

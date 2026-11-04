@@ -107,3 +107,10 @@ def test_factory_passes_same_cadence_to_worker_and_collector(tmp_path, monkeypat
     assert received["collector"]["max_captures"] == 1540
     assert received["worker"]["interval"] == 0.5
     assert order == ["baseline", "attach", "start"]
+
+
+def test_slo_option_without_native_mode_refused():
+    with pytest.raises(lib.TestnetError, match="native options"):
+        elections.check_load_args(
+            SimpleNamespace(native_finality=False, native_slo_population="fixed-stage")
+        )

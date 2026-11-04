@@ -645,3 +645,99 @@ def test_failed_result_fsync_leaves_no_partial_final_and_can_resume(closed_run, 
     assert not (Path(c.args.output) / "RESULT.json").exists()
     c.args.resume = True
     assert replay.run(c.args)["attempt"] == 1 and c.calls == [0, 1, 2, 0, 1, 2]
+
+
+def fixed_stage_case(case):
+    native = case.summary["qualification"]["native_finality"]
+    native.update(
+        slo_population="fixed-stage",
+        stage_sealed=True,
+        stage_finalized=True,
+        stage_start_monotonic_seconds=1.2,
+        stage_deadline_monotonic_seconds=2.2,
+    )
+    case.events[0]["slo_population"] = "fixed-stage"
+    case.events.insert(
+        1,
+        {
+            "event": "native_stage_started",
+            "boot_id": "one-boot",
+            "started_monotonic_seconds": 1.2,
+            "duration_seconds": 1,
+            "monotonic_seconds": 1.3,
+        },
+    )
+    case.events.extend(
+        [
+            {
+                "event": "native_stage_sealed",
+                "boot_id": "one-boot",
+                "sealed_monotonic_seconds": 2.7,
+                "monotonic_seconds": 2.8,
+                "offered": 2,
+            },
+            {
+                "event": "native_stage_finalized",
+                "boot_id": "one-boot",
+                "finalized_monotonic_seconds": 2.9,
+                "monotonic_seconds": 3,
+                "summary": copy.deepcopy(native),
+            },
+        ]
+    )
+    packet = json.loads(Path(case.args.producer_packet).read_text())
+    packet["calibration_commands"][0]["command"] += ["--native-slo-population", "fixed-stage"]
+    store(Path(case.args.producer_packet), packet)
+    repin(case, "producer_packet")
+    store(Path(case.args.summary), case.summary)
+    repin(case, "summary")
+    write_events(case)
+
+
+def test_explicit_fixed_stage_closed_run_replay(closed_run):
+    fixed_stage_case(closed_run)
+    assert replay.run(closed_run.args)["offered"] == 2
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "missing-start",
+        "missing-seal",
+        "missing-final",
+        "summary-policy",
+        "early-final",
+        "late-offer",
+        "packet-policy",
+        "forged-histogram",
+    ],
+)
+def test_fixed_stage_policy_splices_refused(closed_run, change):
+    c = closed_run
+    fixed_stage_case(c)
+    if change.startswith("missing-"):
+        kind = {
+            "missing-start": "native_stage_started",
+            "missing-seal": "native_stage_sealed",
+            "missing-final": "native_stage_finalized",
+        }[change]
+        c.events = [e for e in c.events if e["event"] != kind]
+    elif change == "summary-policy":
+        c.summary["qualification"]["native_finality"]["slo_population"] = "completion-prefix"
+    elif change == "early-final":
+        c.events[-1]["finalized_monotonic_seconds"] = 2.3
+    elif change == "late-offer":
+        c.events[2]["native_offered_monotonic_seconds"] = 2.3
+        c.events[2]["monotonic_seconds"] = 2.4
+    elif change == "packet-policy":
+        packet = json.loads(Path(c.args.producer_packet).read_text())
+        packet["calibration_commands"][0]["command"][-1] = "completion-prefix"
+        store(Path(c.args.producer_packet), packet)
+        repin(c, "producer_packet")
+    elif change == "forged-histogram":
+        c.events[-1]["summary"]["histogram"][0] += 1
+    store(Path(c.args.summary), c.summary)
+    repin(c, "summary")
+    write_events(c)
+    with pytest.raises((ValueError, KeyError)):
+        replay.run(c.args)

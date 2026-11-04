@@ -234,3 +234,39 @@ def test_lookup_rejects_unbounded_or_boolean_queries(query):
     o, _ = observer()
     with pytest.raises(HistoryError, match="invalid native query"):
         o.finalized(query)
+
+
+def test_fixed_stage_worker_records_final_population_after_join():
+    records = []
+    c = Collector()
+    o = NativeObserver(
+        c,
+        lambda kind, **fields: records.append((kind, fields)),
+        lambda reason: None,
+        interval=0.1,
+        boot=lambda: "test-boot",
+        slo_population="fixed-stage",
+    )
+    o.bootstrap()
+    o.begin_stage(0.02)
+    o.offer({1: "ab" * 32})
+    from dataclasses import replace
+
+    from test_load_finality_window import public_segment
+
+    r = replace(public_segment()[2][0], query_id=1, request_hash="ab" * 32)
+    c.next_capture = lambda: capture(13, OLD, NEW, [r])
+    o.start()
+    deadline = time.monotonic() + 1
+    while not o.finalized(1) and time.monotonic() < deadline:
+        time.sleep(0.005)
+    time.sleep(0.025)
+    result = o.finish()
+    assert result["latency_criteria_pass"] and result["stage_finalized"]
+    assert not o.thread.is_alive() and c.closed
+    assert [kind for kind, _ in records if kind.startswith("native_stage_")] == [
+        "native_stage_started",
+        "native_stage_sealed",
+        "native_stage_finalized",
+    ]
+    assert records[-1][1]["summary"] == result

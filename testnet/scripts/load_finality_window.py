@@ -24,6 +24,7 @@ class FinalityWindow:
         max_query_age=30,
         p95_limit=5,
         p99_limit=10,
+        slo_population="completion-prefix",
     ):
         if not isinstance(boot_id, str) or not 1 <= len(boot_id) <= 128:
             raise HistoryError("bounded boot identity required")
@@ -34,6 +35,11 @@ class FinalityWindow:
                 raise HistoryError("bounded positive finality times required")
         if p95_limit > p99_limit:
             raise HistoryError("p95 limit exceeds p99 limit")
+        if slo_population not in ("completion-prefix", "fixed-stage"):
+            raise HistoryError("invalid native SLO population")
+        self.slo_population = slo_population
+        self.sealed = self.stage_finalized = False
+        self.stage_start = self.stage_deadline = self.sealed_at = None
         self.boot_id = boot_id
         self.max_pending = max_pending
         self.max_proof_age = max_proof_age
@@ -89,6 +95,12 @@ class FinalityWindow:
         """Register signed request digests, not hashes of private carrier BOCs."""
         with self.guard:
             self._healthy(boot_id, now)
+            if self.sealed:
+                self._fail("native stage admission sealed")
+            if self.slo_population == "fixed-stage" and (
+                self.stage_deadline is None or now >= self.stage_deadline
+            ):
+                self._fail("native fixed stage offering interval not open", drainable=True)
             if (
                 type(request_hashes) is not dict
                 or not request_hashes
@@ -187,11 +199,50 @@ class FinalityWindow:
                 self._fail("native proof observation stale", drainable=True)
             if latencies and max(latencies) > self.max_query_age:
                 self._fail("native query observation overdue", drainable=True)
-            if self.finalized and (
-                self._quantile(95) > self.p95_limit or self._quantile(99) > self.p99_limit
+            if (
+                self.slo_population == "completion-prefix"
+                and self.finalized
+                and (self._quantile(95) > self.p95_limit or self._quantile(99) > self.p99_limit)
             ):
                 self._fail("native verified finality latency exceeds declared SLO", drainable=True)
             self._healthy(boot_id, now)
+
+    def begin_stage(self, duration, *, boot_id, now):
+        with self.guard:
+            self._healthy(boot_id, now)
+            if self.stage_start is not None or self.offered or self.sealed:
+                self._fail("native stage start must precede offers exactly once")
+            if (
+                type(duration) not in (int, float)
+                or not math.isfinite(duration)
+                or duration <= 0
+                or not math.isfinite(now + duration)
+            ):
+                self._fail("invalid native stage duration")
+            self.stage_start, self.stage_deadline = now, now + duration
+
+    def seal(self, *, boot_id, now):
+        with self.guard:
+            self._clock(boot_id, now, reconcile=True)
+            if self.sealed:
+                self._fail("native stage already sealed")
+            self.sealed = True
+            self.sealed_at = now
+
+    def finish_stage(self, *, boot_id, now):
+        with self.guard:
+            self._clock(boot_id, now, reconcile=True)
+            if not self.sealed or self.stage_finalized:
+                self._fail("native stage must be sealed exactly once before final evaluation")
+            self.stage_finalized = True
+            if self.stage_deadline is None or self.sealed_at < self.stage_deadline:
+                self._fail("native fixed stage duration incomplete", drainable=True)
+            if not self.offered or self.pending or self.offered != self.finalized:
+                self._fail("native final stage population incomplete", drainable=True)
+            if self._quantile(95) > self.p95_limit or self._quantile(99) > self.p99_limit:
+                self._fail(
+                    "native verified final stage latency exceeds declared SLO", drainable=True
+                )
 
     def summary(self):
         with self.guard:
@@ -205,7 +256,14 @@ class FinalityWindow:
                 "readonly_reconciliation_allowed": self.drainable_failure,
                 "integrity_failure": self.integrity_failure,
                 "all_offered_native_finalized": complete,
-                "latency_criteria_pass": complete and self.failure is None,
+                "latency_criteria_pass": complete
+                and self.failure is None
+                and (self.slo_population == "completion-prefix" or self.stage_finalized),
+                "slo_population": self.slo_population,
+                "stage_sealed": self.sealed,
+                "stage_finalized": self.stage_finalized,
+                "stage_start_monotonic_seconds": self.stage_start,
+                "stage_deadline_monotonic_seconds": self.stage_deadline,
                 "latency_bucket_upper_seconds": [*BUCKETS, "infinity"],
                 "histogram": list(self.histogram),
                 "p95_upper_seconds": "infinity" if p95 == float("inf") else p95,
