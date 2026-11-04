@@ -98,10 +98,18 @@ def bounded_snapshot(source, target, expected=None):
     write_file(target, data)
 
 
-def capture_size(directory):
+def capture_size(directory, *, native_running=False):
     total, files = 0, 0
     for path in directory.rglob("*"):
-        info = path.lstat()
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            # The pinned native verifier atomically renames this one temporary
+            # state file while running. Its absence after enumeration is not a
+            # missing retained artifact. Completed captures remain strict.
+            if native_running and path == directory / "native-state.json.tmp":
+                continue
+            raise
         require(not stat.S_ISLNK(info.st_mode), "capture symlink refused")
         if stat.S_ISREG(info.st_mode):
             files += 1
@@ -158,6 +166,7 @@ class NativeCollector:
         liteserver,
         rpc,
         directory,
+        confirm_rpc=None,
         wallet,
         code_hash,
         global_id,
@@ -177,16 +186,17 @@ class NativeCollector:
             type(storage_budget) is int and MAX_CAPTURE <= storage_budget <= 512 << 30,
             "storage budget limit",
         )
-        endpoint = urlsplit(rpc)
-        require(
-            endpoint.scheme in ("http", "https")
-            and endpoint.hostname
-            and not endpoint.username
-            and not endpoint.password
-            and not endpoint.fragment
-            and not endpoint.query,
-            "public RPC URL required",
-        )
+        for url in (rpc, confirm_rpc) if confirm_rpc is not None else (rpc,):
+            endpoint = urlsplit(url)
+            require(
+                endpoint.scheme in ("http", "https")
+                and endpoint.hostname
+                and not endpoint.username
+                and not endpoint.password
+                and not endpoint.fragment
+                and not endpoint.query,
+                "public RPC URL required",
+            )
         require(
             isinstance(wallet, str) and wallet.startswith("0:") and len(wallet) == 66,
             "basechain wallet required",
@@ -230,6 +240,7 @@ class NativeCollector:
         self.max_age, self.timeout = max_age, timeout
         self.max_captures, self.storage_budget = max_captures, storage_budget
         self.rpc, self.captures, self.retained = rpc, 0, 0
+        self.confirm_rpc = confirm_rpc if confirm_rpc != rpc else None
         self.state_source = None
         self.last_head = None
         try:
@@ -258,7 +269,7 @@ class NativeCollector:
             try:
                 while process.poll() is None:
                     require(time.monotonic() < deadline, "capture deadline expired")
-                    capture_size(directory)
+                    capture_size(directory, native_running=native)
                     time.sleep(0.05)
                 require(process.returncode == 0, "native/RPC subprocess refused")
             finally:
@@ -293,40 +304,66 @@ class NativeCollector:
         }
         query, response = path / f"rpc-{page}.request.json", path / f"rpc-{page}.json"
         write_file(query, json.dumps(request).encode())
-        remaining = deadline - time.monotonic()
-        require(remaining > 0, "capture deadline expired")
-        self._run(
-            [
-                self.curl,
-                "--disable",
-                "--silent",
-                "--show-error",
-                "--fail",
-                "--proto",
-                "=http,https",
-                "--max-time",
-                str(remaining),
-                "--max-filesize",
-                str(MAX_OUTPUT),
-                "--header",
-                "Content-Type: application/json",
-                "--data-binary",
-                "@" + str(query),
-                self.rpc,
-            ],
-            response,
-            path / f"rpc-{page}.stderr",
-            deadline,
-            path,
-        )
-        result = json.loads(response.read_bytes())
-        require(
-            "error" not in result
-            and type(result.get("result")) is list
-            and 0 < len(result["result"]) <= 64,
-            "bounded RPC history page required",
-        )
-        return result["result"]
+        endpoints = [self.rpc] + ([self.confirm_rpc] if self.confirm_rpc else [])
+        for attempt, endpoint in enumerate(endpoints):
+            remaining = deadline - time.monotonic()
+            require(remaining > 0, "capture deadline expired")
+            self._run(
+                [
+                    self.curl,
+                    "--disable",
+                    "--silent",
+                    "--show-error",
+                    "--fail",
+                    "--proto",
+                    "=http,https",
+                    "--max-time",
+                    str(remaining),
+                    "--max-filesize",
+                    str(MAX_OUTPUT),
+                    "--header",
+                    "Content-Type: application/json",
+                    "--data-binary",
+                    "@" + str(query),
+                    endpoint,
+                ],
+                response,
+                path / f"rpc-{page}.stderr",
+                deadline,
+                path,
+            )
+            result = json.loads(response.read_bytes())
+            # A native-proven head can lead a particular RPC shard client. Try
+            # the existing independent endpoint once, for internal RPC errors
+            # only. Neither an error nor fallback rows authenticate history;
+            # capture() still checks every BOC back to the prior native head.
+            error = result.get("error") if isinstance(result, dict) else None
+            if (
+                attempt == 0
+                and len(endpoints) == 2
+                and isinstance(error, dict)
+                and type(error.get("code")) is int
+                and error["code"] == -32603
+                and "result" not in result
+            ):
+                failed = path / "rpc-failover"
+                failed.mkdir(exist_ok=True)
+                response.rename(failed / f"page-{page}.json")
+                (path / f"rpc-{page}.stderr").rename(failed / f"page-{page}.stderr")
+                write_file(
+                    failed / f"page-{page}.sources.json",
+                    json.dumps({"primary": self.rpc, "fallback": self.confirm_rpc}).encode(),
+                )
+                continue
+            require(
+                isinstance(result, dict)
+                and "error" not in result
+                and type(result.get("result")) is list
+                and 0 < len(result["result"]) <= 64,
+                "bounded RPC history page required",
+            )
+            return result["result"]
+        raise HistoryError("bounded RPC history page required")
 
     def capture(self, previous_head=None):
         with self.guard:

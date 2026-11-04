@@ -53,13 +53,14 @@ class NativeObserver:
         if strict.receipts:
             raise HistoryError("wallet received submissions during native bootstrap")
         with self.window.guard:
+            boot_id, observed = self.boot(), time.monotonic()
             self.window.advance(
                 strict.seqno,
                 strict.head,
                 strict.head,
                 (),
-                boot_id=self.boot(),
-                now=time.monotonic(),
+                boot_id=boot_id,
+                now=observed,
             )
         self.record(
             "native_baseline",
@@ -67,6 +68,9 @@ class NativeObserver:
             head_lt=strict.head.lt,
             head_hash=strict.head.hash,
             capture=str(strict.directory),
+            boot_id=boot_id,
+            verified_observation_monotonic_seconds=observed,
+            poll_interval_seconds=self.interval,
         )
 
     def start(self):
@@ -106,7 +110,9 @@ class NativeObserver:
     def offer(self, request_hashes):
         self.assert_healthy()
         with self.window.guard:
-            self.window.offer(request_hashes, boot_id=self.boot(), now=time.monotonic())
+            boot_id, offered = self.boot(), time.monotonic()
+            self.window.offer(request_hashes, boot_id=boot_id, now=offered)
+        return {"boot_id": boot_id, "monotonic_seconds": offered}
 
     def finalized(self, query):
         if type(query) is not int or not 0 <= query < QUERY_LIMIT:
@@ -129,13 +135,14 @@ class NativeObserver:
                     captured = self.collector.capture()
                     try:
                         with self.window.guard:
+                            boot_id, observed = self.boot(), time.monotonic()
                             self.window.advance(
                                 captured.seqno,
                                 captured.previous_head,
                                 captured.head,
                                 captured.receipts,
-                                boot_id=self.boot(),
-                                now=time.monotonic(),
+                                boot_id=boot_id,
+                                now=observed,
                             )
                     except HistoryError as exc:
                         # Quality failure can settle authentic receipts while
@@ -147,6 +154,8 @@ class NativeObserver:
                         capture=str(captured.directory),
                         query_ids=[r.query_id for r in captured.receipts],
                         summary=self.window.summary(),
+                        boot_id=boot_id,
+                        verified_observation_monotonic_seconds=observed,
                     )
                     if self.window.failure is not None and not self.window.drainable_failure:
                         break
@@ -182,4 +191,5 @@ class NativeObserver:
             result["worker_failure"] = self.failure
         result["latency_criteria_pass"] = result["latency_criteria_pass"] and self.failure is None
         result["historical_replay_coverage"] = False
+        result["poll_interval_seconds"] = self.interval
         return result

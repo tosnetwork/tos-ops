@@ -158,6 +158,31 @@ wallet-lock waits and balance RPCs, at the actual owner signature call, and afte
 the signed message export before broadcast. Failure after signing retains the
 original signed operation and unknown-funding fence; it never signs a replacement.
 
+`--native-poll-seconds` explicitly selects capture start spacing (0.1..10 seconds,
+default2). The worker remains serial; a slow capture consumes its interval and
+does not spawn overlapping work. The capture-count allowance is
+`ceil((duration + 600) / interval) + 100`, capped at the collector's supported
+one million by **rejecting** an unsupported horizon before signing, not clamping
+it. A72hour run at0.5seconds therefore allows519700captures. Count allowance
+does not establish disk capacity or prove throughput; existing byte/inode/free
+space guards remain active.
+
+Native offered events now include `native_boot_id` and
+`native_offered_monotonic_seconds`, sampled from the actual window offer call.
+Baseline/checkpoint events include `boot_id` and
+`verified_observation_monotonic_seconds`, the same value passed to the window
+after persisted native capture and while holding its guard. Event/journal timing
+remains separate; delayed callbacks cannot rewrite native observation latency.
+These are additive fields; older runs do not retroactively gain exact timestamps.
+
+The retained120second diagnostic fromNov4 stopped early with16/16bound native
+receipts settled and one query beyond5seconds (p95bucket10), preservingFAIL.
+Twenty-seven captures and all16exact request digests replay independently
+offline. Historical probes show slowquery2639 already present atMC1228752,
+while its original observation wasMC1228756. The explicit shorter interval is
+a measured follow-up option; no p95/p99 limit is relaxed or new performancePASS
+claimed. Fullrun replay/continuous key-boundary/live SLO/72hour gates stay open.
+
 `verification_mode` distinguishes native signed-request completion from legacy
 two-RPC processed checks. RPC seqno acceptance remains a separate metric; the
 native histogram measures offered digests through verified, persisted capture
@@ -178,3 +203,53 @@ offline replay: the existing verifier rejects a live-material bundle supplied
 as historical material. Independent historical replay currently needs a
 separately acquired historical request/material bundle at the exact target.
 Continuous retained-proof replay coverage therefore remains an acceptance gate.
+
+### Bounded history RPC failover
+
+The native collector receives the load command's existing `--confirm-rpc` as an
+optional history fallback. For each page it tries that distinct endpoint once
+only when the primary returns a JSON-RPC internal error (`-32603`, without a
+result). A shard client can temporarily lag an already native-proven head. Both
+reads use the exact same account/LT/hash cursor and the original capture deadline;
+there is no new age allowance, infinite retry, signing or admission bypass.
+Primary error bytes/stderr and both public endpoint URLs remain under the
+capture's `rpc-failover/`; the successful page retains its original canonical
+`rpc-N.json` filename for offline replay. Malformed pages, empty lists and other
+error codes still fail immediately. Two internal errors stop the capture.
+
+Fallback rows remain untrusted: the unchanged capture path checks each BOC hash,
+logical time, predecessor chain, transaction semantics and exact signed-request
+digests against the native account head. A fallback with the wrong chain is
+refused without promoting the collector head/state. Existing count/byte/file
+and persistence bounds apply to failed attempts too. Added files can cause the
+existing guard to refuse a pathological capture; its limits are not increased.
+
+Upstream comparison: the underlying transaction-block lookup error remains in
+upstream `validator/impl/liteserver.cpp:1763` at
+857b8a57a178e6ae0fe7fa86e7d81c5233de8560 and TOS
+`validator/impl/liteserver.cpp:1731` at
+f58402109959aac7af8c3d7e93ec66d7468cd9b4. Upstream issue1105 remains open;
+current source/search/release review did not identify a fix for this observation.
+Inherited lookup behavior is unchanged. This operations collector has no upstream
+counterpart; its previously single-endpoint acquisition is the scope of this fix.
+
+### Atomic live-state rename during resource sampling
+
+While the pinned native verifier is still running, its `commit_state` writes
+`native-state.json.tmp` and atomically renames it to `native-state.json`. A
+resource scan can enumerate the temporary pathname immediately before that
+rename; lstat then returns ENOENT. The running-native scan tolerates precisely
+that vanished pathname. It does not ignore other missing artifacts, permission
+errors, existing symlinks or special files. RPC subprocess scans remain strict.
+All scans after subprocess completion, capture synchronization and retained-byte
+accounting remain strict, with the same file/byte limits and kernel file-size
+bound. This fixes a sampler false failure without changing proof acceptance or
+native state persistence. Deterministic tests perform the real rename exactly
+between enumeration and lstat and test the strict boundaries separately.
+
+Upstream comparison: both this operations collector and the native proof helper
+are TOS-specific paths absent at upstream857b8a57a178e6ae0fe7fa86e7d81c5233de8560.
+The unchanged helper performs the intended atomic rename in TOS proof-verify
+main.cpp:167-191 atf58402109959aac7af8c3d7e93ec66d7468cd9b4. No inherited or
+native proof code changes. Checklist: TE-8 (existed, not applied to the directory
+scanner racing the helper's atomic state commit).

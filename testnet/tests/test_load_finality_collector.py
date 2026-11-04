@@ -459,3 +459,208 @@ def test_reported_completion_is_the_exact_deadline_checked_value(configured, mon
         assert clock_reads[0] == 1
     finally:
         c.close()
+
+
+def test_internal_rpc_error_uses_confirm_endpoint_once(configured, tmp_path):
+    args, _ = configured
+    c = collector.NativeCollector(**args, confirm_rpc="http://127.0.0.1:8083/jsonRPC")
+    path = tmp_path / "rpc-page"
+    path.mkdir()
+    calls = []
+    deadline = time.monotonic() + 5
+
+    def response(argv, output, error, end, _directory):
+        calls.append((argv[-1], end))
+        value = (
+            {
+                "error": {
+                    "code": -32603,
+                    "message": "possibly out of sync",
+                    "data": {"retryable": False},
+                }
+            }
+            if len(calls) == 1
+            else {"result": [{"data": "untrusted-BOC"}]}
+        )
+        collector.write_file(output, json.dumps(value).encode())
+        collector.write_file(error, b"")
+
+    c._run = response
+    try:
+        assert c._rpc_page(path, Head(1, "11" * 32), 0, deadline) == [{"data": "untrusted-BOC"}]
+        assert calls == [(args["rpc"], deadline), ("http://127.0.0.1:8083/jsonRPC", deadline)]
+        assert (
+            json.loads((path / "rpc-failover/page-0.json").read_text())["error"]["code"] == -32603
+        )
+        assert json.loads((path / "rpc-0.json").read_text())["result"] == [
+            {"data": "untrusted-BOC"}
+        ]
+        assert json.loads((path / "rpc-0.request.json").read_text())["params"]["lt"] == "1"
+    finally:
+        c.close()
+
+
+@pytest.mark.parametrize(
+    "first",
+    [
+        {"result": []},
+        {"result": {}},
+        {"error": {"code": -32602}},
+        {"error": {"code": -32603}, "result": []},
+    ],
+)
+def test_non_internal_or_malformed_pages_do_not_fail_over(configured, tmp_path, first):
+    args, _ = configured
+    c = collector.NativeCollector(**args, confirm_rpc="http://127.0.0.1:8083/jsonRPC")
+    path = tmp_path / "rpc-page"
+    path.mkdir()
+    calls = []
+
+    def response(argv, output, error, *_):
+        calls.append(argv[-1])
+        collector.write_file(output, json.dumps(first).encode())
+        collector.write_file(error, b"")
+
+    c._run = response
+    try:
+        with pytest.raises(HistoryError, match="bounded RPC history page"):
+            c._rpc_page(path, Head(1, "11" * 32), 0, time.monotonic() + 5)
+        assert len(calls) == 1
+    finally:
+        c.close()
+
+
+def test_both_internal_errors_stop_after_two(configured, tmp_path):
+    args, _ = configured
+    c = collector.NativeCollector(**args, confirm_rpc="http://127.0.0.1:8083/jsonRPC")
+    path = tmp_path / "rpc-page"
+    path.mkdir()
+    calls = []
+
+    def response(argv, output, error, *_):
+        calls.append(argv[-1])
+        collector.write_file(output, b'{"error":{"code":-32603}}')
+        collector.write_file(error, b"")
+
+    c._run = response
+    try:
+        with pytest.raises(HistoryError, match="bounded RPC history page"):
+            c._rpc_page(path, Head(1, "11" * 32), 0, time.monotonic() + 5)
+        assert len(calls) == 2
+    finally:
+        c.close()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://user:password@localhost/jsonRPC",
+        "ftp://localhost/jsonRPC",
+        "http://localhost/?token=private",
+    ],
+)
+def test_confirm_url_validated_before_artifacts(configured, url):
+    args, _ = configured
+    with pytest.raises(HistoryError, match="public RPC URL"):
+        collector.NativeCollector(**args, confirm_rpc=url)
+    assert not args["directory"].exists()
+
+
+@pytest.mark.parametrize("wrong_history", [False, True])
+def test_fallback_rows_still_require_native_boc_chain(configured, wrong_history):
+    args, public = configured
+    c = collector.NativeCollector(**args, confirm_rpc="http://127.0.0.1:8083/jsonRPC")
+    fake_boundary(c, public)
+    native_run = c._run
+    c._rpc_page = collector.NativeCollector._rpc_page.__get__(c)
+    calls = []
+
+    def run(argv, output, error, deadline, directory, *, native=False):
+        if native:
+            return native_run(argv, output, error, deadline, directory, native=True)
+        calls.append(argv[-1])
+        rows = public["transactions"][1:] if wrong_history else public["transactions"]
+        value = (
+            {"error": {"code": -32603}}
+            if len(calls) == 1
+            else {"result": [{"data": x} for x in rows]}
+        )
+        collector.write_file(output, json.dumps(value).encode())
+        collector.write_file(error, b"")
+
+    c._run = run
+    try:
+        if wrong_history:
+            with pytest.raises(HistoryError, match="does not match native head"):
+                c.capture(Head(**public["previous"]))
+            assert c.last_head is None and c.state_source is None
+            assert not (c.root / "capture-000000/result.json").exists()
+        else:
+            capture = c.capture(Head(**public["previous"]))
+            assert [r.query_id for r in capture.receipts] == [1566, 1565]
+        assert len(calls) == 2
+    finally:
+        c.close()
+
+
+@pytest.mark.parametrize(
+    "running,filename,accepted",
+    [
+        (True, "native-state.json.tmp", True),
+        (False, "native-state.json.tmp", False),
+        (True, "account.tl", False),
+    ],
+)
+def test_atomic_native_state_rename_during_enumeration(
+    tmp_path, monkeypatch, running, filename, accepted
+):
+    directory = tmp_path / "capture"
+    directory.mkdir()
+    temporary = directory / filename
+    temporary.write_bytes(b"new")
+    old = Path.lstat
+    renamed = []
+
+    def lstat(path, *args, **kwargs):
+        if path == temporary and not renamed:
+            temporary.rename(directory / "native-state.json")
+            renamed.append(True)
+        return old(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", lstat)
+    if accepted:
+        collector.capture_size(directory, native_running=running)
+    else:
+        with pytest.raises(FileNotFoundError):
+            collector.capture_size(directory, native_running=running)
+    assert renamed
+    assert collector.capture_size(directory) == 3
+
+
+@pytest.mark.parametrize("native", [False, True])
+def test_only_running_native_scan_tolerates_state_rename(configured, tmp_path, monkeypatch, native):
+    args, _ = configured
+    c = collector.NativeCollector(**args)
+    directory = tmp_path / "running"
+    directory.mkdir()
+    calls = []
+    real = collector.capture_size
+
+    def scan(path, *, native_running=False):
+        calls.append(native_running)
+        return real(path, native_running=native_running)
+
+    monkeypatch.setattr(collector, "capture_size", scan)
+    try:
+        c._run(
+            ["/bin/sleep", "0.12"],
+            directory / "out",
+            directory / "err",
+            time.monotonic() + 5,
+            directory,
+            native=native,
+        )
+        assert calls[-1] is False and len(calls) >= 2
+        assert all(v is native for v in calls[:-1])
+    finally:
+        c.close()
