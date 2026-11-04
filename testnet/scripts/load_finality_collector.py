@@ -98,10 +98,18 @@ def bounded_snapshot(source, target, expected=None):
     write_file(target, data)
 
 
-def capture_size(directory):
+def capture_size(directory, *, native_running=False):
     total, files = 0, 0
     for path in directory.rglob("*"):
-        info = path.lstat()
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            # The pinned native verifier atomically renames this one temporary
+            # state file while running. Its absence after enumeration is not a
+            # missing retained artifact. Completed captures remain strict.
+            if native_running and path == directory / "native-state.json.tmp":
+                continue
+            raise
         require(not stat.S_ISLNK(info.st_mode), "capture symlink refused")
         if stat.S_ISREG(info.st_mode):
             files += 1
@@ -261,7 +269,7 @@ class NativeCollector:
             try:
                 while process.poll() is None:
                     require(time.monotonic() < deadline, "capture deadline expired")
-                    capture_size(directory)
+                    capture_size(directory, native_running=native)
                     time.sleep(0.05)
                 require(process.returncode == 0, "native/RPC subprocess refused")
             finally:

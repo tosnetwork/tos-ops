@@ -232,3 +232,24 @@ f58402109959aac7af8c3d7e93ec66d7468cd9b4. Upstream issue1105 remains open;
 current source/search/release review did not identify a fix for this observation.
 Inherited lookup behavior is unchanged. This operations collector has no upstream
 counterpart; its previously single-endpoint acquisition is the scope of this fix.
+
+### Atomic live-state rename during resource sampling
+
+While the pinned native verifier is still running, its `commit_state` writes
+`native-state.json.tmp` and atomically renames it to `native-state.json`. A
+resource scan can enumerate the temporary pathname immediately before that
+rename; lstat then returns ENOENT. The running-native scan tolerates precisely
+that vanished pathname. It does not ignore other missing artifacts, permission
+errors, existing symlinks or special files. RPC subprocess scans remain strict.
+All scans after subprocess completion, capture synchronization and retained-byte
+accounting remain strict, with the same file/byte limits and kernel file-size
+bound. This fixes a sampler false failure without changing proof acceptance or
+native state persistence. Deterministic tests perform the real rename exactly
+between enumeration and lstat and test the strict boundaries separately.
+
+Upstream comparison: both this operations collector and the native proof helper
+are TOS-specific paths absent at upstream857b8a57a178e6ae0fe7fa86e7d81c5233de8560.
+The unchanged helper performs the intended atomic rename in TOS proof-verify
+main.cpp:167-191 atf58402109959aac7af8c3d7e93ec66d7468cd9b4. No inherited or
+native proof code changes. Checklist: TE-8 (existed, not applied to the directory
+scanner racing the helper's atomic state commit).
