@@ -93,10 +93,60 @@ def test_failed_thread_start_closes_collector_and_finish_preserves_failure(monke
     def fail_start():
         raise RuntimeError("cannot start new thread")
 
-    monkeypatch.setattr(threading, "Thread", lambda **kw: SimpleNamespace(start=fail_start))
+    monkeypatch.setattr(
+        threading, "Thread", lambda **kw: SimpleNamespace(start=fail_start, ident=None)
+    )
     with pytest.raises(RuntimeError, match="cannot start new thread"):
         o.start()
     assert c.closed and halted and o.thread is None
+    assert o.finish()["worker_failure"] == "native observer thread could not start"
+    with pytest.raises(HistoryError, match="initialized start"):
+        o.start()
+
+
+def test_exception_after_os_thread_started_retains_handle_until_join(monkeypatch):
+    ready, release, finished = threading.Event(), threading.Event(), threading.Event()
+    c = Collector()
+
+    def blocked_capture():
+        ready.set()
+        assert release.wait(3)
+        return capture(13)
+
+    c.next_capture = blocked_capture
+    o, _ = observer(c)
+    o.bootstrap()
+    real_thread = threading.Thread
+    workers = []
+
+    def interrupted_thread(**kwargs):
+        thread = real_thread(**kwargs)
+        original = thread.start
+
+        def start_then_raise():
+            original()
+            assert ready.wait(2)
+            raise RuntimeError("interrupted after OS thread started")
+
+        thread.start = start_then_raise
+        workers.append(thread)
+        return thread
+
+    monkeypatch.setattr(threading, "Thread", interrupted_thread)
+    with pytest.raises(RuntimeError, match="after OS thread"):
+        o.start()
+    assert o.thread is workers[0] and o.thread.is_alive() and not c.closed
+
+    def finish():
+        o.finish(timeout=2)
+        finished.set()
+
+    cleanup = real_thread(target=finish)
+    cleanup.start()
+    assert not finished.wait(0.05)
+    release.set()
+    cleanup.join(3)
+    assert finished.is_set() and c.closed and not workers[0].is_alive()
     assert o.finish()["worker_failure"] == "native observer thread could not start"
     with pytest.raises(HistoryError, match="initialized start"):
         o.start()

@@ -76,7 +76,6 @@ class NativeObserver:
         try:
             self.thread.start()
         except BaseException as startup_error:
-            self.thread = None
             self.done.set()
             try:
                 self._fail("native observer thread could not start")
@@ -85,7 +84,12 @@ class NativeObserver:
                 # journal error must not prevent closing the owned verifier FD.
                 pass
             try:
-                self.collector.close()
+                # start() can fail after the OS thread is already running.
+                # Retain that handle: finish() must join it before closing the
+                # collector or permitting the caller to close its journal.
+                if self.thread.ident is None:
+                    self.thread = None
+                    self.collector.close()
             finally:
                 raise startup_error
 
