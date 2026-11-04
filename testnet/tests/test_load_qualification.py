@@ -91,6 +91,101 @@ def test_native_verification_requires_exact_bound_receipt_without_rpc(tmp_path):
     assert result["safe_to_start_new_run"]
 
 
+def test_native_failure_during_offered_fsync_prevents_broadcast(tmp_path, monkeypatch):
+    obj = driver()
+    q, o = native_audit(tmp_path)
+    obj.qualification = q
+    obj.request_hashes = {0: "ab" * 32}
+    original = q.event
+
+    def event(kind, **fields):
+        original(kind, **fields)
+        if kind == "offered":
+            o._fail("proof failed during offered fsync")
+
+    monkeypatch.setattr(q, "event", event)
+    sent = []
+    error = obj.send((None, [0], carrier(tmp_path)), SimpleNamespace(send_boc=sent.append))
+    assert error and not sent and obj.stop
+    assert q.offered == 1 and o.summary()["native_pending"] == 1
+    assert not q.finish()["safe_to_start_new_run"]
+
+
+def test_native_health_is_refreshed_after_funding_lock_wait(tmp_path, monkeypatch):
+    obj = driver()
+    q, o = native_audit(tmp_path)
+    obj.qualification = q
+    obj.args.owner_floor = "1"
+    obj.funding_owner = lambda: ("node-1", "public-owner")
+    obj.operations = SimpleNamespace(balance=lambda _: 10**12)
+    monkeypatch.setitem(type(obj).fund_from_owner.__globals__, "owner_keeps", lambda *a: None)
+    signed = []
+
+    def reserved(_to, _amount, _label, _init, _name, prerequisites):
+        o.window.last_verified = time.monotonic() - 11
+        prerequisites()
+        signed.append(True)
+
+    obj._fund_from_owner_reserved = reserved
+    with pytest.raises(ValueError, match="stale"):
+        obj.fund_from_owner("public-target", 1, "test", None)
+    assert not signed and q.funding_unknown and obj.stop
+    assert not q.finish()["safe_to_start_new_run"]
+
+
+@pytest.mark.parametrize("cut", ["before_sign", "after_export"])
+def test_native_owner_guard_checks_actual_sign_and_broadcast_boundaries(tmp_path, monkeypatch, cut):
+    obj = driver()
+    q, o = native_audit(tmp_path)
+    g = type(obj).fund_from_owner.__globals__
+    # All owner/key/signing operations below are fakes; no real key is read.
+    monkeypatch.setitem(
+        g,
+        "pool_owner_paths",
+        lambda *a: {
+            "key": SimpleNamespace(is_file=lambda: True),
+            "addr": SimpleNamespace(read_bytes=lambda: b"fake-address"),
+        },
+    )
+    monkeypatch.setitem(g, "address_from_file", lambda _: "public-owner")
+    signed, broadcast = [], []
+    monkeypatch.setitem(g, "sign_wallet_v3", lambda *a, **k: signed.append(True) or b"fake-boc")
+
+    def run(_id, _params, sign, _validate, _prerequisites, _expect, *, export):
+        if cut == "before_sign":
+            o._fail("failure after wallet identity RPC")
+        boc = sign(0)
+        if cut == "after_export":
+            # Reproduce failure during the export's durable file write.
+            original = lib.write_new
+
+            def write_then_fail(*args, **kwargs):
+                original(*args, **kwargs)
+                o._fail("failure during export fsync")
+
+            monkeypatch.setattr(lib, "write_new", write_then_fail)
+        export(boc, 0)
+        broadcast.append(True)
+
+    operations = SimpleNamespace(run=run)
+    with pytest.raises(ValueError, match="failure"):
+        g["owner_transfer"](
+            SimpleNamespace(ceremony=str(tmp_path)),
+            operations,
+            2,
+            "node-1",
+            "fake-id",
+            "owner-fund",
+            "public-destination",
+            1,
+            None,
+            lambda: None,
+            admission_guard=o.assert_healthy,
+        )
+    assert len(signed) == (cut == "after_export") and not broadcast
+    q.abort()
+
+
 def test_qualified_settlement_checks_execution_without_artificial_hold(tmp_path, monkeypatch):
     obj = driver()
     obj.qualification = audit(tmp_path)

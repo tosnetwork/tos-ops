@@ -883,6 +883,7 @@ def owner_transfer(
     expect=None,
     bounce: bool = True,
     init: Path | None = None,
+    admission_guard=None,
 ) -> dict:
     """A transfer from the pool owner, signed here with its offline key: bounceable
     to a pool, non-bounce (with a StateInit for a deployment) for owner-fund."""
@@ -895,6 +896,8 @@ def owner_transfer(
     init_hash = lib.parse_boc(Path(init).read_bytes()).hash().hex() if init else None
 
     def sign(seqno: int) -> bytes:
+        if admission_guard is not None:
+            admission_guard()
         boc = sign_wallet_v3(
             args,
             global_id,
@@ -915,6 +918,8 @@ def owner_transfer(
         sent = lib.private_dir(ceremony / "sent")
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
         lib.write_new(sent / f"{stamp}-owner-{name}-seq{seqno}-{op_id}.boc", boc, 0o600)
+        if admission_guard is not None:
+            admission_guard()
 
     params = {
         "kind": kind,
@@ -2519,6 +2524,7 @@ class LoadDriver:
                 floor = parse_tos(self.args.owner_floor, "--owner-floor")
                 if self.operations.balance(owner) - nanotos - ops.FEE_ALLOWANCE_NANOTOS < floor:
                     raise lib.TestnetError("qualified owner reserve would be crossed")
+                self.qualification.native_healthy()
 
         if getattr(self, "qualification", None):
             self.qualification.reserve_funding(nanotos, label)
@@ -2548,6 +2554,11 @@ class LoadDriver:
             {"label": label, "purpose": "load"},
             bounce=False,
             init=init,
+            admission_guard=(
+                self.check_native_admission
+                if getattr(self, "qualification", None) and self.qualification.native is not None
+                else None
+            ),
         )
 
     def deploy(self, wallet: str, relayers: list[Relayer]) -> None:
@@ -2571,7 +2582,9 @@ class LoadDriver:
                 state = self.chain.account(relayer.address)[0]
             if state != "active":
                 print(f"activate relayer {relayer.index}", flush=True)
-                self.chain.send_boc((self.state / f"{relayer.base}-query.boc").read_bytes())
+                payload = (self.state / f"{relayer.base}-query.boc").read_bytes()
+                self.check_native_admission()
+                self.chain.send_boc(payload)
                 self.chain.wait_active(relayer.address)
         for relayer in relayers:
             relayer.seqno = self.chain.seqno(relayer.address)
@@ -3083,6 +3096,7 @@ class LoadDriver:
                     payload = self.qualification.offer(external[1], external[2])
             else:
                 payload = external[2].read_bytes()
+            self.check_native_admission()
             route.send_boc(payload)
         except (lib.TestnetError, OSError, ValueError) as exc:
             if getattr(self, "qualification", None):
@@ -3090,6 +3104,13 @@ class LoadDriver:
                 self.qualification.halt("send_uncertainty_or_refusal")
             return str(exc)
         return None
+
+    def check_native_admission(self):
+        qualification = getattr(self, "qualification", None)
+        if qualification is not None and qualification.native is not None:
+            qualification.native_healthy()
+            if self.stop or qualification.halted:
+                raise lib.TestnetError("qualified native admission stopped")
 
     def fail(self, relayer: Relayer, batches: int, error: str) -> None:
         self.counts["batches_failed"] += batches

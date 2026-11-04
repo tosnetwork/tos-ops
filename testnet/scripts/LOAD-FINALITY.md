@@ -147,6 +147,12 @@ where the window permits it. The worker joins before the durable journal closes.
 An unfinished native pending set preserves the original run fence, even when
 the application journal never completed its offered event.
 
+Admission is checked again after the offered event is fsynced and immediately
+before broadcast, including relayer activation. Funding also rechecks after
+wallet-lock waits and balance RPCs, at the actual owner signature call, and after
+the signed message export before broadcast. Failure after signing retains the
+original signed operation and unknown-funding fence; it never signs a replacement.
+
 `verification_mode` distinguishes native signed-request completion from legacy
 two-RPC processed checks. RPC seqno acceptance remains a separate metric; the
 native histogram measures offered digests through verified, persisted capture
