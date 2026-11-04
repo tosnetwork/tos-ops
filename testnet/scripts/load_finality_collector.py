@@ -478,15 +478,6 @@ class NativeCollector:
                 )
                 sync_directory(path)
                 sync_directory(self.root)
-                require(
-                    0 <= time.time() - proof["target"]["gen_utime"] <= self.max_age
-                    and time.monotonic() < deadline,
-                    "capture expired during persistence",
-                )
-                completed = time.monotonic()
-                capture = Capture(
-                    proof["target"]["seqno"], previous, head, receipts, completed, path
-                )
             finally:
                 try:
                     self.retained += capture_size(path)
@@ -495,6 +486,12 @@ class NativeCollector:
                     # budget. Preserve artifacts and refuse every later capture.
                     self.retained = self.storage_budget
                     raise
+            require(
+                0 <= time.time() - proof["target"]["gen_utime"] <= self.max_age
+                and time.monotonic() < deadline,
+                "capture expired during persistence",
+            )
+            completed = time.monotonic()
             self.state_source = path / "native-state.json"
             self.last_head = head
-            return capture
+            return Capture(proof["target"]["seqno"], previous, head, receipts, completed, path)

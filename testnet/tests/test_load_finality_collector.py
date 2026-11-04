@@ -402,3 +402,30 @@ def test_explicit_mismatched_previous_head_refused_before_acquisition(configured
         assert c.captures == 1
     finally:
         c.close()
+
+
+def test_final_retention_scan_counts_toward_age_and_deadline(configured, monkeypatch):
+    args, public = configured
+    c = collector.NativeCollector(**args)
+    wall = 1700000000
+    fake_boundary(c, public, edit=lambda p: p["target"].update(gen_utime=wall))
+    elapsed, scans = [0], [0]
+    monkeypatch.setattr(collector.time, "time", lambda: wall + elapsed[0])
+    monkeypatch.setattr(collector.time, "monotonic", lambda: 100 + elapsed[0])
+    actual_size = collector.capture_size
+
+    def slow_final_scan(path):
+        size = actual_size(path)
+        scans[0] += 1
+        if scans[0] == 2:
+            elapsed[0] += 11
+        return size
+
+    monkeypatch.setattr(collector, "capture_size", slow_final_scan)
+    try:
+        with pytest.raises(HistoryError, match="expired during persistence"):
+            c.capture()
+        assert scans[0] == 2 and c.retained > 0
+        assert c.last_head is None and c.state_source is None
+    finally:
+        c.close()
