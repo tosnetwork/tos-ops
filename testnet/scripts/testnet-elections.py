@@ -3087,6 +3087,7 @@ class LoadDriver:
         try:
             if getattr(self, "qualification", None):
                 self.check_send_genesis(route)
+                offer_started = time.monotonic()
                 if getattr(self.qualification, "native", None) is not None:
                     payload = self.qualification.offer(
                         external[1],
@@ -3095,10 +3096,32 @@ class LoadDriver:
                     )
                 else:
                     payload = self.qualification.offer(external[1], external[2])
+                offer_returned = time.monotonic()
             else:
                 payload = external[2].read_bytes()
             self.check_native_admission()
-            route.send_boc(payload)
+            send_started = time.monotonic()
+            returned = False
+            try:
+                route.send_boc(payload)
+                returned = True
+            finally:
+                send_finished = time.monotonic()
+                if getattr(self, "qualification", None):
+                    # Persist only after the original single HTTP attempt. This
+                    # diagnoses local admission/dispatch versus ingress delay;
+                    # a returned call is not acceptance or native execution.
+                    with self.qualification.guard:
+                        self.qualification.event(
+                            "broadcast_timing",
+                            query_ids=external[1],
+                            relayer=getattr(external[0], "address", None),
+                            offer_call_started_monotonic_seconds=offer_started,
+                            offer_call_returned_monotonic_seconds=offer_returned,
+                            send_call_started_monotonic_seconds=send_started,
+                            send_call_finished_monotonic_seconds=send_finished,
+                            outcome="returned" if returned else "raised",
+                        )
         except (lib.TestnetError, OSError, ValueError) as exc:
             if getattr(self, "qualification", None):
                 self.stop = True
