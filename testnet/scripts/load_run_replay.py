@@ -22,7 +22,7 @@ import tempfile
 from pathlib import Path
 
 from load_finality import Head, HistoryError, decode_history
-from load_finality_collector import capture_size, seal_executable
+from load_finality_collector import capture_size, seal_executable, sync_directory
 from load_finality_replay import RetainedPrefix, block_identity
 from load_finality_window import BUCKETS, QUERY_LIMIT
 from load_proof_archive import PublicProofArchive
@@ -74,16 +74,20 @@ def pinned(path, expected, limit=8 * MIB):
 
 
 def durable_json(path, value):
-    with path.open("x") as stream:
+    # A failed write/fsync must not leave a partial completion filename that
+    # prevents a safe index replay. Link publication is atomic and exclusive.
+    require(not path.exists() and not path.is_symlink(), "public result already published")
+    with tempfile.NamedTemporaryFile(
+        "w", dir=path.parent, prefix=path.name + ".", suffix=".tmp", delete=False
+    ) as stream:
+        temporary = Path(stream.name)
         json.dump(value, stream, sort_keys=True, allow_nan=False)
         stream.write("\n")
         stream.flush()
         os.fsync(stream.fileno())
-    fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    os.link(temporary, path)
+    temporary.unlink()
+    sync_directory(path.parent)
 
 
 def clock(value):
@@ -115,6 +119,8 @@ class EventIndex:
         self.max_offers, self.max_captures = max_offers, max_captures
         self.offers = self.checkpoints = 0
         self.baseline = None
+        self.last_offered_clock = None
+        self.last_observed_clock = None
         self.histogram = [0] * (len(BUCKETS) + 1)
 
     def add(self, event):
@@ -131,6 +137,10 @@ class EventIndex:
             require(
                 clock(event["monotonic_seconds"]) >= offered, "offered event precedes window clock"
             )
+            require(
+                self.last_offered_clock is None or offered >= self.last_offered_clock,
+                "serialized offered window clock regressed",
+            )
             boot = event["native_boot_id"]
             require(type(boot) is str and 0 < len(boot) <= 128, "invalid boot identity")
             for q in ids:
@@ -141,6 +151,7 @@ class EventIndex:
                     (q, hashes[str(q)], offered, boot),
                 )
                 self.offers += 1
+            self.last_offered_clock = offered
         elif kind in ("native_baseline", "native_checkpoint"):
             path = Path(event["capture"])
             require(
@@ -184,6 +195,7 @@ class EventIndex:
             (baseline["boot_id"], baseline["verified_observation_monotonic_seconds"]),
         ).fetchone()[0]
         require(invalid == 0, "offered boot or baseline clock differs")
+        self.last_observed_clock = baseline["verified_observation_monotonic_seconds"]
         self.db.commit()
 
     def bind(self, number, seqno, head, receipts):
@@ -199,6 +211,8 @@ class EventIndex:
             event["checkpoint_seqno"] == seqno and event["boot_id"] == self.baseline["boot_id"],
             "checkpoint identity or boot differs",
         )
+        observed = event["verified_observation_monotonic_seconds"]
+        require(observed >= self.last_observed_clock, "checkpoint window clock regressed")
         ids = event.get("query_ids", [])
         require(
             type(ids) is list and len(ids) == len(set(query_id(q) for q in ids)),
@@ -234,6 +248,7 @@ class EventIndex:
             self.db.execute("UPDATE offers SET matched=1 WHERE q=?", (receipt.query_id,))
         self.db.execute("UPDATE checkpoints SET matched=1 WHERE number=?", (number,))
         self.db.commit()
+        self.last_observed_clock = observed
 
     def complete(self, qualification):
         require(
@@ -665,13 +680,15 @@ def run(args):
             ("producer-packet.json", packet_raw),
         ):
             path = public / name
-            if path.exists():
+            if path.exists() or path.is_symlink():
                 require(snapshot(path, 16 * MIB) == raw, "retained public context changed")
             else:
                 with path.open("xb") as stream:
                     stream.write(raw)
                     stream.flush()
                     os.fsync(stream.fileno())
+        sync_directory(public)
+        sync_directory(output)
         attempt = 0
         while (output / f"index-{attempt}.sqlite").exists() or (
             output / f"index-{attempt}.sqlite"

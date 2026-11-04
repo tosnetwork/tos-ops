@@ -5,7 +5,10 @@ bounded public events into SQLite, recomposes retained forward proofs through th
 reviewed prefix library, runs the pinned native historical verifier for every
 capture, follows each public transaction BOC back to the preceding native account
 head, binds every query to its exact offered signed-request hash and recomputes
-the histogram from the original same-boot window clocks.
+the histogram from the original same-boot window clocks. Offered clocks must
+not regress in serialized offer order, and checkpoint clocks must not regress
+in capture order, including empty checkpoints. Callback record order across
+these two kinds is deliberately not used as window order.
 
 It does not sign, send, read keys/private carriers/outboxes/financial journals,
 clear a spending fence, or turn coverage into load acceptance. A failed source
@@ -50,9 +53,14 @@ Only one bounded capture and decoded history segment are resident at a time.
 Next archive capture lookup uses the integer primary key; it does not count all
 blobs on every capture. Archive statistics are collected only at completion.
 
+The public context directory and its parent are fsynced before verification.
 The output contains a pinned context/public-input snapshot, a per-attempt event
 copy and derived SQLite index, the shared `proofs.sqlite`, advisory progress and
-a durable `RESULT.json` only after complete coverage checks. Public TL responses,
+a durable `RESULT.json` only after complete coverage checks. Publication links
+a fsynced temporary file atomically to an exclusive final name, then syncs the
+directory; an interrupted result fsync cannot leave a partial final marker
+that blocks resume. This single publication link is unrelated to proof-bundle
+sharing and cannot exhaust per-inode link counts. Public TL responses,
 historical request JSON and selected public RPC page JSON/transaction BOCs are
 archived in exact order. Known masterchain-info/descent auxiliary TL files are
 retained too; they are not substituted for the composed forward proof used by
@@ -83,7 +91,7 @@ remain unchanged. Resource/latency measurements must be reported from the exact
 replayed source and host, not extrapolated into completed long-run acceptance.
 
 
-Exact-source real-corpus validation completed317captures/168queries with identical
+At initial4485c46, real-corpus validation completed317captures/168queries with identical
 original same-boot histogram, no AF_INET/connect in the outer network trace,
 75.30seconds elapsed under tracing and35,124KiB maximum RSS on the test host.
 These are short-corpus measurements, not a72h resource or live-follow result.

@@ -7,6 +7,7 @@ must exercise the pinned native verifier for signature/consensus claims.
 import base64
 import copy
 import json
+import shutil
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -512,3 +513,135 @@ def test_archive_payload_budget_cannot_publish_result(closed_run):
     with pytest.raises(ValueError, match="byte budget exhausted"):
         replay.run(c.args)
     assert not (Path(c.args.output) / "RESULT.json").exists()
+
+
+def test_regressed_empty_checkpoint_is_rejected(closed_run):
+    c = closed_run
+    old = c.run / "native-captures/capture-000002"
+    new = c.run / "native-captures/capture-000003"
+    shutil.copytree(old, new)
+    p = copy.deepcopy(c.proofs[2])
+    p["target"] = block(3)
+    c.proofs[3] = p
+    store(new / "proof.json", p)
+    result = json.loads((old / "result.json").read_text())
+    result.update(target=block(3), previous_head=result["head"], receipts=0)
+    store(new / "result.json", result)
+    c.events.append(
+        {
+            "event": "native_checkpoint",
+            "capture": str(new),
+            "boot_id": "one-boot",
+            "verified_observation_monotonic_seconds": 0.5,
+            "monotonic_seconds": 3.0,
+            "checkpoint_seqno": 3,
+            "query_ids": [],
+        }
+    )
+    write_events(c)
+    with pytest.raises(HistoryError, match="checkpoint window clock regressed"):
+        replay.run(c.args)
+
+
+def test_regressed_offered_window_sequence_is_rejected(closed_run):
+    c = closed_run
+    original = c.events[1]
+    events = []
+    for pos, q in enumerate(original["query_ids"]):
+        e = copy.deepcopy(original)
+        e["query_ids"] = [q]
+        e["signed_request_hashes"] = {str(q): original["signed_request_hashes"][str(q)]}
+        e["native_offered_monotonic_seconds"] = 2.0 if pos == 0 else 1.5
+        e["monotonic_seconds"] = 2.1 + pos * 0.1
+        events.append(e)
+    c.events[1:2] = events
+    write_events(c)
+    c.summary["qualification"]["native_finality"]["histogram"] = [0, 0, 1, 1] + [0] * 10
+    store(Path(c.args.summary), c.summary)
+    repin(c, "summary")
+    with pytest.raises(HistoryError, match="serialized offered window clock regressed"):
+        replay.run(c.args)
+
+
+def test_callback_record_order_can_differ_from_window_order(closed_run):
+    c = closed_run
+    old = c.run / "native-captures/capture-000002"
+    new = c.run / "native-captures/capture-000003"
+    shutil.copytree(old, new)
+    original = copy.deepcopy(c.proofs[2])
+    original["target"] = block(3)
+    c.proofs[3] = original
+    store(new / "proof.json", original)
+    original_result = json.loads((old / "result.json").read_text())
+    original_result["target"] = block(3)
+    store(new / "result.json", original_result)
+    previous = {
+        "lt": c.proofs[1]["account"]["last_trans_lt"],
+        "hash": c.proofs[1]["account"]["last_trans_hash"],
+    }
+    empty = copy.deepcopy(c.proofs[1])
+    empty["target"] = block(2)
+    c.proofs[2] = empty
+    store(old / "proof.json", empty)
+    store(
+        old / "result.json",
+        {
+            "status": "VERIFIED_CAPTURE",
+            "target": block(2),
+            "head": previous,
+            "previous_head": previous,
+            "receipts": 0,
+        },
+    )
+    (old / "rpc-0.json").unlink()
+    final = copy.deepcopy(c.events[2])
+    final.update(capture=str(new), checkpoint_seqno=3)
+    c.events[2].update(
+        query_ids=[], verified_observation_monotonic_seconds=1.2, monotonic_seconds=2.0
+    )
+    c.events.append(final)
+    write_events(c)
+    assert replay.run(c.args)["offered"] == 2
+
+
+def test_public_context_directory_is_synced_before_verification(closed_run, monkeypatch):
+    import os
+    import stat
+
+    real = os.fsync
+    directories = []
+    public = Path(closed_run.args.output) / "public"
+
+    def fsync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            path = Path(os.readlink("/proc/self/fd/" + str(fd)))
+            directories.append(path)
+            if path == public:
+                assert closed_run.calls == []
+        return real(fd)
+
+    monkeypatch.setattr(replay.os, "fsync", fsync)
+    replay.run(closed_run.args)
+    assert public in directories
+
+
+def test_failed_result_fsync_leaves_no_partial_final_and_can_resume(closed_run, monkeypatch):
+    import os
+
+    c = closed_run
+    real = os.fsync
+    failed = [False]
+
+    def fsync(fd):
+        path = Path(os.readlink("/proc/self/fd/" + str(fd)))
+        if (path.name == "RESULT.json" or path.name.startswith("RESULT.json.")) and not failed[0]:
+            failed[0] = True
+            raise OSError("injected result fsync interruption")
+        return real(fd)
+
+    monkeypatch.setattr(replay.os, "fsync", fsync)
+    with pytest.raises(OSError, match="result fsync interruption"):
+        replay.run(c.args)
+    assert not (Path(c.args.output) / "RESULT.json").exists()
+    c.args.resume = True
+    assert replay.run(c.args)["attempt"] == 1 and c.calls == [0, 1, 2, 0, 1, 2]
