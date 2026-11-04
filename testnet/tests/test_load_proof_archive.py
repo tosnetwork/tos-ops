@@ -90,6 +90,7 @@ def test_actual_process_kill_preserves_atomicity(tmp_path):
     import subprocess
     import sys
     from pathlib import Path
+
     from load_proof_archive import __file__ as module_file
 
     a = archive(tmp_path)
