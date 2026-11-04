@@ -2679,6 +2679,11 @@ class LoadDriver:
                     return
                 try:
                     balance = self.chain.account(relayer.address)[1]
+                    if done.is_set() or (
+                        getattr(self, "qualification", None)
+                        and (self.stop or self.qualification.halted)
+                    ):
+                        return
                     if balance < amount // 3:
                         self.fund_from_owner(
                             relayer.address,
@@ -2969,9 +2974,14 @@ class LoadDriver:
                 self.counts["unconfirmed"] += len(item[1])
         finally:
             signal.signal(signal.SIGINT, old_handler)
-            pool.shutdown(wait=True)
-            self.stop_refiller(refiller, refill_done)
-            shutil.rmtree(work, ignore_errors=True)
+            if getattr(self, "qualification", None):
+                self.stop = True
+                self.qualification.halt("exception_or_final_cleanup")
+            try:
+                self.stop_refiller(refiller, refill_done)
+            finally:
+                pool.shutdown(wait=True)
+                shutil.rmtree(work, ignore_errors=True)
         ended = time.time()
         end_balances = self.balances(wallet, relayers)
         spent = sum(start_balances.values()) + self.topped_up - sum(end_balances.values())
@@ -3047,8 +3057,10 @@ class LoadDriver:
         try:
             if getattr(self, "qualification", None):
                 self.check_send_genesis(route)
-                self.qualification.offer(external[1], external[2])
-            route.send_boc(external[2].read_bytes())
+                payload = self.qualification.offer(external[1], external[2])
+            else:
+                payload = external[2].read_bytes()
+            route.send_boc(payload)
         except (lib.TestnetError, OSError, ValueError) as exc:
             if getattr(self, "qualification", None):
                 self.stop = True
@@ -3140,6 +3152,9 @@ class LoadDriver:
         )
 
     def stop_refiller(self, refiller, done):
+        if getattr(self, "qualification", None):
+            self.stop = True
+            self.qualification.halt("refiller_cleanup")
         done.set()
         refiller.join(timeout=120)
         if getattr(self, "qualification", None) and refiller.is_alive():
@@ -3173,7 +3188,24 @@ class LoadDriver:
 def run_load(args, chain, global_id, operations=None):
     driver = LoadDriver(args, chain, global_id, operations)
     try:
-        return driver.run()
+        result = driver.run()
+        if driver.qualification:
+            evidence = result.get("qualification", {})
+            valid = (
+                result.get("stop_reason") == "duration reached"
+                and evidence.get("all_queries_observed_executed") is True
+                and evidence.get("safe_to_start_new_run") is True
+                and result.get("offering_seconds_monotonic", 0) >= args.duration
+                and all(
+                    result.get(name, 0) == 0
+                    for name in ("batches_failed", "refused", "unconfirmed")
+                )
+            )
+            if not valid:
+                raise lib.TestnetError(
+                    "qualified run did not meet its declared execution window; inspect retained evidence"
+                )
+        return result
     finally:
         driver.close()
 

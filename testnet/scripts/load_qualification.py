@@ -17,6 +17,7 @@ import testnet_lib as lib
 
 BUCKETS = (0.1, 0.25, 0.5, 1, 2, 3, 5, 10, 20, 30, 60, 120, 300)
 QUERY_LIMIT = 1 << 23
+MAX_CARRIER_BYTES = 1 << 20
 
 
 def sync_directory(path):
@@ -201,12 +202,16 @@ class Qualification:
                     raise lib.TestnetError("invalid qualified query id")
                 if self.seen[query // 8] & (1 << (query % 8)):
                     raise lib.TestnetError("query reused within qualified run")
-            # Keep the original carrier privately for read-only reconciliation; no hash or payload log.
+            # Archive and send exactly the same bounded immutable snapshot.
+            with carrier.open("rb") as src:
+                payload = src.read(MAX_CARRIER_BYTES + 1)
+            if not payload or len(payload) > MAX_CARRIER_BYTES:
+                raise lib.TestnetError("qualified carrier size limit")
             target = self.run / "private-outbox" / carrier.name
-            with carrier.open("rb") as src, target.open("xb") as out:
+            with target.open("xb") as out:
                 os.chmod(target, 0o600)
-                while block := src.read(1024 * 1024):
-                    out.write(block)
+                if out.write(payload) != len(payload):
+                    raise lib.TestnetError("short qualified carrier archive")
                 out.flush()
                 os.fsync(out.fileno())
             sync_directory(target.parent)
@@ -216,6 +221,7 @@ class Qualification:
                 self.seen[query // 8] |= 1 << (query % 8)
                 self.live[query] = {"offered": stamp, "accepted": False}
             self.offered += len(ids)
+            return payload
 
     def _histogram(self, kind, seconds):
         index = next((i for i, upper in enumerate(BUCKETS) if seconds <= upper), len(BUCKETS))

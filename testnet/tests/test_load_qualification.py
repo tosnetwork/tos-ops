@@ -381,3 +381,108 @@ def test_qualified_query_counter_fsyncs_file_and_directory(tmp_path, monkeypatch
     obj.save_state()
     assert synced == ["file", "directory"]
     obj.qualification.finish()
+
+
+def test_exception_cleanup_stops_delayed_refill_before_funding(tmp_path):
+    import threading
+
+    obj = driver()
+    obj.qualification = audit(tmp_path)
+    obj.args.relayer_amount = "1"
+    entered, release, cleanup = threading.Event(), threading.Event(), threading.Event()
+    calls = []
+
+    def account(_address):
+        entered.set()
+        assert release.wait(3)
+        return "active", 0
+
+    obj.chain = SimpleNamespace(account=account)
+    obj.topped_up = 0
+    obj.fund_from_owner = lambda *args: calls.append(args)
+
+    class Done:
+        def wait(self, timeout):
+            return cleanup.wait(min(timeout, 0.01))
+
+        def is_set(self):
+            return cleanup.is_set()
+
+        def set(self):
+            cleanup.set()
+            release.set()
+
+    done = Done()
+    thread = threading.Thread(
+        target=obj.refill, args=([SimpleNamespace(address="test", index=0)], done)
+    )
+    thread.start()
+    assert entered.wait(3)
+    obj.stop_refiller(thread, done)
+    assert not thread.is_alive() and obj.stop and obj.qualification.halted and not calls
+    obj.qualification.finish()
+
+
+def test_sent_bytes_are_the_archived_snapshot_after_source_replacement(tmp_path):
+    obj = driver()
+    obj.qualification = audit(tmp_path)
+    path = carrier(tmp_path)
+    offer = obj.qualification.offer
+
+    def replacing(ids, source):
+        payload = offer(ids, source)
+        source.write_bytes(b"different-unsent-replacement")
+        return payload
+
+    obj.qualification.offer = replacing
+    sent = []
+    route = SimpleNamespace(send_boc=lambda payload: sent.append(payload))
+    assert obj.send((None, [0], path), route) is None
+    archived = obj.qualification.run / "private-outbox" / path.name
+    assert sent == [archived.read_bytes()] == [b"test-only-unsent-carrier"]
+    assert path.read_bytes() != sent[0]
+    obj.qualification.terminal(0, True)
+    obj.qualification.finish()
+
+
+def test_oversized_carrier_refused_before_archiving(tmp_path):
+    from load_qualification import MAX_CARRIER_BYTES
+
+    q = audit(tmp_path)
+    path = tmp_path / "oversized.boc"
+    with path.open("wb") as out:
+        out.truncate(MAX_CARRIER_BYTES + 1)
+    with pytest.raises(lib.TestnetError, match="size limit"):
+        q.offer([0], path)
+    assert q.offered == 0 and not list((q.run / "private-outbox").iterdir())
+    q.abort()
+
+
+@pytest.mark.parametrize("bad", ["window", "stopped", "pending", "failed"])
+def test_qualified_incomplete_run_returns_failure_and_closes(monkeypatch, bad):
+    spec = importlib.util.spec_from_file_location(
+        "qualification_exit", SCRIPTS / "testnet-elections.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    result = {
+        "stop_reason": "duration reached",
+        "offering_seconds_monotonic": 10,
+        "qualification": {"all_queries_observed_executed": True, "safe_to_start_new_run": True},
+    }
+    if bad == "window":
+        result["offering_seconds_monotonic"] = 9
+    elif bad == "stopped":
+        result["stop_reason"] = "interrupted"
+    elif bad == "pending":
+        result["qualification"]["safe_to_start_new_run"] = False
+    else:
+        result["batches_failed"] = 1
+    closed = []
+    fake = SimpleNamespace(
+        run=lambda: result, qualification=True, close=lambda: closed.append(True)
+    )
+    monkeypatch.setattr(module, "LoadDriver", lambda *args: fake)
+    with pytest.raises(lib.TestnetError, match="declared execution window"):
+        module.run_load(SimpleNamespace(duration=10), None, 2)
+    assert closed == [True]

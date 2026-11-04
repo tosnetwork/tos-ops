@@ -541,3 +541,11 @@ command. A run cannot publish a safe closed marker with funding still in flight.
 The offering window uses monotonic time; event monotonic timestamps also allow
 gap analysis. Setup/drain time and thermal pauses do not become evidence of
 sustained qualifying throughput by virtue of elapsed wall time alone.
+
+Exceptional cleanup halts admission before waiting for worker shutdown. Qualified
+carriers are capped at 1 MiB, archived once, and that exact immutable snapshot is
+sent; replacing the original pathname cannot change the transmitted bytes. A
+qualified CLI run returns failure unless its declared monotonic offering window
+completed, every offered query was observed executed, all funding was settled,
+and failed/refused/unconfirmed counts are zero. The retained summary still
+exposes the narrower RPC-observation and net-burn scopes above.
