@@ -147,6 +147,8 @@ activation carrier. It does not create a new highload wallet. Cold bootstrap is 
 capture. Each worker capture uses those strict settings. A worker failure
 permanently stops admission; authenticated receipts may still drain read-only
 where the window permits it. The worker joins before the durable journal closes.
+If thread startup itself fails, the owned verifier is closed, the original
+startup error is preserved, and the failed observer cannot be started again.
 An unfinished native pending set preserves the original run fence, even when
 the application journal never completed its offered event.
 

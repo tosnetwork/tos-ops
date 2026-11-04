@@ -70,10 +70,24 @@ class NativeObserver:
         )
 
     def start(self):
-        if self.thread is not None or self.window.last_verified is None:
+        if self.thread is not None or self.window.last_verified is None or self.done.is_set():
             raise HistoryError("native observer needs one initialized start")
         self.thread = threading.Thread(target=self._work, name="native-finality", daemon=True)
-        self.thread.start()
+        try:
+            self.thread.start()
+        except BaseException as startup_error:
+            self.thread = None
+            self.done.set()
+            try:
+                self._fail("native observer thread could not start")
+            except BaseException:
+                # The sticky failure is set before the halt callback; even a
+                # journal error must not prevent closing the owned verifier FD.
+                pass
+            try:
+                self.collector.close()
+            finally:
+                raise startup_error
 
     def assert_healthy(self):
         with self.failure_guard:

@@ -77,6 +77,31 @@ def test_failed_bootstrap_restores_timeout():
         o.offer({1: "ab" * 32})
 
 
+@pytest.mark.parametrize("halt_fails", [False, True])
+def test_failed_thread_start_closes_collector_and_finish_preserves_failure(monkeypatch, halt_fails):
+    c = Collector()
+    o, halted = observer(c)
+    o.bootstrap()
+    if halt_fails:
+
+        def bad_halt(_reason):
+            halted.append(_reason)
+            raise OSError("journal unavailable")
+
+        o.halt = bad_halt
+
+    def fail_start():
+        raise RuntimeError("cannot start new thread")
+
+    monkeypatch.setattr(threading, "Thread", lambda **kw: SimpleNamespace(start=fail_start))
+    with pytest.raises(RuntimeError, match="cannot start new thread"):
+        o.start()
+    assert c.closed and halted and o.thread is None
+    assert o.finish()["worker_failure"] == "native observer thread could not start"
+    with pytest.raises(HistoryError, match="initialized start"):
+        o.start()
+
+
 def test_worker_matches_request_digest_and_joins_before_close():
     ready, release = threading.Event(), threading.Event()
     c = Collector()
