@@ -183,3 +183,59 @@ def test_overflow_latency_report_is_strict_json():
         w.advance(2, old, new, receipts, boot_id=BOOT, now=500)
     assert w.summary()["p99_upper_seconds"] == "infinity"
     json.dumps(w.summary(), allow_nan=False)
+
+
+def test_late_receipts_can_drain_without_reopening_admission():
+    old, new, receipts = public_segment()
+    middle = receipts[1].transaction
+    w = FinalityWindow(BOOT)
+    w.advance(1, old, old, (), boot_id=BOOT, now=100)
+    w.offer({r.query_id: r.request_hash for r in receipts}, boot_id=BOOT, now=101)
+    with pytest.raises(HistoryError, match="latency exceeds declared SLO"):
+        w.advance(2, old, middle, (receipts[1],), boot_id=BOOT, now=107)
+    assert len(w.pending) == 1
+    with pytest.raises(HistoryError, match="latency exceeds declared SLO"):
+        w.offer({12: "ab" * 32}, boot_id=BOOT, now=107)
+    with pytest.raises(HistoryError, match="latency exceeds declared SLO"):
+        w.advance(3, middle, new, (receipts[0],), boot_id=BOOT, now=108)
+    s = w.summary()
+    assert s["native_pending"] == 0 and s["all_offered_native_finalized"]
+    assert not s["latency_criteria_pass"] and s["readonly_reconciliation_allowed"]
+
+
+def test_integrity_failure_during_drain_requires_external_reconciliation():
+    old, new, receipts = public_segment()
+    middle = receipts[1].transaction
+    w = FinalityWindow(BOOT)
+    w.advance(1, old, old, (), boot_id=BOOT, now=100)
+    w.offer({r.query_id: r.request_hash for r in receipts}, boot_id=BOOT, now=101)
+    with pytest.raises(HistoryError, match="latency exceeds declared SLO"):
+        w.advance(2, old, middle, (receipts[1],), boot_id=BOOT, now=107)
+    with pytest.raises(HistoryError, match="does not match offered signed request"):
+        w.advance(
+            3, middle, new, (replace(receipts[0], request_hash="ff" * 32),), boot_id=BOOT, now=108
+        )
+    assert len(w.pending) == 1 and not w.summary()["readonly_reconciliation_allowed"]
+    assert (
+        w.summary()["integrity_failure"] == "native receipt does not match offered signed request"
+    )
+    with pytest.raises(HistoryError):
+        w.advance(3, middle, new, (receipts[0],), boot_id=BOOT, now=109)
+    assert len(w.pending) == 1
+
+
+def test_repeated_checkpoint_does_not_refresh_progress_freshness():
+    w = window()
+    w.advance(10, OLD, OLD, (), boot_id=BOOT, now=105)
+    w.advance(10, OLD, OLD, (), boot_id=BOOT, now=110)
+    assert w.last_verified == 100
+    with pytest.raises(HistoryError, match="proof observation stale"):
+        w.offer({1: "ab" * 32}, boot_id=BOOT, now=111)
+
+
+def test_newer_checkpoint_with_unchanged_account_is_progress():
+    w = window()
+    w.advance(11, OLD, OLD, (), boot_id=BOOT, now=105)
+    w.advance(12, OLD, OLD, (), boot_id=BOOT, now=110)
+    w.offer({1: "ab" * 32}, boot_id=BOOT, now=111)
+    assert len(w.pending) == 1 and w.last_verified == 110

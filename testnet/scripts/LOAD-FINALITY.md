@@ -65,13 +65,24 @@ proof artifacts. No caller may substitute an RPC account head for a verified one
 
 The client supplies same-boot monotonic completion times. A boot change, clock
 regression, stale observation, overdue query or checkpoint discontinuity latches
-a failure that cannot be reset. Default observation-age/query-age guards are
-10/30 seconds. Refreshing a checkpoint cannot erase an observation gap. Default
-latency criteria are conservative histogram upper bounds p95 <= 5 seconds and
+a failure that cannot be reset for admission. Default observation-age/query-age guards are
+10/30 seconds. Refreshing a checkpoint cannot erase an observation gap.
+Re-verifying the same masterchain checkpoint does not refresh this progress
+clock; only a larger authenticated checkpoint sequence does. The caller must
+also request live native proofs with authenticated age no larger than the
+configured observation-age guard; replaying old historical proofs cannot satisfy
+that prerequisite. An unchanged account head at a newer checkpoint is valid.
+Default latency criteria are conservative histogram upper bounds p95 <= 5 seconds and
 p99 <= 10 seconds; no inclusion or chain timestamp is substituted for completion
 of proof and history verification. Authentic slow receipts still settle the
 pending entries, while their latency makes the qualification fail. Summary
 overflow buckets use the JSON string `infinity`, never a non-finite JSON number.
+After a latency/observation-age failure, `advance` may continue strictly read-only
+reconciliation of the original requests with fresh, complete same-boot native
+evidence. Admission remains halted and the original failure remains recorded.
+An identity, boot, clock, binding or checkpoint-integrity failure prevents that
+automatic drain and requires external read-only investigation of the original
+run; it never permits new signatures or a new baseline.
 
 This class does not acquire proofs, persist events, stop the sender or execute
 the caller's funding gate itself. Those live integration gates remain open.

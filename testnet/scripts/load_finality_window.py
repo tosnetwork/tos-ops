@@ -46,14 +46,20 @@ class FinalityWindow:
         self.offered = self.finalized = 0
         self.head = self.seqno = self.last_verified = self.last_clock = None
         self.failure = None
+        self.drainable_failure = False
+        self.integrity_failure = None
 
-    def _fail(self, reason):
+    def _fail(self, reason, *, drainable=False):
         if self.failure is None:
             self.failure = reason
-        raise HistoryError(self.failure)
+            self.drainable_failure = drainable
+        elif not drainable:
+            self.drainable_failure = False
+            self.integrity_failure = reason
+        raise HistoryError(reason)
 
-    def _clock(self, boot_id, now):
-        if self.failure is not None:
+    def _clock(self, boot_id, now, *, reconcile=False):
+        if self.failure is not None and not (reconcile and self.drainable_failure):
             raise HistoryError(self.failure)
         if boot_id != self.boot_id:
             self._fail("finality boot identity changed")
@@ -71,9 +77,9 @@ class FinalityWindow:
         if self.last_verified is None:
             self._fail("native baseline not established")
         if now - self.last_verified > self.max_proof_age:
-            self._fail("native proof observation stale")
+            self._fail("native proof observation stale", drainable=True)
         if any(now - stamp > self.max_query_age for _, stamp in self.pending.values()):
-            self._fail("native query observation overdue")
+            self._fail("native query observation overdue", drainable=True)
 
     def healthy(self, *, boot_id, now):
         with self.guard:
@@ -126,7 +132,7 @@ class FinalityWindow:
         receipts still settle pending entries; their latency stops new admission.
         """
         with self.guard:
-            self._clock(boot_id, now)
+            self._clock(boot_id, now, reconcile=True)
             if (
                 type(seqno) is not int
                 or seqno < 0
@@ -173,15 +179,18 @@ class FinalityWindow:
                 )
                 self.histogram[index] += 1
             self.finalized += len(receipts)
-            self.head, self.seqno, self.last_verified = head, seqno, now
+            progressed = self.seqno is None or seqno > self.seqno
+            self.head, self.seqno = head, seqno
+            if progressed:
+                self.last_verified = now
             if observation_gap:
-                self._fail("native proof observation stale")
+                self._fail("native proof observation stale", drainable=True)
             if latencies and max(latencies) > self.max_query_age:
-                self._fail("native query observation overdue")
+                self._fail("native query observation overdue", drainable=True)
             if self.finalized and (
                 self._quantile(95) > self.p95_limit or self._quantile(99) > self.p99_limit
             ):
-                self._fail("native verified finality latency exceeds declared SLO")
+                self._fail("native verified finality latency exceeds declared SLO", drainable=True)
             self._healthy(boot_id, now)
 
     def summary(self):
@@ -193,6 +202,8 @@ class FinalityWindow:
                 "native_finalized": self.finalized,
                 "native_pending": len(self.pending),
                 "failure": self.failure,
+                "readonly_reconciliation_allowed": self.drainable_failure,
+                "integrity_failure": self.integrity_failure,
                 "all_offered_native_finalized": complete,
                 "latency_criteria_pass": complete and self.failure is None,
                 "latency_bucket_upper_seconds": [*BUCKETS, "infinity"],
