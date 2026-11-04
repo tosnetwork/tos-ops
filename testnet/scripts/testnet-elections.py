@@ -2469,6 +2469,7 @@ class LoadDriver:
         for index in range(relayers):
             relayer_base = f"relayer-{index}"
             if not (self.state / f"{relayer_base}.addr").is_file():
+                self.check_native_admission()
                 result = subprocess.run(
                     [
                         self.args.fift,
@@ -2858,9 +2859,9 @@ class LoadDriver:
         if self.args.dry_run:
             self.dry_run()
             return {}
-        wallet, relayers = self.ensure_keys(relayer_count)
         if getattr(self.args, "native_finality", False):
-            self.start_native_observer(wallet)
+            self.start_native_from_existing_wallet()
+        wallet, relayers = self.ensure_keys(relayer_count)
         self.deploy(wallet, relayers)
         recipients = [r.address for r in relayers]
         self.value = submission_value(self.required_value(wallet))
@@ -3261,6 +3262,14 @@ class LoadDriver:
         self.native_observer.bootstrap()
         self.qualification.attach_native(self.native_observer)
         self.native_observer.start()
+
+    def start_native_from_existing_wallet(self):
+        # Native mode verifies a deployed wallet before any relayer activation
+        # carrier can be signed. New highload setup belongs to preparation.
+        for name in ("highload.key", "highload.addr"):
+            if not (self.state / name).is_file():
+                raise lib.TestnetError("native mode requires an existing deployed highload wallet")
+        self.start_native_observer(address_from_file(self.state / "highload.addr"))
 
 
 def run_load(args, chain, global_id, operations=None):

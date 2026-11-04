@@ -186,6 +186,60 @@ def test_native_owner_guard_checks_actual_sign_and_broadcast_boundaries(tmp_path
     q.abort()
 
 
+def test_native_setup_requires_existing_wallet_before_observer_or_signing(tmp_path):
+    obj = driver()
+    obj.state = tmp_path
+    started = []
+    obj.start_native_observer = started.append
+    with pytest.raises(lib.TestnetError, match="existing deployed"):
+        obj.start_native_from_existing_wallet()
+    assert not started
+
+
+def test_native_baseline_precedes_any_relayer_preparation(monkeypatch):
+    obj = driver()
+    obj.args.relayers = 1
+    obj.args.dry_run = False
+    obj.args.native_finality = True
+    obj.check_qualified_genesis = lambda: None
+    monkeypatch.setitem(type(obj).run.__globals__, "previous_wallets", lambda _: [])
+    trace = []
+    obj.start_native_from_existing_wallet = lambda: trace.append("native baseline")
+
+    def prepare(_count):
+        assert trace == ["native baseline"]
+        raise RuntimeError("test stops before setup action")
+
+    obj.ensure_keys = prepare
+    with pytest.raises(RuntimeError, match="test stops"):
+        obj.run()
+
+
+def test_new_relayer_activation_carrier_signing_is_native_guarded(tmp_path, monkeypatch):
+    obj = driver()
+    q, o = native_audit(tmp_path)
+    obj.qualification = q
+    obj.state = tmp_path / "prepared-test-state"
+    obj.state.mkdir(mode=0o700)
+    (obj.state / "highload.key").write_bytes(b"FAKE-TEST-KEY-NOT-USABLE")
+    (obj.state / "highload.addr").write_bytes(b"FAKE-TEST-ADDRESS")
+    obj.saved = {"wallet_timeout": 3600}
+    obj.args.wallet_timeout = 3600
+    obj.global_id = 2
+    obj.tos_root = tmp_path
+    obj.include = "unused"
+    obj.args.fift = "unused"
+    g = type(obj).ensure_keys.__globals__
+    monkeypatch.setitem(g, "address_from_file", lambda _: "0:" + "11" * 32)
+    calls = []
+    monkeypatch.setattr(g["subprocess"], "run", lambda *a, **k: calls.append(a))
+    o._fail("failure before relayer setup signing")
+    with pytest.raises(ValueError, match="relayer setup"):
+        obj.ensure_keys(1)
+    assert not calls
+    q.abort()
+
+
 def test_qualified_settlement_checks_execution_without_artificial_hold(tmp_path, monkeypatch):
     obj = driver()
     obj.qualification = audit(tmp_path)

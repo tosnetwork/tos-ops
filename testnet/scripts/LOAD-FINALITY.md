@@ -139,7 +139,10 @@ already deployed wallet, the skip/254-action profile, explicit verifier and
 anchor paths plus SHA256 pins, a lite-server config and the expected wallet code
 hash (`--native-verifier`, `--native-verifier-sha256`, `--native-anchor`,
 `--native-anchor-sha256`, `--native-liteserver`, `--native-wallet-code-hash`).
-The wallet's global version must be 16. Cold bootstrap is unscored and permits
+The wallet's global version must be 16. Native mode requires existing
+`highload.key` and `highload.addr`; it establishes its native baseline before
+relayer preparation, and checks admission before Fift may sign a new relayer
+activation carrier. It does not create a new highload wallet. Cold bootstrap is unscored and permits
 30 seconds; admission starts only after a strict 10-second-age/8-second-deadline
 capture. Each worker capture uses those strict settings. A worker failure
 permanently stops admission; authenticated receipts may still drain read-only
