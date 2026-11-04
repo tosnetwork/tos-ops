@@ -17,7 +17,9 @@ consensus certificate or independently establish that a checkpoint is finalized.
 For a highload submission the decoder checks its signed global ID, wallet and
 subwallet, then ordinary transaction, compute and action outcomes. The explicit
 skip profile requires 255 actions, 254 skipped actions and one created refund
-message. Those skipped actions are deliberate computational load; they are not
+message, with its source, destination, excesses opcode and relayer correlation
+decoded from the unique output. This proves emission, not receipt at the relayer.
+Those skipped actions are deliberate computational load; they are not
 delivered payments. General-profile receipts expose action counts and do not
 establish downstream delivery. Authenticating transaction history is stronger
 than observing a `processed?` marker alone, but remains separate from matching

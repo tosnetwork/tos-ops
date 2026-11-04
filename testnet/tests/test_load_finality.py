@@ -6,7 +6,7 @@ from pathlib import Path
 
 import load_finality as finality
 import pytest
-from pytosiq_core import Cell, Transaction
+from pytosiq_core import Address, Builder, Cell, Transaction
 
 
 @pytest.fixture
@@ -151,3 +151,28 @@ def test_decoded_public_phase_refusals(public, field, value, message):
 def test_invalid_heads_refused(lt, hash_):
     with pytest.raises(finality.HistoryError):
         finality.Head(lt, hash_)
+
+
+@pytest.mark.parametrize("case", ["destination", "source", "opcode", "query", "shape", "count"])
+def test_refund_is_decoded_not_inferred_from_action_counts(public, case):
+    tx = transaction(public)
+    refund = tx.out_msgs[0]
+    if case in ("destination", "source"):
+        setattr(refund.info, "dest" if case == "destination" else "src", Address("0:" + "11" * 32))
+        reason = "refund routing mismatch"
+    elif case == "count":
+        tx.out_msgs.append(refund)
+        reason = "refund output count mismatch"
+    elif case == "shape":
+        refund.body = Builder().store_uint(0xD53276DB, 32).store_uint(0, 64).store_bit(1).end_cell()
+        reason = "refund body shape mismatch"
+    else:
+        refund.body = (
+            Builder()
+            .store_uint(0 if case == "opcode" else 0xD53276DB, 32)
+            .store_uint(1 if case == "query" else 0, 64)
+            .end_cell()
+        )
+        reason = "refund correlation mismatch"
+    with pytest.raises(finality.HistoryError, match=reason):
+        finality.submit_receipt(tx, public["wallet"], 2, 4269, skipped_profile=True)

@@ -63,7 +63,7 @@ def submit_receipt(tx, wallet, global_id, subwallet_id, *, skipped_profile):
     if body.remaining_bits < 32 or body.load_uint(32) != SUBMIT:
         return None
     require(tx.in_msg.is_internal, "submission must be internal")
-    body.load_uint(64)  # Relayer refund correlation, not the signed replay query.
+    relayer_query = body.load_uint(64)  # Distinct from the signed replay query.
     request = body.load_ref()
     body.load_ref()  # Signature already checked by the authenticated transaction.
     require(body.remaining_bits == body.remaining_refs == 0, "submission trailing data")
@@ -104,6 +104,25 @@ def submit_receipt(tx, wallet, global_id, subwallet_id, *, skipped_profile):
             and action.skipped_actions == 254
             and action.msgs_created == 1,
             "submission skip profile mismatch",
+        )
+        require(tx.outmsg_cnt == len(tx.out_msgs) == 1, "refund output count mismatch")
+        refund = tx.out_msgs[0]
+        require(
+            refund.is_internal
+            and not refund.info.bounced
+            and refund.info.src.to_str(is_user_friendly=False) == wallet
+            and refund.info.dest.to_str(is_user_friendly=False)
+            == tx.in_msg.info.src.to_str(is_user_friendly=False),
+            "refund routing mismatch",
+        )
+        refund_body = refund.body.begin_parse()
+        require(
+            refund_body.remaining_bits == 96 and refund_body.remaining_refs == 0,
+            "refund body shape mismatch",
+        )
+        require(
+            refund_body.load_uint(32) == 0xD53276DB and refund_body.load_uint(64) == relayer_query,
+            "refund correlation mismatch",
         )
     return SubmitReceipt(
         query,
