@@ -486,12 +486,12 @@ class NativeCollector:
                     # budget. Preserve artifacts and refuse every later capture.
                     self.retained = self.storage_budget
                     raise
+            completed = time.monotonic()
             require(
                 0 <= time.time() - proof["target"]["gen_utime"] <= self.max_age
-                and time.monotonic() < deadline,
+                and completed < deadline,
                 "capture expired during persistence",
             )
-            completed = time.monotonic()
             self.state_source = path / "native-state.json"
             self.last_head = head
             return Capture(proof["target"]["seqno"], previous, head, receipts, completed, path)

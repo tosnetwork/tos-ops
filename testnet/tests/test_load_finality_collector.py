@@ -429,3 +429,33 @@ def test_final_retention_scan_counts_toward_age_and_deadline(configured, monkeyp
         assert c.last_head is None and c.state_source is None
     finally:
         c.close()
+
+
+def test_reported_completion_is_the_exact_deadline_checked_value(configured, monkeypatch):
+    args, public = configured
+    c = collector.NativeCollector(**args)
+    fake_boundary(c, public)
+    post_scan, clock_reads, scans = [False], [0], [0]
+    actual_size = collector.capture_size
+
+    def clock():
+        if not post_scan[0]:
+            return 100
+        clock_reads[0] += 1
+        return 107.99 if clock_reads[0] == 1 else 108.01
+
+    def final_scan(path):
+        result = actual_size(path)
+        scans[0] += 1
+        if scans[0] == 2:
+            post_scan[0] = True
+        return result
+
+    monkeypatch.setattr(collector, "capture_size", final_scan)
+    monkeypatch.setattr(collector.time, "monotonic", clock)
+    try:
+        captured = c.capture()
+        assert captured.completed_monotonic < 108
+        assert clock_reads[0] == 1
+    finally:
+        c.close()
