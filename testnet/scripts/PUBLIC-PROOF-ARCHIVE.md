@@ -1,6 +1,6 @@
 # Public proof archive
 
-`PublicProofArchive` stores explicit public TL proof responses once by SHA-256,
+`PublicProofArchive` stores explicit public TL proof responses, transaction BOCs and replay JSON once by SHA-256,
 with ordered capture manifests in SQLite. It does not inspect directories or
 accept keys, private journals, signed carriers or outboxes. Archive hashes prove
 storage integrity only. Native historical verification, network identity and
@@ -22,7 +22,8 @@ requires exact part count/order. Materialize only one bounded capture for native
 replay and remove that temporary material after verification. No hardlinks are
 used, so a repeated prefix does not exhaust per-inode link counts.
 
-This is a storage API, not a live collector replacement or a full-run replay CLI.
+This is a storage API, not a live collector replacement. The separate closed-run
+CLI is documented in RUN-PROOF-REPLAY.md; live follow remains separate.
 The latter must check gaps, source changes, native signatures, account history,
 exact signed-request digests, boot identity and the original monotonic SLO inputs.
 
