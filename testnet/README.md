@@ -487,3 +487,41 @@ genesis`, `testnet-elections.py pool`, `onboard` and `load`), beside `manifest
   follow this runbook on Ubuntu 24.04 x86_64 only unless a separate build is reviewed.
 - The alert peer sees the coordinator heartbeat, not chain state. Independent
   chain observation requires another approved endpoint/deployment.
+
+### Qualified load evidence
+
+`testnet-elections.py load --qualify-load` adds bounded, durable evidence to the
+existing load driver. Supply distinct `--rpc` and `--confirm-rpc`, the approved
+`--expected-genesis-root` and `--expected-genesis-file` (64 lowercase hex digits
+each), a positive `--funding-ceiling` and a positive `--fee-stop`, in TOS. All
+watched RPC sources must report that full genesis before keys/deployment and at
+periodic safety checks. This is RPC corroboration; the execution packet still
+needs its separate native genesis/configuration/source-funds proofs.
+
+The funding ceiling bounds the sum of new owner transfer amounts in **one run**,
+including initial deployment and refills. It does not include the owner's own
+transfer fees or previously funded assets. The fee-stop is an observed net-burn
+stop for load wallets, sampled at safety checks; it excludes deployment/owner
+fees, can be affected by other inflows, and does not bound costs still in flight.
+It is not an exact total-fee guarantee. Preserve the source owner's reserve and
+set a separately reviewed total allocation for all trials and retained balances.
+
+Every offered query gets private retained original carrier bytes and a durable
+public-metadata event. Execution is checked for **each query** on both RPC
+sources; the old last-query group proxy is not used in qualified mode. Latency is
+from RPC offer to wallet-sequence acceptance / observed processed status, not
+key generation, signing, native finality or full application latency. Histograms
+have fixed buckets, the seen-ID bitmap is 1 MiB and the live table is capped at
+8,192 queries. Retained carrier/disk growth is expected workload evidence, not
+in-memory retention. Never publish or hash private outbox carriers or keys.
+
+A send/funding uncertainty stops new work. The private unfinished-run marker
+refuses a new qualified run until the original result is reconciled; there is no
+automatic retry, re-sign or resume flag. Successful normal completion releases
+the process lock and closes the run marker only when no queries or unknown
+funding remain. The lock file is retained. These observations alone do not prove
+72 hours, node resource bounds, native settlement, three trials or capacity SLOs.
+
+Do not use `--dry-run` as an unsigned check: existing load dry-run creates keys
+and signs a batch. Qualified dry-run is refused. Build an unsigned execution
+packet and review the actual monitor, load profile and budgets before sending.
