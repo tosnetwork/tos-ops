@@ -525,3 +525,19 @@ funding remain. The lock file is retained. These observations alone do not prove
 Do not use `--dry-run` as an unsigned check: existing load dry-run creates keys
 and signs a batch. Qualified dry-run is refused. Build an unsigned execution
 packet and review the actual monitor, load profile and budgets before sending.
+
+All load modes share the same process lock. A state with qualification history
+cannot be reopened in ordinary/dry-run mode, even after a completed run; keep
+using qualification mode. Qualified identities are durably bound to the full
+genesis, and unbound legacy keys cannot be silently adopted. Query-counter data
+and its directory are synced before signing. All send endpoints participate in
+the pre-key/periodic genesis checks, and each actual send route is checked again
+before its carrier is admitted.
+
+Stopping closes admission to new carriers and funding reservations immediately;
+already-started operations still need their original result reconciled. A funding
+thread that outlives the bounded join leaves the run unfinished and fails the
+command. A run cannot publish a safe closed marker with funding still in flight.
+The offering window uses monotonic time; event monotonic timestamps also allow
+gap analysis. Setup/drain time and thermal pauses do not become evidence of
+sustained qualifying throughput by virtue of elapsed wall time alone.

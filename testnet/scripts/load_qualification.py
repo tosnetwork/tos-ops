@@ -51,8 +51,35 @@ def check_genesis(info, root_hex, file_hex):
         raise lib.TestnetError("qualified RPC genesis does not match the explicit ceremony")
 
 
+def lock_state(directory):
+    directory = lib.private_dir(Path(directory))
+    fd = os.open(directory / "qualification.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+            raise lib.TestnetError("unsafe qualification lock")
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def ordinary_state_lock(directory):
+    fd = lock_state(directory)
+    try:
+        if (Path(directory) / "qualification-active.json").exists() or (
+            Path(directory) / "qualification-identity.json"
+        ).exists():
+            raise lib.TestnetError("qualified state requires qualification mode and reconciliation")
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 class Qualification:
-    def __init__(self, directory, funding_cap, fee_stop, max_pending=8192):
+    def __init__(self, directory, funding_cap, fee_stop, max_pending=8192, identity=None):
         if (
             type(funding_cap) is not int
             or type(fee_stop) is not int
@@ -64,20 +91,31 @@ class Qualification:
                 "positive qualification budgets and bounded pending limit required"
             )
         self.directory = lib.private_dir(Path(directory))
-        self.lock_fd = os.open(
-            self.directory / "qualification.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600
-        )
-        info = os.fstat(self.lock_fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
-            os.close(self.lock_fd)
-            raise lib.TestnetError("unsafe qualification lock")
+        self.lock_fd = lock_state(self.directory)
         try:
-            fcntl.flock(self.lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             self.active = self.directory / "qualification-active.json"
-            if self.active.exists() and not json.loads(self.active.read_text()).get("closed"):
+            if (
+                self.active.exists()
+                and json.loads(self.active.read_text()).get("closed") is not True
+            ):
                 raise lib.TestnetError(
                     "previous qualified run unfinished: reconcile original messages"
                 )
+            identity_path = self.directory / "qualification-identity.json"
+            if identity is not None:
+                if identity_path.exists():
+                    if json.loads(identity_path.read_text()) != identity:
+                        raise lib.TestnetError("qualified state belongs to a different genesis")
+                else:
+                    if (
+                        (self.directory / "highload.key").exists()
+                        or (self.directory / "highload.addr").exists()
+                        or list(self.directory.glob("relayer-*.pk"))
+                    ):
+                        raise lib.TestnetError(
+                            "existing unbound load keys require a fresh qualified state"
+                        )
+                    atomic_json(identity_path, identity)
             self.run = self.directory / f"qualification-{time.time_ns()}"
             self.run.mkdir(mode=0o700)
             (self.run / "private-outbox").mkdir(mode=0o700)
@@ -95,17 +133,31 @@ class Qualification:
         self.funded = self.funding_operations = self.offered = self.executed = 0
         self.accepted = self.failed = 0
         self.funding_unknown = False
+        self.funding_inflight = 0
+        self.halted = False
         self.histograms = {name: [0] * (len(BUCKETS) + 1) for name in ("accepted", "executed")}
         self.started = time.monotonic()
         self.closed = False
 
     def event(self, kind, **fields):
-        self.events.write(json.dumps({"event": kind, "time_unix": time.time(), **fields}) + "\n")
+        self.events.write(
+            json.dumps(
+                {
+                    "event": kind,
+                    "time_unix": time.time(),
+                    "monotonic_seconds": time.monotonic(),
+                    **fields,
+                }
+            )
+            + "\n"
+        )
         self.events.flush()
         os.fsync(self.events.fileno())
 
     def reserve_funding(self, amount, label):
         with self.guard:
+            if self.halted:
+                raise lib.TestnetError("qualified admission stopped")
             if (
                 type(amount) is not int
                 or amount <= 0
@@ -116,14 +168,32 @@ class Qualification:
             self.event("funding_reserved", amount_nanotos=amount, label=label)
             self.funded += amount
             self.funding_operations += 1
+            self.funding_inflight += 1
+
+    def funding_settled(self):
+        with self.guard:
+            if self.closed or self.funding_inflight <= 0:
+                raise lib.TestnetError("funding settlement needs original-run reconciliation")
+            self.event("funding_settled")
+            self.funding_inflight -= 1
+
+    def halt(self, reason):
+        with self.guard:
+            self.halted = True
+            if not self.closed:
+                self.event("admission_stopped", reason=reason)
 
     def uncertain_funding(self):
         with self.guard:
             self.funding_unknown = True
-            self.event("funding_unknown")
+            self.halted = True
+            if not self.closed:
+                self.event("funding_unknown")
 
     def offer(self, ids, carrier):
         with self.guard:
+            if self.halted:
+                raise lib.TestnetError("qualified admission stopped")
             if not ids or len(set(ids)) != len(ids) or len(self.live) + len(ids) > self.max_pending:
                 raise lib.TestnetError("duplicate query or qualified pending ceiling reached")
             for query in ids:
@@ -194,6 +264,9 @@ class Qualification:
                 "funded_nanotos": self.funded,
                 "funding_cap_nanotos": self.funding_cap,
                 "funding_unknown": self.funding_unknown,
+                "funding_inflight": self.funding_inflight,
+                "admission_stopped": self.halted,
+                "run_directory": self.run.name,
                 "observed_fee_stop_nanotos": self.fee_stop,
                 "seconds_monotonic": time.monotonic() - self.started,
                 "latency_bucket_upper_seconds": [*BUCKETS, "infinity"],
@@ -204,7 +277,10 @@ class Qualification:
                 self.offered > 0 and self.executed == self.offered
             )
             result["safe_to_start_new_run"] = (
-                not self.live and not self.failed and not self.funding_unknown
+                not self.live
+                and not self.failed
+                and not self.funding_unknown
+                and self.funding_inflight == 0
             )
             atomic_json(self.run / "result.json", result)
             atomic_json(

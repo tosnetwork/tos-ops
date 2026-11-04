@@ -2341,9 +2341,9 @@ class LoadDriver:
         self.endpoints = [
             (Chain(url, chain.rpc), SendWindow()) for url in (args.send_rpc or [chain.url])
         ]
-        self.saved = self.load_state()
         self.previous: list[dict[str, str]] = []
         self.qualification = None
+        self.load_lock_fd = None
         if getattr(args, "qualify_load", False):
             from load_qualification import Qualification
 
@@ -2351,7 +2351,28 @@ class LoadDriver:
                 self.state,
                 parse_tos(args.funding_ceiling, "--funding-ceiling"),
                 parse_tos(args.fee_stop, "--fee-stop"),
+                identity={
+                    "global_id": global_id,
+                    "genesis_root": args.expected_genesis_root,
+                    "genesis_file": args.expected_genesis_file,
+                },
             )
+        else:
+            from load_qualification import ordinary_state_lock
+
+            self.load_lock_fd = ordinary_state_lock(self.state)
+        try:
+            self.saved = self.load_state()
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self):
+        if self.qualification and not self.qualification.closed:
+            self.qualification.abort()
+        if self.load_lock_fd is not None:
+            os.close(self.load_lock_fd)
+            self.load_lock_fd = None
 
     # -- files
 
@@ -2363,6 +2384,11 @@ class LoadDriver:
 
     def save_state(self) -> None:
         path = self.state / STATE_FILE
+        if getattr(self, "qualification", None):
+            from load_qualification import atomic_json
+
+            atomic_json(path, self.saved)
+            return
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.saved, indent=2) + "\n")
         os.chmod(tmp, 0o600)
@@ -2485,6 +2511,8 @@ class LoadDriver:
         def prerequisites() -> None:
             owner_keeps(self.operations, owner, nanotos)
             if getattr(self, "qualification", None):
+                if self.stop or self.qualification.halted:
+                    raise lib.TestnetError("qualified admission stopped")
                 floor = parse_tos(self.args.owner_floor, "--owner-floor")
                 if self.operations.balance(owner) - nanotos - ops.FEE_ALLOWANCE_NANOTOS < floor:
                     raise lib.TestnetError("qualified owner reserve would be crossed")
@@ -2493,6 +2521,8 @@ class LoadDriver:
             self.qualification.reserve_funding(nanotos, label)
         try:
             self._fund_from_owner_reserved(to, nanotos, label, init, name, prerequisites)
+            if getattr(self, "qualification", None):
+                self.qualification.funding_settled()
         except BaseException:
             if getattr(self, "qualification", None):
                 self.qualification.uncertain_funding()
@@ -2639,8 +2669,13 @@ class LoadDriver:
         pay for every batch (value for compute, import and forwarding fees)."""
         amount = parse_tos(self.args.relayer_amount, "--relayer-amount")
         while not done.wait(5):
+            if getattr(self, "qualification", None) and (self.stop or self.qualification.halted):
+                return
             for relayer in relayers:
-                if done.is_set():
+                if done.is_set() or (
+                    getattr(self, "qualification", None)
+                    and (self.stop or self.qualification.halted)
+                ):
                     return
                 try:
                     balance = self.chain.account(relayer.address)[1]
@@ -2823,6 +2858,7 @@ class LoadDriver:
         work = Path(tempfile.mkdtemp(prefix="load-", dir=self.state))
         self.links(work)
         started = time.time()
+        started_monotonic = time.monotonic()
         stop_reason = "duration reached"
         old_handler = signal.signal(signal.SIGINT, self.on_sigint)
         refill_done = threading.Event()
@@ -2839,7 +2875,12 @@ class LoadDriver:
         try:
             while not self.stop:
                 now = time.monotonic()
-                if time.time() - started >= self.args.duration:
+                elapsed = (
+                    time.monotonic() - started_monotonic
+                    if getattr(self, "qualification", None)
+                    else time.time() - started
+                )
+                if elapsed >= self.args.duration:
                     break
                 tokens = min(tokens + rate * (now - last), rate * 2 + SUBMISSIONS_PER_EXTERNAL)
                 last = now
@@ -2909,8 +2950,11 @@ class LoadDriver:
                         flush=True,
                     )
                 time.sleep(0.05)
+            offering_seconds_monotonic = time.monotonic() - started_monotonic
             if self.stop:
                 stop_reason = "interrupted"
+            if getattr(self, "qualification", None):
+                self.qualification.halt("end_of_offering")
             # Let what is in flight land or expire, then check the last ones.
             deadline = time.time() + EXTERNAL_TTL + 10
             while any(r.inflight for r in relayers) and time.time() < deadline:
@@ -2926,8 +2970,7 @@ class LoadDriver:
         finally:
             signal.signal(signal.SIGINT, old_handler)
             pool.shutdown(wait=True)
-            refill_done.set()
-            refiller.join(timeout=120)
+            self.stop_refiller(refiller, refill_done)
             shutil.rmtree(work, ignore_errors=True)
         ended = time.time()
         end_balances = self.balances(wallet, relayers)
@@ -2965,6 +3008,7 @@ class LoadDriver:
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(started))
         if getattr(self, "qualification", None):
             summary["qualification"] = self.qualification.finish()
+            summary["offering_seconds_monotonic"] = offering_seconds_monotonic
         lib.write_new_json(self.state / f"summary-{stamp}.json", summary, 0o600)
         print(json.dumps(summary, indent=2))
         return summary
@@ -2988,6 +3032,8 @@ class LoadDriver:
     def on_sigint(self, _signum, _frame) -> None:
         print("load: interrupted, stopping after the messages in flight", flush=True)
         self.stop = True
+        if getattr(self, "qualification", None):
+            self.qualification.halt("signal_stop")
 
     def try_seqno(self, relayer: Relayer) -> int | None:
         """The relayer's seqno, read where it was sent: the reads spread over the
@@ -3000,9 +3046,13 @@ class LoadDriver:
     def send(self, external: tuple[Relayer, list[int], Path], route: Chain) -> str | None:
         try:
             if getattr(self, "qualification", None):
+                self.check_send_genesis(route)
                 self.qualification.offer(external[1], external[2])
             route.send_boc(external[2].read_bytes())
         except (lib.TestnetError, OSError, ValueError) as exc:
+            if getattr(self, "qualification", None):
+                self.stop = True
+                self.qualification.halt("send_uncertainty_or_refusal")
             return str(exc)
         return None
 
@@ -3011,6 +3061,7 @@ class LoadDriver:
         self.counts["externals_failed"] += 1
         if getattr(self, "qualification", None):
             self.stop = True
+            self.qualification.halt("send_or_expiry_failure")
         if "rate limit" in error:
             # The node's admission window, not this relayer: not a retry.
             self.counts["externals_throttled"] += 1
@@ -3067,12 +3118,33 @@ class LoadDriver:
     def check_qualified_genesis(self):
         from load_qualification import check_genesis
 
-        for url in {self.chain.url, self.args.confirm_rpc, *(self.args.watch_rpc or [])}:
+        for url in {
+            self.chain.url,
+            self.args.confirm_rpc,
+            *(self.args.watch_rpc or []),
+            *(self.args.send_rpc or []),
+        }:
             check_genesis(
                 self.chain.rpc(url, "getMasterchainInfo"),
                 self.args.expected_genesis_root,
                 self.args.expected_genesis_file,
             )
+
+    def check_send_genesis(self, route):
+        from load_qualification import check_genesis
+
+        check_genesis(
+            route.rpc(route.url, "getMasterchainInfo"),
+            self.args.expected_genesis_root,
+            self.args.expected_genesis_file,
+        )
+
+    def stop_refiller(self, refiller, done):
+        done.set()
+        refiller.join(timeout=120)
+        if getattr(self, "qualification", None) and refiller.is_alive():
+            self.qualification.uncertain_funding()
+            raise lib.TestnetError("funding thread still active; original run remains unfinished")
 
     def verify_qualified(self, wallet, checks, now):
         for item in [c for c in checks if c[0] <= now]:
@@ -3096,6 +3168,14 @@ class LoadDriver:
                     self.stop = True
             if remaining:
                 checks.append((now + 3, remaining, item[2]))
+
+
+def run_load(args, chain, global_id, operations=None):
+    driver = LoadDriver(args, chain, global_id, operations)
+    try:
+        return driver.run()
+    finally:
+        driver.close()
 
 
 def check_load_args(args: argparse.Namespace) -> None:
@@ -3266,7 +3346,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "load" and args.dry_run:
             check_load_args(args)
             os.umask(0o077)
-            LoadDriver(args, chain, global_id).run()
+            run_load(args, chain, global_id)
         else:
             operations = operations_for(args, global_id)
             if args.command == "fund":
@@ -3274,12 +3354,7 @@ def main(argv: list[str] | None = None) -> int:
             elif args.command == "load":
                 check_load_args(args)
                 os.umask(0o077)
-                driver = LoadDriver(args, chain, global_id, operations)
-                try:
-                    driver.run()
-                finally:
-                    if driver.qualification and not driver.qualification.closed:
-                        driver.qualification.abort()
+                run_load(args, chain, global_id, operations)
             elif args.command == "withdraw":
                 withdraw(args, operations, global_id)
             elif args.command == "change-validator":
