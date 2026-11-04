@@ -89,6 +89,8 @@ def test_actual_process_kill_preserves_atomicity(tmp_path):
     import signal
     import subprocess
     import sys
+    from pathlib import Path
+    from load_proof_archive import __file__ as module_file
 
     a = archive(tmp_path)
     a.close()
@@ -103,7 +105,12 @@ a.append(0,interrupted(),metadata={})
 """
     done = subprocess.run(
         [sys.executable, "-c", child, str(tmp_path / "public.sqlite")],
-        env=os.environ.copy(),
+        env={
+            **os.environ,
+            "PYTHONPATH": str(Path(module_file).parent)
+            + os.pathsep
+            + os.environ.get("PYTHONPATH", ""),
+        },
         timeout=10,
     )
     assert done.returncode == -signal.SIGKILL
