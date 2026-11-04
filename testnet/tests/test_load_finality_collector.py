@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import load_finality_collector as collector
 import pytest
 from load_finality import Head, HistoryError
-from pytosiq_core import Builder
+from pytosiq_core import Builder, Cell, Transaction
 
 
 def digest(data):
@@ -369,5 +369,36 @@ def test_native_network_policy_is_checked(configured, field, value, message):
         fake_boundary(c, public)
         with pytest.raises(HistoryError, match=message):
             c.capture()
+    finally:
+        c.close()
+
+
+def test_default_second_capture_cannot_silently_rebaseline(configured):
+    args, public = configured
+    older = Transaction.deserialize(
+        Cell.one_from_boc(base64.b64decode(public["transactions"][1])).begin_parse()
+    )
+    middle = {"lt": older.lt, "hash": older.cell.hash.hex()}
+    c = collector.NativeCollector(**args)
+    try:
+        fake_boundary(c, dict(public, head=middle))
+        first = c.capture()
+        fake_boundary(c, public)
+        second = c.capture()
+        assert second.previous_head == first.head
+        assert [r.query_id for r in second.receipts] == [1566]
+    finally:
+        c.close()
+
+
+def test_explicit_mismatched_previous_head_refused_before_acquisition(configured):
+    args, public = configured
+    c = collector.NativeCollector(**args)
+    try:
+        fake_boundary(c, public)
+        c.capture()
+        with pytest.raises(HistoryError, match="does not match last success"):
+            c.capture(Head(**public["previous"]))
+        assert c.captures == 1
     finally:
         c.close()

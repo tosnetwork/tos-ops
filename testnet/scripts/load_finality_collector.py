@@ -231,6 +231,7 @@ class NativeCollector:
         self.max_captures, self.storage_budget = max_captures, storage_budget
         self.rpc, self.captures, self.retained = rpc, 0, 0
         self.state_source = None
+        self.last_head = None
         try:
             sync_directory(self.root)
         except BaseException:
@@ -330,6 +331,12 @@ class NativeCollector:
     def capture(self, previous_head=None):
         with self.guard:
             require(self.native_fd is not None, "collector closed")
+            if self.last_head is not None:
+                require(
+                    previous_head is None or previous_head == self.last_head,
+                    "collector previous head does not match last success",
+                )
+                previous_head = self.last_head
             require(
                 self.captures < self.max_captures
                 and self.retained + MAX_CAPTURE <= self.storage_budget,
@@ -477,8 +484,9 @@ class NativeCollector:
                     "capture expired during persistence",
                 )
                 completed = time.monotonic()
-                self.state_source = path / "native-state.json"
-                return Capture(proof["target"]["seqno"], previous, head, receipts, completed, path)
+                capture = Capture(
+                    proof["target"]["seqno"], previous, head, receipts, completed, path
+                )
             finally:
                 try:
                     self.retained += capture_size(path)
@@ -487,3 +495,6 @@ class NativeCollector:
                     # budget. Preserve artifacts and refuse every later capture.
                     self.retained = self.storage_budget
                     raise
+            self.state_source = path / "native-state.json"
+            self.last_head = head
+            return capture

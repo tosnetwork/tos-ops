@@ -100,8 +100,10 @@ trusted system libraries are prerequisites. Call `close()` when finished.
 Each capture validates the expected account, active code hash, global ID and
 version before following public RPC transaction BOCs back to the previous
 verified head. A first capture establishes a baseline and does not collect old,
-unbound offers. Subsequent captures return receipts only for a complete verified
-segment. An unchanged account at a newer checkpoint is supported. This remains
+unbound offers. Subsequent default captures use the last successful head;
+explicit mismatched previous heads are refused before acquisition. A failed
+capture never advances that cursor. Subsequent captures return receipts only
+for a complete verified segment. An unchanged account at a newer checkpoint is supported. This remains
 the explicitly computational skip/refund profile, not delivered-payment proof.
 
 The run directory must be new; existing collector runs cannot be resumed or
@@ -138,3 +140,9 @@ The caller must enforce collector age <= window age and retain failure status
 even during permitted read-only reconciliation. Unit acquisition tests stub the
 proof execution boundary; only tests using the actual pinned native verifier
 are evidence of native proof verification.
+
+Persisted live material is not, by itself, a claim of standalone historical
+offline replay: the existing verifier rejects a live-material bundle supplied
+as historical material. Independent historical replay currently needs a
+separately acquired historical request/material bundle at the exact target.
+Continuous retained-proof replay coverage therefore remains an acceptance gate.
