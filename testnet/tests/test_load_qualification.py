@@ -3,6 +3,7 @@
 import base64
 import importlib.util
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -21,6 +22,33 @@ def carrier(tmp_path, name="ext-0.boc"):
     p = tmp_path / name
     p.write_bytes(b"test-only-unsent-carrier")
     return p
+
+
+def test_qualified_settlement_checks_execution_without_artificial_hold(tmp_path, monkeypatch):
+    obj = driver()
+    obj.qualification = audit(tmp_path)
+    obj.qualification.offer([0], carrier(tmp_path))
+    obj.counts["batches_accepted"] = 0
+    monkeypatch.setattr(time, "time", lambda: 100)
+    relayer = SimpleNamespace(inflight={"seqno": 7, "ids": [0]}, seqno=7, retries=0)
+    checks = []
+    seen = []
+    obj.processed = lambda _wallet, query: seen.append(query) or True
+    obj.settle(relayer, 8, checks)
+    obj.verify_qualified("public-wallet", checks, now=100)
+    assert seen == [0] and not checks
+    result = obj.qualification.finish()
+    assert result["executed"] == result["accepted"] == 1
+
+
+def test_unqualified_settlement_retains_ordinary_poll_delay(monkeypatch):
+    obj = driver()
+    obj.counts["batches_accepted"] = 0
+    monkeypatch.setattr(time, "time", lambda: 100)
+    relayer = SimpleNamespace(inflight={"seqno": 7, "ids": [0]}, seqno=7, retries=0)
+    checks = []
+    obj.settle(relayer, 8, checks)
+    assert checks[0][0] == 103
 
 
 def test_every_query_has_terminal_evidence_and_bounded_histogram(tmp_path):

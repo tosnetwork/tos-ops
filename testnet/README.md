@@ -510,8 +510,11 @@ Every offered query gets private retained original carrier bytes and a durable
 public-metadata event. Execution is checked for **each query** on both RPC
 sources; the old last-query group proxy is not used in qualified mode. Latency is
 from RPC offer to wallet-sequence acceptance / observed processed status, not
-key generation, signing, native finality or full application latency. Histograms
-have fixed buckets, the seen-ID bitmap is 1 MiB and the live table is capped at
+key generation, signing, native finality or full application latency.
+The first execution check is eligible immediately after sequence acceptance;
+qualified observations do not add the ordinary mode's three-second hold. Polling
+and RPC time still contribute to the observed latency; it is not chain finality.
+Histograms have fixed buckets, the seen-ID bitmap is 1 MiB and the live table is capped at
 8,192 queries. Retained carrier/disk growth is expected workload evidence, not
 in-memory retention. Never publish or hash private outbox carriers or keys.
 

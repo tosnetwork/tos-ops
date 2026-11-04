@@ -3097,7 +3097,10 @@ class LoadDriver:
             if getattr(self, "qualification", None):
                 self.qualification.accept(flight["ids"])
             accepted = time.time()
-            checks.append((accepted + 3, flight["ids"], accepted + EXECUTION_GRACE))
+            # Qualified latency measures actual observations, without an artificial
+            # post-acceptance hold. Pending queries retain the bounded retry grace.
+            first_check = accepted if getattr(self, "qualification", None) else accepted + 3
+            checks.append((first_check, flight["ids"], accepted + EXECUTION_GRACE))
         elif time.time() > flight["expires"]:
             relayer.inflight = None
             if seqno is not None:
