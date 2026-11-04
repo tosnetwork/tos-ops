@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 import testnet_lib as lib
+from load_finality_window import AdmissionClosed
 
 BUCKETS = (0.1, 0.25, 0.5, 1, 2, 3, 5, 10, 20, 30, 60, 120, 300)
 QUERY_LIMIT = 1 << 23
@@ -132,7 +133,8 @@ class Qualification:
         self.live = {}
         self.seen = bytearray(QUERY_LIMIT // 8)
         self.funded = self.funding_operations = self.offered = self.executed = 0
-        self.accepted = self.failed = 0
+        self.accepted = self.failed = self.not_offered = 0
+        self.not_offered_unknown = False
         self.funding_unknown = False
         self.funding_inflight = 0
         self.halted = False
@@ -233,7 +235,26 @@ class Qualification:
             if self.native is not None:
                 if type(request_hashes) is not dict or set(request_hashes) != set(ids):
                     raise lib.TestnetError("native offer needs every signed request digest")
-                native_offer = self.native.offer(request_hashes)
+                try:
+                    native_offer = self.native.offer(request_hashes)
+                except AdmissionClosed as exc:
+                    # The archived bytes are retained but never sent. Burn the
+                    # allocated IDs and durably distinguish them from offers.
+                    self.not_offered_unknown = True
+                    self.event(
+                        "not_offered",
+                        query_ids=ids,
+                        native_boot_id=exc.boot_id,
+                        not_offered_monotonic_seconds=exc.now,
+                        declared_deadline_monotonic_seconds=exc.deadline,
+                        reason="fixed_stage_deadline",
+                    )
+                    for query in ids:
+                        self.seen[query // 8] |= 1 << (query % 8)
+                    self.not_offered += len(ids)
+                    self.not_offered_unknown = False
+                    raise
+
                 fields["signed_request_hashes"] = request_hashes
                 fields["native_boot_id"] = native_offer["boot_id"]
                 fields["native_offered_monotonic_seconds"] = native_offer["monotonic_seconds"]
@@ -284,6 +305,8 @@ class Qualification:
         with self.guard:
             result = {
                 "offered": self.offered,
+                "not_offered": self.not_offered,
+                "not_offered_unknown": self.not_offered_unknown,
                 "accepted": self.accepted,
                 "executed": self.executed,
                 "unconfirmed": self.failed,
@@ -309,6 +332,7 @@ class Qualification:
                 and not self.failed
                 and not self.funding_unknown
                 and self.funding_inflight == 0
+                and not self.not_offered_unknown
             )
             if self.native is not None:
                 result["native_finality"] = self.native.summary()

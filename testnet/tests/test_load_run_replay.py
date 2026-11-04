@@ -801,3 +801,94 @@ def test_fixed_stage_repeated_identical_declared_profile_is_valid(closed_run):
     store(Path(c.args.producer_packet), packet)
     repin(c, "producer_packet")
     assert replay.run(c.args)["offered"] == 2
+
+
+def canceled_case(c):
+    fixed_stage_case(c)
+    native = c.summary["qualification"]["native_finality"]
+    native["cutoff_policy"] = "not-offered"
+    c.summary["qualification"]["not_offered"] = 1
+    c.summary["qualification"]["not_offered_unknown"] = False
+    c.events[0]["cutoff_policy"] = "not-offered"
+    c.events[-1]["summary"] = copy.deepcopy(native)
+    offered = c.events[2]["query_ids"]
+    query = max(offered) + 1
+    if query & 1023 == 1023:
+        query += 1
+    event = {
+        "event": "not_offered",
+        "query_ids": [query],
+        "native_boot_id": "one-boot",
+        "not_offered_monotonic_seconds": 2.6,
+        "declared_deadline_monotonic_seconds": 2.2,
+        "monotonic_seconds": 2.65,
+        "reason": "fixed_stage_deadline",
+    }
+    c.events.insert(-2, event)
+    p = json.loads(Path(c.args.producer_packet).read_text())
+    p["calibration_commands"][0]["command"] += ["--native-cutoff-policy", "not-offered"]
+    store(Path(c.args.producer_packet), p)
+    repin(c, "producer_packet")
+    store(Path(c.args.summary), c.summary)
+    repin(c, "summary")
+    write_events(c)
+    return event
+
+
+def test_replay_binds_durable_pre_admission_cutoff(closed_run):
+    canceled_case(closed_run)
+    result = replay.run(closed_run.args)
+    assert result["offered"] == 2 and result["not_offered"] == 1
+
+
+@pytest.mark.parametrize(
+    "change", ["missing", "duplicate", "early", "offered-id", "unknown", "policy"]
+)
+def test_cutoff_disposition_corruption_refused(closed_run, change):
+    c = closed_run
+    e = canceled_case(c)
+    if change == "missing":
+        c.events.remove(e)
+    elif change == "duplicate":
+        c.events.insert(-2, copy.deepcopy(e))
+    elif change == "early":
+        e["not_offered_monotonic_seconds"] = 2.1
+    elif change == "offered-id":
+        e["query_ids"] = [c.events[2]["query_ids"][0]]
+    elif change == "unknown":
+        c.summary["qualification"]["not_offered_unknown"] = True
+    elif change == "policy":
+        c.events[0]["cutoff_policy"] = "fail"
+    store(Path(c.args.summary), c.summary)
+    repin(c, "summary")
+    write_events(c)
+    with pytest.raises(ValueError):
+        replay.run(c.args)
+
+
+def test_actual_native_receipt_cannot_be_hidden_as_not_offered(closed_run):
+    c = closed_run
+    e = canceled_case(c)
+    offer = c.events[2]
+    removed = offer["query_ids"].pop()
+    del offer["signed_request_hashes"][str(removed)]
+    e["query_ids"] = [removed]
+    c.summary["qualification"]["offered"] = 1
+    next(row for row in c.events if row["event"] == "native_stage_sealed")["offered"] = 1
+    store(Path(c.args.summary), c.summary)
+    repin(c, "summary")
+    write_events(c)
+    with pytest.raises(ValueError, match="missing/duplicate query"):
+        replay.run(c.args)
+
+
+def test_cutoff_policy_is_bound_to_immutable_command(closed_run):
+    c = closed_run
+    canceled_case(c)
+    packet = json.loads(Path(c.args.producer_packet).read_text())
+    cmd = packet["calibration_commands"][0]["command"]
+    cmd[cmd.index("--native-cutoff-policy") + 1] = "fail"
+    store(Path(c.args.producer_packet), packet)
+    repin(c, "producer_packet")
+    with pytest.raises(ValueError, match="cutoff policy differs"):
+        replay.run(c.args)

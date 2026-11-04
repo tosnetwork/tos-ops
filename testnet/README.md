@@ -578,3 +578,21 @@ the original offer interval and finalization order, and recomputes the populatio
 histogram and successful final percentile bounds. Missing legacy mode fields mean
 completion-prefix. Replay coverage alone does not establish throughput, 72-hour
 acceptance or authority to clear an interrupted financial fence.
+
+
+The default `--native-cutoff-policy fail` preserves strict fixed-stage behavior: a
+preparation reaching admission after the original deadline fails the run. The
+explicit `not-offered` option requires fixed-stage native qualification. A valid
+preparation that reaches admission at or after the original cutoff is archived
+and recorded as `not_offered`, its allocated query IDs remain consumed, and it
+is never broadcast or put in flight. It is outside the offered population and
+sent/failed counters; throughput still uses every originally offered request
+over the full declared interval. Cancellation cannot remove an admitted request.
+Admission errors, stale proofs, journal failure and uncertain actual HTTP sends
+still fail the original run. An unrecorded cancellation prevents closing its
+financial fence. The replay binds this policy to immutable argv/baseline/summary,
+checks cancellation time, disjoint IDs/counts and rejects any native receipt
+hidden as not offered. No retry or signed-carrier replay is introduced. Existing
+failed campaigns retain their original policy and verdict. This is an explicit
+pre-admission disposition policy change; it does not extend the interval or
+relax the p95/p99, proof-age, query-age or funding guards.

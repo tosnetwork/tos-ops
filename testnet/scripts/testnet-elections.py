@@ -220,6 +220,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import testnet_lib as lib  # noqa: E402
 import testnet_ops as ops  # noqa: E402
+from load_finality_window import AdmissionClosed  # noqa: E402
 
 BOOTSTRAP_WALLET = "-1:" + "1" * 64
 NANO = 10**9
@@ -2943,12 +2944,15 @@ class LoadDriver:
                     externals = self.build(work, wallet, recipients, plan)
                     results = list(pool.map(self.send, externals, routes))
                     for (relayer, ids, path), error, route in zip(externals, results, routes):
-                        self.counts["externals_sent"] += 1
-                        self.counts["batches_sent"] += len(ids)
+                        if not isinstance(error, AdmissionClosed):
+                            self.counts["externals_sent"] += 1
+                            self.counts["batches_sent"] += len(ids)
                         path.unlink(missing_ok=True)
                         for q in ids:
                             (work / f"req-{q}.boc").unlink(missing_ok=True)
                             (work / f"sig-{q}.bin").unlink(missing_ok=True)
+                        if isinstance(error, AdmissionClosed):
+                            continue
                         if error:
                             self.fail(relayer, len(ids), error)
                             seqno = self.try_seqno(relayer)
@@ -3087,17 +3091,22 @@ class LoadDriver:
         except (lib.TestnetError, OSError, KeyError, ValueError):
             return None
 
-    def send(self, external: tuple[Relayer, list[int], Path], route: Chain) -> str | None:
+    def send(
+        self, external: tuple[Relayer, list[int], Path], route: Chain
+    ) -> str | AdmissionClosed | None:
         try:
             if getattr(self, "qualification", None):
                 self.check_send_genesis(route)
                 offer_started = time.monotonic()
                 if getattr(self.qualification, "native", None) is not None:
-                    payload = self.qualification.offer(
-                        external[1],
-                        external[2],
-                        {q: self.request_hashes[q] for q in external[1]},
-                    )
+                    try:
+                        payload = self.qualification.offer(
+                            external[1],
+                            external[2],
+                            {q: self.request_hashes[q] for q in external[1]},
+                        )
+                    except AdmissionClosed as exc:
+                        return exc
                 else:
                     payload = self.qualification.offer(external[1], external[2])
                 offer_returned = time.monotonic()
@@ -3296,6 +3305,7 @@ class LoadDriver:
             self.qualification.halt,
             interval=interval,
             slo_population=getattr(self.args, "native_slo_population", None) or "completion-prefix",
+            cutoff_policy=getattr(self.args, "native_cutoff_policy", None) or "fail",
         )
         self.native_observer.bootstrap()
         self.qualification.attach_native(self.native_observer)
@@ -3370,6 +3380,10 @@ def check_load_args(args: argparse.Namespace) -> None:
     )
     if getattr(args, "native_finality", False):
         native_capture_policy(args.duration, getattr(args, "native_poll_seconds", None))
+        if getattr(args, "native_cutoff_policy", None) == "not-offered" and (
+            getattr(args, "native_slo_population", None) != "fixed-stage"
+        ):
+            raise lib.TestnetError("not-offered cutoff requires fixed-stage native population")
         if (
             not getattr(args, "qualify_load", False)
             or args.transfers != "skip"
@@ -3389,6 +3403,7 @@ def check_load_args(args: argparse.Namespace) -> None:
         any(getattr(args, field, None) for field in native_fields)
         or getattr(args, "native_poll_seconds", None) is not None
         or getattr(args, "native_slo_population", None) is not None
+        or getattr(args, "native_cutoff_policy", None) is not None
     ):
         raise lib.TestnetError("native options require --native-finality")
     if getattr(args, "qualify_load", False):
@@ -3557,6 +3572,11 @@ def main(argv: list[str] | None = None) -> int:
         "--native-slo-population",
         choices=("completion-prefix", "fixed-stage"),
         help="explicit percentile admission policy; default completion-prefix",
+    )
+    p_load.add_argument(
+        "--native-cutoff-policy",
+        choices=("fail", "not-offered"),
+        help="explicit pre-admission cutoff policy; default fail",
     )
     p_load.add_argument("--native-verifier")
     p_load.add_argument("--native-verifier-sha256")

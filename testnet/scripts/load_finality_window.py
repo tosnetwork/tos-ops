@@ -14,6 +14,14 @@ BUCKETS = (0.1, 0.25, 0.5, 1, 2, 3, 5, 10, 20, 30, 60, 120, 300)
 QUERY_LIMIT = 1 << 23
 
 
+class AdmissionClosed(HistoryError):
+    """A valid preparation was never admitted; never broadcast or reuse its IDs."""
+
+    def __init__(self, boot_id, now, deadline):
+        super().__init__("native fixed stage offering interval not open")
+        self.boot_id, self.now, self.deadline = boot_id, now, deadline
+
+
 class FinalityWindow:
     def __init__(
         self,
@@ -25,6 +33,7 @@ class FinalityWindow:
         p95_limit=5,
         p99_limit=10,
         slo_population="completion-prefix",
+        cutoff_policy="fail",
     ):
         if not isinstance(boot_id, str) or not 1 <= len(boot_id) <= 128:
             raise HistoryError("bounded boot identity required")
@@ -37,6 +46,11 @@ class FinalityWindow:
             raise HistoryError("p95 limit exceeds p99 limit")
         if slo_population not in ("completion-prefix", "fixed-stage"):
             raise HistoryError("invalid native SLO population")
+        if cutoff_policy not in ("fail", "not-offered") or (
+            cutoff_policy == "not-offered" and slo_population != "fixed-stage"
+        ):
+            raise HistoryError("invalid native cutoff policy")
+        self.cutoff_policy = cutoff_policy
         self.slo_population = slo_population
         self.sealed = self.stage_finalized = False
         self.stage_start = self.stage_deadline = self.sealed_at = self.stage_duration = None
@@ -97,10 +111,6 @@ class FinalityWindow:
             self._healthy(boot_id, now)
             if self.sealed:
                 self._fail("native stage admission sealed")
-            if self.slo_population == "fixed-stage" and (
-                self.stage_deadline is None or now >= self.stage_deadline
-            ):
-                self._fail("native fixed stage offering interval not open", drainable=True)
             if (
                 type(request_hashes) is not dict
                 or not request_hashes
@@ -121,6 +131,12 @@ class FinalityWindow:
                     or any(c not in "0123456789abcdef" for c in digest)
                 ):
                     self._fail("native signed request digest invalid")
+            if self.slo_population == "fixed-stage" and (
+                self.stage_deadline is None or now >= self.stage_deadline
+            ):
+                if self.stage_deadline is not None and self.cutoff_policy == "not-offered":
+                    raise AdmissionClosed(boot_id, now, self.stage_deadline)
+                self._fail("native fixed stage offering interval not open", drainable=True)
             for query, digest in request_hashes.items():
                 self.pending[query] = (digest, now)
                 self.seen[query // 8] |= 1 << (query % 8)
@@ -261,6 +277,7 @@ class FinalityWindow:
                 and self.failure is None
                 and (self.slo_population == "completion-prefix" or self.stage_finalized),
                 "slo_population": self.slo_population,
+                "cutoff_policy": self.cutoff_policy,
                 "stage_sealed": self.sealed,
                 "stage_finalized": self.stage_finalized,
                 "stage_start_monotonic_seconds": self.stage_start,

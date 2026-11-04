@@ -8,9 +8,9 @@ from load_finality_window import FinalityWindow
 from test_load_finality_window import BOOT, public_segment
 
 
-def stage():
+def stage(**kwargs):
     old, new, receipts = public_segment()
-    w = FinalityWindow(BOOT, slo_population="fixed-stage")
+    w = FinalityWindow(BOOT, slo_population="fixed-stage", **kwargs)
     w.advance(1, old, old, (), boot_id=BOOT, now=100)
     w.begin_stage(10, boot_id=BOOT, now=100)
     return w, old, new, receipts[0]
@@ -87,4 +87,44 @@ def test_fixed_stage_early_seal_cannot_pass():
     w.seal(boot_id=BOOT, now=102)
     with pytest.raises(HistoryError, match="duration incomplete"):
         w.finish_stage(boot_id=BOOT, now=102)
+    assert not w.summary()["latency_criteria_pass"]
+
+
+def test_explicit_not_offered_cutoff_preserves_original_population():
+    from load_finality_window import AdmissionClosed
+
+    w, old, new, r = stage(cutoff_policy="not-offered")
+    w.offer({1: r.request_hash}, boot_id=BOOT, now=101)
+    w.advance(2, old, new, [replace(r, query_id=1)], boot_id=BOOT, now=102)
+    with pytest.raises(AdmissionClosed):
+        w.offer({2: r.request_hash}, boot_id=BOOT, now=110)
+    assert w.offered == w.finalized == 1 and not w.pending and w.failure is None
+    w.seal(boot_id=BOOT, now=110)
+    w.finish_stage(boot_id=BOOT, now=110)
+    assert w.summary()["latency_criteria_pass"]
+
+
+def test_not_offered_cannot_mask_invalid_digest_after_cutoff():
+    w, _, _, _ = stage(cutoff_policy="not-offered")
+    with pytest.raises(HistoryError, match="digest invalid"):
+        w.offer({1: "bad"}, boot_id=BOOT, now=110)
+    assert w.failure is not None
+
+
+def test_not_offered_requires_fixed_stage():
+    with pytest.raises(HistoryError, match="cutoff policy"):
+        FinalityWindow(BOOT, cutoff_policy="not-offered")
+
+
+def test_legacy_cutoff_failure_is_not_retroactively_canceled():
+    from load_finality_window import AdmissionClosed
+
+    w, old, new, r = stage()
+    w.offer({1: r.request_hash}, boot_id=BOOT, now=101)
+    w.advance(2, old, new, [replace(r, query_id=1)], boot_id=BOOT, now=102)
+    with pytest.raises(HistoryError) as failure:
+        w.offer({2: r.request_hash}, boot_id=BOOT, now=110)
+    assert not isinstance(failure.value, AdmissionClosed) and w.failure is not None
+    w.seal(boot_id=BOOT, now=110)
+    w.finish_stage(boot_id=BOOT, now=110)
     assert not w.summary()["latency_criteria_pass"]

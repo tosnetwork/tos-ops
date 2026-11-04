@@ -23,6 +23,7 @@ class NativeObserver:
         max_pending=8192,
         boot=boot_identity,
         slo_population="completion-prefix",
+        cutoff_policy="fail",
     ):
         if not 0.1 <= interval <= 10:
             raise HistoryError("native poll interval must be 0.1..10")
@@ -33,6 +34,7 @@ class NativeObserver:
             max_pending=max_pending,
             max_proof_age=collector.max_age,
             slo_population=slo_population,
+            cutoff_policy=cutoff_policy,
         )
         self.failure = None
         self.failure_guard = threading.Lock()
@@ -83,6 +85,7 @@ class NativeObserver:
             verified_observation_monotonic_seconds=observed,
             poll_interval_seconds=self.interval,
             slo_population=self.window.slo_population,
+            cutoff_policy=self.window.cutoff_policy,
         )
 
     def start(self):

@@ -117,7 +117,8 @@ class EventIndex:
         )
         self.run = Path(run)
         self.max_offers, self.max_captures = max_offers, max_captures
-        self.offers = self.checkpoints = 0
+        self.offers = self.checkpoints = self.not_offered = 0
+        self.db.execute("CREATE TABLE not_offered(q INTEGER PRIMARY KEY,clock REAL,boot TEXT)")
         self.baseline = None
         self.sealed = self.final_event = self.stage_started = None
         self.last_offered_clock = None
@@ -129,7 +130,9 @@ class EventIndex:
         if kind in ("offered", "native_baseline", "native_checkpoint"):
             require(self.final_event is None, "activity after native final evaluation")
         if kind == "offered":
-            require(self.sealed is None, "offered after native stage sealed")
+            require(
+                self.sealed is None and not self.not_offered, "offered after native stage cutoff"
+            )
             hashes, ids = event["signed_request_hashes"], event["query_ids"]
             require(
                 type(hashes) is dict and type(ids) is list and 0 < len(ids) <= 8192,
@@ -149,7 +152,7 @@ class EventIndex:
             require(type(boot) is str and 0 < len(boot) <= 128, "invalid boot identity")
             for q in ids:
                 Head(0, hashes[str(q)])
-                require(self.offers < self.max_offers, "offered count limit")
+                require(self.offers + self.not_offered < self.max_offers, "offered count limit")
                 self.db.execute(
                     "INSERT INTO offers(q,digest,clock,boot) VALUES(?,?,?,?)",
                     (q, hashes[str(q)], offered, boot),
@@ -189,6 +192,49 @@ class EventIndex:
             )
             self.checkpoints += 1
 
+        elif kind == "not_offered":
+            require(
+                self.baseline is not None
+                and self.stage_started is not None
+                and self.sealed is None
+                and self.final_event is None
+                and self.baseline.get("slo_population") == "fixed-stage"
+                and self.baseline.get("cutoff_policy", "fail") == "not-offered",
+                "unpermitted pre-admission disposition",
+            )
+            ids = event["query_ids"]
+            require(
+                type(ids) is list
+                and 0 < len(ids) <= 8192
+                and len(ids) == len(set(query_id(q) for q in ids))
+                and all(q & 1023 != 1023 for q in ids),
+                "invalid not-offered ids",
+            )
+            stamp = clock(event["not_offered_monotonic_seconds"])
+            deadline = (
+                self.stage_started["started_monotonic_seconds"]
+                + self.stage_started["duration_seconds"]
+            )
+            require(
+                event["native_boot_id"] == self.baseline["boot_id"]
+                and event["reason"] == "fixed_stage_deadline"
+                and event["declared_deadline_monotonic_seconds"] == deadline
+                and stamp >= deadline
+                and clock(event["monotonic_seconds"]) >= stamp,
+                "not-offered clock or context differs",
+            )
+            for q in ids:
+                require(self.offers + self.not_offered < self.max_offers, "not-offered count limit")
+                require(
+                    self.db.execute("SELECT 1 FROM offers WHERE q=?", (q,)).fetchone() is None
+                    and self.db.execute("SELECT 1 FROM not_offered WHERE q=?", (q,)).fetchone()
+                    is None,
+                    "duplicate or admitted not-offered query",
+                )
+                self.db.execute(
+                    "INSERT INTO not_offered VALUES(?,?,?)", (q, stamp, event["native_boot_id"])
+                )
+                self.not_offered += 1
         elif kind == "native_stage_started":
             require(
                 self.baseline is not None and self.stage_started is None and not self.offers,
@@ -241,6 +287,11 @@ class EventIndex:
         baseline = self.baseline
         policy = baseline.get("slo_population", "completion-prefix")
         require(policy in ("completion-prefix", "fixed-stage"), "unknown native SLO policy")
+        cutoff = baseline.get("cutoff_policy", "fail")
+        require(
+            cutoff in ("fail", "not-offered") and (cutoff == "fail" or policy == "fixed-stage"),
+            "unknown or incompatible native cutoff policy",
+        )
         require(
             (self.sealed is not None and self.final_event is not None)
             if policy == "fixed-stage"
@@ -323,6 +374,12 @@ class EventIndex:
         require(
             native.get("slo_population", "completion-prefix") == policy,
             "native summary SLO policy differs",
+        )
+        require(
+            native.get("cutoff_policy", "fail") == self.baseline.get("cutoff_policy", "fail")
+            and qualification.get("not_offered", 0) == self.not_offered
+            and qualification.get("not_offered_unknown", False) is False,
+            "native cutoff disposition summary differs",
         )
         if policy == "fixed-stage":
             require(
@@ -691,7 +748,15 @@ def replay_capture(cap, number, previous, cache, verifier, index, archive, ident
 
 
 def validate_packet(
-    packet, run, anchor, args, policy="completion-prefix", *, duration=None, target_gas=None
+    packet,
+    run,
+    anchor,
+    args,
+    policy="completion-prefix",
+    *,
+    duration=None,
+    target_gas=None,
+    cutoff="fail",
 ):
     require(Path(packet["state_directory"]) == run.parent, "producer state/run context differs")
     stages = packet["calibration_commands"]
@@ -721,6 +786,10 @@ def validate_packet(
         require(command.count(key) <= 1, "duplicate native SLO policy")
         declared = command[command.index(key) + 1] if key in command else "completion-prefix"
         require(declared == policy, "producer native SLO policy differs")
+        key = "--native-cutoff-policy"
+        require(command.count(key) <= 1, "duplicate native cutoff policy")
+        declared_cutoff = command[command.index(key) + 1] if key in command else "fail"
+        require(declared_cutoff == cutoff, "producer native cutoff policy differs")
         if policy == "fixed-stage":
             require(command.count("--duration") == 1, "one frozen stage duration required")
             declared_duration = command[command.index("--duration") + 1]
@@ -786,6 +855,7 @@ def run(args):
         q["native_finality"].get("slo_population", "completion-prefix"),
         duration=q["native_finality"].get("stage_duration_seconds"),
         target_gas=summary.get("target_gas_per_block"),
+        cutoff=q["native_finality"].get("cutoff_policy", "fail"),
     )
     count = capture_count(captures, args.max_captures)
     identity = {
@@ -910,6 +980,7 @@ def run(args):
                 "identity": identity,
                 "captures": count,
                 "offered": index.offers,
+                "not_offered": index.not_offered,
                 "recomputed_histogram": index.histogram,
                 "source_native_latency_criteria_pass": q["native_finality"][
                     "latency_criteria_pass"
