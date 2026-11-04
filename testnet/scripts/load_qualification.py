@@ -241,14 +241,18 @@ class Qualification:
                     # The archived bytes are retained but never sent. Burn the
                     # allocated IDs and durably distinguish them from offers.
                     self.not_offered_unknown = True
-                    self.event(
-                        "not_offered",
-                        query_ids=ids,
-                        native_boot_id=exc.boot_id,
-                        not_offered_monotonic_seconds=exc.now,
-                        declared_deadline_monotonic_seconds=exc.deadline,
-                        reason="fixed_stage_deadline",
-                    )
+                    try:
+                        self.event(
+                            "not_offered",
+                            query_ids=ids,
+                            native_boot_id=exc.boot_id,
+                            not_offered_monotonic_seconds=exc.now,
+                            declared_deadline_monotonic_seconds=exc.deadline,
+                            reason="fixed_stage_deadline",
+                        )
+                    except BaseException:
+                        self.halted = True
+                        raise
                     for query in ids:
                         self.seen[query // 8] |= 1 << (query % 8)
                     self.not_offered += len(ids)

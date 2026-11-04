@@ -980,3 +980,28 @@ def test_actual_send_result_loop_does_not_count_canceled_preparations(tmp_path, 
     assert counts == {"externals_sent": 0 if cancel else 1, "batches_sent": 0 if cancel else 1}
     assert (relayer.inflight is None) == cancel
     assert not path.exists()
+
+
+def test_a_second_preparation_cannot_clear_unknown_cancel_evidence(tmp_path, monkeypatch):
+    from load_finality_window import AdmissionClosed
+
+    q, _, _ = cutoff_audit(tmp_path, monkeypatch)
+    original = q.event
+
+    def failed(kind, **fields):
+        if kind == "not_offered":
+            raise OSError("one failed durable cancellation")
+        return original(kind, **fields)
+
+    monkeypatch.setattr(q, "event", failed)
+    with pytest.raises(OSError):
+        q.offer([1], carrier(tmp_path, "first-late.boc"), {1: "cd" * 32})
+    # Another worker can acquire the qualification lock before the first sender
+    # reaches its error handler. Success must not erase that earlier unknown.
+    monkeypatch.setattr(q, "event", original)
+    try:
+        q.offer([2], carrier(tmp_path, "second-late.boc"), {2: "ef" * 32})
+    except (AdmissionClosed, lib.TestnetError):
+        pass
+    assert q.not_offered_unknown
+    assert not q.finish()["safe_to_start_new_run"]
