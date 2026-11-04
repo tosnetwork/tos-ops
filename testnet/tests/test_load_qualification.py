@@ -24,6 +24,73 @@ def carrier(tmp_path, name="ext-0.boc"):
     return p
 
 
+def native_audit(tmp_path):
+    from load_finality import Head
+    from load_native_observer import NativeObserver
+
+    q = audit(tmp_path)
+    c = SimpleNamespace(max_age=10, timeout=8, close=lambda: None)
+    o = NativeObserver(c, lambda *a, **k: None, q.halt, boot=lambda: "test-boot")
+    head = Head(1, "11" * 32)
+    o.window.advance(1, head, head, (), boot_id="test-boot", now=time.monotonic())
+    q.attach_native(o)
+    return q, o
+
+
+def test_native_offer_journals_signed_request_not_carrier_digest(tmp_path):
+    q, o = native_audit(tmp_path)
+    q.offer([0], carrier(tmp_path), {0: "ab" * 32})
+    assert o.window.pending[0][0] == "ab" * 32
+    events = [json.loads(line) for line in (q.run / "events.jsonl").read_text().splitlines()]
+    offered = next(event for event in events if event["event"] == "offered")
+    assert offered["signed_request_hashes"] == {"0": "ab" * 32}
+    assert not q.finish()["safe_to_start_new_run"]
+
+
+def test_native_offered_journal_failure_retains_unfinished_fence(tmp_path, monkeypatch):
+    q, o = native_audit(tmp_path)
+
+    def fail(*args, **kwargs):
+        raise OSError("fsync failed")
+
+    monkeypatch.setattr(q, "event", fail)
+    with pytest.raises(OSError, match="fsync"):
+        q.offer([0], carrier(tmp_path), {0: "ab" * 32})
+    assert o.summary()["native_pending"] == 1 and q.offered == 0
+    assert not q.finish()["safe_to_start_new_run"]
+    with pytest.raises(lib.TestnetError, match="unfinished"):
+        audit(tmp_path)
+
+
+def test_native_verification_requires_exact_bound_receipt_without_rpc(tmp_path):
+    from load_finality import Head, SubmitReceipt
+
+    obj = driver()
+    q, o = native_audit(tmp_path)
+    obj.qualification = q
+    q.offer([0], carrier(tmp_path), {0: "ab" * 32})
+    q.accept([0])
+    obj.processed = lambda *a: pytest.fail("native completion must not query processed RPC")
+    obj.processed_on = obj.processed
+    checks = [(0, [0], 100)]
+    obj.verify_qualified("wallet", checks, now=1)
+    assert q.executed == 0 and checks
+    new = Head(2, "22" * 32)
+    o.window.advance(
+        2,
+        o.window.head,
+        new,
+        (SubmitReceipt(0, new, "ab" * 32, 1, 255, 254, 1),),
+        boot_id="test-boot",
+        now=time.monotonic(),
+    )
+    obj.verify_qualified("wallet", checks, now=5)
+    assert not checks
+    result = q.finish()
+    assert result["executed"] == 1 and result["native_finality"]["native_finalized"] == 1
+    assert result["safe_to_start_new_run"]
+
+
 def test_qualified_settlement_checks_execution_without_artificial_hold(tmp_path, monkeypatch):
     obj = driver()
     obj.qualification = audit(tmp_path)

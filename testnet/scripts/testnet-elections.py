@@ -2368,6 +2368,9 @@ class LoadDriver:
             raise
 
     def close(self):
+        if getattr(self, "native_observer", None) is not None:
+            self.native_observer.finish()
+            self.native_observer = None
         if self.qualification and not self.qualification.closed:
             self.qualification.abort()
         if self.load_lock_fd is not None:
@@ -2589,6 +2592,8 @@ class LoadDriver:
         self, work: Path, wallet: str, recipients: list[str], plan: list[tuple[Relayer, int]]
     ) -> list[tuple[Relayer, list[int], Path]]:
         """Build, sign and wrap: for each (relayer, batches) one external message."""
+        if getattr(self, "qualification", None):
+            self.qualification.native_healthy()
         total = sum(n for _, n in plan)
         ids = self.take_query_ids(total)
         created = int(time.time()) - CREATED_AT_SLACK
@@ -2608,10 +2613,13 @@ class LoadDriver:
         )
         if set(hashes) != set(ids):
             raise lib.TestnetError("fift did not build every request")
+        self.request_hashes = hashes
         context = HIGHLOAD_CONTEXT.hex()
         key = str(self.state / "highload.key")
 
         def sign(query_id: int) -> None:
+            if getattr(self, "qualification", None):
+                self.qualification.native_healthy()
             out = lib.run(
                 [self.args.key_tool, "sign", key, hashes[query_id], context], timeout=30
             ).stdout.strip()
@@ -2838,6 +2846,8 @@ class LoadDriver:
             self.dry_run()
             return {}
         wallet, relayers = self.ensure_keys(relayer_count)
+        if getattr(self.args, "native_finality", False):
+            self.start_native_observer(wallet)
         self.deploy(wallet, relayers)
         recipients = [r.address for r in relayers]
         self.value = submission_value(self.required_value(wallet))
@@ -2879,6 +2889,9 @@ class LoadDriver:
         log_prev = dict(self.counts)
         try:
             while not self.stop:
+                if self.qualification and self.qualification.halted:
+                    self.stop = True
+                    break
                 now = time.monotonic()
                 elapsed = (
                     time.monotonic() - started_monotonic
@@ -3017,6 +3030,9 @@ class LoadDriver:
         }
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(started))
         if getattr(self, "qualification", None):
+            if getattr(self, "native_observer", None) is not None:
+                self.native_observer.finish()
+                self.native_observer = None
             summary["qualification"] = self.qualification.finish()
             summary["offering_seconds_monotonic"] = offering_seconds_monotonic
         lib.write_new_json(self.state / f"summary-{stamp}.json", summary, 0o600)
@@ -3057,7 +3073,14 @@ class LoadDriver:
         try:
             if getattr(self, "qualification", None):
                 self.check_send_genesis(route)
-                payload = self.qualification.offer(external[1], external[2])
+                if getattr(self.qualification, "native", None) is not None:
+                    payload = self.qualification.offer(
+                        external[1],
+                        external[2],
+                        {q: self.request_hashes[q] for q in external[1]},
+                    )
+                else:
+                    payload = self.qualification.offer(external[1], external[2])
             else:
                 payload = external[2].read_bytes()
             route.send_boc(payload)
@@ -3170,9 +3193,12 @@ class LoadDriver:
             remaining = []
             for query in item[1]:
                 try:
-                    done = self.processed(wallet, query)
-                    if done:
-                        done = self.processed_on(self.args.confirm_rpc, wallet, query)
+                    if self.qualification.native is not None:
+                        done = self.qualification.native.finalized(query)
+                    else:
+                        done = self.processed(wallet, query)
+                        if done:
+                            done = self.processed_on(self.args.confirm_rpc, wallet, query)
                 except (lib.TestnetError, OSError):
                     done = None
                 if done:
@@ -3186,6 +3212,34 @@ class LoadDriver:
                     self.stop = True
             if remaining:
                 checks.append((now + 3, remaining, item[2]))
+
+    def start_native_observer(self, wallet):
+        from load_finality_collector import NativeCollector
+        from load_native_observer import NativeObserver
+
+        def record(kind, **fields):
+            with self.qualification.guard:
+                self.qualification.event(kind, **fields)
+
+        collector = NativeCollector(
+            verifier=self.args.native_verifier,
+            verifier_sha256=self.args.native_verifier_sha256,
+            anchor=self.args.native_anchor,
+            anchor_sha256=self.args.native_anchor_sha256,
+            liteserver=self.args.native_liteserver,
+            rpc=self.args.rpc,
+            directory=self.qualification.run / "native-captures",
+            wallet=wallet,
+            code_hash=self.args.native_wallet_code_hash,
+            global_id=self.global_id,
+            global_version=16,
+            subwallet_id=HIGHLOAD_SUBWALLET,
+            max_captures=min(1000000, int((self.args.duration + 600) / 2) + 100),
+        )
+        self.native_observer = NativeObserver(collector, record, self.qualification.halt)
+        self.native_observer.bootstrap()
+        self.qualification.attach_native(self.native_observer)
+        self.native_observer.start()
 
 
 def run_load(args, chain, global_id, operations=None):
@@ -3204,6 +3258,9 @@ def run_load(args, chain, global_id, operations=None):
                     for name in ("batches_failed", "refused", "unconfirmed")
                 )
             )
+            if getattr(args, "native_finality", False):
+                native = evidence.get("native_finality", {})
+                valid = valid and native.get("latency_criteria_pass") is True
             if not valid:
                 raise lib.TestnetError(
                     "qualified run did not meet its declared execution window; inspect retained evidence"
@@ -3214,6 +3271,32 @@ def run_load(args, chain, global_id, operations=None):
 
 
 def check_load_args(args: argparse.Namespace) -> None:
+    native_fields = (
+        "native_verifier",
+        "native_verifier_sha256",
+        "native_anchor",
+        "native_anchor_sha256",
+        "native_liteserver",
+        "native_wallet_code_hash",
+    )
+    if getattr(args, "native_finality", False):
+        if (
+            not getattr(args, "qualify_load", False)
+            or args.transfers != "skip"
+            or args.actions_per_batch != 254
+        ):
+            raise lib.TestnetError(
+                "native finality requires qualified skip profile with 254 actions"
+            )
+        if not all(getattr(args, field, None) for field in native_fields):
+            raise lib.TestnetError(
+                "native finality requires explicit helper, anchor and wallet pins"
+            )
+        for field in ("native_verifier_sha256", "native_anchor_sha256", "native_wallet_code_hash"):
+            if not re.fullmatch(r"[0-9a-f]{64}", getattr(args, field)):
+                raise lib.TestnetError("invalid native SHA256/code pin")
+    elif any(getattr(args, field, None) for field in native_fields):
+        raise lib.TestnetError("native options require --native-finality")
     if getattr(args, "qualify_load", False):
         if not getattr(args, "confirm_rpc", None) or args.confirm_rpc == args.rpc:
             raise lib.TestnetError("qualified load requires a distinct confirmation RPC")
@@ -3370,6 +3453,13 @@ def main(argv: list[str] | None = None) -> int:
     p_load.add_argument("--send-rpc", action="append")
     p_load.add_argument("--dry-run", action="store_true")
     p_load.add_argument("--qualify-load", action="store_true")
+    p_load.add_argument("--native-finality", action="store_true")
+    p_load.add_argument("--native-verifier")
+    p_load.add_argument("--native-verifier-sha256")
+    p_load.add_argument("--native-anchor")
+    p_load.add_argument("--native-anchor-sha256")
+    p_load.add_argument("--native-liteserver")
+    p_load.add_argument("--native-wallet-code-hash")
     p_load.add_argument("--expected-genesis-root")
     p_load.add_argument("--expected-genesis-file")
     p_load.add_argument("--funding-ceiling", help="hard cumulative owner funding limit in TOS")

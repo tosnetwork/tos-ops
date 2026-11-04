@@ -139,6 +139,17 @@ class Qualification:
         self.histograms = {name: [0] * (len(BUCKETS) + 1) for name in ("accepted", "executed")}
         self.started = time.monotonic()
         self.closed = False
+        self.native = None
+
+    def attach_native(self, observer):
+        with self.guard:
+            if self.native is not None or self.offered:
+                raise lib.TestnetError("native observer must attach before the first offer")
+            self.native = observer
+
+    def native_healthy(self):
+        if self.native is not None:
+            self.native.assert_healthy()
 
     def event(self, kind, **fields):
         self.events.write(
@@ -157,6 +168,7 @@ class Qualification:
 
     def reserve_funding(self, amount, label):
         with self.guard:
+            self.native_healthy()
             if self.halted:
                 raise lib.TestnetError("qualified admission stopped")
             if (
@@ -191,8 +203,9 @@ class Qualification:
             if not self.closed:
                 self.event("funding_unknown")
 
-    def offer(self, ids, carrier):
+    def offer(self, ids, carrier, request_hashes=None):
         with self.guard:
+            self.native_healthy()
             if self.halted:
                 raise lib.TestnetError("qualified admission stopped")
             if not ids or len(set(ids)) != len(ids) or len(self.live) + len(ids) > self.max_pending:
@@ -216,7 +229,13 @@ class Qualification:
                 os.fsync(out.fileno())
             sync_directory(target.parent)
             stamp = time.monotonic()
-            self.event("offered", query_ids=ids, carrier_bytes=target.stat().st_size)
+            fields = {}
+            if self.native is not None:
+                if type(request_hashes) is not dict or set(request_hashes) != set(ids):
+                    raise lib.TestnetError("native offer needs every signed request digest")
+                self.native.offer(request_hashes)
+                fields["signed_request_hashes"] = request_hashes
+            self.event("offered", query_ids=ids, carrier_bytes=target.stat().st_size, **fields)
             for query in ids:
                 self.seen[query // 8] |= 1 << (query % 8)
                 self.live[query] = {"offered": stamp, "accepted": False}
@@ -277,6 +296,7 @@ class Qualification:
                 "seconds_monotonic": time.monotonic() - self.started,
                 "latency_bucket_upper_seconds": [*BUCKETS, "infinity"],
                 "histograms": self.histograms,
+                "verification_mode": "two_rpc_processed",
                 "latency_scope": "offered to RPC seqno acceptance / two-RPC per-query processed? observation; not native finality proof",
             }
             result["all_queries_observed_executed"] = (
@@ -288,6 +308,17 @@ class Qualification:
                 and not self.funding_unknown
                 and self.funding_inflight == 0
             )
+            if self.native is not None:
+                result["native_finality"] = self.native.summary()
+                result["verification_mode"] = "native_signed_request_completion"
+                result["safe_to_start_new_run"] = (
+                    result["safe_to_start_new_run"]
+                    and result["native_finality"]["native_pending"] == 0
+                )
+                result["latency_scope"] = (
+                    "RPC relayer acceptance / application reporting; native_finality contains "
+                    "independently verified signed-request completion latency"
+                )
             atomic_json(self.run / "result.json", result)
             atomic_json(
                 self.active, {"run": self.run.name, "closed": result["safe_to_start_new_run"]}
