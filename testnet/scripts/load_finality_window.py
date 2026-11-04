@@ -39,7 +39,7 @@ class FinalityWindow:
             raise HistoryError("invalid native SLO population")
         self.slo_population = slo_population
         self.sealed = self.stage_finalized = False
-        self.stage_start = self.stage_deadline = self.sealed_at = None
+        self.stage_start = self.stage_deadline = self.sealed_at = self.stage_duration = None
         self.boot_id = boot_id
         self.max_pending = max_pending
         self.max_proof_age = max_proof_age
@@ -220,6 +220,7 @@ class FinalityWindow:
             ):
                 self._fail("invalid native stage duration")
             self.stage_start, self.stage_deadline = now, now + duration
+            self.stage_duration = duration
 
     def seal(self, *, boot_id, now):
         with self.guard:
@@ -264,6 +265,7 @@ class FinalityWindow:
                 "stage_finalized": self.stage_finalized,
                 "stage_start_monotonic_seconds": self.stage_start,
                 "stage_deadline_monotonic_seconds": self.stage_deadline,
+                "stage_duration_seconds": self.stage_duration,
                 "latency_bucket_upper_seconds": [*BUCKETS, "infinity"],
                 "histogram": list(self.histogram),
                 "p95_upper_seconds": "infinity" if p95 == float("inf") else p95,

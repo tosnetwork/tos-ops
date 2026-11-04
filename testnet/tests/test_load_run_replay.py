@@ -655,6 +655,7 @@ def fixed_stage_case(case):
         stage_finalized=True,
         stage_start_monotonic_seconds=1.2,
         stage_deadline_monotonic_seconds=2.2,
+        stage_duration_seconds=1,
     )
     case.events[0]["slo_population"] = "fixed-stage"
     case.events.insert(
@@ -686,7 +687,12 @@ def fixed_stage_case(case):
         ]
     )
     packet = json.loads(Path(case.args.producer_packet).read_text())
-    packet["calibration_commands"][0]["command"] += ["--native-slo-population", "fixed-stage"]
+    packet["calibration_commands"][0]["command"] += [
+        "--native-slo-population",
+        "fixed-stage",
+        "--duration",
+        "1",
+    ]
     store(Path(case.args.producer_packet), packet)
     repin(case, "producer_packet")
     store(Path(case.args.summary), case.summary)
@@ -741,3 +747,57 @@ def test_fixed_stage_policy_splices_refused(closed_run, change):
     write_events(c)
     with pytest.raises((ValueError, KeyError)):
         replay.run(c.args)
+
+
+def test_fixed_stage_duration_must_match_frozen_packet(closed_run):
+    c = closed_run
+    fixed_stage_case(c)
+    packet = json.loads(Path(c.args.producer_packet).read_text())
+    cmd = packet["calibration_commands"][0]["command"]
+    cmd[cmd.index("--duration") + 1] = "120"
+    store(Path(c.args.producer_packet), packet)
+    repin(c, "producer_packet")
+    with pytest.raises(ValueError, match="duration"):
+        replay.run(c.args)
+
+
+@pytest.mark.parametrize("bad", ["missing", "duplicate", "wrong-profile", "unrelated-duration"])
+def test_fixed_stage_declared_duration_and_profile_are_one_context(closed_run, bad):
+    c = closed_run
+    fixed_stage_case(c)
+    c.summary["target_gas_per_block"] = 125000
+    store(Path(c.args.summary), c.summary)
+    repin(c, "summary")
+    packet = json.loads(Path(c.args.producer_packet).read_text())
+    cmd = packet["calibration_commands"][0]["command"]
+    cmd += ["--target-gas-per-block", "125000"]
+    if bad == "missing":
+        i = cmd.index("--duration")
+        del cmd[i : i + 2]
+    elif bad == "duplicate":
+        cmd += ["--duration", "1"]
+    elif bad == "wrong-profile":
+        cmd[-1] = "250000"
+    elif bad == "unrelated-duration":
+        other = copy.deepcopy(cmd)
+        other[-1] = "250000"
+        packet["calibration_commands"].append({"command": other})
+        cmd[cmd.index("--duration") + 1] = "120"
+    store(Path(c.args.producer_packet), packet)
+    repin(c, "producer_packet")
+    with pytest.raises(ValueError):
+        replay.run(c.args)
+
+
+def test_fixed_stage_repeated_identical_declared_profile_is_valid(closed_run):
+    c = closed_run
+    fixed_stage_case(c)
+    c.summary["target_gas_per_block"] = 125000
+    store(Path(c.args.summary), c.summary)
+    repin(c, "summary")
+    packet = json.loads(Path(c.args.producer_packet).read_text())
+    packet["calibration_commands"][0]["command"] += ["--target-gas-per-block", "125000"]
+    packet["calibration_commands"].append(copy.deepcopy(packet["calibration_commands"][0]))
+    store(Path(c.args.producer_packet), packet)
+    repin(c, "producer_packet")
+    assert replay.run(c.args)["offered"] == 2

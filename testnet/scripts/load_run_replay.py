@@ -329,6 +329,7 @@ class EventIndex:
                 self.final_event["summary"] == native
                 and native.get("stage_sealed") is True
                 and native.get("stage_finalized") is True
+                and native.get("stage_duration_seconds") == self.stage_started["duration_seconds"]
                 and native.get("stage_start_monotonic_seconds")
                 == self.stage_started["started_monotonic_seconds"]
                 and native.get("stage_deadline_monotonic_seconds")
@@ -689,7 +690,9 @@ def replay_capture(cap, number, previous, cache, verifier, index, archive, ident
     return head
 
 
-def validate_packet(packet, run, anchor, args, policy="completion-prefix"):
+def validate_packet(
+    packet, run, anchor, args, policy="completion-prefix", *, duration=None, target_gas=None
+):
     require(Path(packet["state_directory"]) == run.parent, "producer state/run context differs")
     stages = packet["calibration_commands"]
     require(type(stages) is list and 0 < len(stages) <= 32, "bounded producer stages required")
@@ -701,6 +704,16 @@ def validate_packet(packet, run, anchor, args, policy="completion-prefix"):
         "--native-wallet-code-hash": args.wallet_code_hash,
         "--state": str(run.parent),
     }
+    if policy == "fixed-stage":
+        require(
+            type(duration) in (int, float) and math.isfinite(duration) and duration > 0,
+            "invalid native original duration",
+        )
+        require(
+            target_gas is None or type(target_gas) is int and target_gas > 0,
+            "invalid native selected gas profile",
+        )
+    matched_duration = False
     for stage in stages:
         command = stage["command"]
         require("--native-finality" in command, "native producer required")
@@ -708,11 +721,27 @@ def validate_packet(packet, run, anchor, args, policy="completion-prefix"):
         require(command.count(key) <= 1, "duplicate native SLO policy")
         declared = command[command.index(key) + 1] if key in command else "completion-prefix"
         require(declared == policy, "producer native SLO policy differs")
+        if policy == "fixed-stage":
+            require(command.count("--duration") == 1, "one frozen stage duration required")
+            declared_duration = command[command.index("--duration") + 1]
+            require(
+                re.fullmatch(r"[1-9][0-9]*", declared_duration) is not None,
+                "invalid frozen stage duration",
+            )
+            key = "--target-gas-per-block"
+            require(command.count(key) <= 1, "duplicate frozen stage gas profile")
+            declared_gas = command[command.index(key) + 1] if key in command else None
+            if int(declared_duration) == duration and declared_gas == (
+                str(target_gas) if target_gas is not None else None
+            ):
+                matched_duration = True
         for key, value in expected.items():
             require(
                 command.count(key) == 1 and command[command.index(key) + 1] == value,
                 "producer identity differs",
             )
+    if policy == "fixed-stage":
+        require(matched_duration, "native original duration/profile differs from frozen packet")
 
 
 def run(args):
@@ -755,6 +784,8 @@ def run(args):
         anchor,
         args,
         q["native_finality"].get("slo_population", "completion-prefix"),
+        duration=q["native_finality"].get("stage_duration_seconds"),
+        target_gas=summary.get("target_gas_per_block"),
     )
     count = capture_count(captures, args.max_captures)
     identity = {
