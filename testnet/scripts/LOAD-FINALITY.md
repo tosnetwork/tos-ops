@@ -86,3 +86,55 @@ run; it never permits new signatures or a new baseline.
 
 This class does not acquire proofs, persist events, stop the sender or execute
 the caller's funding gate itself. Those live integration gates remain open.
+
+## Native acquisition and retained captures
+
+`load_finality_collector.NativeCollector` acquires a live native proof using
+explicit verifier and anchor SHA-256 pins. It snapshots bounded public anchor
+and lite-server configuration files, copies the exact verified ELF into a
+kernel-sealed memfd once, and executes that descriptor. The strategy reuses the
+reviewed sealed-provider approach; replacing the original executable path cannot
+change the bytes subsequently executed. Linux, installed curl/prlimit and their
+trusted system libraries are prerequisites. Call `close()` when finished.
+
+Each capture validates the expected account, active code hash, global ID and
+version before following public RPC transaction BOCs back to the previous
+verified head. A first capture establishes a baseline and does not collect old,
+unbound offers. Subsequent captures return receipts only for a complete verified
+segment. An unchanged account at a newer checkpoint is supported. This remains
+the explicitly computational skip/refund profile, not delivered-payment proof.
+
+The run directory must be new; existing collector runs cannot be resumed or
+silently rebaselined. Live proof cache state is copied only from the previous
+successful capture into the next capture, so failed writes and temporary files
+remain inside the capture budget. Native output, public RPC responses, material
+and directories are synced before returning a completed capture. No keys or
+private outbox carriers are read. The caller must separately persist offered
+digests and preserve its unfinished-run fence.
+
+Per-file subprocess output has an 8 MiB kernel limit; stderr is additionally
+checked against 1 MiB before acceptance. Each capture has monitored and final
+limits of 64 MiB and 512 files, checked before returning progress. Aggregate
+monitoring is not a filesystem quota: a write burst can overshoot before the
+next check, and that rejected capture is retained. Oversized rejected evidence
+exhausts the collector's retention budget and prevents further captures. Defaults
+are at most 200,000 captures, a 256 GiB retained-capture budget, at least 20 GiB
+plus capture headroom free, and an inode reserve. Count and byte limits also
+apply to RPC pages/history. Snapshots and the sealed executable have separate
+fixed input-size bounds. No proof artifacts are automatically deleted.
+
+The default 8-second acquisition deadline fits within the configured 10-second
+native-age limit; the same absolute deadline covers subprocesses, paging,
+decoding and persistence. A failed capture returns no progress. It must stop
+new admission in the caller; this module never retries signatures or payments.
+Thirty-second age/deadline settings are available for explicitly separate
+post-run diagnostics and must not be substituted for a 10-second SLO run.
+
+A continuous worker, durable offered-digest event wiring, and the actual sender
+and funding gates are still required. Sample the window's monotonic time while
+holding its serialization lock, after capture persistence; do not submit an
+older precomputed timestamp after a concurrent offer has advanced that clock.
+The caller must enforce collector age <= window age and retain failure status
+even during permitted read-only reconciliation. Unit acquisition tests stub the
+proof execution boundary; only tests using the actual pinned native verifier
+are evidence of native proof verification.
