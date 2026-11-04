@@ -43,7 +43,35 @@ python -m pytest -q testnet/tests/test_load_finality.py
 ```
 
 Before a 72-hour acceptance run this building block still needs the live native
-proof/RPC collector, same-boot monotonic offered-query correlation, durable
-bounded pending state, latency criteria, proof retention and a fail-closed
-connection to load admission. Passing these decoder tests does not start or
-complete that acceptance.
+proof/RPC collector, durable event wiring, proof retention and a fail-closed
+connection to load admission. Passing these tests does not start or complete
+that acceptance.
+
+## Offered-request and latency window
+
+`load_finality_window.FinalityWindow` correlates the decoded receipts with the
+exact signed request digests already produced by the request builder. It does
+not hash or read private outbox carriers. The caller must durably journal those
+digests before broadcast and retain its unfinished-run fence across any exit.
+The window is in memory; it does not authorize a restart, resume or new signature.
+
+Admission requires a native baseline first. The caller must check `healthy`
+before every offer and every funding action, and stop new work on any error.
+The window has at most 8,192 pending entries, a fixed 1 MiB seen-query bitmap and
+fixed latency histogram counters. It refuses query reuse even after completion.
+`advance` checks all query/digest bindings before removing pending entries; the
+caller must first authenticate the complete transaction segment and persist its
+proof artifacts. No caller may substitute an RPC account head for a verified one.
+
+The client supplies same-boot monotonic completion times. A boot change, clock
+regression, stale observation, overdue query or checkpoint discontinuity latches
+a failure that cannot be reset. Default observation-age/query-age guards are
+10/30 seconds. Refreshing a checkpoint cannot erase an observation gap. Default
+latency criteria are conservative histogram upper bounds p95 <= 5 seconds and
+p99 <= 10 seconds; no inclusion or chain timestamp is substituted for completion
+of proof and history verification. Authentic slow receipts still settle the
+pending entries, while their latency makes the qualification fail. Summary
+overflow buckets use the JSON string `infinity`, never a non-finite JSON number.
+
+This class does not acquire proofs, persist events, stop the sender or execute
+the caller's funding gate itself. Those live integration gates remain open.
