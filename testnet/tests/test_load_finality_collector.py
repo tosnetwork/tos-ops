@@ -530,7 +530,7 @@ def test_non_internal_or_malformed_pages_do_not_fail_over(configured, tmp_path, 
         c.close()
 
 
-def test_both_internal_errors_stop_after_two(configured, tmp_path):
+def test_both_internal_errors_stop_after_four_rounds(configured, tmp_path):
     args, _ = configured
     c = collector.NativeCollector(**args, confirm_rpc="http://127.0.0.1:8083/jsonRPC")
     path = tmp_path / "rpc-page"
@@ -546,7 +546,7 @@ def test_both_internal_errors_stop_after_two(configured, tmp_path):
     try:
         with pytest.raises(HistoryError, match="bounded RPC history page"):
             c._rpc_page(path, Head(1, "11" * 32), 0, time.monotonic() + 5)
-        assert len(calls) == 2
+        assert len(calls) == 8
     finally:
         c.close()
 
@@ -567,7 +567,8 @@ def test_confirm_url_validated_before_artifacts(configured, url):
 
 
 @pytest.mark.parametrize("wrong_history", [False, True])
-def test_fallback_rows_still_require_native_boc_chain(configured, wrong_history):
+@pytest.mark.parametrize("internal_errors", [1, 3])
+def test_fallback_rows_still_require_native_boc_chain(configured, wrong_history, internal_errors):
     args, public = configured
     c = collector.NativeCollector(**args, confirm_rpc="http://127.0.0.1:8083/jsonRPC")
     fake_boundary(c, public)
@@ -582,7 +583,7 @@ def test_fallback_rows_still_require_native_boc_chain(configured, wrong_history)
         rows = public["transactions"][1:] if wrong_history else public["transactions"]
         value = (
             {"error": {"code": -32603}}
-            if len(calls) == 1
+            if len(calls) <= internal_errors
             else {"result": [{"data": x} for x in rows]}
         )
         collector.write_file(output, json.dumps(value).encode())
@@ -598,7 +599,7 @@ def test_fallback_rows_still_require_native_boc_chain(configured, wrong_history)
         else:
             capture = c.capture(Head(**public["previous"]))
             assert [r.query_id for r in capture.receipts] == [1566, 1565]
-        assert len(calls) == 2
+        assert len(calls) == internal_errors + 1
     finally:
         c.close()
 
@@ -662,5 +663,78 @@ def test_only_running_native_scan_tolerates_state_rename(configured, tmp_path, m
         )
         assert calls[-1] is False and len(calls) >= 2
         assert all(v is native for v in calls[:-1])
+    finally:
+        c.close()
+
+
+@pytest.mark.parametrize(
+    "confirm,failures,expected_calls,delays", [(True, 3, 4, [0.25]), (False, 2, 3, [0.25, 0.5])]
+)
+def test_internal_read_lag_retries_same_cursor_and_deadline(
+    configured, tmp_path, monkeypatch, confirm, failures, expected_calls, delays
+):
+    args, _ = configured
+    endpoint = "http://127.0.0.1:8083/jsonRPC" if confirm else None
+    c = collector.NativeCollector(**args, confirm_rpc=endpoint)
+    path = tmp_path / "page"
+    path.mkdir()
+    calls = []
+    sleeps = []
+    deadline = time.monotonic() + 5
+    monkeypatch.setattr(collector.time, "sleep", sleeps.append)
+
+    def response(argv, output, error, end, _directory):
+        request = Path(argv[argv.index("--data-binary") + 1][1:]).read_bytes()
+        calls.append((argv[-1], request, end))
+        value = (
+            {"error": {"code": -32603, "message": f"lag-{len(calls)}"}}
+            if len(calls) <= failures
+            else {"result": [{"data": "untrusted"}]}
+        )
+        collector.write_file(output, json.dumps(value).encode())
+        collector.write_file(error, b"")
+
+    c._run = response
+    try:
+        assert c._rpc_page(path, Head(7, "11" * 32), 0, deadline) == [{"data": "untrusted"}]
+        assert len(calls) == expected_calls and sleeps == delays
+        assert all(row[1:] == calls[0][1:] for row in calls)
+        assert all(row[2] == deadline for row in calls)
+        assert [row[0] for row in calls] == [
+            args["rpc"] if not confirm or i % 2 == 0 else endpoint for i in range(expected_calls)
+        ]
+        errors = sorted((path / "rpc-failover").glob("*.json"))
+        errors = [p for p in errors if not p.name.endswith(".sources.json")]
+        assert len(errors) == failures
+        assert {json.loads(p.read_text())["error"]["message"] for p in errors} == {
+            f"lag-{i}" for i in range(1, failures + 1)
+        }
+    finally:
+        c.close()
+
+
+def test_original_deadline_refuses_further_retry_before_sleep(configured, tmp_path, monkeypatch):
+    args, _ = configured
+    c = collector.NativeCollector(**args, confirm_rpc="http://127.0.0.1:8083/jsonRPC")
+    path = tmp_path / "page"
+    path.mkdir()
+    calls = []
+    now = [1.0]
+    sleeps = []
+    monkeypatch.setattr(collector.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(collector.time, "sleep", sleeps.append)
+
+    def response(argv, output, error, end, _directory):
+        calls.append(end)
+        collector.write_file(output, b'{"error":{"code":-32603}}')
+        collector.write_file(error, b"")
+        if len(calls) == 2:
+            now[0] = 2.1
+
+    c._run = response
+    try:
+        with pytest.raises(HistoryError, match="capture deadline expired"):
+            c._rpc_page(path, Head(7, "11" * 32), 0, 2.0)
+        assert calls == [2.0, 2.0] and sleeps == []
     finally:
         c.close()

@@ -253,3 +253,27 @@ The unchanged helper performs the intended atomic rename in TOS proof-verify
 main.cpp:167-191 atf58402109959aac7af8c3d7e93ec66d7468cd9b4. No inherited or
 native proof code changes. Checklist: TE-8 (existed, not applied to the directory
 scanner racing the helper's atomic state commit).
+
+### Simultaneous RPC shard-index lag
+
+Both configured RPCs can briefly lag the native-proven transaction head. Internal
+error reads now use at most four rounds of the existing distinct endpoints,
+with0.25/0.5/1-second backoff between rounds. This is at most eight reads with two
+endpoints, or four with one endpoint, all inside the original capture deadline.
+An exhausted deadline stops before sleeping or issuing another read. Other RPC
+errors, malformed/empty pages and transport failures retain immediate refusal.
+
+Every unsuccessful internal-error response/stderr/source URL is retained under a
+unique attempt name. The first retains its original page-N filename for existing
+diagnostics. Successful canonical page filenames and the exact cursor/request
+remain unchanged. All native/head/BOC/request-digest validation and count/byte/file
+budgets remain unchanged; extra diagnostics may exhaust the existing limit and
+must then stop. This is read-only acquisition retry, never a payment retry.
+
+Measured trigger: R3trial2-500k captures248/249/250 saw both sources return
+-32603 block-not-found at the same shard-client height; later readonly acquisition
+proved all141queries. One immediate fallback was insufficient. No inherited
+lookup change: the same error remains upstream857b8a57a178e6ae0fe7fa86e7d81c5233de8560
+liteserver.cpp1763 / TOSf584021:1731, and upstream issue1105 is open. This TOS-only
+collector path has no upstream counterpart. Original failed-stage and unresolved
+RPC bookkeeping remain failed until separate original-run reconciliation.
