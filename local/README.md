@@ -537,7 +537,12 @@ The adapter accepts only an explicit loopback backend and listener, with a
 16 KiB header limit, 1 MiB request/response bodies, a 100,000-request budget,
 saturating counters and a kernel listen backlog of eight. The normal frontend
 exchange deadline is five seconds and the backend deadline is 2.5 seconds;
-connect/header/body/chunks share those total deadlines, not per-byte timeouts.
+connect/header/body/chunks share those total network I/O deadlines, not per-byte
+timeouts. These do not bound filesystem synchronization or waiting for the trusted
+controller mutex; controller integration must bound those separately. Error holds
+are scoped to the request admission generation so a late error cannot revoke a
+newly confirmed admission. Read callback failures close admission while still
+holding the gate mutex.
 The server handles one request at a time. It neither establishes native network
 identity nor prevents a different producer using already delivered data.
 

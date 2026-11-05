@@ -423,3 +423,31 @@ def test_hold_drops_permission_without_unlocking_or_rearming(directory):
             gate.authorize(receipt)
         with pytest.raises(BlockingIOError):
             SendGate(directory, CONTEXT)
+
+
+def test_generation_scopes_late_holds(directory):
+    with SendGate(directory, CONTEXT) as gate:
+        gate.authorize(receipt)
+        previous = gate.admission_version()
+        gate.forward_once(lambda _: None)
+        gate.authorize(receipt)
+        current = gate.admission_version()
+        assert current > previous
+        assert gate.hold(expected_version=previous) is False
+        assert gate.metrics()["admitted"]
+        assert gate.hold(expected_version=current) is True
+        assert not gate.metrics()["admitted"]
+
+
+def test_read_failure_closes_admission_before_releasing_mutex(directory):
+    with SendGate(directory, CONTEXT) as gate:
+        gate.authorize(receipt)
+
+        def failed_read():
+            raise OSError("synthetic read failure")
+
+        with pytest.raises(OSError, match="synthetic read failure"):
+            gate.admitted_read(failed_read)
+        assert not gate.metrics()["admitted"]
+        with pytest.raises(GateError):
+            gate.admitted_read(lambda: pytest.fail("read after failed callback"))

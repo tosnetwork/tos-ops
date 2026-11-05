@@ -80,6 +80,7 @@ class SendGate:
         self._fd = None
         self._admitted = False  # Never restored from an earlier process's permit.
         self._poisoned = False
+        self._admission_version = 0
         self._records = 0
         self._hash = "0" * 64
         self._last = None
@@ -258,6 +259,7 @@ class SendGate:
                     "proof_digest": verdict["proof_digest"],
                 }
             )
+            self._admission_version = self._records
             self._admitted = True
 
     def admitted_read(self, fetch_and_publish):
@@ -269,7 +271,11 @@ class SendGate:
                 raise GateError(
                     "RPC reads held pending admission or original settlement"
                 )
-            return fetch_and_publish()
+            try:
+                return fetch_and_publish()
+            except Exception:
+                self._admitted = False
+                raise
 
     def forward_once(self, forward):
         self._check_owner()
@@ -284,7 +290,13 @@ class SendGate:
             # this callback's entire network exchange and must never retry it.
             return forward(operation)
 
-    def hold(self):
+    def admission_version(self):
+        """Snapshot the admission generation before an adapter request."""
+        self._check_owner()
+        with self._mutex:
+            return self._admission_version
+
+    def hold(self, expected_version=None):
         """Drop this process's permission on any adapter/protocol uncertainty.
 
         This cannot rearm an unused durable admission; that needs a separate
@@ -292,7 +304,13 @@ class SendGate:
         """
         self._check_owner()
         with self._mutex:
+            if (
+                expected_version is not None
+                and expected_version != self._admission_version
+            ):
+                return False
             self._admitted = False
+            return True
 
     def metrics(self):
         self._check_owner()

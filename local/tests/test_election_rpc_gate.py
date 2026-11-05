@@ -365,3 +365,39 @@ def test_new_http_instance_cannot_restore_a_pending_send_permission(environment)
             assert request(server, "sendBocReturnHash")[0] == 503
             assert restored.metrics()["operation"] == 1
     assert env.backend.calls == ["sendBoc"]
+
+
+def test_late_error_cannot_revoke_a_new_confirmed_admission(environment, monkeypatch):
+    env = environment
+    env.backend.mode = "lost"
+    original = env.gate.forward_once
+    failed, release = threading.Event(), threading.Event()
+
+    def delayed_failure(forward):
+        try:
+            return original(forward)
+        except Exception:
+            failed.set()
+            assert release.wait(2)
+            raise
+
+    monkeypatch.setattr(env.gate, "forward_once", delayed_failure)
+    results = []
+    client = threading.Thread(
+        target=lambda: results.append(request(env.server, "sendBoc")[0])
+    )
+    client.start()
+    try:
+        assert failed.wait(2)
+        assert env.backend.calls == ["sendBoc"]
+        env.gate.authorize(receipt)  # Synthetic exact-original settlement.
+        assert env.gate.metrics()["admitted"]
+    finally:
+        release.set()
+        client.join(2)
+    assert not client.is_alive() and results == [503]
+    assert env.gate.metrics()["admitted"], (
+        "old failure revoked a newer native-confirmed admission"
+    )
+    env.backend.mode = "ok"
+    assert request(env.server)[0] == 200

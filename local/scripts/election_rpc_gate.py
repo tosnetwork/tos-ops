@@ -271,6 +271,7 @@ class Handler(socketserver.BaseRequestHandler):
         server = self.server
         deadline = time.monotonic() + server.total_timeout
         identifier = None
+        version = server.gate.admission_version()
         server.increment("requests")
         try:
             if server.counts["requests"] > MAX_REQUESTS:
@@ -313,7 +314,7 @@ class Handler(socketserver.BaseRequestHandler):
 
                 server.gate.admitted_read(read)
         except Exception:
-            server.gate.hold()
+            server.gate.hold(expected_version=version)
             server.increment("denied")
             # The original native verifier/controller, not this reply, decides
             # settlement. Error responses and client retries never clear a latch.
