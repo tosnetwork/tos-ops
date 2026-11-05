@@ -502,7 +502,9 @@ publication, fsyncs a global latch before one forwarding callback, and never
 reopens on an acknowledgement, timeout or restart. Exact original-operation
 settlement must be checked by a separately reviewed native verifier before the
 caller authorizes another admission. A previously unused process admission is
-not automatically restored. Storage uncertainty is sticky; corrupt, incomplete,
+not automatically restored. Process identity is checked before any mutex acquisition,
+so a fork child cannot reuse its parent's admission or block on an inherited lock.
+Storage uncertainty is sticky; corrupt, incomplete,
 foreign-context, shared or oversized journals refuse. The metadata hash chain is
 corruption detection, not protection against the owner rolling storage back.
 

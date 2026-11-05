@@ -75,6 +75,7 @@ class SendGate:
         ):
             raise GateError("invalid public context digest")
         self.context = dict(context)
+        self._owner_pid = os.getpid()
         self._mutex = threading.RLock()
         self._fd = None
         self._admitted = False  # Never restored from an earlier process's permit.
@@ -216,6 +217,10 @@ class SendGate:
         self._records += 1
         self._poisoned = False
 
+    def _check_owner(self):
+        if os.getpid() != self._owner_pid:
+            raise GateError("gate belongs to another process")
+
     def _healthy(self):
         if self._fd is None or self._poisoned:
             raise GateError("gate closed or storage uncertain")
@@ -228,6 +233,7 @@ class SendGate:
         increased unrelated seqno are not receipt verifiers. This library does
         not implement that native verifier and is not a ready execution tool.
         """
+        self._check_owner()
         with self._mutex:
             self._healthy()
             self._admitted = False
@@ -256,6 +262,7 @@ class SendGate:
 
     def admitted_read(self, fetch_and_publish):
         """Hold serialization through BOTH backend read and response publication."""
+        self._check_owner()
         with self._mutex:
             self._healthy()
             if not self._admitted:
@@ -265,6 +272,7 @@ class SendGate:
             return fetch_and_publish()
 
     def forward_once(self, forward):
+        self._check_owner()
         with self._mutex:
             self._healthy()
             if not self._admitted:
@@ -277,6 +285,7 @@ class SendGate:
             return forward(operation)
 
     def metrics(self):
+        self._check_owner()
         with self._mutex:
             return {
                 "admitted": self._admitted,
@@ -286,11 +295,19 @@ class SendGate:
             }
 
     def close(self):
+        # A fork child must not wait on a mutex held by a vanished thread, or
+        # explicitly unlock the parent's inherited open-file description.
+        if os.getpid() != self._owner_pid:
+            self._admitted = False
+            descriptor, self._fd = self._fd, None
+            if descriptor is not None:
+                os.close(descriptor)
+            return
         with self._mutex:
             self._admitted = False
-            if self._fd is not None:
-                os.close(self._fd)
-                self._fd = None
+            descriptor, self._fd = self._fd, None
+            if descriptor is not None:
+                os.close(descriptor)
 
     def __enter__(self):
         return self

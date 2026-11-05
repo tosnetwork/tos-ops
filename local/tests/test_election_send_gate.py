@@ -326,3 +326,86 @@ def test_partial_latch_write_never_forwards_or_reopens(directory, monkeypatch):
     monkeypatch.setattr(gate_module.os, "write", original)
     with pytest.raises(GateError):
         SendGate(directory, CONTEXT)
+
+
+def fork_case(directory, body):
+    prelude = """
+import importlib.util, json, os, signal, sys, threading
+spec=importlib.util.spec_from_file_location('gate', sys.argv[1])
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+context=json.loads(sys.argv[3])
+gate=m.SendGate(sys.argv[2],context)
+gate.authorize(lambda c,n:dict(context=c,operation=n,proof_digest='4'*64))
+"""
+    return subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            prelude + body,
+            str(SCRIPT),
+            str(directory),
+            json.dumps(CONTEXT),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="Unix fork ownership boundary")
+def test_inherited_process_cannot_reuse_an_admission(directory):
+    result = fork_case(
+        directory,
+        """
+reader,writer=os.pipe()
+pid=os.fork()
+if pid==0:
+    os.close(reader)
+    try:
+        try:gate.forward_once(lambda n:os.write(writer,b'forwarded'))
+        except m.GateError:os.write(writer,b'refused')
+    finally:
+        gate.close();os.close(writer);os._exit(0)
+os.close(writer)
+os.waitpid(pid,0)
+answer=os.read(reader,64);os.close(reader)
+assert answer==b'refused', 'inherited child executed a second owner forward'
+try:m.SendGate(sys.argv[2],context)
+except BlockingIOError:pass
+else:raise AssertionError('child close unlocked parent ownership')
+assert gate.forward_once(lambda n:n)==1
+gate.close()
+""",
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="Unix fork ownership boundary")
+def test_foreign_owner_checks_precede_inherited_mutex_and_close_is_safe(directory):
+    result = fork_case(
+        directory,
+        """
+held,release=threading.Event(),threading.Event()
+def hold():
+    with gate._mutex:
+        held.set();release.wait(5)
+thread=threading.Thread(target=hold);thread.start();assert held.wait(2)
+pid=os.fork()
+if pid==0:
+    signal.alarm(2)
+    gate.close()
+    denied=0
+    actions=[lambda:gate.authorize(lambda c,n:None),lambda:gate.admitted_read(lambda:None),lambda:gate.forward_once(lambda n:None),gate.metrics]
+    for action in actions:
+        try:action()
+        except m.GateError:denied+=1
+    os._exit(0 if denied==4 else 87)
+_,status=os.waitpid(pid,0)
+release.set();thread.join(2)
+assert os.waitstatus_to_exitcode(status)==0, 'foreign owner blocked on inherited mutex or retained authority'
+assert not thread.is_alive()
+assert gate.forward_once(lambda n:n)==1
+gate.close()
+""",
+    )
+    assert result.returncode == 0, result.stderr
