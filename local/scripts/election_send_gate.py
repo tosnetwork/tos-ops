@@ -262,11 +262,16 @@ class SendGate:
             self._admission_version = self._records
             self._admitted = True
 
-    def admitted_read(self, fetch_and_publish):
+    def admitted_read(self, fetch_and_publish, *, expected_version=None):
         """Hold serialization through BOTH backend read and response publication."""
         self._check_owner()
         with self._mutex:
             self._healthy()
+            if (
+                expected_version is not None
+                and expected_version != self._admission_version
+            ):
+                raise GateError("request belongs to an earlier admission")
             if not self._admitted:
                 raise GateError(
                     "RPC reads held pending admission or original settlement"
@@ -277,10 +282,15 @@ class SendGate:
                 self._admitted = False
                 raise
 
-    def forward_once(self, forward):
+    def forward_once(self, forward, *, expected_version=None):
         self._check_owner()
         with self._mutex:
             self._healthy()
+            if (
+                expected_version is not None
+                and expected_version != self._admission_version
+            ):
+                raise GateError("request belongs to an earlier admission")
             if not self._admitted:
                 raise GateError("send held pending admission or original settlement")
             self._admitted = False

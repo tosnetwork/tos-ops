@@ -373,9 +373,9 @@ def test_late_error_cannot_revoke_a_new_confirmed_admission(environment, monkeyp
     original = env.gate.forward_once
     failed, release = threading.Event(), threading.Event()
 
-    def delayed_failure(forward):
+    def delayed_failure(forward, **kwargs):
         try:
-            return original(forward)
+            return original(forward, **kwargs)
         except Exception:
             failed.set()
             assert release.wait(2)
@@ -401,3 +401,48 @@ def test_late_error_cannot_revoke_a_new_confirmed_admission(environment, monkeyp
     )
     env.backend.mode = "ok"
     assert request(env.server)[0] == 200
+
+
+@pytest.mark.parametrize(
+    "method", ["sendBoc", "sendBocReturnHash", "getMasterchainInfo"]
+)
+def test_closed_request_cannot_consume_a_later_admission(
+    environment, monkeypatch, method
+):
+    env = environment
+    env.gate.forward_once(lambda _: None)
+    observed = threading.Event()
+    original = env.gate.admission_version
+
+    def snapshot():
+        value = original()
+        observed.set()
+        return value
+
+    monkeypatch.setattr(env.gate, "admission_version", snapshot)
+    body = json.dumps(
+        dict(
+            jsonrpc="2.0",
+            id=1,
+            method=method,
+            params={"boc": "AAAA"} if method in rpc.WRITE_METHODS else {},
+        )
+    ).encode()
+    head = (
+        f"POST /jsonRPC HTTP/1.1\r\nHost: 127.0.0.1:{env.server.server_address[1]}\r\n"
+        f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n\r\n"
+    ).encode()
+    with socket.create_connection(env.server.server_address, timeout=2) as connection:
+        connection.sendall(head + body[:1])
+        assert observed.wait(2)
+        assert not env.gate.metrics()["admitted"]
+        env.gate.authorize(receipt)
+        connection.sendall(body[1:])
+        response = http.client.HTTPResponse(connection)
+        response.begin()
+        response.read()
+        assert response.status == 503, "old request consumed a later admission"
+    assert env.backend.calls == []
+    assert env.gate.metrics()["operation"] == 1
+    assert env.gate.metrics()["admitted"], "stale refusal revoked the fresh permit"
+    assert request(env.server, "getMasterchainInfo")[0] == 200

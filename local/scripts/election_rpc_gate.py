@@ -305,14 +305,14 @@ class Handler(socketserver.BaseRequestHandler):
                     server.increment("forward_attempts")
                     return exchange_and_publish()
 
-                server.gate.forward_once(forward)
+                server.gate.forward_once(forward, expected_version=version)
             else:
 
                 def read():
                     server.increment("read_attempts")
                     return exchange_and_publish()
 
-                server.gate.admitted_read(read)
+                server.gate.admitted_read(read, expected_version=version)
         except Exception:
             server.gate.hold(expected_version=version)
             server.increment("denied")

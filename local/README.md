@@ -554,3 +554,8 @@ only and never a real node, wallet key or signed transaction carrier:
 ```sh
 TOS_ROOT="$TOS_ROOT" "$TOS_ROOT/.venv/bin/python" -m pytest -q local/tests/test_election_send_gate.py local/tests/test_election_rpc_gate.py
 ```
+
+RPC requests also bind the request-start admission generation under the core
+read/forward mutex. A request begun before fresh admission cannot consume that
+new permit, including when its body arrives late. This does not revoke a response
+already delivered to a producer; exclusive producer/controller remains required.
