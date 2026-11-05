@@ -508,6 +508,25 @@ Storage uncertainty is sticky; corrupt, incomplete,
 foreign-context, shared or oversized journals refuse. The metadata hash chain is
 corruption detection, not protection against the owner rolling storage back.
 
+Each forwarding latch also fsyncs the original message representation hash before
+calling the backend. `forward_once(..., original_message_hash=...)` requires the
+canonical lowercase 32-byte digest. The trusted receipt callback must return
+`original_message_hash` alongside `context`, `operation` and `proof_digest`:
+initial admission uses `None`, later admission must match the last persisted
+message exactly. Another transaction, body hash or unrelated increased seqno is
+not that identity. Metrics expose this public hash for the native controller;
+no signed carrier bytes or credentials are stored by this primitive. A legacy
+latched record without its original identity refuses on load; do not delete it,
+reset it or manufacture a new baseline to migrate an unresolved operation.
+
+The RPC adapter requires a separately reviewed `identify_message(boc)` callback
+for writes. It must decode the bounded original carrier and return its message
+representation hash, not a digest of serialization bytes or an RPC claim. No
+production decoder is supplied here: absent/refused/noncanonical identification
+holds the request without forwarding. Decoder work cannot extend the exchange
+deadline. Synthetic tests supply only explicit fixture identities, not a native
+message-verification claim.
+
 The future adapter/controller must enforce one sole RPC endpoint, one financial
 producer, bounded full HTTP exchanges and no stale in-flight response or task
 reload bypass. Reads already delivered to another signer cannot be revoked by

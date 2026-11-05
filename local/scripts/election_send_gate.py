@@ -84,6 +84,7 @@ class SendGate:
         self._records = 0
         self._hash = "0" * 64
         self._last = None
+        self._original_message_hash = None
         directory = private_directory(directory)
         flags = os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_APPEND
         path = directory / "send-admission.jsonl"
@@ -155,6 +156,8 @@ class SendGate:
                 raise GateError("journal integrity mismatch")
             self._validate_transition(payload)
             self._hash, self._last = digest, payload
+            if payload["event"] == "latched":
+                self._original_message_hash = payload["message_hash"]
             self._records += 1
 
     def _validate_transition(self, value):
@@ -182,9 +185,11 @@ class SendGate:
                 raise GateError("invalid public proof digest")
         elif event == "latched":
             if (
-                set(value) != {"sequence", "event", "operation"}
+                set(value) != {"sequence", "event", "operation", "message_hash"}
                 or self._last["event"] != "admitted"
                 or operation != self._last["operation"] + 1
+                or not isinstance(value["message_hash"], str)
+                or not HEX.fullmatch(value["message_hash"])
             ):
                 raise GateError("invalid forward transition")
         else:
@@ -215,6 +220,8 @@ class SendGate:
             remaining = remaining[count:]
         os.fsync(self._fd)
         self._hash, self._last = digest, payload
+        if payload["event"] == "latched":
+            self._original_message_hash = payload["message_hash"]
         self._records += 1
         self._poisoned = False
 
@@ -227,10 +234,10 @@ class SendGate:
             raise GateError("gate closed or storage uncertain")
 
     def authorize(self, verifier):
-        """Trusted verifier returns exact context/operation/public-proof digest.
+        """Trusted verifier returns exact context/operation/original-message hash and public-proof digest.
 
         Operation0 needs fresh initial native admission; later operations need
-        exact original-message settlement. Time, RPC acknowledgement and an
+        exact settlement of the durably latched original-message hash. Time, RPC acknowledgement and an
         increased unrelated seqno are not receipt verifiers. This library does
         not implement that native verifier and is not a ready execution tool.
         """
@@ -246,10 +253,12 @@ class SendGate:
             verdict = verifier(dict(self.context), operation)
             if (
                 type(verdict) is not dict
-                or set(verdict) != {"context", "operation", "proof_digest"}
+                or set(verdict)
+                != {"context", "operation", "proof_digest", "original_message_hash"}
                 or verdict["context"] != self.context
                 or type(verdict["operation"]) is not int
                 or verdict["operation"] != operation
+                or verdict["original_message_hash"] != self._original_message_hash
             ):
                 raise GateError("receipt context or operation mismatch")
             self._append(
@@ -282,7 +291,7 @@ class SendGate:
                 self._admitted = False
                 raise
 
-    def forward_once(self, forward, *, expected_version=None):
+    def forward_once(self, forward, *, original_message_hash, expected_version=None):
         self._check_owner()
         with self._mutex:
             self._healthy()
@@ -294,8 +303,18 @@ class SendGate:
             if not self._admitted:
                 raise GateError("send held pending admission or original settlement")
             self._admitted = False
+            if not isinstance(original_message_hash, str) or not HEX.fullmatch(
+                original_message_hash
+            ):
+                raise GateError("canonical original message hash required")
             operation = self._last["operation"] + 1
-            self._append({"event": "latched", "operation": operation})
+            self._append(
+                {
+                    "event": "latched",
+                    "operation": operation,
+                    "message_hash": original_message_hash,
+                }
+            )
             # No acknowledge/error path reopens the gate. The caller must bound
             # this callback's entire network exchange and must never retry it.
             return forward(operation)
@@ -330,6 +349,7 @@ class SendGate:
                 "poisoned": self._poisoned,
                 "records": self._records,
                 "operation": self._last["operation"] if self._last else None,
+                "original_message_hash": self._original_message_hash,
             }
 
     def close(self):

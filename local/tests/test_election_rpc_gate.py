@@ -23,7 +23,12 @@ CONTEXT = dict(
 
 
 def receipt(context, operation):
-    return dict(context=context, operation=operation, proof_digest="4" * 64)
+    return dict(
+        context=context,
+        operation=operation,
+        proof_digest="4" * 64,
+        original_message_hash="5" * 64 if operation else None,
+    )
 
 
 class Backend(http.server.BaseHTTPRequestHandler):
@@ -105,6 +110,7 @@ def environment(tmp_path):
             ("127.0.0.1", 0),
             backend.server_port,
             gate,
+            identify_message=lambda _boc: "5" * 64,
             total_timeout=1,
             backend_timeout=0.2,
         )
@@ -173,7 +179,12 @@ def test_only_explicit_context_bound_confirmation_allows_next_send(environment):
     assert request(env.server, "sendBoc")[0] == 200
     with pytest.raises(GateError):
         env.gate.authorize(
-            lambda c, n: dict(context=c, operation=0, proof_digest="4" * 64)
+            lambda c, n: dict(
+                context=c,
+                operation=0,
+                proof_digest="4" * 64,
+                original_message_hash="5" * 64 if n else None,
+            )
         )
     assert request(env.server)[0] == 503
     env.gate.authorize(receipt)  # Synthetic verifier, not a native confirmation claim.
@@ -308,7 +319,10 @@ def test_publication_stays_inside_core_read_lock(environment, monkeypatch):
     client.start()
     assert entered.wait(2)
     sender = threading.Thread(
-        name="sender", target=lambda: env.gate.forward_once(lambda n: None)
+        name="sender",
+        target=lambda: env.gate.forward_once(
+            lambda n: None, original_message_hash="5" * 64
+        ),
     )
     sender.start()
     try:
@@ -410,7 +424,7 @@ def test_closed_request_cannot_consume_a_later_admission(
     environment, monkeypatch, method
 ):
     env = environment
-    env.gate.forward_once(lambda _: None)
+    env.gate.forward_once(lambda _: None, original_message_hash="5" * 64)
     observed = threading.Event()
     original = env.gate.admission_version
 
@@ -446,3 +460,51 @@ def test_closed_request_cannot_consume_a_later_admission(
     assert env.gate.metrics()["operation"] == 1
     assert env.gate.metrics()["admitted"], "stale refusal revoked the fresh permit"
     assert request(env.server, "getMasterchainInfo")[0] == 200
+
+
+def test_rpc_binds_the_decoded_exact_carrier_identity(environment):
+    env = environment
+    seen = []
+
+    def identify(boc):
+        seen.append(boc)
+        return "5" * 64
+
+    env.server.identify_message = identify
+    assert request(env.server, "sendBoc")[0] == 200
+    assert seen == ["AAAA"]
+    assert env.gate.metrics()["original_message_hash"] == "5" * 64
+
+
+@pytest.mark.parametrize("mode", ["absent", "refused", "noncanonical"])
+def test_missing_or_failed_decoder_never_forwards(environment, mode):
+    env = environment
+
+    def refuse(_boc):
+        raise ValueError("synthetic decoder refusal")
+
+    env.server.identify_message = {
+        "absent": None,
+        "refused": refuse,
+        "noncanonical": lambda _: "NOT-A-HASH",
+    }[mode]
+    assert request(env.server, "sendBoc")[0] != 200
+    assert env.server.counts["forward_attempts"] == 0
+    assert env.backend.calls == []
+    assert not env.gate.metrics()["admitted"]
+
+
+def test_decoder_work_cannot_extend_forwarding_deadline(environment):
+    env = environment
+    env.server.total_timeout = 0.05
+
+    def slow(_boc):
+        time.sleep(0.1)
+        return "5" * 64
+
+    env.server.identify_message = slow
+    with pytest.raises(http.client.RemoteDisconnected):
+        request(env.server, "sendBoc")
+    assert env.server.counts["forward_attempts"] == 0
+    assert env.backend.calls == []
+    assert env.gate.metrics()["operation"] == 0

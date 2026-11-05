@@ -8,6 +8,8 @@ import sys
 import threading
 from pathlib import Path
 
+import hashlib
+
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/election_send_gate.py"
@@ -24,7 +26,12 @@ CONTEXT = dict(
 
 
 def receipt(context, operation):
-    return dict(context=context, operation=operation, proof_digest="4" * 64)
+    return dict(
+        context=context,
+        operation=operation,
+        proof_digest="4" * 64,
+        original_message_hash="5" * 64 if operation else None,
+    )
 
 
 @pytest.fixture
@@ -40,7 +47,9 @@ def test_closed_gate_does_not_fetch_or_forward(directory):
         with pytest.raises(GateError):
             gate.admitted_read(lambda: calls.append("read"))
         with pytest.raises(GateError):
-            gate.forward_once(lambda _: calls.append("send"))
+            gate.forward_once(
+                lambda _: calls.append("send"), original_message_hash="5" * 64
+            )
         assert calls == []
 
 
@@ -73,11 +82,16 @@ def test_fsync_precedes_forward_and_reply_never_reopens(
 
         if lost_reply:
             with pytest.raises(TimeoutError):
-                gate.forward_once(forward)
+                gate.forward_once(forward, original_message_hash="5" * 64)
         else:
-            assert gate.forward_once(forward) == "synthetic acknowledgement only"
+            assert (
+                gate.forward_once(forward, original_message_hash="5" * 64)
+                == "synthetic acknowledgement only"
+            )
         with pytest.raises(GateError):
-            gate.forward_once(lambda _: pytest.fail("second forward"))
+            gate.forward_once(
+                lambda _: pytest.fail("second forward"), original_message_hash="5" * 64
+            )
         with pytest.raises(GateError):
             gate.admitted_read(lambda: pytest.fail("next signing read"))
 
@@ -97,11 +111,16 @@ def test_restart_does_not_restore_prior_unused_read_permission(directory):
 def test_restart_pending_requires_exact_receipt_and_operation(directory):
     with SendGate(directory, CONTEXT) as gate:
         gate.authorize(receipt)
-        gate.forward_once(lambda _: None)
+        gate.forward_once(lambda _: None, original_message_hash="5" * 64)
     with SendGate(directory, CONTEXT) as gate:
         with pytest.raises(GateError):
             gate.authorize(
-                lambda c, n: dict(context=c, operation=n - 1, proof_digest="4" * 64)
+                lambda c, n: dict(
+                    context=c,
+                    operation=n - 1,
+                    proof_digest="4" * 64,
+                    original_message_hash="5" * 64 if n else None,
+                )
             )
         with pytest.raises(GateError):
             gate.authorize(
@@ -109,12 +128,13 @@ def test_restart_pending_requires_exact_receipt_and_operation(directory):
                     context=dict(c, genesis_root="5" * 64),
                     operation=n,
                     proof_digest="4" * 64,
+                    original_message_hash="5" * 64,
                 )
             )
         assert not gate.metrics()["admitted"]
         gate.authorize(receipt)
         assert gate.admitted_read(lambda: "new") == "new"
-        assert gate.forward_once(lambda n: n) == 2
+        assert gate.forward_once(lambda n: n, original_message_hash="5" * 64) == 2
 
 
 def test_corruption_partial_and_empty_existing_journals_refuse(directory):
@@ -138,7 +158,7 @@ def test_corruption_partial_and_empty_existing_journals_refuse(directory):
 def test_short_existing_read_is_not_a_valid_prefix(directory, monkeypatch):
     with SendGate(directory, CONTEXT) as gate:
         gate.authorize(receipt)
-        gate.forward_once(lambda _: None)
+        gate.forward_once(lambda _: None, original_message_hash="5" * 64)
     original = os.read
     monkeypatch.setattr(
         gate_module.os,
@@ -159,7 +179,10 @@ def test_failed_fsync_never_forwards_and_poison_is_sticky(directory, monkeypatch
 
         monkeypatch.setattr(gate_module.os, "fsync", fail)
         with pytest.raises(OSError):
-            gate.forward_once(lambda _: pytest.fail("uncommitted forward"))
+            gate.forward_once(
+                lambda _: pytest.fail("uncommitted forward"),
+                original_message_hash="5" * 64,
+            )
         monkeypatch.setattr(gate_module.os, "fsync", original)
         with pytest.raises(GateError):
             gate.admitted_read(lambda: pytest.fail("poisoned read"))
@@ -179,11 +202,13 @@ def test_capacity_refuses_before_another_forward(directory, monkeypatch):
     monkeypatch.setattr(gate_module, "MAX_RECORDS", 3)
     with SendGate(directory, CONTEXT) as gate:
         gate.authorize(receipt)
-        gate.forward_once(lambda _: None)
+        gate.forward_once(lambda _: None, original_message_hash="5" * 64)
         with pytest.raises(GateError, match="capacity"):
             gate.authorize(receipt)
         with pytest.raises(GateError):
-            gate.forward_once(lambda _: pytest.fail("beyond bound"))
+            gate.forward_once(
+                lambda _: pytest.fail("beyond bound"), original_message_hash="5" * 64
+            )
         assert gate.metrics()["records"] == 3
 
 
@@ -217,7 +242,9 @@ def test_read_publication_and_forward_are_serialized(directory):
         reader = threading.Thread(target=lambda: gate.admitted_read(publish))
         sender = threading.Thread(
             name="sender",
-            target=lambda: gate.forward_once(lambda _: events.append("forwarded")),
+            target=lambda: gate.forward_once(
+                lambda _: events.append("forwarded"), original_message_hash="5" * 64
+            ),
         )
         reader.start()
         assert entered.wait(2)
@@ -244,8 +271,8 @@ spec=importlib.util.spec_from_file_location('gate', sys.argv[1])
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 context=json.loads(sys.argv[3])
 gate=m.SendGate(sys.argv[2],context)
-gate.authorize(lambda c,n:dict(context=c,operation=n,proof_digest='4'*64))
-gate.forward_once(lambda n:os._exit(86))
+gate.authorize(lambda c,n:dict(context=c,operation=n,proof_digest='4'*64,original_message_hash='5'*64 if n else None))
+gate.forward_once(lambda n:os._exit(86), original_message_hash='5'*64)
 """
     result = subprocess.run(
         [
@@ -261,6 +288,7 @@ gate.forward_once(lambda n:os._exit(86))
     assert result.returncode == 86
     with SendGate(directory, CONTEXT) as gate:
         assert gate.metrics()["operation"] == 1
+        assert gate.metrics()["original_message_hash"] == "5" * 64
         with pytest.raises(GateError):
             gate.admitted_read(lambda: pytest.fail("crash reopened"))
 
@@ -321,7 +349,10 @@ def test_partial_latch_write_never_forwards_or_reopens(directory, monkeypatch):
 
         monkeypatch.setattr(gate_module.os, "write", partial)
         with pytest.raises(OSError):
-            gate.forward_once(lambda _: pytest.fail("partial record forwarded"))
+            gate.forward_once(
+                lambda _: pytest.fail("partial record forwarded"),
+                original_message_hash="5" * 64,
+            )
         assert gate.metrics()["poisoned"] and not gate.metrics()["admitted"]
     monkeypatch.setattr(gate_module.os, "write", original)
     with pytest.raises(GateError):
@@ -335,7 +366,7 @@ spec=importlib.util.spec_from_file_location('gate', sys.argv[1])
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 context=json.loads(sys.argv[3])
 gate=m.SendGate(sys.argv[2],context)
-gate.authorize(lambda c,n:dict(context=c,operation=n,proof_digest='4'*64))
+gate.authorize(lambda c,n:dict(context=c,operation=n,proof_digest='4'*64,original_message_hash='5'*64 if n else None))
 """
     return subprocess.run(
         [
@@ -362,7 +393,7 @@ pid=os.fork()
 if pid==0:
     os.close(reader)
     try:
-        try:gate.forward_once(lambda n:os.write(writer,b'forwarded'))
+        try:gate.forward_once(lambda n:os.write(writer,b'forwarded'), original_message_hash='5'*64)
         except m.GateError:os.write(writer,b'refused')
     finally:
         gate.close();os.close(writer);os._exit(0)
@@ -373,7 +404,7 @@ assert answer==b'refused', 'inherited child executed a second owner forward'
 try:m.SendGate(sys.argv[2],context)
 except BlockingIOError:pass
 else:raise AssertionError('child close unlocked parent ownership')
-assert gate.forward_once(lambda n:n)==1
+assert gate.forward_once(lambda n:n, original_message_hash='5'*64)==1
 gate.close()
 """,
     )
@@ -395,7 +426,7 @@ if pid==0:
     signal.alarm(2)
     gate.close()
     denied=0
-    actions=[lambda:gate.authorize(lambda c,n:None),lambda:gate.admitted_read(lambda:None),lambda:gate.forward_once(lambda n:None),gate.metrics,gate.hold]
+    actions=[lambda:gate.authorize(lambda c,n:None),lambda:gate.admitted_read(lambda:None),lambda:gate.forward_once(lambda n:None, original_message_hash='5'*64),gate.metrics,gate.hold]
     for action in actions:
         try:action()
         except m.GateError:denied+=1
@@ -404,7 +435,7 @@ _,status=os.waitpid(pid,0)
 release.set();thread.join(2)
 assert os.waitstatus_to_exitcode(status)==0, 'foreign owner blocked on inherited mutex or retained authority'
 assert not thread.is_alive()
-assert gate.forward_once(lambda n:n)==1
+assert gate.forward_once(lambda n:n, original_message_hash='5'*64)==1
 gate.close()
 """,
     )
@@ -418,7 +449,9 @@ def test_hold_drops_permission_without_unlocking_or_rearming(directory):
         with pytest.raises(GateError):
             gate.admitted_read(lambda: pytest.fail("held read"))
         with pytest.raises(GateError):
-            gate.forward_once(lambda n: pytest.fail("held write"))
+            gate.forward_once(
+                lambda n: pytest.fail("held write"), original_message_hash="5" * 64
+            )
         with pytest.raises(GateError):
             gate.authorize(receipt)
         with pytest.raises(BlockingIOError):
@@ -429,7 +462,7 @@ def test_generation_scopes_late_holds(directory):
     with SendGate(directory, CONTEXT) as gate:
         gate.authorize(receipt)
         previous = gate.admission_version()
-        gate.forward_once(lambda _: None)
+        gate.forward_once(lambda _: None, original_message_hash="5" * 64)
         gate.authorize(receipt)
         current = gate.admission_version()
         assert current > previous
@@ -451,3 +484,64 @@ def test_read_failure_closes_admission_before_releasing_mutex(directory):
         assert not gate.metrics()["admitted"]
         with pytest.raises(GateError):
             gate.admitted_read(lambda: pytest.fail("read after failed callback"))
+
+
+def test_original_message_identity_survives_restart_and_binds_receipt(directory):
+    with SendGate(directory, CONTEXT) as gate:
+        gate.authorize(receipt)
+
+        def forwarded(_operation):
+            assert gate.metrics()["original_message_hash"] == "5" * 64
+
+        gate.forward_once(forwarded, original_message_hash="5" * 64)
+    with SendGate(directory, CONTEXT) as restored:
+        assert restored.metrics()["original_message_hash"] == "5" * 64
+
+        def wrong(context, operation):
+            value = receipt(context, operation)
+            value["original_message_hash"] = "6" * 64
+            return value
+
+        with pytest.raises(GateError, match="receipt context or operation mismatch"):
+            restored.authorize(wrong)
+        assert not restored.metrics()["admitted"]
+        restored.authorize(receipt)
+        restored.forward_once(lambda _: None, original_message_hash="6" * 64)
+    with SendGate(directory, CONTEXT) as restored:
+        assert restored.metrics()["original_message_hash"] == "6" * 64
+        with pytest.raises(GateError, match="receipt context or operation mismatch"):
+            restored.authorize(
+                receipt
+            )  # A receipt for operation1's message is not operation2.
+
+
+@pytest.mark.parametrize("identity", [None, True, "", "A" * 64, "5" * 63, "5" * 65])
+def test_invalid_original_identity_never_forwards(directory, identity):
+    with SendGate(directory, CONTEXT) as gate:
+        gate.authorize(receipt)
+        with pytest.raises(GateError, match="canonical original message hash"):
+            gate.forward_once(
+                lambda _: pytest.fail("invalid identity forwarded"),
+                original_message_hash=identity,
+            )
+        assert gate.metrics()["operation"] == 0
+        assert not gate.metrics()["admitted"]
+
+
+def test_legacy_latch_missing_original_hash_is_not_silently_migrated(directory):
+    with SendGate(directory, CONTEXT) as gate:
+        gate.authorize(receipt)
+        gate.forward_once(lambda _: None, original_message_hash="5" * 64)
+    path = directory / "send-admission.jsonl"
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    # Synthetic old schema, with an otherwise valid checksum, must still fail.
+    row = rows[-1]
+    del row["payload"]["message_hash"]
+    row["hash"] = hashlib.sha256(
+        bytes.fromhex(row["previous"]) + gate_module.canonical(row["payload"])
+    ).hexdigest()
+    path.write_bytes(b"\n".join(gate_module.canonical(row) for row in rows) + b"\n")
+    before = path.read_bytes()
+    with pytest.raises(GateError, match="invalid forward transition"):
+        SendGate(directory, CONTEXT)
+    assert path.read_bytes() == before

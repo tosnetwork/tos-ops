@@ -225,7 +225,14 @@ class RPCGate(socketserver.TCPServer):
     allow_reuse_address = False
 
     def __init__(
-        self, address, backend_port, gate, *, total_timeout=5.0, backend_timeout=2.5
+        self,
+        address,
+        backend_port,
+        gate,
+        *,
+        identify_message=None,
+        total_timeout=5.0,
+        backend_timeout=2.5,
     ):
         if (
             type(address) is not tuple
@@ -243,6 +250,7 @@ class RPCGate(socketserver.TCPServer):
         ):
             raise ProtocolError("bounded total deadlines required")
         self.backend_port, self.gate = backend_port, gate
+        self.identify_message = identify_message
         self.total_timeout, self.backend_timeout = total_timeout, backend_timeout
         self.counts = dict(requests=0, read_attempts=0, forward_attempts=0, denied=0)
         super().__init__(address, Handler)
@@ -305,7 +313,16 @@ class Handler(socketserver.BaseRequestHandler):
                     server.increment("forward_attempts")
                     return exchange_and_publish()
 
-                server.gate.forward_once(forward, expected_version=version)
+                if not callable(server.identify_message):
+                    raise ProtocolError("trusted original-message decoder required")
+                remaining(deadline)
+                message_hash = server.identify_message(envelope["params"]["boc"])
+                remaining(deadline)  # Decoder work cannot extend the admission window.
+                server.gate.forward_once(
+                    forward,
+                    original_message_hash=message_hash,
+                    expected_version=version,
+                )
             else:
 
                 def read():
