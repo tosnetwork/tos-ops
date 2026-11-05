@@ -488,3 +488,36 @@ on-chain privacy acceptance: confirm a deposit, a transfer and a withdrawal
 through the installed service and its cross-node checks. See
 [DEFECTS-20261006.md](DEFECTS-20261006.md) for the defect record and the
 remaining acceptance gates.
+
+## Election test send admission primitive
+
+`local/scripts/election_send_gate.py` is a library for an isolated test's single
+financial producer. It is **not an RPC proxy, native receipt verifier or a fix
+for the production election runner**. It cannot yet be used to run the delayed
+registration money scenario.
+
+The library holds reads and sends closed until a trusted caller supplies a
+context-bound verification result. It serializes a read through response
+publication, fsyncs a global latch before one forwarding callback, and never
+reopens on an acknowledgement, timeout or restart. Exact original-operation
+settlement must be checked by a separately reviewed native verifier before the
+caller authorizes another admission. A previously unused process admission is
+not automatically restored. Storage uncertainty is sticky; corrupt, incomplete,
+foreign-context, shared or oversized journals refuse. The metadata hash chain is
+corruption detection, not protection against the owner rolling storage back.
+
+The future adapter/controller must enforce one sole RPC endpoint, one financial
+producer, bounded full HTTP exchanges and no stale in-flight response or task
+reload bypass. Reads already delivered to another signer cannot be revoked by
+this library. Holding Config15 reads also pauses registration renewal; the test
+must prove enough installed horizon and cannot claim uninterrupted renewal while
+an unknown send remains unresolved. These integration and native-confirmation
+requirements remain unimplemented.
+
+The synthetic unit suite covers admission, lost replies, a real subprocess exit,
+restart, file ownership, write/fsync failures, record limits and publication
+serialization. It neither signs transactions nor contacts a node:
+
+```sh
+TOS_ROOT="$TOS_ROOT" "$TOS_ROOT/.venv/bin/python" -m pytest -q local/tests/test_election_send_gate.py
+```
