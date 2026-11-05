@@ -581,3 +581,53 @@ RPC requests also bind the request-start admission generation under the core
 read/forward mutex. A request begun before fresh admission cannot consume that
 new permit, including when its body arrives late. This does not revoke a response
 already delivered to a producer; exclusive producer/controller remains required.
+
+## Read-only native delivery worker
+
+`local/scripts/election_native_receipt.py` supplies a bounded worker for a pinned
+`tosctl wallet receipt`. It is not an admission callback: `DeliveryEvidence`
+retains `business_acceptance=False` and `authorizes_send=False`. The controller
+still needs independently proven Elector business acceptance and its sole
+producer/endpoint/reload controls before constructing any admission verdict.
+No signer, Vault configuration, private journal or signed private carrier is an
+input. Only locally approved public intent, Account preimages, full-genesis
+anchor and lite configuration bytes are accepted.
+
+`verify_delivery` requires pinned CLI, native helper and thermal-watcher programs
+from an operator-owned mode0700 program directory. Programs must be single-link,
+non-writable, executable, owned by the operator or root, and match their reviewed
+SHA-256; the CLI executes through its held descriptor. Ancestors are checked and
+program path/inode/timestamps are checked again after completion. Local owner
+mutation is outside the storage trust model. Public snapshots are created once
+with mode0400 under a new mode0700 artifact directory; an existing directory is
+never automatically reused. The helper's fresh observer watermark is retained
+there and is not a replacement for an unresolved financial journal.
+
+The worker clears inherited environment, fixes Tokio/Rayon workers to two,
+starts a separate process group, and attaches the pinned thermal watcher to that
+group. Early watcher exit refuses the read. Timeout, oversized output, nonzero
+exit or malformed/foreign output never becomes delivery evidence. Both worker
+and watcher groups are stopped and the direct children reaped, including on
+successful completion. Stdout/stderr are each bounded to64KiB. Stderr is not
+exported; only two fixed refusal categories may be exposed, for targeted tests.
+An otherwise valid report from a nonzero process is still a refusal. Duplicate
+keys, foreign intent hashes and output claiming business/send authority refuse.
+
+Bounds are256MiB per pinned executable (streamed hashing),64KiB JSON,1MiB each
+Account preimage/lite configuration, and at most305seconds of subprocess time
+plus bounded cleanup waits. Preparation/filesystem I/O and total retained
+artifact volume also need the caller's finite CPU/memory/task/runtime/cgroup
+controls; this one-shot library is not an unbounded service or worker pool.
+Caller-supplied thermal policy remains trusted and must implement the approved
+host limits; synthetic tests use a fixture watcher and do not certify sensors.
+The test suite uses fake local workers and contains no native crypto acceptance:
+
+```sh
+TOS_ROOT="$TOS_ROOT" /usr/bin/python3 -m pytest -q local/tests/test_election_native_receipt.py
+```
+
+Native acceptance additionally requires a reviewed real CLI/helper/profile case
+and independent evidence review. Delivery proves one original request reached
+the approved downstream transaction; it neither proves registration acceptance
+nor authorizes another send. Production carrier decoding, business confirmation,
+sole-producer/reload integration and the production Runner fix remain separate.
