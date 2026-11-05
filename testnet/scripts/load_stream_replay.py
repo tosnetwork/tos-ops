@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import stat
+import tempfile
 import time
 from contextlib import ExitStack
 from pathlib import Path
@@ -129,6 +130,27 @@ class AppendJournal:
             self.copy.close()
         finally:
             self.source.close()
+
+
+def publish_result(path, value, before_link):
+    """Persist the candidate before checking source context for publication."""
+    require(not path.exists() and not path.is_symlink(), "public result already published")
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", dir=path.parent, prefix=path.name + ".", suffix=".tmp", delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            json.dump(value, stream, sort_keys=True, allow_nan=False)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        before_link()
+        os.link(temporary, path)
+        sync_directory(path.parent)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def validate_complete_index(index):
@@ -373,7 +395,23 @@ def run(args):
                         "latency_criteria_pass"
                     ],
                 }
-                durable_json(output / "RESULT.json", result)
+
+                def final_source_check():
+                    require(
+                        capture_count(captures, args.max_captures) == number,
+                        "unverified final capture",
+                    )
+                    require(
+                        snapshot(path, MIB) == summary_raw
+                        and snapshot(args.anchor) == anchor_raw
+                        and snapshot(args.schema, 16 * MIB) == schema_raw
+                        and snapshot(args.producer_packet) == packet_raw,
+                        "final context changed at publication",
+                    )
+                    require(closure_ready(source), "original run reopened before publication")
+                    journal.check_sealed()
+
+                publish_result(output / "RESULT.json", result, final_source_check)
                 return result
             time.sleep(0.2)
     finally:

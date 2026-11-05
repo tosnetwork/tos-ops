@@ -260,3 +260,37 @@ def test_event_copy_close_error_still_releases_original_descriptor(tmp_path):
     with pytest.raises(OSError, match="copy close error"):
         journal.close()
     assert journal.source.closed
+
+
+@pytest.mark.parametrize("changed", ["journal", "summary", "marker", "anchor", "capture"])
+def test_final_source_checks_follow_result_file_fsync(stream_case, monkeypatch, changed):
+    case = stream_case
+    original = live.os.fsync
+    injected = []
+
+    def fsync(fd):
+        name = Path(live.os.readlink(f"/proc/self/fd/{fd}")).name
+        if name.startswith("RESULT.json.") and not injected:
+            injected.append(changed)
+            if changed == "journal":
+                with (case.run / "events.jsonl").open("ab") as stream:
+                    stream.write(b'{"event":"admission_stopped"}\n')
+            elif changed == "summary":
+                case.summary["qualification"]["pending"] = 1
+                store(Path(case.args.summary), case.summary)
+            elif changed == "marker":
+                store(
+                    case.run.parent / "qualification-active.json",
+                    {"run": case.run.name, "closed": False},
+                )
+            elif changed == "anchor":
+                Path(case.args.anchor).write_bytes(b'{"changed":true}\n')
+            else:
+                (case.run / "native-captures/capture-000003").mkdir()
+        return original(fd)
+
+    monkeypatch.setattr(live.os, "fsync", fsync)
+    with pytest.raises(HistoryError):
+        live.run(case.args)
+    assert injected == [changed]
+    assert not (Path(case.args.output) / "RESULT.json").exists()

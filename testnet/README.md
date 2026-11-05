@@ -611,7 +611,10 @@ same pinned anchor, schema, verifier, producer packet, wallet and network identi
 arguments accepted by `load_run_replay.py`. The original producer continues to
 own its journal and captures. Partial event lines wait for their newline; file
 replacement, truncation, prefix changes, unsafe summaries and unmatched captures
-prevent successful completion. Output paths must have canonical parents so an
+prevent successful completion. The result candidate is flushed and fsynced
+before the original journal, summary, closed marker, captures and pinned inputs
+are rechecked immediately before exclusive atomic publication. Output paths
+must have canonical parents so an
 alias cannot place replay files inside the original run.
 
 Live `PROGRESS.json` always says `LIVE_COVERAGE_NOT_ACCEPTED`. A final `RESULT.json`
