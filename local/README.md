@@ -513,8 +513,8 @@ producer, bounded full HTTP exchanges and no stale in-flight response or task
 reload bypass. Reads already delivered to another signer cannot be revoked by
 this library. Holding Config15 reads also pauses registration renewal; the test
 must prove enough installed horizon and cannot claim uninterrupted renewal while
-an unknown send remains unresolved. These integration and native-confirmation
-requirements remain unimplemented.
+an unknown send remains unresolved. The native-confirmation and sole-producer/controller integration requirements
+remain unimplemented; the bounded transport adapter is described below.
 
 The synthetic unit suite covers admission, lost replies, a real subprocess exit,
 restart, file ownership, write/fsync failures, record limits and publication
@@ -522,4 +522,30 @@ serialization. It neither signs transactions nor contacts a node:
 
 ```sh
 TOS_ROOT="$TOS_ROOT" "$TOS_ROOT/.venv/bin/python" -m pytest -q local/tests/test_election_send_gate.py
+```
+
+`local/scripts/election_rpc_gate.py` now supplies the serial loopback transport
+adapter for that core. It forwards only the explicit read-method inventory and
+puts `sendBoc` and `sendBocReturnHash` behind the same latch. There is no HTTP
+reset/authorization route or backend retry/failover. Backend replies are bounded
+and checked for the request ID; the core read lock covers backend exchange and
+frontend publication. Malformed requests, protocol failures and deadlines hold
+admission. Refusing an exhausted request budget may close the connection before
+consuming another body; that is a failure, not evidence of settlement.
+
+The adapter accepts only an explicit loopback backend and listener, with a
+16 KiB header limit, 1 MiB request/response bodies, a 100,000-request budget,
+saturating counters and a kernel listen backlog of eight. The normal frontend
+exchange deadline is five seconds and the backend deadline is 2.5 seconds;
+connect/header/body/chunks share those total deadlines, not per-byte timeouts.
+The server handles one request at a time. It neither establishes native network
+identity nor prevents a different producer using already delivered data.
+
+The native receipt verifier, sole-producer/reload topology and actual CLI
+controller remain missing. This is not an executable financial-test launcher or
+a production runner repair. The additional loopback suite uses synthetic JSON
+only and never a real node, wallet key or signed transaction carrier:
+
+```sh
+TOS_ROOT="$TOS_ROOT" "$TOS_ROOT/.venv/bin/python" -m pytest -q local/tests/test_election_send_gate.py local/tests/test_election_rpc_gate.py
 ```

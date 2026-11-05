@@ -395,11 +395,11 @@ if pid==0:
     signal.alarm(2)
     gate.close()
     denied=0
-    actions=[lambda:gate.authorize(lambda c,n:None),lambda:gate.admitted_read(lambda:None),lambda:gate.forward_once(lambda n:None),gate.metrics]
+    actions=[lambda:gate.authorize(lambda c,n:None),lambda:gate.admitted_read(lambda:None),lambda:gate.forward_once(lambda n:None),gate.metrics,gate.hold]
     for action in actions:
         try:action()
         except m.GateError:denied+=1
-    os._exit(0 if denied==4 else 87)
+    os._exit(0 if denied==5 else 87)
 _,status=os.waitpid(pid,0)
 release.set();thread.join(2)
 assert os.waitstatus_to_exitcode(status)==0, 'foreign owner blocked on inherited mutex or retained authority'
@@ -409,3 +409,17 @@ gate.close()
 """,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_hold_drops_permission_without_unlocking_or_rearming(directory):
+    with SendGate(directory, CONTEXT) as gate:
+        gate.authorize(receipt)
+        gate.hold()
+        with pytest.raises(GateError):
+            gate.admitted_read(lambda: pytest.fail("held read"))
+        with pytest.raises(GateError):
+            gate.forward_once(lambda n: pytest.fail("held write"))
+        with pytest.raises(GateError):
+            gate.authorize(receipt)
+        with pytest.raises(BlockingIOError):
+            SendGate(directory, CONTEXT)

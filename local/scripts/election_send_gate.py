@@ -284,6 +284,16 @@ class SendGate:
             # this callback's entire network exchange and must never retry it.
             return forward(operation)
 
+    def hold(self):
+        """Drop this process's permission on any adapter/protocol uncertainty.
+
+        This cannot rearm an unused durable admission; that needs a separate
+        recovery review. Restart already starts closed regardless of this flag.
+        """
+        self._check_owner()
+        with self._mutex:
+            self._admitted = False
+
     def metrics(self):
         self._check_owner()
         with self._mutex:
