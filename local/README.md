@@ -605,7 +605,10 @@ there and is not a replacement for an unresolved financial journal.
 
 The worker clears inherited environment, fixes Tokio/Rayon workers to two,
 starts a separate process group, and attaches the pinned thermal watcher to that
-group. Early watcher exit refuses the read. Timeout, oversized output, nonzero
+group. Watcher liveness is checked for the whole worker lifetime, including after both
+output pipes reach EOF; an observed premature exit or nonzero completion status
+refuses the read. Normal watcher completion after worker exit remains allowed.
+Timeout, oversized output, nonzero
 exit or malformed/foreign output never becomes delivery evidence. Both worker
 and watcher groups are stopped and the direct children reaped, including on
 successful completion. Stdout/stderr are each bounded to64KiB. Stderr is not

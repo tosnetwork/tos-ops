@@ -309,3 +309,50 @@ def test_refusal_exposes_only_fixed_category_not_raw_diagnostic(
         )
     assert caught.value.category == category
     assert "NEVER_ECHO" not in str(caught.value) and diagnostic not in str(caught.value)
+
+
+def test_dead_watcher_is_detected_after_both_worker_pipes_close(case):
+    root, _intent, _anchor, _helper, execute = case
+    watcher = program(root / "late-dead-monitor", "import time;time.sleep(0.1)\n")
+    with pytest.raises(ReceiptError, match="thermal watcher"):
+        execute(
+            monitor_pin=watcher,
+            after="os.close(1);os.close(2);time.sleep(0.7);os._exit(0)",
+        )
+    assert not (root / "run/receipt.json").exists()
+
+
+@pytest.mark.parametrize("observed_exit", [0, 17])
+def test_watcher_completion_status_is_checked_after_worker_exit(
+    case, monkeypatch, observed_exit
+):
+    import election_native_receipt as native
+
+    _root, _intent, _anchor, _helper, execute = case
+    original = native.subprocess.Popen
+    launched = []
+
+    def launch(*args, **kwargs):
+        process = original(*args, **kwargs)
+        launched.append(process)
+        if len(launched) == 2:
+            # Inject an observation only after the real worker has terminated.
+            # This isolates completion ordering without relying on a timing race.
+            actual_poll = process.poll
+
+            def observed_poll():
+                if launched[0].returncode is not None:
+                    return observed_exit
+                return actual_poll()
+
+            process.poll = observed_poll
+        return process
+
+    monkeypatch.setattr(native.subprocess, "Popen", launch)
+    if observed_exit:
+        with pytest.raises(
+            ReceiptError, match="thermal watcher failed at worker completion"
+        ):
+            execute()
+    else:
+        assert execute().authorizes_send is False

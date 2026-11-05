@@ -232,7 +232,7 @@ def run_bounded(argv, pass_fd, monitor_fd, seconds):
             for stream, target in [(process.stdout, stdout), (process.stderr, stderr)]:
                 os.set_blocking(stream.fileno(), False)
                 selector.register(stream, selectors.EVENT_READ, target)
-            while selector.get_map():
+            while selector.get_map() or process.poll() is None:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise ReceiptError("native delivery worker deadline")
@@ -262,6 +262,8 @@ def run_bounded(argv, pass_fd, monitor_fd, seconds):
                 "native delivery refused; original operation remains unknown",
                 category=category,
             )
+        if monitor.poll() not in (None, 0):
+            raise ReceiptError("thermal watcher failed at worker completion")
         return bytes(stdout)
     except subprocess.TimeoutExpired as error:
         raise ReceiptError("native delivery worker deadline") from error
