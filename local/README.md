@@ -557,8 +557,11 @@ The adapter accepts only an explicit loopback backend and listener, with a
 saturating counters and a kernel listen backlog of eight. The normal frontend
 exchange deadline is five seconds and the backend deadline is 2.5 seconds;
 connect/header/body/chunks share those total network I/O deadlines, not per-byte
-timeouts. These do not bound filesystem synchronization or waiting for the trusted
-controller mutex; controller integration must bound those separately. Error holds
+timeouts. These checks prevent forwarding after a decoder returns too late; they
+do not preempt the trusted synchronous decoder or receipt verifier. They also do
+not bound filesystem synchronization or waiting for the trusted controller mutex;
+controller integration must bound those separately with its own finite worker and
+lifecycle controls. Error holds
 are scoped to the request admission generation so a late error cannot revoke a
 newly confirmed admission. Read callback failures close admission while still
 holding the gate mutex.
