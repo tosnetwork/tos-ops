@@ -1,5 +1,6 @@
 """Bounded streaming RPC read load; evidence only, no keys or value actions."""
 
+import argparse
 import hashlib
 import json
 import math
@@ -117,6 +118,7 @@ def run(packet, output):
         raise RuntimeError("Original public wallet required")
     if shutil.disk_usage(output.parent).free < 20 << 30:
         raise RuntimeError("Initial read disk reserve")
+    maximum_pending = worker_budget(rate)
     output.mkdir(mode=0o700)
     started = time.monotonic()
     boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
@@ -128,7 +130,6 @@ def run(packet, output):
     slot = completed = errors = missed = 0
     last_complete = last_publish = started
     journal_hash = hashlib.sha256()
-    maximum_pending = worker_budget(rate)
     pool = ThreadPoolExecutor(max_workers=maximum_pending)
 
     def invoke(endpoint, method):
@@ -285,7 +286,22 @@ def run(packet, output):
         pool.shutdown(wait=False, cancel_futures=True)
 
 
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--packet", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    with args.packet.open("rb") as stream:
+        raw = stream.read((1 << 20) + 1)
+    if len(raw) > 1 << 20:
+        parser.error("packet byte limit")
+    packet = json.loads(raw)
+    if type(packet) is not dict:
+        parser.error("packet must be an object")
+    if "output" in packet and packet["output"] != str(args.output):
+        parser.error("packet/output mismatch")
+    print(json.dumps(run(packet, args.output)))
+
+
 if __name__ == "__main__":
-    frozen = Path("/opt/tos-acceptance/e7-read-load-72h-20261105-r2")
-    packet = json.loads((frozen / "READ-LOAD-PACKET.json").read_text())
-    print(json.dumps(run(packet, Path(packet["output"]))))
+    main()

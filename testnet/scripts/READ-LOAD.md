@@ -38,3 +38,8 @@ Keep the failed original run and its criteria unchanged. Finish independent
 original-operation reconciliation and review a fresh runtime capsule before
 starting another financial generation. Do not replace a running or retained
 capsule in place.
+
+The CLI requires explicit `--packet PUBLIC_PACKET.json --output NEW_DIRECTORY`.
+If the packet declares an output path, it must match. There is no default old
+capsule path, implicit resume or reuse of an earlier output directory. Packet
+bytes and the worker budget are bounded before a new run is admitted.

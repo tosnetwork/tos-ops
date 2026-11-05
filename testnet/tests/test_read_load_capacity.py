@@ -3,8 +3,11 @@
 import base64
 import http.server
 import json
+import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 import read_client
@@ -104,3 +107,42 @@ def test_network_budget_change_cannot_silently_allocate_over48_workers(monkeypat
 
 def test_maximum_declared_rate_fits_the_hard_worker_bound():
     assert 1 <= load.worker_budget(16) <= 48
+
+
+@pytest.mark.parametrize("partial", [[], ["--output", "new"], ["--packet", "absent.json"]])
+def test_cli_requires_explicit_paths_without_reading_old_capsule(tmp_path, partial):
+    result = subprocess.run(
+        [sys.executable, str(Path(load.__file__)), *partial],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=3,
+    )
+    assert result.returncode == 2 and "required" in result.stderr
+    assert not list(tmp_path.iterdir())
+
+
+def test_cli_refuses_output_binding_mismatch_before_any_request(tmp_path, monkeypatch, capsys):
+    source = tmp_path / "packet.json"
+    value = packet()
+    value["output"] = str(tmp_path / "declared")
+    source.write_text(json.dumps(value))
+    output = tmp_path / "different"
+    calls = []
+    monkeypatch.setattr(
+        sys, "argv", [str(Path(load.__file__)), "--packet", str(source), "--output", str(output)]
+    )
+    monkeypatch.setattr(load, "run", lambda *args: calls.append(args) or {"synthetic": True})
+    with pytest.raises(SystemExit) as error:
+        load.main()
+    assert error.value.code == 2
+    assert "packet/output mismatch" in capsys.readouterr().err
+    assert calls == [] and not output.exists()
+
+
+def test_bad_thread_budget_refuses_before_output_creation(tmp_path, monkeypatch):
+    monkeypatch.setattr(load, "NETWORK_DEADLINE_SECONDS", 100)
+    output = tmp_path / "not-created"
+    with pytest.raises(RuntimeError, match="Read worker budget exceeds48"):
+        load.run(packet(), output)
+    assert not output.exists()
