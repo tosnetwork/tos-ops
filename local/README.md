@@ -634,3 +634,37 @@ and independent evidence review. Delivery proves one original request reached
 the approved downstream transaction; it neither proves registration acceptance
 nor authorizes another send. Production carrier decoding, business confirmation,
 sole-producer/reload integration and the production Runner fix remain separate.
+
+## Historical Elector registration witness
+
+`election_elector_acceptance.verify_registered_stake` consumes trusted in-process
+`DeliveryEvidence` from the pinned native worker, the exact approved public
+intent, and a public recipient transaction BOC. A raw JSON receipt is not native
+evidence. `StakeApproval` is trusted policy: the operator must previously review
+and bind the actual Elector code's semantics, address, full genesis, query,
+election, factor, public-key Cell hash and ADNL. An RPC-returned code hash is not
+code approval. Code upgrades require another semantics review.
+
+The transaction representation hash must equal the native receipt, and its
+retained incoming Message Cell must match the native delivery hash and approved
+request body/credit. The PQ new-stake fields, successful compute/action phases
+and exactly one positive `0xf374484c` acknowledgement must agree. The decoder
+retains original message identities; reserialization is not an identity check.
+Byte limit is1MiB, cell count4096 (preflight before codec list allocation), graph
+depth64, complete ordinary cells only, generic TOS BOC envelope only. Run under
+the controller's finite service/resource limits, using the reviewed codec on
+`PYTHONPATH`.
+
+The result proves historical registration at that transaction only. It does not
+prove current membership, election, nominator-pool multi-edge routing, or permit
+another send. Missing acknowledgement is UNKNOWN: Elector can store membership
+with query0 or lose a mode2 acknowledgement. No rejection/retry inference is
+provided. The strategy follows upstream elector-code.fc at857b8a5; TOS5439f98
+adds PQ request/member encoding. This module changes no contract or consensus.
+Synthetic TL-B fixtures test parser refusals, not native cryptography or real
+Elector execution. Both actual evidence and independent review remain required:
+
+```sh
+TOS_ROOT="$TOS_ROOT" PYTHONPATH="$TOS_ROOT/test/tostester/src" \
+  python -m pytest -q local/tests/test_election_elector_acceptance.py
+```
