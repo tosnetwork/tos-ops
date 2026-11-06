@@ -35,12 +35,23 @@ MID = SINCE + 3600
 WALLETS = {w: f"0:{i:02x}" + "00" * 31 for i, w in enumerate(spc.WALLETS)}
 
 
-def tx(lt, hash_, *, in_hash=None, out=(), exit_code=0, aborted=False, success=None, action=None):
+def tx(
+    lt,
+    hash_,
+    *,
+    in_hash=None,
+    out=(),
+    exit_code=0,
+    aborted=False,
+    success=None,
+    action=None,
+    kind="internal",
+):
     ok = not aborted if success is None else success
     return {
         "transaction_id": {"lt": str(lt), "hash": hash_},
         "block_id": {"seqno": lt // 10},
-        "in_msg": {"hash": in_hash} if in_hash else None,
+        "in_msg": {"hash": in_hash, "kind": kind} if in_hash else None,
         "out_msgs": [{"destination": d, "hash": h, "value": "1", "bounced": False} for d, h in out],
         "compute": {"success": ok, "exit_code": exit_code, "skipped": False},
         "aborted": aborted,
@@ -1188,6 +1199,180 @@ class Reconcile(RunnerCase):
         with self.assertRaises(spc.Refusal) as cm:
             self.reconcile()
         self.assertIn("0 messages", str(cm.exception))
+
+
+def external_effect(exit_code=0, aborted=False, out=(), sources=(PRIMARY, CONFIRM), lt=200):
+    def effect(rpc):
+        rpc.add(
+            CONTRACT,
+            tx(
+                lt,
+                "X1",
+                in_hash="E1",
+                kind="external",
+                exit_code=exit_code,
+                aborted=aborted,
+                out=out,
+            ),
+            sources,
+        )
+
+    return effect
+
+
+class ExternalSteps(RunnerCase):
+    """A command signed for the contract itself: the proof is its single external arrival."""
+
+    def ext(self, rc=0, effect=None, expect_exit=0):
+        self.cli.script["s"] = (rc, "", effect)
+        return self.runner.step(
+            "s",
+            ["agent", "x"],
+            payer=CONTRACT,
+            observe=CONTRACT,
+            expect_exit=expect_exit,
+            external=True,
+        )
+
+    def test_single_external_arrival_settles(self):
+        rec = self.ext(effect=external_effect())
+        self.assertEqual(rec["verdict"], "settled")
+        self.assertTrue(rec["external"])
+        self.assertIsNone(rec["payer_tx"])
+        self.assertEqual(rec["tx"]["hash"], "X1")
+        self.assertEqual(rec["in_msg_hash"], "E1")
+        self.assertTrue(all(rec["confirmed_on"].values()))
+
+    def test_internal_arrival_is_not_an_external_one(self):
+        def effect(rpc):
+            rpc.add(CONTRACT, tx(200, "C1", in_hash="M1"))
+
+        with self.assertRaises(spc.Refusal):
+            self.ext(effect=effect)
+        self.assertEqual(self.runner.journal.result("s")["verdict"], "unknown-not-observed")
+
+    def test_no_arrival_is_unknown_not_observed(self):
+        with self.assertRaises(spc.Refusal):
+            self.ext()
+        self.assertEqual(self.runner.journal.result("s")["verdict"], "unknown-not-observed")
+
+    def test_arrival_before_the_baseline_does_not_count(self):
+        self.rpc.add(CONTRACT, tx(60, "X0", in_hash="E0", kind="external"))
+        with self.assertRaises(spc.Refusal):
+            self.ext()
+        rec = self.runner.journal.result("s")
+        self.assertEqual(rec["verdict"], "unknown-not-observed")
+        self.assertEqual(rec["before"]["observe_lt"], 60)
+
+    def test_two_external_arrivals_stop_the_step(self):
+        def effect(rpc):
+            rpc.add(CONTRACT, tx(200, "X1", in_hash="E1", kind="external"))
+            rpc.add(CONTRACT, tx(201, "X2", in_hash="E2", kind="external"))
+
+        with self.assertRaises(spc.Refusal):
+            self.ext(effect=effect)
+        self.assertEqual(self.runner.journal.result("s")["verdict"], "multiple-sends-observed")
+
+    def test_cli_failure_after_one_external_arrival_is_judged_by_the_chain(self):
+        rec = self.ext(rc=1, effect=external_effect(exit_code=77, aborted=True), expect_exit=77)
+        self.assertEqual(rec["verdict"], "refused-as-intended")
+        self.assertTrue(rec["cli_reported_failure"])
+
+    def test_cli_refusal_without_arrival_is_client_side(self):
+        rec = self.ext(rc=1, expect_exit=77)
+        self.assertEqual(rec["verdict"], "cli-refused-before-broadcast")
+
+    def test_missing_confirmation_source_refuses(self):
+        with self.assertRaises(spc.Refusal):
+            self.ext(effect=external_effect(sources=(PRIMARY,)))
+        self.assertEqual(self.runner.journal.result("s")["verdict"], "not-confirmed-on-all-sources")
+
+
+class ExternalDuplicateControl(RunnerCase):
+    def setUp(self):
+        super().setUp()
+        self.rpc.balances[TARGET] = 10**9
+
+    def dup(self, rc=0, effect=None):
+        self.cli.script["d"] = (rc, "", effect)
+        return self.runner.duplicate_control(
+            "d", ["agent", "account", "task-send"], CONTRACT, CONTRACT, TARGET, external=True
+        )
+
+    def test_aborted_external_transaction_is_the_intended_refusal(self):
+        rec = self.dup(effect=external_effect(exit_code=1337, aborted=True))
+        self.assertEqual(rec["verdict"], "refused-as-intended")
+        self.assertIsNone(rec["payer_tx"])
+        self.assertEqual(rec["tx"]["hash"], "X1")
+
+    def test_external_transfer_to_the_target_is_the_failure(self):
+        rec = self.dup(effect=external_effect(out=((TARGET, "T1"),)))
+        self.assertEqual(rec["verdict"], "DUPLICATE-EXECUTED")
+
+    def test_client_side_refusal_without_arrival(self):
+        self.assertEqual(self.dup(rc=1)["verdict"], "cli-refused-before-broadcast")
+
+    def test_two_external_arrivals_stop_the_control(self):
+        def effect(rpc):
+            rpc.add(CONTRACT, tx(200, "X1", in_hash="E1", kind="external", aborted=True))
+            rpc.add(CONTRACT, tx(201, "X2", in_hash="E2", kind="external", aborted=True))
+
+        with self.assertRaises(spc.Refusal):
+            self.dup(effect=effect)
+        self.assertEqual(self.runner.journal.result("d")["verdict"], "multiple-sends-observed")
+
+    def test_silence_is_unknown(self):
+        with self.assertRaises(spc.Refusal):
+            self.dup()
+        self.assertEqual(self.runner.journal.result("d")["verdict"], "unknown-not-observed")
+
+
+class ReconcileExternal(RunnerCase):
+    def record(self, verdict="unknown-not-observed", external=None):
+        rec = {
+            "verdict": verdict,
+            "exit_code": 0,
+            "payer": CONTRACT,
+            "observe": CONTRACT,
+            "expect_exit": 0,
+            "before": {"payer_lt": 60, "observe_lt": 60, "observe_balance": 10**9},
+        }
+        if external is not None:
+            rec["external"] = external
+        self.runner.journal.attempt("s", {})
+        self.runner.journal.done("s", rec)
+        self.rpc.add(CONTRACT, tx(60, "X0", in_hash="E0", kind="external"))
+
+    def reconcile(self, **kw):
+        with mock.patch.object(spc.Runner, "preflight", return_value={}):
+            return self.runner.reconcile("s", **kw)
+
+    def test_not_observed_external_step_reconciles_from_its_arrival(self):
+        self.record(external=True)
+        external_effect()(self.rpc)
+        rec = self.reconcile()
+        self.assertEqual(rec["verdict"], "settled")
+        self.assertTrue(rec["external"])
+        self.assertEqual(rec["tx"]["hash"], "X1")
+        self.assertIsNone(rec["payer_tx"])
+        self.assertEqual(self.runner.journal.result("s")["verdict"], "settled")
+
+    def test_record_without_the_flag_needs_the_explicit_option(self):
+        self.record()
+        external_effect()(self.rpc)
+        with self.assertRaises(spc.Refusal):
+            self.reconcile()
+        self.assertEqual(self.reconcile(external=True)["verdict"], "settled")
+
+    def test_two_arrivals_or_none_refuse(self):
+        self.record(external=True)
+        with self.assertRaises(spc.Refusal):
+            self.reconcile()
+        external_effect()(self.rpc)
+        self.rpc.add(CONTRACT, tx(201, "X2", in_hash="E2", kind="external"))
+        with self.assertRaises(spc.Refusal):
+            self.reconcile()
+        self.assertFalse((self.runner.journal.steps / "s.reconciled.json").exists())
 
 
 class FlagFixtureDefault(unittest.TestCase):

@@ -109,7 +109,7 @@ TASK_HORIZON_S = 7200
 SERVICE_MIN_DEPLOY_TOS = "1.5"  # >= 1 TOS operating reserve + 0.2 TOS fee margin
 SERVICE_WITHDRAW_CAP = 50_000_000  # 0.05 TOS, at most the price of the one answered call
 REPLAYABLE = ("settled", "refused-as-intended", "cli-refused-before-broadcast")
-RECONCILABLE = ("unknown", "unexpected-abort")
+RECONCILABLE = ("unknown", "unknown-not-observed", "unexpected-abort")
 FLAG_FIXTURE = (
     Path(__file__).resolve().parents[1] / "tests" / "data" / "service-public-cases-cli-flags.json"
 )
@@ -713,6 +713,15 @@ class Runner:
                 return False
             time.sleep(POLL_S)
 
+    def external_arrivals(self, observe: str, since_lt: int, url: str | None = None) -> list[dict]:
+        """Transactions of `observe` after `since_lt` that were triggered by an external message
+        (a command signed for the contract itself, not sent by another account)."""
+        return [
+            r
+            for r in self.rpc.transactions_after(observe, since_lt, url)
+            if (r.get("in_msg") or {}).get("kind") == "external"
+        ]
+
     def sends_to(self, payer: str, since_lt: int, observe: str | None) -> list[dict]:
         """Payer transactions after `since_lt` that carry a message to `observe` (any, if None)."""
         rows = self.rpc.transactions_after(payer, since_lt)
@@ -733,8 +742,13 @@ class Runner:
         expect_exit: int = 0,
         want_json: bool = False,
         show=None,
+        external: bool = False,
     ) -> dict:
         """One CLI action that sends exactly one message from `payer` (an actor wallet).
+
+        `external=True` for a command the CLI signs for the contract itself: no wallet sends
+        anything, the proof is the single new transaction of `observe` with an external
+        in-message after the baseline (`payer` is then the contract, for its balance).
 
         `observe` is the contract address whose next transaction must be the message from
         `payer` (None for a deploy whose address is only known from the CLI answer).
@@ -766,6 +780,7 @@ class Runner:
             "argv": self.cli.redact(tuple(argv)),
             "payer": payer,
             "observe": observe,
+            "external": external,
             "expect_exit": expect_exit,
             "before": before,
         }
@@ -788,7 +803,10 @@ class Runner:
             sent: list[dict] = []
 
             def broadcast() -> bool:
-                sent[:] = self.sends_to(payer, before["payer_lt"], observe)
+                if external:
+                    sent[:] = self.external_arrivals(observe, before["observe_lt"] or 0)
+                else:
+                    sent[:] = self.sends_to(payer, before["payer_lt"], observe)
                 return bool(sent)
 
             self.wait(broadcast, REFUSAL_OBSERVE_S)
@@ -819,6 +837,16 @@ class Runner:
         found: dict = {}
 
         def settled() -> bool:
+            if external:
+                arrivals = self.external_arrivals(observe, before["observe_lt"] or 0)
+                if len(arrivals) > 1:
+                    found["error"] = f"{len(arrivals)} external messages reached {observe}"
+                    return True
+                if not arrivals:
+                    return False
+                found["payer_tx"] = None
+                found["tx"] = arrivals[0]
+                return True
             sends = self.sends_to(payer, before["payer_lt"], observe)
             if len(sends) > 1:
                 found["error"] = f"payer sent {len(sends)} messages to {observe}"
@@ -860,7 +888,7 @@ class Runner:
         after_state = show() if show else None
         record.update(
             {
-                "payer_tx": found["payer_tx"]["transaction_id"],
+                "payer_tx": (found["payer_tx"] or {}).get("transaction_id"),
                 "tx": tx["transaction_id"],
                 "block_id": tx.get("block_id"),
                 "compute": compute,
@@ -1764,15 +1792,16 @@ class Runner:
                 action_1,
                 "--yes",
             ],
-            payer=agent_wallet,
+            payer=account,
             observe=account,
+            external=True,
         )
         delivered = self.wait(
             lambda: self.rpc.balance(target) >= target_before + tos_to_nanotos("0.09")
         )
-        # Replaying the same action id must not execute a second transfer. The CLI may refuse
-        # it client-side (no on-chain row) or the account may refuse it on chain; a second
-        # successful transfer is the failure.
+        # Replaying the same action id must not execute a second transfer. The CLI refuses it
+        # client-side from its custody journal (the account contract stores no action id), so
+        # no on-chain row is expected; a second successful transfer is the failure.
         duplicate = self.duplicate_control(
             "sc03-task-send-1-duplicate",
             [
@@ -1791,9 +1820,10 @@ class Runner:
                 action_1,
                 "--yes",
             ],
-            agent_wallet,
+            account,
             account,
             target,
+            external=True,
         )
         self.local(
             "sc03-policy-local",
@@ -1835,8 +1865,9 @@ class Runner:
                 "0.05",
                 "--yes",
             ],
-            payer=agent_wallet,
+            payer=account,
             observe=account,
+            external=True,
         )
         target_before_2 = self.rpc.balance(target)
         self.step(
@@ -1877,7 +1908,13 @@ class Runner:
         }
 
     def duplicate_control(
-        self, label: str, argv: list[str], payer: str, account: str, target: str
+        self,
+        label: str,
+        argv: list[str],
+        payer: str,
+        account: str,
+        target: str,
+        external: bool = False,
     ) -> dict:
         """Replay of an already executed action id: it must not pay the target a second time.
 
@@ -1905,6 +1942,7 @@ class Runner:
             "argv": self.cli.redact(tuple(argv)),
             "payer": payer,
             "observe": account,
+            "external": external,
             "target": target,
             "before": before,
         }
@@ -1925,7 +1963,10 @@ class Runner:
             sent: list[dict] = []
 
             def broadcast() -> bool:
-                sent[:] = self.sends_to(payer, before["payer_lt"], account)
+                if external:
+                    sent[:] = self.external_arrivals(account, before["observe_lt"])
+                else:
+                    sent[:] = self.sends_to(payer, before["payer_lt"], account)
                 return bool(sent)
 
             self.wait(broadcast, REFUSAL_OBSERVE_S)
@@ -1939,6 +1980,16 @@ class Runner:
         found: dict = {}
 
         def settled() -> bool:
+            if external:
+                arrivals = self.external_arrivals(account, before["observe_lt"])
+                if len(arrivals) > 1:
+                    found["error"] = f"{len(arrivals)} external messages reached {account}"
+                    return True
+                if not arrivals:
+                    return False
+                found["payer_tx"] = None
+                found["tx"] = arrivals[0]
+                return True
             sends = self.sends_to(payer, before["payer_lt"], account)
             if len(sends) > 1:
                 found["error"] = f"payer sent {len(sends)} messages to {account}"
@@ -1982,7 +2033,7 @@ class Runner:
         ]
         record.update(
             {
-                "payer_tx": found["payer_tx"]["transaction_id"],
+                "payer_tx": (found["payer_tx"] or {}).get("transaction_id"),
                 "tx": tx["transaction_id"],
                 "block_id": tx.get("block_id"),
                 "compute": compute,
@@ -2150,7 +2201,7 @@ class Runner:
             out[wallet] = {"returned_nanotos": amount, "tx": rec["tx"]}
         return out
 
-    def reconcile(self, label: str) -> dict:
+    def reconcile(self, label: str, external: bool = False) -> dict:
         """Read-only reconciliation of a step that ended `unknown` or `unexpected-abort`.
 
         Nothing is sent. The payer's single message to the observed contract after the step's
@@ -2170,19 +2221,28 @@ class Runner:
             )
         payer, observe = done.get("payer"), done.get("observe")
         before = done.get("before") or {}
+        external = bool(done.get("external")) or external
         if not payer or not observe or "payer_lt" not in before:
             raise Refusal(f"{label} lacks payer/observe/baseline; reconcile by hand")
-        sends = self.sends_to(payer, int(before["payer_lt"]), observe)
-        if len(sends) != 1:
-            raise Refusal(f"{label}: payer sent {len(sends)} messages to {observe}; by hand")
-        out_hash = [
-            m["hash"] for m in sends[0]["out_msgs"] if same_addr(m.get("destination"), observe)
-        ][0]
-        rows = self.rpc.transactions_after(observe, int(before.get("observe_lt") or 0))
-        hit = [r for r in rows if (r.get("in_msg") or {}).get("hash") == out_hash]
-        if len(hit) != 1:
-            raise Refusal(f"{label}: {len(hit)} contract transactions carry the message")
-        tx = hit[0]
+        if external:
+            arrivals = self.external_arrivals(observe, int(before.get("observe_lt") or 0))
+            if len(arrivals) != 1:
+                raise Refusal(f"{label}: {len(arrivals)} external messages reached {observe}")
+            sends = [None]
+            tx = arrivals[0]
+            out_hash = (tx.get("in_msg") or {}).get("hash")
+        else:
+            sends = self.sends_to(payer, int(before["payer_lt"]), observe)
+            if len(sends) != 1:
+                raise Refusal(f"{label}: payer sent {len(sends)} messages to {observe}; by hand")
+            out_hash = [
+                m["hash"] for m in sends[0]["out_msgs"] if same_addr(m.get("destination"), observe)
+            ][0]
+            rows = self.rpc.transactions_after(observe, int(before.get("observe_lt") or 0))
+            hit = [r for r in rows if (r.get("in_msg") or {}).get("hash") == out_hash]
+            if len(hit) != 1:
+                raise Refusal(f"{label}: {len(hit)} contract transactions carry the message")
+            tx = hit[0]
         compute = tx.get("compute") or {}
         action = tx.get("action")
         confirmations = {
@@ -2199,7 +2259,8 @@ class Runner:
             {
                 "reconciled": True,
                 "reconciled_from_verdict": done.get("verdict"),
-                "payer_tx": sends[0]["transaction_id"],
+                "external": external,
+                "payer_tx": (sends[0] or {}).get("transaction_id"),
                 "tx": tx["transaction_id"],
                 "block_id": tx.get("block_id"),
                 "compute": compute,
@@ -2257,13 +2318,16 @@ class PlanRunner(Runner):
         self.recorded.append({"label": label, "argv": list(argv), "value": False})
         return {"address": self.fake, "result": {"address": self.fake}} if want_json else None
 
-    def step(self, label, argv, payer, observe, expect_exit=0, want_json=False, show=None):
+    def step(
+        self, label, argv, payer, observe, expect_exit=0, want_json=False, show=None, external=False
+    ):
         self.recorded.append(
             {
                 "label": label,
                 "argv": list(argv),
                 "value": True,
                 "payer": payer,
+                "external": external,
                 "expect_exit": expect_exit,
             }
         )
@@ -2293,7 +2357,7 @@ class PlanRunner(Runner):
     def wait_active(self, address, what):
         return None
 
-    def duplicate_control(self, label, argv, payer, account, target):
+    def duplicate_control(self, label, argv, payer, account, target, external=False):
         self.recorded.append(
             {"label": label, "argv": list(argv), "value": True, "payer": payer, "expect_exit": -1}
         )
@@ -2398,6 +2462,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status")
     rc = sub.add_parser("reconcile")
     rc.add_argument("label")
+    rc.add_argument(
+        "--external",
+        action="store_true",
+        help="the step's command was signed for the contract itself (no wallet send)",
+    )
     return p
 
 
@@ -2422,7 +2491,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "return-funds":
             out = runner.return_funds(args.to)
         elif args.command == "reconcile":
-            out = runner.reconcile(args.label)
+            out = runner.reconcile(args.label, external=args.external)
         else:
             out = runner.status()
     except Refusal as exc:
