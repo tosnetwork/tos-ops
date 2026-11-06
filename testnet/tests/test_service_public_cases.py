@@ -247,6 +247,49 @@ class StepControls(RunnerCase):
         self.assertEqual(verdict["controls_without_on_chain_receipt"], ["u"])
         self.assertFalse(verdict["pass"])
 
+    def test_plain_credit_to_an_account_without_code_settles(self):
+        def effect(rpc):
+            rpc.add(PAYER, tx(100, "P1", out=((CONTRACT, "M1"),)))
+            row = tx(200, "C1", in_hash="M1", aborted=True)
+            row["compute"] = {"skipped": True, "skip_reason": 0}
+            row["action"] = None
+            rpc.add(CONTRACT, row)
+            rpc.balances[CONTRACT] += 500_000_000
+
+        self.cli.script["s"] = (0, "", effect)
+        rec = self.step()
+        self.assertEqual(rec["verdict"], "settled")
+        self.assertEqual(rec["settled_as"], "credited-without-compute")
+
+    def test_skipped_compute_without_a_credit_is_an_unexpected_abort(self):
+        def effect(rpc):
+            rpc.add(PAYER, tx(100, "P1", out=((CONTRACT, "M1"),)))
+            row = tx(200, "C1", in_hash="M1", aborted=True)
+            row["compute"] = {"skipped": True, "skip_reason": 0}
+            rpc.add(CONTRACT, row)
+
+        self.cli.script["s"] = (0, "", effect)
+        with self.assertRaises(spc.Refusal):
+            self.step()
+        self.assertEqual(self.runner.journal.result("s")["verdict"], "unexpected-abort")
+
+    def test_skipped_compute_with_a_bounce_is_an_unexpected_abort(self):
+        def effect(rpc):
+            rpc.add(PAYER, tx(100, "P1", out=((CONTRACT, "M1"),)))
+            row = tx(200, "C1", in_hash="M1", aborted=True, out=((PAYER, "B1"),))
+            row["compute"] = {"skipped": True, "skip_reason": 0}
+            rpc.add(CONTRACT, row)
+            rpc.balances[CONTRACT] += 500_000_000
+
+        self.cli.script["s"] = (0, "", effect)
+        with self.assertRaises(spc.Refusal):
+            self.step()
+        self.assertEqual(self.runner.journal.result("s")["verdict"], "unexpected-abort")
+
+    def test_executed_step_records_how_it_settled(self):
+        self.cli.script["s"] = (0, "", settle_effect())
+        self.assertEqual(self.step()["settled_as"], "executed")
+
     def test_old_payer_send_is_not_attributed_to_a_client_side_refusal(self):
         self.rpc.add(PAYER, tx(50, "P0", out=((CONTRACT, "M0"),)))
         self.cli.script["s"] = (1, "", None)
@@ -1066,6 +1109,42 @@ class Reconcile(RunnerCase):
         settle_effect()(self.rpc)
         self.assertEqual(self.reconcile()["verdict"], "settled")
 
+    def test_unexpected_abort_that_was_a_plain_credit_reconciles_to_settled(self):
+        self.unknown_record(expect_exit=0)
+        done = json.loads((self.runner.journal.steps / "s.done.json").read_text())
+        done["verdict"] = "unexpected-abort"
+        done["before"]["observe_balance"] = 0
+        (self.runner.journal.steps / "s.done.json").write_text(json.dumps(done))
+        self.rpc.add(PAYER, tx(100, "P1", out=((CONTRACT, "M1"),)))
+        row = tx(200, "C1", in_hash="M1", aborted=True)
+        row["compute"] = {"skipped": True, "skip_reason": 0}
+        row["action"] = None
+        self.rpc.add(CONTRACT, row)
+        self.rpc.balances[CONTRACT] = 500_000_000
+        rec = self.reconcile()
+        self.assertEqual(rec["verdict"], "settled")
+        self.assertEqual(rec["settled_as"], "credited-without-compute")
+        self.assertEqual(rec["after"]["observe_balance"], 500_000_000)
+        self.assertEqual(self.step()["verdict"], "settled")
+        self.assertEqual(self.cli.calls, [])
+
+    def test_unexpected_abort_without_a_real_credit_stays_unexpected(self):
+        self.unknown_record(expect_exit=0)
+        done = json.loads((self.runner.journal.steps / "s.done.json").read_text())
+        done["verdict"] = "unexpected-abort"
+        done["before"]["observe_balance"] = 500_000_000
+        (self.runner.journal.steps / "s.done.json").write_text(json.dumps(done))
+        self.rpc.add(PAYER, tx(100, "P1", out=((CONTRACT, "M1"),)))
+        row = tx(200, "C1", in_hash="M1", aborted=True)
+        row["compute"] = {"skipped": True, "skip_reason": 0}
+        row["action"] = None
+        self.rpc.add(CONTRACT, row)
+        self.rpc.balances[CONTRACT] = 500_000_000
+        self.assertEqual(self.reconcile()["verdict"], "unexpected-abort")
+        with self.assertRaises(spc.Refusal):
+            self.step()
+        self.assertEqual(self.cli.calls, [])
+
     def test_positive_step_with_an_abort_is_unexpected(self):
         self.unknown_record(expect_exit=0)
         settle_effect(exit_code=5, aborted=True)(self.rpc)
@@ -1094,7 +1173,7 @@ class Reconcile(RunnerCase):
         (self.runner.journal.steps / "s.done.json").write_text(json.dumps(done))
         with self.assertRaises(spc.Refusal) as cm:
             self.reconcile()
-        self.assertIn("only `unknown`", str(cm.exception))
+        self.assertIn("are reconciled", str(cm.exception))
         self.assertFalse((self.runner.journal.steps / "s.reconciled.json").exists())
 
     def test_missing_confirmation_source_refuses(self):

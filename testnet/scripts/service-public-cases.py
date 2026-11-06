@@ -109,6 +109,7 @@ TASK_HORIZON_S = 7200
 SERVICE_MIN_DEPLOY_TOS = "1.5"  # >= 1 TOS operating reserve + 0.2 TOS fee margin
 SERVICE_WITHDRAW_CAP = 50_000_000  # 0.05 TOS, at most the price of the one answered call
 REPLAYABLE = ("settled", "refused-as-intended", "cli-refused-before-broadcast")
+RECONCILABLE = ("unknown", "unexpected-abort")
 FLAG_FIXTURE = (
     Path(__file__).resolve().parents[1] / "tests" / "data" / "service-public-cases-cli-flags.json"
 )
@@ -884,13 +885,11 @@ class Runner:
             self.journal.done(label, record)
             raise Refusal(f"{label}: transaction not seen on every confirmation source")
         if expect_exit == 0:
-            action_ok = action is None or action.get("success") is not False
-            ok = (
-                compute.get("success") is True
-                and compute.get("exit_code") == 0
-                and tx.get("aborted") is False
-                and action_ok
+            how = self.positive_outcome(
+                tx, before["observe_balance"] or 0, record["after"]["observe_balance"]
             )
+            ok = bool(how)
+            record["settled_as"] = how or None
             record["verdict"] = "settled" if ok else "unexpected-abort"
         else:
             aborted = tx.get("aborted") is True and compute.get("success") is False
@@ -911,6 +910,31 @@ class Runner:
             return data
 
         return read
+
+    @staticmethod
+    def positive_outcome(tx: dict, before_balance: int | None, after_balance: int | None) -> str:
+        """How a step that had to succeed settled: `executed`, `credited-without-compute`
+        (a plain value transfer to an account without code: compute phase skipped, nothing
+        bounced, the balance grew) or `` when neither holds."""
+        compute = tx.get("compute") or {}
+        action = tx.get("action")
+        action_ok = action is None or action.get("success") is not False
+        if (
+            compute.get("success") is True
+            and compute.get("exit_code") == 0
+            and tx.get("aborted") is False
+            and action_ok
+        ):
+            return "executed"
+        if (
+            compute.get("skipped") is True
+            and not tx.get("out_msgs")
+            and before_balance is not None
+            and after_balance is not None
+            and after_balance > before_balance
+        ):
+            return "credited-without-compute"
+        return ""
 
     @staticmethod
     def verdict(final_ok: bool, controls: list[dict]) -> dict:
@@ -2127,7 +2151,7 @@ class Runner:
         return out
 
     def reconcile(self, label: str) -> dict:
-        """Read-only reconciliation of a step that ended `unknown` with exactly one broadcast.
+        """Read-only reconciliation of a step that ended `unknown` or `unexpected-abort`.
 
         Nothing is sent. The payer's single message to the observed contract after the step's
         baseline is located, the contract transaction it produced is read and confirmed on
@@ -2140,8 +2164,10 @@ class Runner:
             raise Refusal(f"{label} has no record")
         if done.get("reconciled"):
             raise Refusal(f"{label} was already reconciled")
-        if done.get("verdict") != "unknown":
-            raise Refusal(f"{label} ended {done.get('verdict')!r}; only `unknown` is reconciled")
+        if done.get("verdict") not in RECONCILABLE:
+            raise Refusal(
+                f"{label} ended {done.get('verdict')!r}; only {RECONCILABLE} are reconciled"
+            )
         payer, observe = done.get("payer"), done.get("observe")
         before = done.get("before") or {}
         if not payer or not observe or "payer_lt" not in before:
@@ -2192,14 +2218,11 @@ class Runner:
             raise Refusal(f"{label}: transaction not seen on every confirmation source")
         expect_exit = int(done.get("expect_exit") or 0)
         if expect_exit == 0:
-            action_ok = action is None or action.get("success") is not False
-            ok = (
-                compute.get("success") is True
-                and compute.get("exit_code") == 0
-                and tx.get("aborted") is False
-                and action_ok
-            )
-            record["verdict"] = "settled" if ok else "unexpected-abort"
+            after_balance = self.rpc.balance(observe)
+            record["after"] = {**(done.get("after") or {}), "observe_balance": after_balance}
+            how = self.positive_outcome(tx, before.get("observe_balance") or 0, after_balance)
+            record["settled_as"] = how or None
+            record["verdict"] = "settled" if how else "unexpected-abort"
         else:
             ok = (
                 tx.get("aborted") is True
