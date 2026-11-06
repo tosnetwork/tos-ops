@@ -109,6 +109,9 @@ TASK_HORIZON_S = 7200
 SERVICE_MIN_DEPLOY_TOS = "1.5"  # >= 1 TOS operating reserve + 0.2 TOS fee margin
 SERVICE_WITHDRAW_CAP = 50_000_000  # 0.05 TOS, at most the price of the one answered call
 REPLAYABLE = ("settled", "refused-as-intended", "cli-refused-before-broadcast")
+FLAG_FIXTURE = (
+    Path(__file__).resolve().parents[1] / "tests" / "data" / "service-public-cases-cli-flags.json"
+)
 
 
 class Refusal(Exception):
@@ -940,8 +943,9 @@ class Runner:
     def case(self, name: str) -> dict:
         self.preflight()
         planned = self.plan(name)
-        if self.args.flag_fixture:
-            self.check_flags(planned, pinned_flags(Path(self.args.flag_fixture)))
+        if not self.args.flag_fixture:
+            raise Refusal("a case runs only against the pinned CLI flag fixture (--flag-fixture)")
+        self.check_flags(planned, pinned_flags(Path(self.args.flag_fixture)))
         self.journal.log(kind="case-start", case=name, planned_steps=[p["label"] for p in planned])
         result = self.case_fn(name)(self.actors()["wallets"])
         (self.evidence / f"{name}-RESULT.json").write_text(
@@ -1731,6 +1735,7 @@ class Runner:
                 action_1,
                 "--yes",
             ],
+            agent_wallet,
             account,
             target,
         )
@@ -1815,53 +1820,130 @@ class Runner:
             **self.verdict(final_ok, [duplicate]),
         }
 
-    def duplicate_control(self, label: str, argv: list[str], account: str, target: str) -> dict:
+    def duplicate_control(
+        self, label: str, argv: list[str], payer: str, account: str, target: str
+    ) -> dict:
         """Replay of an already executed action id: it must not pay the target a second time.
 
-        The CLI may refuse it client-side (no on-chain row) or the account may refuse it on
-        chain; the verdict says which. A second successful transfer is the failure.
+        The proof is the exact on-chain row, as in `step()`: the agent wallet's message to the
+        account and the account transaction it produced. An aborted account transaction is the
+        intended refusal and its exit code is recorded; a CLI refusal with no send is recorded
+        as client-side (no on-chain row); a second transfer is the failure. A missing row is an
+        unknown that stops the case, never a pass.
         """
         duplicate = self.journal.result(label)
         if duplicate is not None:
+            if duplicate.get("verdict") not in REPLAYABLE:
+                raise Refusal(f"{label} ended {duplicate.get('verdict')!r}; reconcile read-only")
             duplicate.setdefault("label", label)
             return duplicate
         if self.journal.attempted(label):
             raise Refusal(f"{label} was attempted without a result; reconcile read-only")
         self.guards()
-        account_lt = self.rpc.last_lt(account)
-        target_mid = self.rpc.balance(target)
-        self.journal.attempt(label, {"kind": "value", "argv": self.cli.redact(tuple(argv))})
-        rc, _ = self.cli.run(label, *argv)
-        executed: list[dict] = []
-        paid_at = target_mid + tos_to_nanotos("0.09")
-
-        def repeated() -> bool:
-            executed[:] = [
-                r
-                for r in self.rpc.transactions_after(account, account_lt)
-                if r.get("aborted") is False
-            ]
-            return bool(executed) or self.rpc.balance(target) >= paid_at
-
-        self.wait(repeated, REFUSAL_OBSERVE_S if rc != 0 else None)
-        paid_again = self.rpc.balance(target) >= paid_at
-        if paid_again:
-            verdict = "DUPLICATE-EXECUTED"
-        elif rc != 0 and not executed:
-            verdict = "cli-refused-before-broadcast"
-        elif executed:
-            verdict = "accepted-without-transfer"
-        else:
-            verdict = "refused-as-intended"
-        duplicate = {
-            "exit_code": rc,
-            "new_successful_tx": len(executed),
-            "target_paid_again": paid_again,
-            "verdict": verdict,
+        before = {
+            "payer_lt": self.rpc.last_lt(payer),
+            "observe_lt": self.rpc.last_lt(account),
+            "target_balance": self.rpc.balance(target),
         }
-        self.journal.done(label, duplicate)
-        duplicate["label"] = label
-        return duplicate
+        record: dict = {
+            "argv": self.cli.redact(tuple(argv)),
+            "payer": payer,
+            "observe": account,
+            "target": target,
+            "before": before,
+        }
+        self.journal.attempt(label, {"kind": "value", **record})
+        rc, _ = self.cli.run(label, *argv)
+        record["exit_code"] = rc
+        paid_at = before["target_balance"] + tos_to_nanotos("0.09")
+
+        def finish(verdict: str) -> dict:
+            record["target_paid_again"] = self.rpc.balance(target) >= paid_at
+            record["verdict"] = verdict
+            self.journal.done(label, record)
+            record["label"] = label
+            return record
+
+        if rc != 0:
+            sent: list[dict] = []
+
+            def broadcast() -> bool:
+                sent[:] = self.sends_to(payer, before["payer_lt"], account)
+                return bool(sent)
+
+            self.wait(broadcast, REFUSAL_OBSERVE_S)
+            record["payer_tx_after"] = [r["transaction_id"] for r in sent]
+            if sent or rc is None:
+                finish("unknown")
+                raise Refusal(f"{label}: CLI exit {rc} but a message left the wallet; reconcile")
+            if self.rpc.balance(target) >= paid_at:
+                return finish("DUPLICATE-EXECUTED")
+            return finish("cli-refused-before-broadcast")
+        found: dict = {}
+
+        def settled() -> bool:
+            sends = self.sends_to(payer, before["payer_lt"], account)
+            if len(sends) > 1:
+                found["error"] = f"payer sent {len(sends)} messages to {account}"
+                return True
+            if not sends:
+                return False
+            out_hash = [
+                m["hash"] for m in sends[0]["out_msgs"] if same_addr(m.get("destination"), account)
+            ][0]
+            rows = self.rpc.transactions_after(account, before["observe_lt"])
+            hit = [r for r in rows if (r.get("in_msg") or {}).get("hash") == out_hash]
+            if not hit:
+                return False
+            found["payer_tx"] = sends[0]
+            found["tx"] = hit[0]
+            return True
+
+        observed = self.wait(settled)
+        if "error" in found:
+            record["error"] = found["error"]
+            finish("multiple-sends-observed")
+            raise Refusal(f"{label}: {found['error']}; stop and reconcile by hand")
+        if not observed:
+            finish("unknown-not-observed")
+            raise Refusal(f"{label}: the exact message was not observed in time; no retry")
+        tx = found["tx"]
+        compute = tx.get("compute") or {}
+        confirmations = {
+            url: self.wait(
+                lambda u=url: any(
+                    r["transaction_id"]["hash"] == tx["transaction_id"]["hash"]
+                    for r in self.rpc.transactions_after(account, before["observe_lt"], u)
+                )
+            )
+            for url in self.rpc.confirms
+        }
+        transferred = [
+            {k: m.get(k) for k in ("destination", "value", "bounced", "hash")}
+            for m in tx.get("out_msgs", [])
+            if same_addr(m.get("destination"), target)
+        ]
+        record.update(
+            {
+                "payer_tx": found["payer_tx"]["transaction_id"],
+                "tx": tx["transaction_id"],
+                "block_id": tx.get("block_id"),
+                "compute": compute,
+                "aborted": tx.get("aborted"),
+                "action": tx.get("action"),
+                "in_msg_hash": (tx.get("in_msg") or {}).get("hash"),
+                "transfers_to_target": transferred,
+                "confirmed_on": confirmations,
+            }
+        )
+        if not all(confirmations.values()):
+            finish("not-confirmed-on-all-sources")
+            raise Refusal(f"{label}: transaction not seen on every confirmation source")
+        if transferred or self.rpc.balance(target) >= paid_at:
+            return finish("DUPLICATE-EXECUTED")
+        if tx.get("aborted") is True and compute.get("success") is False:
+            return finish("refused-as-intended")
+        return finish("accepted-without-transfer")
 
     def case_sc08(self, w: dict) -> dict:
         """Integrated journey with a disputed task and the lost-reply drill.
@@ -2070,9 +2152,9 @@ class PlanRunner(Runner):
     def wait_active(self, address, what):
         return None
 
-    def duplicate_control(self, label, argv, account, target):
+    def duplicate_control(self, label, argv, payer, account, target):
         self.recorded.append(
-            {"label": label, "argv": list(argv), "value": True, "payer": account, "expect_exit": -1}
+            {"label": label, "argv": list(argv), "value": True, "payer": payer, "expect_exit": -1}
         )
         return {"label": label, "verdict": "refused-as-intended"}
 
@@ -2151,8 +2233,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--stop-ceiling", default="20", help="hard cumulative funding ceiling, TOS")
     p.add_argument(
         "--flag-fixture",
-        default="",
-        help="JSON of the pinned CLI's accepted flags per command (tests/data)",
+        default=str(FLAG_FIXTURE),
+        help="JSON of the pinned CLI's accepted flags per command; required for `case`",
     )
     p.add_argument("--skip-thermal", action="store_true")
     p.add_argument("--date", default=time.strftime("%Y%m%d", time.gmtime()))
@@ -2199,8 +2281,9 @@ def main(argv: list[str] | None = None) -> int:
         else:
             out = runner.status()
     except Refusal as exc:
-        runner.journal.log(kind="refusal", command=args.command, reason=str(exc))
-        print(json.dumps({"refused": str(exc)}, indent=2))
+        reason = str(exc).replace(str(runner.private), "<private>")
+        runner.journal.log(kind="refusal", command=args.command, reason=reason)
+        print(json.dumps({"refused": reason}, indent=2))
         return 3
     except SystemExit:
         raise

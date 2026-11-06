@@ -302,6 +302,16 @@ class StepControls(RunnerCase):
             self.step()
         self.assertEqual(self.runner.journal.result("s")["verdict"], "unknown-not-observed")
 
+    def test_unrelated_contract_row_is_not_taken_for_the_reply(self):
+        def effect(rpc):
+            settle_effect()(rpc)
+            rpc.add(CONTRACT, tx(300, "X1", in_hash="ZZ", aborted=True, exit_code=9))
+
+        self.cli.script["s"] = (0, "", effect)
+        rec = self.step()
+        self.assertEqual(rec["verdict"], "settled")
+        self.assertEqual(rec["tx"]["hash"], "C1")
+
     def test_transactions_before_the_baseline_are_not_attributed(self):
         self.rpc.add(PAYER, tx(50, "P0", out=((CONTRACT, "M0"),)))
         self.rpc.add(CONTRACT, tx(60, "C0", in_hash="M0"))
@@ -771,6 +781,205 @@ class CasePlans(unittest.TestCase):
                 if item["value"]:
                     self.assertIsInstance(item["expect_exit"], int, item["label"])
                     self.assertNotEqual(item["expect_exit"], None, item["label"])
+
+
+TARGET = "0:" + "44" * 32
+
+
+class DuplicateControl(RunnerCase):
+    """The replayed action id is judged from the exact on-chain row, never from silence."""
+
+    def setUp(self):
+        super().setUp()
+        self.rpc.balances[TARGET] = 10**9
+
+    def dup(self, rc=0, effect=None):
+        self.cli.script["d"] = (rc, "", effect)
+        return self.runner.duplicate_control(
+            "d", ["agent", "account", "task-send"], PAYER, CONTRACT, TARGET
+        )
+
+    def test_aborted_account_transaction_is_the_intended_refusal(self):
+        rec = self.dup(effect=settle_effect(exit_code=1337, aborted=True))
+        self.assertEqual(rec["verdict"], "refused-as-intended")
+        self.assertEqual(rec["tx"]["hash"], "C1")
+        self.assertEqual(rec["payer_tx"]["hash"], "P1")
+        self.assertEqual(rec["compute"]["exit_code"], 1337)
+        self.assertTrue(rec["aborted"])
+        self.assertFalse(rec["target_paid_again"])
+        self.assertTrue(all(rec["confirmed_on"].values()))
+        self.assertEqual(self.runner.journal.result("d")["verdict"], "refused-as-intended")
+
+    def test_silence_after_a_successful_cli_is_unknown_not_a_pass(self):
+        with self.assertRaises(spc.Refusal):
+            self.dup(effect=None)
+        self.assertEqual(self.runner.journal.result("d")["verdict"], "unknown-not-observed")
+        self.assertEqual(len(self.cli.calls), 1)
+
+    def test_second_transfer_to_the_target_is_the_failure(self):
+        def effect(rpc):
+            rpc.add(PAYER, tx(100, "P1", out=((CONTRACT, "M1"),)))
+            rpc.add(CONTRACT, tx(200, "C1", in_hash="M1", out=((TARGET, "T1"),)))
+
+        rec = self.dup(effect=effect)
+        self.assertEqual(rec["verdict"], "DUPLICATE-EXECUTED")
+        self.assertEqual(rec["transfers_to_target"][0]["hash"], "T1")
+
+    def test_target_credit_without_a_visible_message_is_still_a_duplicate(self):
+        def effect(rpc):
+            settle_effect(exit_code=1337, aborted=True)(rpc)
+            rpc.balances[TARGET] += spc.tos_to_nanotos("0.1")
+
+        self.assertEqual(self.dup(effect=effect)["verdict"], "DUPLICATE-EXECUTED")
+
+    def test_successful_account_transaction_without_transfer_is_not_a_refusal(self):
+        rec = self.dup(effect=settle_effect())
+        self.assertEqual(rec["verdict"], "accepted-without-transfer")
+        self.assertNotIn(rec["verdict"], spc.REPLAYABLE)
+
+    def test_cli_refusal_with_no_send_has_no_on_chain_row(self):
+        rec = self.dup(rc=1)
+        self.assertEqual(rec["verdict"], "cli-refused-before-broadcast")
+        self.assertNotIn("tx", rec)
+
+    def test_cli_refusal_with_a_send_is_unknown(self):
+        def effect(rpc):
+            rpc.add(PAYER, tx(100, "P1", out=((CONTRACT, "M1"),)))
+
+        with self.assertRaises(spc.Refusal):
+            self.dup(rc=1, effect=effect)
+        self.assertEqual(self.runner.journal.result("d")["verdict"], "unknown")
+
+    def test_cli_crash_is_unknown(self):
+        with self.assertRaises(spc.Refusal):
+            self.dup(rc=None)
+        self.assertEqual(self.runner.journal.result("d")["verdict"], "unknown")
+
+    def test_old_payer_send_is_not_mistaken_for_a_broadcast(self):
+        self.rpc.add(PAYER, tx(50, "P0", out=((CONTRACT, "M0"),)))
+        rec = self.dup(rc=1)
+        self.assertEqual(rec["verdict"], "cli-refused-before-broadcast")
+        self.assertEqual(rec["before"]["payer_lt"], 50)
+        self.assertEqual(rec["payer_tx_after"], [])
+
+    def test_missing_confirmation_source_refuses(self):
+        with self.assertRaises(spc.Refusal):
+            self.dup(effect=settle_effect(exit_code=1337, aborted=True, sources=(PRIMARY,)))
+        self.assertEqual(self.runner.journal.result("d")["verdict"], "not-confirmed-on-all-sources")
+
+    def test_two_sends_stop_the_case(self):
+        def effect(rpc):
+            rpc.add(PAYER, tx(100, "P1", out=((CONTRACT, "M1"),)))
+            rpc.add(PAYER, tx(101, "P2", out=((CONTRACT, "M2"),)))
+
+        with self.assertRaises(spc.Refusal):
+            self.dup(effect=effect)
+        self.assertEqual(self.runner.journal.result("d")["verdict"], "multiple-sends-observed")
+
+    def test_unrelated_account_row_is_not_taken_for_the_reply(self):
+        def effect(rpc):
+            settle_effect(exit_code=1337, aborted=True)(rpc)
+            rpc.add(CONTRACT, tx(300, "X1", in_hash="ZZ", out=((TARGET, "T9"),)))
+
+        rec = self.dup(effect=effect)
+        self.assertEqual(rec["verdict"], "refused-as-intended")
+        self.assertEqual(rec["tx"]["hash"], "C1")
+
+    def test_case_refuses_to_run_without_the_flag_fixture(self):
+        self.write_actors()
+        self.runner.args.flag_fixture = ""
+        with mock.patch.object(spc.Runner, "preflight", return_value={}):
+            with self.assertRaises(spc.Refusal) as cm:
+                self.runner.case("sc07")
+        self.assertIn("flag fixture", str(cm.exception))
+        self.assertEqual(self.cli.calls, [])
+
+    def test_only_a_replayable_verdict_is_replayed(self):
+        self.runner.journal.attempt("d", {})
+        self.runner.journal.done("d", {"verdict": "refused-as-intended", "tx": {"hash": "C1"}})
+        self.assertEqual(self.dup()["tx"]["hash"], "C1")
+        self.assertEqual(self.cli.calls, [])
+        self.runner.journal.attempt("e", {})
+        self.runner.journal.done("e", {"verdict": "accepted-without-transfer"})
+        with self.assertRaises(spc.Refusal):
+            self.runner.duplicate_control("e", ["agent"], PAYER, CONTRACT, TARGET)
+        self.runner.journal.attempt("f", {})
+        with self.assertRaises(spc.Refusal):
+            self.runner.duplicate_control("f", ["agent"], PAYER, CONTRACT, TARGET)
+        self.assertEqual(self.cli.calls, [])
+
+    def test_marker_precedes_the_cli_and_guards_run_first(self):
+        seen = {}
+
+        def effect(rpc):
+            seen["marker"] = (self.runner.journal.steps / "d.attempt.json").exists()
+            settle_effect(exit_code=1337, aborted=True)(rpc)
+
+        self.dup(effect=effect)
+        self.assertTrue(seen["marker"])
+        self.assertIn("rotation_bounds", self.rpc.calls)
+        self.rpc.bounds = (MID - 100, UNTIL)
+        with self.assertRaises(spc.Refusal):
+            self.runner.duplicate_control("g", ["agent"], PAYER, CONTRACT, TARGET)
+        self.assertEqual(len(self.cli.calls), 1)
+
+
+class FlagFixtureDefault(unittest.TestCase):
+    def test_case_defaults_to_the_committed_fixture(self):
+        args = spc.build_parser().parse_args(
+            [
+                "--private-dir",
+                "p",
+                "--evidence-dir",
+                "e",
+                "--cli",
+                "c",
+                "--cli-sha256",
+                "s",
+                "--rpc",
+                PRIMARY,
+                "--genesis-root",
+                "r",
+                "--genesis-file",
+                "f",
+                "status",
+            ]
+        )
+        self.assertEqual(Path(args.flag_fixture), DATA / "service-public-cases-cli-flags.json")
+        self.assertTrue(Path(args.flag_fixture).exists())
+
+
+class RefusalRedaction(unittest.TestCase):
+    def test_private_path_never_reaches_the_evidence_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            private = Path(tmp) / "private"
+            private.mkdir(mode=0o755)
+            evidence = Path(tmp) / "evidence"
+            refusal = spc.Refusal(f"private dir {private} mode 0o755 must be 0700")
+            with mock.patch.object(spc.Runner, "preflight", side_effect=refusal):
+                rc = spc.main(
+                    [
+                        "--private-dir",
+                        str(private),
+                        "--evidence-dir",
+                        str(evidence),
+                        "--cli",
+                        "/x",
+                        "--cli-sha256",
+                        "s",
+                        "--rpc",
+                        PRIMARY,
+                        "--genesis-root",
+                        "r",
+                        "--genesis-file",
+                        "f",
+                        "preflight",
+                    ]
+                )
+            self.assertEqual(rc, 3)
+            events = (evidence / "events.jsonl").read_text()
+            self.assertIn("<private>", events)
+            self.assertNotIn(str(private), events)
 
 
 class Helpers(unittest.TestCase):
