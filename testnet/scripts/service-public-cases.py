@@ -561,6 +561,40 @@ class Runner:
             raise Refusal(f"{label}: exit {rc}")
         return answer if want_json else None
 
+    def quorum_configs(self) -> list[str]:
+        """Two single-endpoint copies of the CLI config, one per confirmation source, for the
+        CLI's own three-view resolution of a broadcast controller action. Written once into
+        the private dir (0600); only the RPC URL differs from the primary config."""
+        paths = []
+        base = json.loads(self.cli.config.read_text())
+        for i, url in enumerate(self.rpc.confirms, start=1):
+            path = self.private / f"tosctl-config-quorum-{i}.json"
+            if not path.exists():
+                derived = dict(base)
+                derived["chain_rpc"] = {
+                    **base.get("chain_rpc", {}),
+                    "urls": [url.rsplit("/", 1)[0] + "/"],
+                }
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "w") as fh:
+                    json.dump(derived, fh)
+            paths.append(str(path.resolve()))
+        if len(paths) != 2:
+            raise Refusal("task-send resolution needs exactly two confirmation sources")
+        return paths
+
+    def retry_label(self, label: str) -> str:
+        """The label to use for a step whose previous attempt the CLI refused client-side
+        with nothing broadcast: the original record is kept and the retry is explicit."""
+        previous = self.journal.result(label)
+        if (
+            previous
+            and previous.get("verdict") == "cli-refused"
+            and previous.get("payer_tx_after") == []
+        ):
+            return f"{label}-retry"
+        return label
+
     # ----- setup --------------------------------------------------------------------------
     def setup(self) -> dict:
         self.preflight(value_action=False)
@@ -1817,6 +1851,22 @@ class Runner:
         # Replay-safe: the delivery and the action id to replay come from the step's own record.
         delivered = self.transferred(first, target, "0.09")
         action_1 = self.argv_value(first, "--action-id")
+        # The CLI's custody journal keeps a broadcast task-send unresolved until its exact
+        # transaction is bound from three RPC views; a later controller action is refused
+        # client-side until then. Resolution moves no value.
+        quorum = self.quorum_configs()
+        self.local(
+            "sc03-task-send-1-resolve",
+            "agent",
+            "account",
+            "task-send-resolve",
+            "--wallet",
+            "sc03-agent",
+            "--action-id",
+            action_1,
+            "--quorum-config",
+            *quorum,
+        )
         # Replaying the same action id must not execute a second transfer. The CLI refuses it
         # client-side from its custody journal (the account contract stores no action id), so
         # no on-chain row is expected; a second successful transfer is the failure.
@@ -1887,7 +1937,7 @@ class Runner:
             observe=account,
         )
         second = self.step(
-            "sc03-task-send-2",
+            self.retry_label("sc03-task-send-2"),
             [
                 "agent",
                 "account",
@@ -1909,6 +1959,18 @@ class Runner:
             external=True,
         )
         delivered_2 = self.transferred(second, target, "0.09")
+        self.local(
+            "sc03-task-send-2-resolve",
+            "agent",
+            "account",
+            "task-send-resolve",
+            "--wallet",
+            "sc03-agent",
+            "--action-id",
+            self.argv_value(second, "--action-id"),
+            "--quorum-config",
+            *quorum,
+        )
         status = self.local(
             "sc03-status", "agent", "account", "status", "--wallet", "sc03-agent", want_json=True
         )
@@ -2388,6 +2450,12 @@ class PlanRunner(Runner):
 
     def wait_active(self, address, what):
         return None
+
+    def quorum_configs(self):
+        return ["/plan/quorum-1.json", "/plan/quorum-2.json"]
+
+    def retry_label(self, label):
+        return label
 
     def duplicate_control(self, label, argv, payer, account, target, external=False):
         self.recorded.append(

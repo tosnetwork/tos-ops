@@ -742,6 +742,66 @@ class LocalSteps(RunnerCase):
         self.assertEqual(len(self.cli.calls), 2)
 
 
+class QuorumConfigs(RunnerCase):
+    def write_config(self):
+        self.cli.config = self.private / "tosctl-config.json"
+        self.cli.config.write_text(
+            json.dumps(
+                {"chain_rpc": {"urls": [PRIMARY.rsplit("/", 1)[0] + "/"]}, "wallets": {"w": {}}}
+            )
+        )
+        self.runner.rpc.confirms = [CONFIRM, "http://127.0.0.1:48083/jsonRPC"]
+
+    def test_two_private_single_endpoint_configs_are_derived_once(self):
+        self.write_config()
+        paths = self.runner.quorum_configs()
+        self.assertEqual(len(paths), 2)
+        for path, url in zip(paths, self.runner.rpc.confirms):
+            self.assertTrue(Path(path).is_absolute())
+            self.assertEqual(Path(path).parent, self.private.resolve())
+            self.assertEqual(oct(Path(path).stat().st_mode & 0o777), oct(0o600))
+            derived = json.loads(Path(path).read_text())
+            self.assertEqual(derived["chain_rpc"]["urls"], [url.rsplit("/", 1)[0] + "/"])
+            self.assertEqual(derived["wallets"], {"w": {}})
+        stamps = [Path(p).stat().st_mtime_ns for p in paths]
+        self.assertEqual(self.runner.quorum_configs(), paths)
+        self.assertEqual([Path(p).stat().st_mtime_ns for p in paths], stamps)
+
+    def test_refuses_without_two_confirmation_sources(self):
+        self.write_config()
+        self.runner.rpc.confirms = [CONFIRM]
+        with self.assertRaises(spc.Refusal):
+            self.runner.quorum_configs()
+        self.runner.rpc.confirms = [CONFIRM, CONFIRM, CONFIRM]
+        with self.assertRaises(spc.Refusal):
+            self.runner.quorum_configs()
+
+
+class RetryLabel(RunnerCase):
+    def test_only_a_client_side_refusal_with_nothing_sent_gets_a_retry_label(self):
+        self.assertEqual(self.runner.retry_label("t"), "t")
+        self.runner.journal.attempt("t", {"argv": []})
+        self.runner.journal.done("t", {"verdict": "cli-refused", "payer_tx_after": []})
+        self.assertEqual(self.runner.retry_label("t"), "t-retry")
+        for verdict, after in (
+            ("cli-refused", [{"transaction_id": {"hash": "h"}}]),
+            ("cli-refused", None),
+            ("unknown", []),
+            ("settled", []),
+            ("cli-refused-before-broadcast", []),
+        ):
+            label = f"u-{verdict}-{len(after or [])}-{after is None}"
+            self.runner.journal.attempt(label, {"argv": []})
+            self.runner.journal.done(label, {"verdict": verdict, "payer_tx_after": after})
+            self.assertEqual(self.runner.retry_label(label), label, label)
+
+    def test_a_reconciled_record_wins_over_the_done_record(self):
+        self.runner.journal.attempt("t", {"argv": []})
+        self.runner.journal.done("t", {"verdict": "cli-refused", "payer_tx_after": []})
+        self.runner.journal.reconciled("t", {"verdict": "settled", "payer_tx_after": []})
+        self.assertEqual(self.runner.retry_label("t"), "t")
+
+
 class DrillRecovery(RunnerCase):
     """The lost-reply recovery of SC-08 re-sends only when the marker is the drill's and the
     chain is provably untouched after it."""
@@ -900,6 +960,25 @@ class CasePlans(unittest.TestCase):
             withdraw["argv"][withdraw["argv"].index("--withdraw-amount") + 1]
         )
         self.assertLessEqual(amount, spc.SERVICE_WITHDRAW_CAP)
+
+    def test_sc03_resolves_each_task_send_through_the_custody_journal(self):
+        planned = self.plan("sc03")
+        labels = [p["label"] for p in planned]
+        for n in ("1", "2"):
+            send = labels.index(f"sc03-task-send-{n}")
+            resolve = labels.index(f"sc03-task-send-{n}-resolve")
+            self.assertLess(send, resolve)
+            sent = planned[send]["argv"]
+            resolving = planned[resolve]["argv"]
+            self.assertEqual(resolving[:3], ["agent", "account", "task-send-resolve"])
+            self.assertFalse(planned[resolve]["value"])
+            self.assertEqual(
+                resolving[resolving.index("--action-id") + 1], sent[sent.index("--action-id") + 1]
+            )
+            q = resolving.index("--quorum-config")
+            self.assertEqual(len(resolving[q + 1 :]), 2)
+            self.assertTrue(all(Path(x).is_absolute() for x in resolving[q + 1 :]))
+        self.assertLess(labels.index("sc03-task-send-1-resolve"), labels.index("sc03-task-send-2"))
 
     def test_every_negative_control_pins_a_contract_exit_code(self):
         for name in spc.Runner.CASES:
