@@ -3016,7 +3016,14 @@ class Runner:
         }
 
     # ----- wrap-up ------------------------------------------------------------------------
-    def return_funds(self, to: str) -> dict:
+    def return_funds(self, to: str, round_: int = 1) -> dict:
+        """Send each actor's balance above its 0.05 TOS floor back to the recorded source. Each
+        return round has its own once-only labels: round 1 keeps the original `return-<wallet>`
+        labels, a later round (after further funding) uses `return-<wallet>-r<N>`, so a replay
+        of round 1 can never stand in for a later return and a later round can never re-send
+        round 1."""
+        if round_ < 1:
+            raise Refusal("return round must be 1 or higher")
         self.preflight()
         to = norm_addr(to)
         source = self.funding_source()
@@ -3025,6 +3032,7 @@ class Runner:
         actors = self.actors()["wallets"]
         out = {}
         keep = tos_to_nanotos("0.05")
+        suffix = "" if round_ == 1 else f"-r{round_}"
         for wallet, address in actors.items():
             balance = self.rpc.balance(address)
             if balance <= keep * 2:
@@ -3032,7 +3040,7 @@ class Runner:
                 continue
             amount = balance - keep
             rec = self.step(
-                f"return-{wallet}",
+                f"return-{wallet}{suffix}",
                 [
                     "wallet",
                     "send",
@@ -3570,6 +3578,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("name")
     r = sub.add_parser("return-funds")
     r.add_argument("--to", required=True)
+    r.add_argument("--round", type=int, default=1, help="return round; 2+ after further funding")
     sub.add_parser("status")
     rc = sub.add_parser("reconcile")
     rc.add_argument("label")
@@ -3606,7 +3615,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "case":
             out = runner.case(args.name)
         elif args.command == "return-funds":
-            out = runner.return_funds(args.to)
+            out = runner.return_funds(args.to, args.round)
         elif args.command == "reconcile":
             out = runner.reconcile(args.label, external=args.external, sender=args.sender)
         else:

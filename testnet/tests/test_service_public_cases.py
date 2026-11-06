@@ -966,6 +966,57 @@ class ReturnFundsReplay(RunnerCase):
             out["sc-owner"], {"returned_nanotos": 123456789, "tx": {"lt": "1", "hash": "OLD"}}
         )
 
+    def record_round_one(self):
+        self.write_actors()
+        self.runner.plan_funding(SOURCE)
+        self.runner.preflight = lambda value_action=True: {}
+        owner = WALLETS["sc-owner"]
+        self.rpc.balances[owner] = spc.tos_to_nanotos("1.0")
+        self.runner.journal.attempt("return-sc-owner", {})
+        self.runner.journal.done(
+            "return-sc-owner",
+            {
+                "verdict": "settled",
+                "observe": SOURCE,
+                "argv": ["wallet", "send", "--amount-nanotos", "123456789"],
+                "tx": {"lt": "1", "hash": "OLD"},
+            },
+        )
+        return owner
+
+    def test_a_second_round_uses_its_own_labels_and_sends_the_current_balance(self):
+        owner = self.record_round_one()
+
+        def effect(rpc):
+            rpc.add(owner, tx(100, "P1", out=((SOURCE, "M1"),)))
+            rpc.add(SOURCE, tx(200, "S1", in_hash="M1"))
+
+        self.cli.script["return-sc-owner-r2"] = (0, "{}", effect)
+        out = self.runner.return_funds(SOURCE, 2)
+        self.assertEqual(len(self.cli.calls), 1)
+        label, argv = self.cli.calls[0]
+        self.assertEqual(label, "return-sc-owner-r2")
+        self.assertEqual(
+            argv[argv.index("--amount-nanotos") + 1],
+            str(spc.tos_to_nanotos("1.0") - spc.tos_to_nanotos("0.05")),
+        )
+        self.assertEqual(out["sc-owner"]["tx"]["hash"], "S1")
+        self.assertEqual(out["sc-owner"]["returned_nanotos"], spc.tos_to_nanotos("0.95"))
+        self.assertTrue((self.runner.journal.steps / "return-sc-owner-r2.done.json").exists())
+        # round 1 is untouched and still replays its own record
+        self.assertEqual(self.runner.return_funds(SOURCE)["sc-owner"]["tx"]["hash"], "OLD")
+        self.assertEqual(len(self.cli.calls), 1)
+
+    def test_a_second_round_never_re_sends_itself_or_round_one(self):
+        self.record_round_one()
+        self.runner.journal.attempt("return-sc-owner-r2", {"kind": "value"})
+        with self.assertRaises(spc.Refusal):
+            self.runner.return_funds(SOURCE, 2)
+        self.assertEqual(self.cli.calls, [])
+        with self.assertRaises(spc.Refusal):
+            self.runner.return_funds(SOURCE, 0)
+        self.assertEqual(self.cli.calls, [])
+
 
 class ReconcileDuplicate(RunnerCase):
     """A duplicate control that ended `unknown` is reconciled by the duplicate rules, never by
