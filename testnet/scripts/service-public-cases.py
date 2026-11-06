@@ -563,18 +563,35 @@ class Rpc:
     def head(self, url: str | None = None) -> dict:
         return self.call("getMasterchainInfo", url)["last"]
 
-    def head_utime(self, url: str | None = None) -> int:
-        """Generation time of the source's latest masterchain block: the clock an external
-        message's deadline is judged against."""
+    def account_shard_utime(self, account: str, url: str | None = None) -> int:
+        """Generation time of the shard block that covers `account` in the source's latest
+        masterchain view: admission judges an external message's deadline against that shard
+        state's time, which can lag the masterchain."""
         last = self.head(url)
+        wc, hexaddr = norm_addr(account).split(":")
+        prefix = int(hexaddr[:16], 16)
+        covering = []
+        for top in self.call("shards", url, seqno=last["seqno"])["shards"]:
+            if int(top["workchain"]) != int(wc):
+                continue
+            shard = int(top["shard"]) & ((1 << 64) - 1)
+            if shard == 0:
+                continue
+            low = shard & -shard  # the shard's tag bit
+            mask = ((1 << 64) - 1) ^ (low - 1) ^ low
+            if (prefix & mask) == (shard & mask):
+                covering.append(top)
+        if len(covering) != 1:
+            raise Refusal(f"{len(covering)} shard tips cover {account}; expected exactly one")
+        top = covering[0]
         header = self.call(
             "getBlockHeader",
             url,
-            workchain=last["workchain"],
-            shard=last["shard"],
-            seqno=last["seqno"],
-            root_hash=last["root_hash"],
-            file_hash=last["file_hash"],
+            workchain=top["workchain"],
+            shard=top["shard"],
+            seqno=top["seqno"],
+            root_hash=top["root_hash"],
+            file_hash=top["file_hash"],
         )
         return int(header["gen_utime"])
 
@@ -2899,16 +2916,22 @@ class Runner:
             raise Refusal("task-send-prepare answer has no exact signed BOC digest")
         return answer
 
-    def wait_chain_past(self, deadline: int) -> dict:
-        """Wait until the latest block of every source is EXPIRY_MARGIN_S past `deadline`."""
+    def wait_chain_past(self, deadline: int, account: str) -> dict:
+        """Wait until, on every source, the shard block covering `account` is EXPIRY_MARGIN_S
+        past `deadline` (the clock admission uses), and return those times."""
         target = deadline + EXPIRY_MARGIN_S
 
-        def past() -> bool:
-            return all(self.rpc.head_utime(url) > target for url in self.rpc.all_sources)
+        def times() -> dict:
+            return {url: self.rpc.account_shard_utime(account, url) for url in self.rpc.all_sources}
 
-        if not self.wait(past, max(0.0, target - now()) + 300):
-            raise Refusal(f"chain time did not pass {target} on every source")
-        return {url: self.rpc.head_utime(url) for url in self.rpc.all_sources}
+        if not self.wait(
+            lambda: all(t > target for t in times().values()), max(0.0, target - now()) + 300
+        ):
+            raise Refusal(f"shard time did not pass {target} on every source")
+        observed = times()
+        if not all(t > target for t in observed.values()):
+            raise Refusal(f"shard time fell back below {target} on a source")
+        return observed
 
     def read_expiry_probe(self, path: Path, prepared: dict, account: str) -> tuple[bytes, Cell]:
         """The saved request, bound to the CLI's printed digest and decoded back to the
@@ -2934,9 +2957,12 @@ class Runner:
         """Expiry refusal on the SC-03 agent account (exit 1706) with a request that is still
         current in every other respect.
 
+        Expiry is judged against the time of the shard block that covers the account (the
+        admission clock), on every source, not against the masterchain head.
+
         The CLI signs one controller task-send for the account's current sequence with a
         deadline EXPIRY_LEAD_S ahead and saves it without broadcasting (`task-send-prepare
-        --signed-boc-out`). Once every source's latest block is past the deadline and the
+        --signed-boc-out`). Once every source's shard block covering the account is past the deadline and the
         sequence is unchanged, those exact bytes are broadcast once: the node must refuse them
         at admission with 1706 and the account must stay unchanged on every source.
 
@@ -2981,7 +3007,11 @@ class Runner:
         else:
             # Resumed after the broadcast: the account has the state the broadcast left.
             prepared = answer
-        chain_times = self.wait_chain_past(valid_until)
+        recorded = self.journal.result("sc03e-chain-time")
+        if control is not None and recorded is not None:
+            chain_times = recorded["shard_utime"]
+        else:
+            chain_times = self.wait_chain_past(valid_until, account)
         state1 = self.agreed_agent_state(account)
         if (state1["seqno"], state1["controller_epoch"]) != (
             prepared["seqno"],
@@ -2989,6 +3019,14 @@ class Runner:
         ):
             raise Refusal("the prepared sequence moved before expiry; not an expiry control")
         raw, msg = self.read_expiry_probe(path, prepared, account)
+        if control is None:
+            # The observation that licensed the broadcast is kept with it, so a resumed report
+            # shows the times that were checked, not later reads.
+            self.journal.attempt("sc03e-chain-time", {"kind": "observation"})
+            self.journal.done(
+                "sc03e-chain-time",
+                {"exit_code": 0, "deadline": valid_until, "shard_utime": chain_times},
+            )
         control = self.refusal_broadcast("sc03e-expired", msg, account, AGENT_EXPIRED, raw=raw)
         state2 = self.agreed_agent_state(account)
         return {
@@ -2998,7 +3036,7 @@ class Runner:
                 k: prepared.get(k)
                 for k in ("seqno", "controller_epoch", "valid_until", "exact_signed_boc_digest")
             },
-            "chain_time_at_broadcast": chain_times,
+            "shard_time_at_broadcast": chain_times,
             "message_hash": cell_hash_b64(msg),
             "control": {
                 "verdict": control["verdict"],
@@ -3673,7 +3711,7 @@ class PlanRunner(Runner):
             "exact_signed_boc_digest": "sha256:" + "00" * 32,
         }
 
-    def wait_chain_past(self, deadline):
+    def wait_chain_past(self, deadline, account):
         return {}
 
     def read_expiry_probe(self, path, prepared, account):

@@ -2770,7 +2770,7 @@ class Sc03eExpiry(RunnerCase):
         self.state = {"seqno": 4, "controller_epoch": 2, "spent_today": 0}
         self.runner.agent_account_state = lambda account, url=None: dict(self.state)
         self.clock = {"utime": 0}
-        self.rpc.head_utime = lambda url=None: self.clock["utime"]
+        self.rpc.account_shard_utime = lambda account, url=None: self.clock["utime"]
         self.runner.wait = lambda predicate, timeout=None: (
             self.clock.update(utime=self.clock["utime"] + 10**10) or predicate()
         )
@@ -2830,9 +2830,9 @@ class Sc03eExpiry(RunnerCase):
     def test_a_sequence_that_moves_before_expiry_is_not_an_expiry_control(self):
         original = self.runner.wait_chain_past
 
-        def moved(deadline):
+        def moved(deadline, account):
             self.state["seqno"] += 1
-            return original(deadline)
+            return original(deadline, account)
 
         self.runner.wait_chain_past = moved
         with self.assertRaises(spc.Refusal) as cm:
@@ -2854,13 +2854,113 @@ class Sc03eExpiry(RunnerCase):
         self.assertIn("did not pass", str(cm.exception))
         self.assertEqual(self.broadcasts, [])
 
+    def test_a_masterchain_past_the_deadline_with_a_stale_shard_sends_nothing(self):
+        heads = {
+            "seqno": 77,
+            "workchain": -1,
+            "shard": "-9223372036854775808",
+            "root_hash": "m",
+            "file_hash": "m",
+        }
+        shard_top = {
+            "workchain": 0,
+            "shard": "-9223372036854775808",
+            "seqno": 5,
+            "root_hash": "s",
+            "file_hash": "s",
+        }
+        times = {"mc": 10**10, "shard": 0}
+        rpc = spc.Rpc(PRIMARY, [CONFIRM])
+        rpc.head = lambda url=None: heads
+
+        def call(method, url=None, **params):
+            if method == "shards":
+                return {"shards": [shard_top]}
+            if method == "getBlockHeader":
+                return {"gen_utime": times["shard" if params["workchain"] == 0 else "mc"]}
+            raise AssertionError(method)
+
+        rpc.call = call
+        self.runner.rpc = rpc
+        self.runner.wait = lambda predicate, timeout=None: predicate()
+        with self.assertRaises(spc.Refusal) as cm:
+            self.runner.case_sc03e(WALLETS)
+        self.assertIn("shard time did not pass", str(cm.exception))
+        self.assertEqual(self.broadcasts, [])
+        times["shard"] = 10**10
+        result = self.runner.case_sc03e(WALLETS)
+        self.assertTrue(result["pass"])
+        self.assertEqual(len(self.broadcasts), 1)
+        self.assertEqual(set(result["shard_time_at_broadcast"].values()), {10**10})
+
+    def test_the_covering_shard_tip_is_chosen_by_the_account_prefix(self):
+        rpc = spc.Rpc(PRIMARY, [CONFIRM])
+        rpc.head = lambda url=None: {"seqno": 9}
+        left = {
+            "workchain": 0,
+            "shard": str(0x4000000000000000),
+            "seqno": 1,
+            "root_hash": "l",
+            "file_hash": "l",
+        }
+        right = {
+            "workchain": 0,
+            "shard": str(0xC000000000000000 - (1 << 64)),
+            "seqno": 2,
+            "root_hash": "r",
+            "file_hash": "r",
+        }
+        master = {
+            "workchain": -1,
+            "shard": str(-(1 << 63)),
+            "seqno": 3,
+            "root_hash": "m",
+            "file_hash": "m",
+        }
+        seen = []
+
+        def call(method, url=None, **params):
+            if method == "shards":
+                return {"shards": [master, left, right]}
+            seen.append(params["seqno"])
+            return {"gen_utime": 100 + params["seqno"]}
+
+        rpc.call = call
+        self.assertEqual(rpc.account_shard_utime("0:" + "7f" + "00" * 31), 101)
+        self.assertEqual(rpc.account_shard_utime("0:" + "80" + "00" * 31), 102)
+        self.assertEqual(seen, [1, 2])
+        rpc.call = lambda method, url=None, **p: {"shards": [master]} if method == "shards" else {}
+        with self.assertRaises(spc.Refusal):
+            rpc.account_shard_utime("0:" + "00" * 32)
+
+    def test_a_resumed_report_keeps_the_times_that_licensed_the_broadcast(self):
+        first = self.runner.case_sc03e(WALLETS)
+        recorded = self.runner.journal.result("sc03e-chain-time")
+        self.assertEqual(recorded["shard_utime"], first["shard_time_at_broadcast"])
+        done = {"verdict": "refused-at-admission", "expect_exit": spc.AGENT_EXPIRED}
+        self.runner.journal.attempt("sc03e-expired", {})
+        self.runner.journal.done("sc03e-expired", done)
+        self.runner.journal.attempt("sc03e-prepare", {})
+        self.runner.journal.done("sc03e-prepare", {"exit_code": 0, "answer": {"valid_until": 5}})
+        self.clock["utime"] = 1
+        self.runner.wait_chain_past = lambda *a: self.fail("resume must not re-read chain time")
+        self.runner.local = lambda *a, **k: {
+            "seqno": 4,
+            "controller_epoch": 2,
+            "valid_until": 5,
+            "exact_signed_boc_digest": "sha256:x",
+        }
+        self.runner.read_expiry_probe = lambda path, prepared, account: (b"", SAMPLE_MSG())
+        again = self.runner.case_sc03e(WALLETS)
+        self.assertEqual(again["shard_time_at_broadcast"], first["shard_time_at_broadcast"])
+
     def test_the_deadline_must_be_passed_by_the_margin_on_every_source(self):
         seen = {}
 
-        def utime(url=None):
+        def utime(account, url=None):
             return {PRIMARY: 10**10, CONFIRM: self.clock["deadline"] + spc.EXPIRY_MARGIN_S}[url]
 
-        self.rpc.head_utime = utime
+        self.rpc.account_shard_utime = utime
         self.runner.wait = lambda predicate, timeout=None: predicate()
         original = self.runner.check_prepared
 
