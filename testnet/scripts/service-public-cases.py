@@ -56,6 +56,11 @@ TEMP_LIMIT_C = 82.0
 CLI_TIMEOUT_S = 180
 SETTLE_TIMEOUT_S = 150
 REFUSAL_OBSERVE_S = 45
+# A record that ended `unknown` after a refused CLI is settled as "nothing sent" only this long
+# after it was written: the live window already watched 45 s after the CLI exit, and a message
+# still in flight at that point lands within the next few blocks or never; well beyond that is
+# the margin for a slow source, not a different quantity than the live window.
+NOTHING_SENT_SETTLE_S = 120
 POLL_S = 2.0
 CP8_VERSION = 16
 WALLETS = ("sc-owner", "sc-client", "sc-verifier", "sc-respondent", "sc-outsider")
@@ -2042,6 +2047,7 @@ class Runner:
             raise Refusal(f"{label} was attempted without a result; reconcile read-only")
         self.guards()
         before = {
+            "head": self.rpc.head(),
             "payer_lt": self.rpc.last_lt(payer),
             "observe_lt": self.rpc.last_lt(account),
             "target_balance": self.rpc.balance(target),
@@ -2471,21 +2477,29 @@ class Runner:
         visible on any source once the observation window has elapsed.
 
         This is the read-only form of the live client-side verdicts: nothing left the payer, so
-        a duplicate control is a client-side refusal (accepted only if the target was not paid
-        either), a negative control is `cli-refused-before-broadcast` only while the observed
-        contract has no transaction after its baseline, and a positive step is `cli-refused`.
-        A successful CLI exit with nothing on chain stays unknown: it is reconciled by hand.
+        a duplicate control is a client-side refusal, a negative control is
+        `cli-refused-before-broadcast` only while the observed contract has no transaction after
+        its baseline, and a positive step is `cli-refused`. Every source must have advanced past
+        the record's baseline block, or its empty answer proves nothing. Two cases stay by hand
+        on purpose: a successful CLI exit with nothing on chain, and a duplicate control whose
+        target was paid although no message from the payer is visible (the live control would
+        record DUPLICATE-EXECUTED; here the payment has no located cause, so nothing is written).
         """
         rc = done.get("exit_code")
         if rc in (None, 0):
             raise Refusal(f"{label}: CLI exit {rc!r} but no message is on chain; by hand")
-        if now() - from_utc(done.get("utc")) < REFUSAL_OBSERVE_S:
+        if now() - from_utc(done.get("utc")) < NOTHING_SENT_SETTLE_S:
             raise Refusal(f"{label}: observation window not elapsed since the record; wait")
         payer, observe = done["payer"], done["observe"]
         before = done.get("before") or {}
+        baseline_head = (before.get("head") or {}).get("seqno")
+        if baseline_head is None:
+            raise Refusal(f"{label}: record has no baseline block; reconcile by hand")
         observe_lt = int(before.get("observe_lt") or 0)
         visible = {}
         for url in self.rpc.all_sources:
+            if int(self.rpc.head(url)["seqno"]) <= int(baseline_head):
+                raise Refusal(f"{label}: {url} has not advanced past the baseline block; wait")
             if external:
                 rows = self.external_arrivals(observe, observe_lt, url)
             else:

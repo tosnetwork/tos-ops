@@ -969,7 +969,7 @@ class ReconcileDuplicate(RunnerCase):
     """A duplicate control that ended `unknown` is reconciled by the duplicate rules, never by
     the positive-step rules that would call a second payout `settled`."""
 
-    def record(self, exit_code=1, utc=None, external=False):
+    def record(self, exit_code=1, utc=None, external=False, head=900):
         rec = {
             "verdict": "unknown",
             "exit_code": exit_code,
@@ -977,10 +977,17 @@ class ReconcileDuplicate(RunnerCase):
             "observe": CONTRACT,
             "target": TARGET,
             "external": external,
-            "before": {"payer_lt": 50, "observe_lt": 60, "target_balance": 10**9},
+            "before": {
+                "head": {"seqno": head},
+                "payer_lt": 50,
+                "observe_lt": 60,
+                "target_balance": 10**9,
+            },
             "payer_tx_after": [],
             "broadcast_observation_failed": True,
         }
+        if head is None:
+            del rec["before"]["head"]
         if utc is not None:
             rec["utc"] = utc
         self.runner.journal.attempt("d", {})
@@ -1010,6 +1017,17 @@ class ReconcileDuplicate(RunnerCase):
         self.assertEqual(rec["verdict"], "DUPLICATE-EXECUTED")
         self.assertEqual(rec["transfers_to_target"][0]["hash"], "T1")
 
+    def test_a_bounce_to_the_payer_is_not_a_transfer_to_the_target(self):
+        self.record()
+        self.rpc.add(PAYER, tx(100, "P1", out=((CONTRACT, "M1"),)))
+        self.rpc.add(
+            CONTRACT,
+            tx(200, "C1", in_hash="M1", exit_code=1337, aborted=True, out=((PAYER, "B1"),)),
+        )
+        rec = self.reconcile()
+        self.assertEqual(rec["verdict"], "refused-as-intended")
+        self.assertEqual(rec["transfers_to_target"], [])
+
     def test_target_balance_growth_is_duplicate_executed(self):
         self.record()
         settle_effect(exit_code=0)(self.rpc)
@@ -1025,7 +1043,7 @@ class ReconcileDuplicate(RunnerCase):
         self.assertEqual(rec["verdict"], "accepted-without-transfer")
 
     def test_nothing_sent_after_the_window_is_a_client_side_refusal(self):
-        self.record(utc=spc.utc(MID - 100))
+        self.record(utc=spc.utc(MID - 200))
         rec = self.reconcile()
         self.assertEqual(rec["verdict"], "cli-refused-before-broadcast")
         self.assertTrue(rec["client_side_refusal_accepted"])
@@ -1035,39 +1053,62 @@ class ReconcileDuplicate(RunnerCase):
         self.assertEqual(self.runner.journal.result("d")["verdict"], "cli-refused-before-broadcast")
 
     def test_nothing_sent_inside_the_window_is_refused(self):
-        self.record(utc=spc.utc(MID))
+        # 100 s after the record is still inside the 120 s settle window.
+        self.record(utc=spc.utc(MID - 100))
         with self.assertRaises(spc.Refusal) as cm:
             self.reconcile()
         self.assertIn("window", str(cm.exception))
         self.assertEqual(self.runner.journal.result("d")["verdict"], "unknown")
 
+    def test_a_source_still_at_the_baseline_block_proves_nothing(self):
+        # FakeRpc reports head seqno 1000 on every source; a baseline at 1000 means that
+        # source has not advanced since the record and its empty answer is not evidence.
+        self.record(utc=spc.utc(MID - 200), head=1000)
+        with self.assertRaises(spc.Refusal) as cm:
+            self.reconcile()
+        self.assertIn("not advanced", str(cm.exception))
+        self.assertEqual(self.runner.journal.result("d")["verdict"], "unknown")
+
+    def test_a_record_without_a_baseline_block_is_refused(self):
+        self.record(utc=spc.utc(MID - 200), head=None)
+        with self.assertRaises(spc.Refusal) as cm:
+            self.reconcile()
+        self.assertIn("baseline block", str(cm.exception))
+
     def test_nothing_sent_after_a_successful_cli_stays_by_hand(self):
-        self.record(exit_code=0, utc=spc.utc(MID - 100))
+        self.record(exit_code=0, utc=spc.utc(MID - 200))
         with self.assertRaises(spc.Refusal):
             self.reconcile()
 
     def test_nothing_sent_but_target_paid_is_refused(self):
-        self.record(utc=spc.utc(MID - 100))
+        self.record(utc=spc.utc(MID - 200))
         self.rpc.balances[TARGET] = 10**9 + spc.tos_to_nanotos("0.09")
         with self.assertRaises(spc.Refusal) as cm:
             self.reconcile()
         self.assertIn("target balance grew", str(cm.exception))
 
     def test_a_message_visible_only_on_the_confirmation_source_is_refused(self):
-        self.record(utc=spc.utc(MID - 100))
+        self.record(utc=spc.utc(MID - 200))
         self.rpc.add(PAYER, tx(100, "P1", out=((CONTRACT, "M1"),)), sources=(CONFIRM,))
         with self.assertRaises(spc.Refusal) as cm:
             self.reconcile()
         self.assertIn("visible", str(cm.exception))
 
     def test_nothing_sent_external_duplicate_is_a_client_side_refusal(self):
-        self.record(utc=spc.utc(MID - 100), external=True)
+        self.record(utc=spc.utc(MID - 200), external=True)
         rec = self.reconcile()
         self.assertEqual(rec["verdict"], "cli-refused-before-broadcast")
         self.assertTrue(rec["external"])
 
+    def test_an_external_arrival_visible_only_on_one_source_is_refused(self):
+        self.record(utc=spc.utc(MID - 200), external=True)
+        self.rpc.add(CONTRACT, tx(70, "X1", in_hash="E1", kind="external"), sources=(CONFIRM,))
+        with self.assertRaises(spc.Refusal) as cm:
+            self.reconcile()
+        self.assertIn("visible", str(cm.exception))
+
     def test_duplicate_without_a_target_baseline_is_refused(self):
-        self.record(utc=spc.utc(MID - 100))
+        self.record(utc=spc.utc(MID - 200))
         done = self.runner.journal.result("d")
         del done["before"]["target_balance"]
         self.runner.journal.done("d", done)
@@ -1086,10 +1127,15 @@ class ReconcileNothingSent(RunnerCase):
             "payer": PAYER,
             "observe": CONTRACT,
             "expect_exit": expect_exit,
-            "before": {"payer_lt": 50, "observe_lt": 60, "state": {"owner": "a"}},
+            "before": {
+                "head": {"seqno": 900},
+                "payer_lt": 50,
+                "observe_lt": 60,
+                "state": {"owner": "a"},
+            },
             "broadcast_observation_failed": True,
         }
-        rec["utc"] = spc.utc(MID - 100) if utc is None else utc
+        rec["utc"] = spc.utc(MID - 200) if utc is None else utc
         self.runner.journal.attempt("s", {})
         self.runner.journal.done("s", rec)
         self.rpc.add(PAYER, tx(50, "P0", out=((CONTRACT, "M0"),)))
@@ -1109,6 +1155,13 @@ class ReconcileNothingSent(RunnerCase):
     def test_negative_control_with_a_changed_contract_is_refused(self):
         self.record(expect_exit=1800)
         self.rpc.add(CONTRACT, tx(70, "C9", in_hash="X9"))
+        with self.assertRaises(spc.Refusal) as cm:
+            self.reconcile()
+        self.assertIn("after the baseline", str(cm.exception))
+
+    def test_a_contract_change_seen_only_on_the_confirmation_source_is_refused(self):
+        self.record(expect_exit=1800)
+        self.rpc.add(CONTRACT, tx(70, "C9", in_hash="X9"), sources=(CONFIRM,))
         with self.assertRaises(spc.Refusal) as cm:
             self.reconcile()
         self.assertIn("after the baseline", str(cm.exception))
