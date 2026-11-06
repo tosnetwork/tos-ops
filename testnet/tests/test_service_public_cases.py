@@ -865,21 +865,282 @@ class RpcOutage(RunnerCase):
         self.assertEqual(record["verdict"], "cli-refused-before-broadcast")
         self.assertFalse(record["broadcast_observation_failed"])
 
+    def test_an_outage_that_clears_inside_the_window_still_leaves_unknown(self):
+        """One failed read taints the whole window: the later clean polls do not restore the
+        client-side verdict, because the chain was not watched for the full window."""
+        self.cli.script["s"] = (1, "", None)
+        real = self.rpc.transactions_after
+        calls = []
+
+        def flaky(*a, **k):
+            calls.append(1)
+            if len(calls) == 1:
+                raise spc.Refusal("injected read outage")
+            return real(*a, **k)
+
+        with mock.patch.object(self.rpc, "transactions_after", side_effect=flaky):
+            with self.assertRaises(spc.Refusal):
+                self.step(expect_exit=1800, show=lambda: {"owner": "a"})
+        self.assertGreater(len(calls), 1)
+        record = self.runner.journal.result("s")
+        self.assertEqual(record["verdict"], "unknown")
+        self.assertTrue(record["broadcast_observation_failed"])
+        self.assertEqual(record["payer_tx_after"], [])
+
+
+class Sc05Payout(RunnerCase):
+    """SC-05 judges the agent payout from the settle transaction's own outgoing message, so a
+    resumed run that replays the recorded settlement does not wait for a second payment."""
+
+    def run_case(self, settle_out_msgs, agent_balance):
+        agent = WALLETS["sc-client"]
+        self.rpc.balances[agent] = agent_balance
+
+        def step(label, argv, **kw):
+            record = {"label": label, "observe": CONTRACT, "argv": list(argv)}
+            if kw.get("expect_exit"):
+                record["verdict"] = "refused-as-intended"
+            else:
+                record["verdict"] = "settled"
+            if label == "sc05-settle-creator":
+                record["out_msgs"] = settle_out_msgs
+            return record
+
+        self.runner.step = step
+        self.runner.wait_active = lambda *a: None
+        self.runner.show = lambda *a: lambda: {"status": "settled"}
+        balance_reads = []
+        real_balance = self.rpc.balance
+        self.rpc.balance = lambda address, url=None: (
+            balance_reads.append(address) or real_balance(address, url)
+        )
+        result = self.runner.case_sc05(WALLETS)
+        return result, balance_reads
+
+    def test_recorded_payout_to_the_agent_passes(self):
+        agent = WALLETS["sc-client"]
+        out = [{"destination": agent, "value": str(600_000_000), "bounced": False, "hash": "T"}]
+        result, reads = self.run_case(out, agent_balance=0)
+        self.assertTrue(result["agent_paid"])
+        self.assertTrue(result["pass"])
+        self.assertNotIn(agent, reads)
+
+    def test_a_large_live_balance_does_not_stand_in_for_the_payout(self):
+        agent = WALLETS["sc-client"]
+        out = [{"destination": agent, "value": str(500_000_000), "bounced": False, "hash": "T"}]
+        result, _ = self.run_case(out, agent_balance=10**12)
+        self.assertFalse(result["agent_paid"])
+        self.assertFalse(result["pass"])
+
+    def test_a_bounced_payout_is_not_a_payment(self):
+        agent = WALLETS["sc-client"]
+        out = [{"destination": agent, "value": str(600_000_000), "bounced": True, "hash": "T"}]
+        result, _ = self.run_case(out, agent_balance=10**12)
+        self.assertFalse(result["agent_paid"])
+
+
+class ReturnFundsReplay(RunnerCase):
+    """A replayed return step reports the amount its recorded message carried."""
+
+    def test_replayed_return_reports_the_recorded_amount(self):
+        self.write_actors()
+        self.runner.plan_funding(SOURCE)
+        self.runner.preflight = lambda value_action=True: {}
+        owner = WALLETS["sc-owner"]
+        self.rpc.balances[owner] = spc.tos_to_nanotos("1.0")
+        self.runner.journal.attempt("return-sc-owner", {})
+        self.runner.journal.done(
+            "return-sc-owner",
+            {
+                "verdict": "settled",
+                "observe": SOURCE,
+                "argv": ["wallet", "send", "--amount-nanotos", "123456789"],
+                "tx": {"lt": "1", "hash": "OLD"},
+            },
+        )
+        out = self.runner.return_funds(SOURCE)
+        self.assertEqual(self.cli.calls, [])
+        self.assertEqual(
+            out["sc-owner"], {"returned_nanotos": 123456789, "tx": {"lt": "1", "hash": "OLD"}}
+        )
+
+
+class ReconcileDuplicate(RunnerCase):
+    """A duplicate control that ended `unknown` is reconciled by the duplicate rules, never by
+    the positive-step rules that would call a second payout `settled`."""
+
+    def record(self, exit_code=1, utc=None, external=False):
+        rec = {
+            "verdict": "unknown",
+            "exit_code": exit_code,
+            "payer": PAYER,
+            "observe": CONTRACT,
+            "target": TARGET,
+            "external": external,
+            "before": {"payer_lt": 50, "observe_lt": 60, "target_balance": 10**9},
+            "payer_tx_after": [],
+            "broadcast_observation_failed": True,
+        }
+        if utc is not None:
+            rec["utc"] = utc
+        self.runner.journal.attempt("d", {})
+        self.runner.journal.done("d", rec)
+        self.rpc.add(PAYER, tx(50, "P0", out=((CONTRACT, "M0"),)))
+        self.rpc.add(CONTRACT, tx(60, "C0", in_hash="M0"))
+        self.rpc.balances[TARGET] = 10**9
+
+    def reconcile(self):
+        with mock.patch.object(spc.Runner, "preflight", return_value={}):
+            return self.runner.reconcile("d")
+
+    def test_aborted_account_transaction_is_the_intended_refusal(self):
+        self.record()
+        settle_effect(exit_code=1337, aborted=True)(self.rpc)
+        rec = self.reconcile()
+        self.assertEqual(rec["verdict"], "refused-as-intended")
+        self.assertEqual(rec["transfers_to_target"], [])
+        self.assertFalse(rec["target_paid_again"])
+        self.assertEqual(rec["tx"]["hash"], "C1")
+
+    def test_second_transfer_to_the_target_is_duplicate_executed(self):
+        self.record()
+        self.rpc.add(PAYER, tx(100, "P1", out=((CONTRACT, "M1"),)))
+        self.rpc.add(CONTRACT, tx(200, "C1", in_hash="M1", out=((TARGET, "T1"),)))
+        rec = self.reconcile()
+        self.assertEqual(rec["verdict"], "DUPLICATE-EXECUTED")
+        self.assertEqual(rec["transfers_to_target"][0]["hash"], "T1")
+
+    def test_target_balance_growth_is_duplicate_executed(self):
+        self.record()
+        settle_effect(exit_code=0)(self.rpc)
+        self.rpc.balances[TARGET] = 10**9 + spc.tos_to_nanotos("0.09")
+        rec = self.reconcile()
+        self.assertEqual(rec["verdict"], "DUPLICATE-EXECUTED")
+        self.assertTrue(rec["target_paid_again"])
+
+    def test_accepted_without_transfer_is_recorded_as_such(self):
+        self.record()
+        settle_effect(exit_code=0)(self.rpc)
+        rec = self.reconcile()
+        self.assertEqual(rec["verdict"], "accepted-without-transfer")
+
+    def test_nothing_sent_after_the_window_is_a_client_side_refusal(self):
+        self.record(utc=spc.utc(MID - 100))
+        rec = self.reconcile()
+        self.assertEqual(rec["verdict"], "cli-refused-before-broadcast")
+        self.assertTrue(rec["client_side_refusal_accepted"])
+        self.assertFalse(rec["target_paid_again"])
+        self.assertEqual(rec["payer_tx_after"], [])
+        self.assertEqual(set(rec["nothing_sent_confirmed_on"]), {PRIMARY, CONFIRM})
+        self.assertEqual(self.runner.journal.result("d")["verdict"], "cli-refused-before-broadcast")
+
+    def test_nothing_sent_inside_the_window_is_refused(self):
+        self.record(utc=spc.utc(MID))
+        with self.assertRaises(spc.Refusal) as cm:
+            self.reconcile()
+        self.assertIn("window", str(cm.exception))
+        self.assertEqual(self.runner.journal.result("d")["verdict"], "unknown")
+
+    def test_nothing_sent_after_a_successful_cli_stays_by_hand(self):
+        self.record(exit_code=0, utc=spc.utc(MID - 100))
+        with self.assertRaises(spc.Refusal):
+            self.reconcile()
+
+    def test_nothing_sent_but_target_paid_is_refused(self):
+        self.record(utc=spc.utc(MID - 100))
+        self.rpc.balances[TARGET] = 10**9 + spc.tos_to_nanotos("0.09")
+        with self.assertRaises(spc.Refusal) as cm:
+            self.reconcile()
+        self.assertIn("target balance grew", str(cm.exception))
+
+    def test_a_message_visible_only_on_the_confirmation_source_is_refused(self):
+        self.record(utc=spc.utc(MID - 100))
+        self.rpc.add(PAYER, tx(100, "P1", out=((CONTRACT, "M1"),)), sources=(CONFIRM,))
+        with self.assertRaises(spc.Refusal) as cm:
+            self.reconcile()
+        self.assertIn("visible", str(cm.exception))
+
+    def test_nothing_sent_external_duplicate_is_a_client_side_refusal(self):
+        self.record(utc=spc.utc(MID - 100), external=True)
+        rec = self.reconcile()
+        self.assertEqual(rec["verdict"], "cli-refused-before-broadcast")
+        self.assertTrue(rec["external"])
+
+    def test_duplicate_without_a_target_baseline_is_refused(self):
+        self.record(utc=spc.utc(MID - 100))
+        done = self.runner.journal.result("d")
+        del done["before"]["target_balance"]
+        self.runner.journal.done("d", done)
+        with self.assertRaises(spc.Refusal):
+            self.reconcile()
+
+
+class ReconcileNothingSent(RunnerCase):
+    """A step record that ended `unknown` from a failed observation window is settled read-only
+    once a fresh read of every source shows that nothing left the payer."""
+
+    def record(self, expect_exit, exit_code=1, utc=None):
+        rec = {
+            "verdict": "unknown",
+            "exit_code": exit_code,
+            "payer": PAYER,
+            "observe": CONTRACT,
+            "expect_exit": expect_exit,
+            "before": {"payer_lt": 50, "observe_lt": 60, "state": {"owner": "a"}},
+            "broadcast_observation_failed": True,
+        }
+        rec["utc"] = spc.utc(MID - 100) if utc is None else utc
+        self.runner.journal.attempt("s", {})
+        self.runner.journal.done("s", rec)
+        self.rpc.add(PAYER, tx(50, "P0", out=((CONTRACT, "M0"),)))
+        self.rpc.add(CONTRACT, tx(60, "C0", in_hash="M0"))
+
+    def reconcile(self):
+        with mock.patch.object(spc.Runner, "preflight", return_value={}):
+            return self.runner.reconcile("s")
+
+    def test_negative_control_with_an_untouched_contract_is_a_client_side_refusal(self):
+        self.record(expect_exit=1800)
+        rec = self.reconcile()
+        self.assertEqual(rec["verdict"], "cli-refused-before-broadcast")
+        self.assertNotIn("client_side_refusal_accepted", rec)
+        self.assertTrue(rec["reconciled"])
+
+    def test_negative_control_with_a_changed_contract_is_refused(self):
+        self.record(expect_exit=1800)
+        self.rpc.add(CONTRACT, tx(70, "C9", in_hash="X9"))
+        with self.assertRaises(spc.Refusal) as cm:
+            self.reconcile()
+        self.assertIn("after the baseline", str(cm.exception))
+
+    def test_positive_step_is_cli_refused(self):
+        self.record(expect_exit=0)
+        rec = self.reconcile()
+        self.assertEqual(rec["verdict"], "cli-refused")
+
+    def test_unreadable_timestamp_is_refused(self):
+        self.record(expect_exit=0, utc="yesterday")
+        with self.assertRaises(spc.Refusal):
+            self.reconcile()
+
 
 class WithdrawalResume(RunnerCase):
     """SC-04 resumed after its owner withdrawal settled must replay the recorded withdrawal
     against its recorded pre-withdrawal baseline, and must fence an unresolved or invalid one."""
 
-    def record_withdrawal(self, verdict, before, amount):
-        self.runner.journal.done(
-            "sc04-withdraw-owner",
-            {
-                "label": "sc04-withdraw-owner",
-                "verdict": verdict,
-                "argv": ["--withdraw-amount", amount],
-                "before": {"state": {"withdrawable_revenue": before}},
-            },
-        )
+    def record_withdrawal(self, verdict, before, amount, observe=CONTRACT, state="given"):
+        record = {
+            "label": "sc04-withdraw-owner",
+            "verdict": verdict,
+            "argv": ["--withdraw-amount", amount],
+            "observe": observe,
+            "before": {"state": {"withdrawable_revenue": before}},
+        }
+        if state == "missing":
+            record["before"] = {"payer_lt": 1}
+        elif state == "empty":
+            record["before"] = {"state": {}}
+        self.runner.journal.done("sc04-withdraw-owner", record)
 
     def fake_case(self, current, allow_withdrawal):
         seen = []
@@ -920,11 +1181,20 @@ class WithdrawalResume(RunnerCase):
     def test_completed_partial_withdrawal_resumes(self):
         self.resume("0.25", "0.050000000", "0.20")
 
-    def refuse(self, verdict, before, amount):
-        self.record_withdrawal(verdict, before, amount)
+    def refuse(self, verdict, before, amount, **record):
+        self.record_withdrawal(verdict, before, amount, **record)
         self.fake_case("0.25", allow_withdrawal=False)
         with self.assertRaises(spc.Refusal):
             self.runner.case_sc04(WALLETS)
+
+    def test_withdrawal_recorded_without_a_baseline_state_refuses(self):
+        self.refuse("settled", "0.25", "0.05", state="missing")
+
+    def test_withdrawal_recorded_with_an_empty_baseline_state_refuses(self):
+        self.refuse("settled", "0.25", "0.05", state="empty")
+
+    def test_withdrawal_recorded_against_another_contract_refuses(self):
+        self.refuse("settled", "0.25", "0.05", observe="0:" + "99" * 32)
 
     def test_unresolved_withdrawal_stays_fenced(self):
         self.refuse("unknown", "0.25", "0.05")
@@ -1443,10 +1713,13 @@ class Reconcile(RunnerCase):
         self.assertFalse((self.runner.journal.steps / "s.reconciled.json").exists())
 
     def test_old_broadcast_before_the_baseline_does_not_count(self):
+        # The only message is older than the baseline, so nothing was sent for this step; the
+        # record was written inside the observation window, so it is not settled yet either.
         self.unknown_record()
         with self.assertRaises(spc.Refusal) as cm:
             self.reconcile()
-        self.assertIn("0 messages", str(cm.exception))
+        self.assertIn("window", str(cm.exception))
+        self.assertEqual(self.runner.journal.result("s")["verdict"], "unknown")
 
 
 def external_effect(exit_code=0, aborted=False, out=(), sources=(PRIMARY, CONFIRM), lt=200):

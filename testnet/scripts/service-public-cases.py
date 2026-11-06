@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import calendar
 import hashlib
 import json
 import os
@@ -125,6 +126,14 @@ def now() -> int:
 
 def utc(ts: int | float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+
+
+def from_utc(text) -> int:
+    """The epoch second of a journal timestamp written by `utc`."""
+    try:
+        return calendar.timegm(time.strptime(str(text), "%Y-%m-%dT%H:%M:%SZ"))
+    except (TypeError, ValueError) as exc:
+        raise Refusal(f"record timestamp unreadable: {text!r}") from exc
 
 
 def sha256_file(path: Path) -> str:
@@ -1371,7 +1380,10 @@ class Runner:
         if withdrawal is not None:
             if withdrawal.get("verdict") != "settled":
                 raise Refusal("original service withdrawal is unresolved; reconcile read-only")
+            if not same_addr(withdrawal.get("observe"), address):
+                raise Refusal("recorded service withdrawal names a different service contract")
             before_state = (withdrawal.get("before") or {}).get("state") or {}
+            # A record without a pre-withdrawal baseline is refused by state_nanotos itself.
             withdrawable = state_nanotos(before_state.get("withdrawable_revenue"))
             amount = self.argv_value(withdrawal, "--withdraw-amount")
             if not 0 < tos_to_nanotos(amount) <= min(withdrawable, SERVICE_WITHDRAW_CAP):
@@ -1497,15 +1509,16 @@ class Runner:
                 show=show,
             )
         )
-        agent_before = self.rpc.balance(agent)
-        self.step(
+        settlement = self.step(
             "sc05-settle-creator",
             send + ["--operation", "settle", "--from", "sc-owner", "--payout", "0.6"],
             payer=creator,
             observe=address,
             show=show,
         )
-        paid = self.wait(lambda: self.rpc.balance(agent) >= agent_before + tos_to_nanotos("0.59"))
+        # The payout is read from the settle transaction's own outgoing message, so a resumed
+        # run judges the recorded settlement instead of waiting for a second payment.
+        paid = self.transferred(settlement, agent, "0.59")
         final = show()
         final_ok = final.get("status") == "settled" and paid
         return {
@@ -2310,7 +2323,11 @@ class Runner:
                 payer=address,
                 observe=to,
             )
-            out[wallet] = {"returned_nanotos": amount, "tx": rec["tx"]}
+            # A replayed record reports the amount it actually sent, not today's recomputation.
+            out[wallet] = {
+                "returned_nanotos": int(self.argv_value(rec, "--amount-nanotos")),
+                "tx": rec["tx"],
+            }
         return out
 
     def reconcile(self, label: str, external: bool = False, sender: str | None = None) -> dict:
@@ -2318,8 +2335,11 @@ class Runner:
 
         Nothing is sent. The payer's single message to the observed contract after the step's
         baseline is located, the contract transaction it produced is read and confirmed on
-        every source, and the verdict follows the same rules as a live step. The original
-        record is kept; the reconciliation is written beside it and replayed from then on.
+        every source, and the verdict follows the same rules as a live step: a duplicate
+        control (a record naming a `target`) is judged by the duplicate rules, every other
+        record by its `expect_exit`. When no message at all left the payer after a CLI
+        refusal, the refusal is settled by `reconcile_nothing_sent`. The original record is
+        kept; the reconciliation is written beside it and replayed from then on.
         """
         self.preflight(value_action=False)
         done = self.journal.result(label)
@@ -2334,8 +2354,11 @@ class Runner:
         payer, observe = done.get("payer"), done.get("observe")
         before = done.get("before") or {}
         external = (bool(done.get("external")) or external) and sender is None
+        duplicate = "target" in done
         if not payer or not observe or "payer_lt" not in before:
             raise Refusal(f"{label} lacks payer/observe/baseline; reconcile by hand")
+        if duplicate and (not done.get("target") or "target_balance" not in before):
+            raise Refusal(f"{label} is a duplicate control without a target baseline; by hand")
         if sender is not None:
             # The record named the wrong payer: find the contract's single new transaction
             # carrying an internal message from `sender` after the contract's own baseline.
@@ -2354,6 +2377,8 @@ class Runner:
             out_hash = (tx.get("in_msg") or {}).get("hash")
         elif external:
             arrivals = self.external_arrivals(observe, int(before.get("observe_lt") or 0))
+            if not arrivals:
+                return self.reconcile_nothing_sent(label, done, external=True)
             if len(arrivals) != 1:
                 raise Refusal(f"{label}: {len(arrivals)} external messages reached {observe}")
             sends = [None]
@@ -2361,6 +2386,8 @@ class Runner:
             out_hash = (tx.get("in_msg") or {}).get("hash")
         else:
             sends = self.sends_to(payer, int(before["payer_lt"]), observe)
+            if not sends:
+                return self.reconcile_nothing_sent(label, done, external=False)
             if len(sends) != 1:
                 raise Refusal(f"{label}: payer sent {len(sends)} messages to {observe}; by hand")
             out_hash = [
@@ -2407,7 +2434,22 @@ class Runner:
         if not all(confirmations.values()):
             raise Refusal(f"{label}: transaction not seen on every confirmation source")
         expect_exit = int(done.get("expect_exit") or 0)
-        if expect_exit == 0:
+        if duplicate:
+            # Same rules as `duplicate_control`: any transfer to the target is the failure, an
+            # aborted account transaction is the intended refusal.
+            target = norm_addr(done["target"])
+            paid_at = int(before["target_balance"]) + tos_to_nanotos("0.09")
+            record["transfers_to_target"] = [
+                m for m in record["out_msgs"] if same_addr(m.get("destination"), target)
+            ]
+            record["target_paid_again"] = self.rpc.balance(target) >= paid_at
+            if record["transfers_to_target"] or record["target_paid_again"]:
+                record["verdict"] = "DUPLICATE-EXECUTED"
+            elif tx.get("aborted") is True and compute.get("success") is False:
+                record["verdict"] = "refused-as-intended"
+            else:
+                record["verdict"] = "accepted-without-transfer"
+        elif expect_exit == 0:
             after_balance = self.rpc.balance(observe)
             record["after"] = {**(done.get("after") or {}), "observe_balance": after_balance}
             how = self.positive_outcome(tx, before.get("observe_balance") or 0, after_balance)
@@ -2420,6 +2462,71 @@ class Runner:
                 and compute.get("exit_code") == expect_exit
             )
             record["verdict"] = "refused-as-intended" if ok else "refusal-control-failed"
+        self.journal.reconciled(label, record)
+        self.journal.log(kind="reconciled", label=label, verdict=record["verdict"])
+        return record
+
+    def reconcile_nothing_sent(self, label: str, done: dict, external: bool) -> dict:
+        """Settle an `unknown` record whose CLI exited non-zero and after which no message is
+        visible on any source once the observation window has elapsed.
+
+        This is the read-only form of the live client-side verdicts: nothing left the payer, so
+        a duplicate control is a client-side refusal (accepted only if the target was not paid
+        either), a negative control is `cli-refused-before-broadcast` only while the observed
+        contract has no transaction after its baseline, and a positive step is `cli-refused`.
+        A successful CLI exit with nothing on chain stays unknown: it is reconciled by hand.
+        """
+        rc = done.get("exit_code")
+        if rc in (None, 0):
+            raise Refusal(f"{label}: CLI exit {rc!r} but no message is on chain; by hand")
+        if now() - from_utc(done.get("utc")) < REFUSAL_OBSERVE_S:
+            raise Refusal(f"{label}: observation window not elapsed since the record; wait")
+        payer, observe = done["payer"], done["observe"]
+        before = done.get("before") or {}
+        observe_lt = int(before.get("observe_lt") or 0)
+        visible = {}
+        for url in self.rpc.all_sources:
+            if external:
+                rows = self.external_arrivals(observe, observe_lt, url)
+            else:
+                rows = [
+                    r
+                    for r in self.rpc.transactions_after(payer, int(before["payer_lt"]), url)
+                    if any(same_addr(m.get("destination"), observe) for m in r.get("out_msgs", []))
+                ]
+            visible[url] = len(rows)
+        if any(visible.values()):
+            raise Refusal(
+                f"{label}: a message is visible on some source {visible}; reconcile again"
+            )
+        record = dict(done)
+        record.update(
+            {
+                "reconciled": True,
+                "reconciled_from_verdict": done.get("verdict"),
+                "external": external,
+                "payer_tx_after": [],
+                "nothing_sent_confirmed_on": {url: True for url in visible},
+            }
+        )
+        if "target" in done:
+            target = norm_addr(done["target"])
+            paid_at = int(before["target_balance"]) + tos_to_nanotos("0.09")
+            record["target_paid_again"] = self.rpc.balance(target) >= paid_at
+            if record["target_paid_again"]:
+                raise Refusal(f"{label}: target balance grew without a located message; by hand")
+            record["client_side_refusal_accepted"] = True
+            record["verdict"] = "cli-refused-before-broadcast"
+        elif int(done.get("expect_exit") or 0) != 0:
+            changed = {
+                url: len(self.rpc.transactions_after(observe, observe_lt, url))
+                for url in self.rpc.all_sources
+            }
+            if any(changed.values()):
+                raise Refusal(f"{label}: {observe} has transactions after the baseline; by hand")
+            record["verdict"] = "cli-refused-before-broadcast"
+        else:
+            record["verdict"] = "cli-refused"
         self.journal.reconciled(label, record)
         self.journal.log(kind="reconciled", label=label, verdict=record["verdict"])
         return record
