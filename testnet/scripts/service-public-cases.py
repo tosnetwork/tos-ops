@@ -1883,9 +1883,8 @@ class Runner:
                 "0.05",
                 "--yes",
             ],
-            payer=account,
+            payer=agent_wallet,
             observe=account,
-            external=True,
         )
         second = self.step(
             "sc03-task-send-2",
@@ -1905,8 +1904,9 @@ class Runner:
                 secrets.token_hex(32),
                 "--yes",
             ],
-            payer=agent_wallet,
+            payer=account,
             observe=account,
+            external=True,
         )
         delivered_2 = self.transferred(second, target, "0.09")
         status = self.local(
@@ -2216,7 +2216,7 @@ class Runner:
             out[wallet] = {"returned_nanotos": amount, "tx": rec["tx"]}
         return out
 
-    def reconcile(self, label: str, external: bool = False) -> dict:
+    def reconcile(self, label: str, external: bool = False, sender: str | None = None) -> dict:
         """Read-only reconciliation of a step that ended `unknown` or `unexpected-abort`.
 
         Nothing is sent. The payer's single message to the observed contract after the step's
@@ -2236,10 +2236,26 @@ class Runner:
             )
         payer, observe = done.get("payer"), done.get("observe")
         before = done.get("before") or {}
-        external = bool(done.get("external")) or external
+        external = (bool(done.get("external")) or external) and sender is None
         if not payer or not observe or "payer_lt" not in before:
             raise Refusal(f"{label} lacks payer/observe/baseline; reconcile by hand")
-        if external:
+        if sender is not None:
+            # The record named the wrong payer: find the contract's single new transaction
+            # carrying an internal message from `sender` after the contract's own baseline.
+            sender = norm_addr(sender)
+            rows = self.rpc.transactions_after(observe, int(before.get("observe_lt") or 0))
+            hit = [
+                r
+                for r in rows
+                if (r.get("in_msg") or {}).get("kind") == "internal"
+                and same_addr((r.get("in_msg") or {}).get("source"), sender)
+            ]
+            if len(hit) != 1:
+                raise Refusal(f"{label}: {len(hit)} messages from {sender} reached {observe}")
+            sends = [None]
+            tx = hit[0]
+            out_hash = (tx.get("in_msg") or {}).get("hash")
+        elif external:
             arrivals = self.external_arrivals(observe, int(before.get("observe_lt") or 0))
             if len(arrivals) != 1:
                 raise Refusal(f"{label}: {len(arrivals)} external messages reached {observe}")
@@ -2275,6 +2291,7 @@ class Runner:
                 "reconciled": True,
                 "reconciled_from_verdict": done.get("verdict"),
                 "external": external,
+                "sender": sender,
                 "payer_tx": (sends[0] or {}).get("transaction_id"),
                 "tx": tx["transaction_id"],
                 "block_id": tx.get("block_id"),
@@ -2482,6 +2499,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="the step's command was signed for the contract itself (no wallet send)",
     )
+    rc.add_argument(
+        "--from",
+        dest="sender",
+        default=None,
+        help="the wallet that actually sent the message, when the record named another",
+    )
     return p
 
 
@@ -2506,7 +2529,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "return-funds":
             out = runner.return_funds(args.to)
         elif args.command == "reconcile":
-            out = runner.reconcile(args.label, external=args.external)
+            out = runner.reconcile(args.label, external=args.external, sender=args.sender)
         else:
             out = runner.status()
     except Refusal as exc:

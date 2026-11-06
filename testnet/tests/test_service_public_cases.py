@@ -1364,6 +1364,34 @@ class ReconcileExternal(RunnerCase):
             self.reconcile()
         self.assertEqual(self.reconcile(external=True)["verdict"], "settled")
 
+    def test_sender_override_locates_the_internal_message_on_the_contract_side(self):
+        self.record(external=True)
+        row = tx(200, "C1", in_hash="M1")
+        row["in_msg"]["source"] = PAYER
+        self.rpc.add(CONTRACT, row)
+        stranger = tx(201, "C2", in_hash="M2")
+        stranger["in_msg"]["source"] = TARGET
+        self.rpc.add(CONTRACT, stranger)
+        with self.assertRaises(spc.Refusal):
+            self.reconcile()
+        rec = self.reconcile(sender=PAYER)
+        self.assertEqual(rec["verdict"], "settled")
+        self.assertFalse(rec["external"])
+        self.assertEqual(rec["sender"], PAYER)
+        self.assertEqual(rec["tx"]["hash"], "C1")
+
+    def test_sender_override_refuses_two_or_zero_messages(self):
+        self.record(external=True)
+        with self.assertRaises(spc.Refusal):
+            self.reconcile(sender=PAYER)
+        for lt, h, m in ((200, "C1", "M1"), (201, "C2", "M2")):
+            row = tx(lt, h, in_hash=m)
+            row["in_msg"]["source"] = PAYER
+            self.rpc.add(CONTRACT, row)
+        with self.assertRaises(spc.Refusal):
+            self.reconcile(sender=PAYER)
+        self.assertFalse((self.runner.journal.steps / "s.reconciled.json").exists())
+
     def test_two_arrivals_or_none_refuse(self):
         self.record(external=True)
         with self.assertRaises(spc.Refusal):
