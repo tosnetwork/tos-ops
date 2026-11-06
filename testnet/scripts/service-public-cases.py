@@ -100,9 +100,31 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def crc16_xmodem(data: bytes) -> int:
+    crc = 0
+    for byte in data:
+        crc ^= byte << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) if crc & 0x8000 else crc << 1
+            crc &= 0xFFFF
+    return crc
+
+
 def norm_addr(address: str) -> str:
-    wc, _, acc = address.partition(":")
-    return f"{int(wc)}:{acc.lower()}"
+    """Canonical `wc:hex` form of a raw or user-friendly (base64url, checksummed) address."""
+    if ":" in address:
+        wc, _, acc = address.partition(":")
+        if len(acc) != 64 or set(acc.lower()) - set("0123456789abcdef"):
+            raise Refusal(f"bad raw address {address!r}")
+        return f"{int(wc)}:{acc.lower()}"
+    try:
+        raw = base64.urlsafe_b64decode(address.replace("+", "-").replace("/", "_") + "==")
+    except (ValueError, TypeError) as exc:
+        raise Refusal(f"bad address {address!r}") from exc
+    if len(raw) != 36 or crc16_xmodem(raw[:34]) != int.from_bytes(raw[34:], "big"):
+        raise Refusal(f"bad address checksum {address!r}")
+    wc = int.from_bytes(raw[1:2], "big", signed=True)
+    return f"{wc}:{raw[2:34].hex()}"
 
 
 def same_addr(a: str | None, b: str | None) -> bool:
@@ -625,12 +647,27 @@ class Runner:
                 for k, v in answer.items()
                 if k in ("address", "request_id", "tx_hash", "status")
             }
-            observe = observe or norm_addr(answer.get("address", "")) or None
+            answered = answer.get("address")
+            observe = observe or (norm_addr(answered) if answered else None)
         if rc != 0:
             # The CLI refused before or while broadcasting: reconcile read-only, never retry.
             record["payer_tx_after"] = self.rpc.transactions_after(payer, before["payer_lt"])
-            record["verdict"] = "cli-refused" if not record["payer_tx_after"] else "unknown"
+            if record["payer_tx_after"]:
+                record["verdict"] = "unknown"
+            elif expect_exit != 0:
+                # A negative control the CLI already refuses client-side: nothing was sent, the
+                # protected state is unchanged, but no on-chain refusal row exists for it.
+                record["after"] = {"state": show() if show else None}
+                record["verdict"] = (
+                    "cli-refused-before-broadcast"
+                    if record["after"]["state"] == before["state"]
+                    else "refusal-control-failed"
+                )
+            else:
+                record["verdict"] = "cli-refused"
             self.journal.done(label, record)
+            if record["verdict"] == "cli-refused-before-broadcast":
+                return record
             raise Refusal(f"{label}: CLI exit {rc}; {record['verdict']}; reconciled read-only")
         found: dict = {}
 

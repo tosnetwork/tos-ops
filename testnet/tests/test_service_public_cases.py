@@ -4,6 +4,7 @@ Every guard is exercised red and green with a fake CLI and a fake RPC: a passing
 proves the guard can refuse, not merely that it stayed quiet.
 """
 
+import base64
 import importlib.util
 import json
 import os
@@ -452,6 +453,66 @@ class Helpers(unittest.TestCase):
             self.assertIn('"label": "echo"', events)
             self.assertNotIn("raw-cli-output", events)  # raw output stays in the private dir
             self.assertIn("raw-cli-output", (cli.receipts / "echo.stdout").read_text())
+
+    def test_user_friendly_address_normalises_to_raw(self):
+        raw = bytes([0x11, 0x00]) + bytes.fromhex("ab" * 32)
+        friendly = base64.urlsafe_b64encode(raw + spc.crc16_xmodem(raw).to_bytes(2, "big")).decode()
+        self.assertEqual(spc.norm_addr(friendly), "0:" + "ab" * 32)
+        self.assertEqual(spc.norm_addr("0:" + "AB" * 32), "0:" + "ab" * 32)
+        self.assertTrue(spc.same_addr(friendly, "0:" + "AB" * 32))
+        masterchain = bytes([0x11, 0xFF]) + bytes.fromhex("cd" * 32)
+        friendly_mc = base64.urlsafe_b64encode(
+            masterchain + spc.crc16_xmodem(masterchain).to_bytes(2, "big")
+        ).decode()
+        self.assertEqual(spc.norm_addr(friendly_mc), "-1:" + "cd" * 32)
+        corrupted = friendly[:-1] + ("A" if friendly[-1] != "A" else "B")
+        with self.assertRaises(spc.Refusal):
+            spc.norm_addr(corrupted)
+        with self.assertRaises(spc.Refusal):
+            spc.norm_addr("0:" + "zz" * 32)
+        with self.assertRaises(spc.Refusal):
+            spc.norm_addr("")
+
+
+class ClientSideRefusal(RunnerCase):
+    def test_negative_control_refused_by_the_cli_is_recorded_not_fatal(self):
+        self.cli.script["s"] = (1, "", None)
+        rec = self.runner.step(
+            "s",
+            ["agent", "x"],
+            payer=PAYER,
+            observe=CONTRACT,
+            expect_exit=1800,
+            show=lambda: {"owner": "a"},
+        )
+        self.assertEqual(rec["verdict"], "cli-refused-before-broadcast")
+        self.assertEqual(rec["payer_tx_after"], [])
+
+    def test_negative_control_refused_by_the_cli_but_state_moved_fails(self):
+        states = iter([{"owner": "a"}, {"owner": "b"}])
+        self.cli.script["s"] = (1, "", None)
+        with self.assertRaises(spc.Refusal):
+            self.runner.step(
+                "s",
+                ["agent", "x"],
+                payer=PAYER,
+                observe=CONTRACT,
+                expect_exit=1800,
+                show=lambda: next(states),
+            )
+        self.assertEqual(self.runner.journal.result("s")["verdict"], "refusal-control-failed")
+
+    def test_positive_step_refused_by_the_cli_stays_fatal(self):
+        self.cli.script["s"] = (1, "", None)
+        with self.assertRaises(spc.Refusal):
+            self.runner.step("s", ["agent", "x"], payer=PAYER, observe=CONTRACT)
+        self.assertEqual(self.runner.journal.result("s")["verdict"], "cli-refused")
+
+    def test_cli_refusal_with_a_message_on_chain_is_unknown_even_for_a_control(self):
+        self.cli.script["s"] = (1, "", self.settle_effect(exit_code=1800, aborted=True))
+        with self.assertRaises(spc.Refusal):
+            self.runner.step("s", ["agent", "x"], payer=PAYER, observe=CONTRACT, expect_exit=1800)
+        self.assertEqual(self.runner.journal.result("s")["verdict"], "unknown")
 
 
 if __name__ == "__main__":
