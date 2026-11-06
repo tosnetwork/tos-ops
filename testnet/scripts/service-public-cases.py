@@ -752,13 +752,16 @@ class Cli:
         private = str(self.private)
         return [a.replace(private, "<private>") if private in a else a for a in args]
 
-    def run(self, label: str, *args: str, want_json: bool = False):
+    def run(self, label: str, *args: str, want_json: bool = False, format_flag: bool = True):
         """Run tosctl once. Raw output stays private; the sanitized record is journaled.
+
+        `want_json` parses stdout as JSON; `format_flag=False` does so without appending the
+        global `--format json` (for commands that print JSON themselves and reject that flag).
 
         Returns (exit code or None on timeout, stdout text or parsed JSON)."""
         self.receipts.mkdir(mode=0o700, exist_ok=True)
         argv = [str(self.path), *args, "-c", str(self.config)]
-        if want_json:
+        if want_json and format_flag:
             argv += ["--format", "json"]
         self.calls += 1
         started = utc(now())
@@ -891,7 +894,7 @@ class Runner:
         return record
 
     # ----- non-value CLI steps -----------------------------------------------------------------
-    def local(self, label: str, *argv: str, want_json: bool = False):
+    def local(self, label: str, *argv: str, want_json: bool = False, format_flag: bool = True):
         """A once-only CLI step that moves no value (profile, key or wallet bookkeeping)."""
         previous = self.journal.result(label)
         if previous:
@@ -901,7 +904,7 @@ class Runner:
         if self.journal.attempted(label):
             raise Refusal(f"step {label!r} was attempted without a result; reconcile by hand")
         self.journal.attempt(label, {"kind": "local", "argv": self.cli.redact(argv)})
-        rc, answer = self.cli.run(label, *argv, want_json=want_json)
+        rc, answer = self.cli.run(label, *argv, want_json=want_json, format_flag=format_flag)
         self.journal.done(
             label, {"exit_code": rc, "answer": answer if want_json and rc == 0 else None}
         )
@@ -2964,6 +2967,15 @@ class Runner:
             raise Refusal(f"saved request header {header} differs from the prepared request")
         return raw, msg
 
+    def sc03e_prepare_label(self) -> str:
+        """`sc03e-prepare`, or `sc03e-prepare-r2` when the first attempt ended with the CLI's
+        argument-parse exit (2): clap refuses before any config, key or chain access, so nothing
+        was signed and the first record stays as evidence. Any other failure is never retried."""
+        first = self.journal.result("sc03e-prepare")
+        if first is not None and first.get("exit_code") == 2 and first.get("answer") is None:
+            return "sc03e-prepare-r2"
+        return "sc03e-prepare"
+
     def case_sc03e(self, w: dict) -> dict:
         """Expiry refusal on the SC-03 agent account (exit 1706) with a request that is still
         current in every other respect.
@@ -2986,14 +2998,15 @@ class Runner:
         agent_wallet = norm_addr(base["agent_wallet"])
         state0 = self.agreed_agent_state(account)
         action_id = hashlib.sha256(f"sc03e-expiry-{self.args.date}".encode()).hexdigest()
-        previous = self.journal.result("sc03e-prepare")
+        label = self.sc03e_prepare_label()
+        previous = self.journal.result(label)
         if previous and isinstance(previous.get("answer"), dict):
             valid_until = int(previous["answer"]["valid_until"])
         else:
             valid_until = int(now()) + EXPIRY_LEAD_S
         path = self.expiry_probe_path()
         answer = self.local(
-            "sc03e-prepare",
+            label,
             "agent",
             "account",
             "task-send-prepare",
@@ -3011,6 +3024,8 @@ class Runner:
             str(path),
             "--yes",
             want_json=True,
+            # task-send-prepare prints its own JSON and rejects the global --format flag.
+            format_flag=False,
         )
         control = self.journal.result("sc03e-expired")
         if control is None:
@@ -3650,17 +3665,20 @@ class PlanRunner(Runner):
     def guards(self) -> dict:
         return {}
 
-    def local(self, label, *argv, want_json=False):
-        self.recorded.append({"label": label, "argv": list(argv), "value": False})
+    def local(self, label, *argv, want_json=False, format_flag=True):
+        # The flag check must see what the CLI receives, including the implicit --format json.
+        implicit = ["--format", "json"] if want_json and format_flag else []
+        self.recorded.append({"label": label, "argv": [*argv, *implicit], "value": False})
         return {"address": self.fake, "result": {"address": self.fake}} if want_json else None
 
     def step(
         self, label, argv, payer, observe, expect_exit=0, want_json=False, show=None, external=False
     ):
+        implicit = ["--format", "json"] if want_json else []
         self.recorded.append(
             {
                 "label": label,
-                "argv": list(argv),
+                "argv": [*argv, *implicit],
                 "value": True,
                 "payer": payer,
                 "external": external,
@@ -3698,6 +3716,9 @@ class PlanRunner(Runner):
 
     def retry_label(self, label):
         return label
+
+    def sc03e_prepare_label(self):
+        return "sc03e-prepare"
 
     def duplicate_control(self, label, argv, payer, account, target, external=False):
         self.recorded.append(
