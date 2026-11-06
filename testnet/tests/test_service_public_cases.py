@@ -297,17 +297,46 @@ class StepControls(RunnerCase):
         self.assertIn("never re-sent", str(cm.exception))
         self.assertEqual(self.cli.calls, [])
 
-    def test_lost_reply_is_reconciled_read_only_without_resend(self):
+    def test_cli_failure_after_one_broadcast_is_judged_by_the_chain(self):
         self.cli.script["s"] = (7, "", settle_effect())
-        with self.assertRaises(spc.Refusal) as cm:
-            self.step()
-        self.assertIn("unknown", str(cm.exception))
-        rec = self.runner.journal.result("s")
-        self.assertEqual(rec["verdict"], "unknown")
+        rec = self.step()
+        self.assertEqual(rec["verdict"], "settled")
+        self.assertTrue(rec["cli_reported_failure"])
+        self.assertEqual(rec["exit_code"], 7)
+        self.assertEqual(rec["tx"]["hash"], "C1")
         self.assertEqual(len(rec["payer_tx_after"]), 1)
+
+    def test_lost_reply_after_a_cli_failure_is_unknown_and_never_resent(self):
+        def effect(rpc):
+            rpc.add(PAYER, tx(100, "P1", out=((CONTRACT, "M1"),)))
+
+        self.cli.script["s"] = (7, "", effect)
+        with self.assertRaises(spc.Refusal):
+            self.step()
+        rec = self.runner.journal.result("s")
+        self.assertEqual(rec["verdict"], "unknown-not-observed")
+        self.assertTrue(rec["cli_reported_failure"])
         with self.assertRaises(spc.Refusal):
             self.step()
         self.assertEqual(len(self.cli.calls), 1)
+
+    def test_two_broadcasts_after_a_cli_failure_stay_unknown(self):
+        def effect(rpc):
+            rpc.add(PAYER, tx(100, "P1", out=((CONTRACT, "M1"),)))
+            rpc.add(PAYER, tx(101, "P2", out=((CONTRACT, "M2"),)))
+
+        self.cli.script["s"] = (7, "", effect)
+        with self.assertRaises(spc.Refusal):
+            self.step()
+        self.assertEqual(self.runner.journal.result("s")["verdict"], "unknown")
+
+    def test_cli_timeout_with_one_broadcast_is_still_unknown(self):
+        self.cli.script["s"] = (None, "", settle_effect())
+        with self.assertRaises(spc.Refusal):
+            self.step()
+        rec = self.runner.journal.result("s")
+        self.assertEqual(rec["verdict"], "unknown")
+        self.assertNotIn("cli_reported_failure", rec)
 
     def test_cli_timeout_is_unknown_even_without_a_visible_message(self):
         self.cli.script["s"] = (None, "", None)
@@ -481,11 +510,18 @@ class ClientSideRefusal(RunnerCase):
             self.step()
         self.assertEqual(self.runner.journal.result("s")["verdict"], "cli-refused")
 
-    def test_cli_refusal_with_a_message_on_chain_is_unknown_even_for_a_control(self):
+    def test_cli_reports_the_contract_abort_with_a_non_zero_exit(self):
         self.cli.script["s"] = (1, "", settle_effect(exit_code=1800, aborted=True))
+        rec = self.step(expect_exit=1800)
+        self.assertEqual(rec["verdict"], "refused-as-intended")
+        self.assertTrue(rec["cli_reported_failure"])
+        self.assertEqual(rec["compute"]["exit_code"], 1800)
+
+    def test_cli_abort_report_with_the_wrong_exit_code_fails_the_control(self):
+        self.cli.script["s"] = (1, "", settle_effect(exit_code=1801, aborted=True))
         with self.assertRaises(spc.Refusal):
             self.step(expect_exit=1800)
-        self.assertEqual(self.runner.journal.result("s")["verdict"], "unknown")
+        self.assertEqual(self.runner.journal.result("s")["verdict"], "refusal-control-failed")
 
     def test_message_that_lands_during_the_observation_window_is_unknown(self):
         ticks = {"n": 0}
@@ -504,7 +540,7 @@ class ClientSideRefusal(RunnerCase):
         ):
             with self.assertRaises(spc.Refusal):
                 self.step(expect_exit=1800)
-        self.assertEqual(self.runner.journal.result("s")["verdict"], "unknown")
+        self.assertEqual(self.runner.journal.result("s")["verdict"], "unknown-not-observed")
 
     def test_case_verdict_flags_controls_without_receipt(self):
         v = spc.Runner.verdict(
@@ -970,6 +1006,109 @@ class DuplicateControl(RunnerCase):
         with self.assertRaises(spc.Refusal):
             self.runner.duplicate_control("g", ["agent"], PAYER, CONTRACT, TARGET)
         self.assertEqual(len(self.cli.calls), 1)
+
+
+class Reconcile(RunnerCase):
+    """A step that ended `unknown` is reconciled read-only from its single broadcast."""
+
+    def unknown_record(self, expect_exit=1923):
+        self.runner.journal.attempt("s", {})
+        self.runner.journal.done(
+            "s",
+            {
+                "verdict": "unknown",
+                "exit_code": 1,
+                "payer": PAYER,
+                "observe": CONTRACT,
+                "expect_exit": expect_exit,
+                "before": {"payer_lt": 50, "observe_lt": 60},
+            },
+        )
+        self.rpc.add(PAYER, tx(50, "P0", out=((CONTRACT, "M0"),)))
+        self.rpc.add(CONTRACT, tx(60, "C0", in_hash="M0"))
+
+    def reconcile(self):
+        with mock.patch.object(spc.Runner, "preflight", return_value={}):
+            return self.runner.reconcile("s")
+
+    def test_single_broadcast_with_the_expected_abort_is_refused_as_intended(self):
+        self.unknown_record()
+        settle_effect(exit_code=1923, aborted=True)(self.rpc)
+        rec = self.reconcile()
+        self.assertEqual(rec["verdict"], "refused-as-intended")
+        self.assertTrue(rec["reconciled"])
+        self.assertEqual(rec["reconciled_from_verdict"], "unknown")
+        self.assertEqual(rec["tx"]["hash"], "C1")
+        self.assertEqual(rec["in_msg_hash"], "M1")
+        self.assertTrue(all(rec["confirmed_on"].values()))
+        self.assertTrue((self.runner.journal.steps / "s.reconciled.json").exists())
+        self.assertEqual(
+            json.loads((self.runner.journal.steps / "s.done.json").read_text())["verdict"],
+            "unknown",
+        )
+        self.assertEqual(self.runner.journal.result("s")["verdict"], "refused-as-intended")
+        self.assertEqual(self.step(expect_exit=1923)["verdict"], "refused-as-intended")
+        self.assertEqual(self.cli.calls, [])
+        with self.assertRaises(spc.Refusal) as cm:
+            self.reconcile()
+        self.assertIn("already reconciled", str(cm.exception))
+
+    def test_wrong_exit_code_is_a_failed_control_and_is_not_replayed(self):
+        self.unknown_record()
+        settle_effect(exit_code=1900, aborted=True)(self.rpc)
+        self.assertEqual(self.reconcile()["verdict"], "refusal-control-failed")
+        with self.assertRaises(spc.Refusal):
+            self.step(expect_exit=1923)
+        self.assertEqual(self.cli.calls, [])
+
+    def test_positive_step_reconciles_to_settled_only_on_success(self):
+        self.unknown_record(expect_exit=0)
+        settle_effect()(self.rpc)
+        self.assertEqual(self.reconcile()["verdict"], "settled")
+
+    def test_positive_step_with_an_abort_is_unexpected(self):
+        self.unknown_record(expect_exit=0)
+        settle_effect(exit_code=5, aborted=True)(self.rpc)
+        self.assertEqual(self.reconcile()["verdict"], "unexpected-abort")
+
+    def test_only_unknown_records_with_exactly_one_broadcast_are_reconciled(self):
+        with self.assertRaises(spc.Refusal):
+            self.reconcile()
+        self.unknown_record()
+        with self.assertRaises(spc.Refusal):
+            self.reconcile()
+        self.rpc.add(PAYER, tx(100, "P1", out=((CONTRACT, "M1"),)))
+        self.rpc.add(CONTRACT, tx(200, "C1", in_hash="M1", exit_code=1923, aborted=True))
+        self.rpc.add(PAYER, tx(101, "P2", out=((CONTRACT, "M2"),)))
+        self.rpc.add(CONTRACT, tx(201, "C2", in_hash="M2", exit_code=1923, aborted=True))
+        with self.assertRaises(spc.Refusal) as cm:
+            self.reconcile()
+        self.assertIn("2 messages", str(cm.exception))
+        self.assertFalse((self.runner.journal.steps / "s.reconciled.json").exists())
+
+    def test_settled_records_are_not_reconciled(self):
+        self.unknown_record()
+        settle_effect(exit_code=1923, aborted=True)(self.rpc)
+        done = json.loads((self.runner.journal.steps / "s.done.json").read_text())
+        done["verdict"] = "refusal-control-failed"
+        (self.runner.journal.steps / "s.done.json").write_text(json.dumps(done))
+        with self.assertRaises(spc.Refusal) as cm:
+            self.reconcile()
+        self.assertIn("only `unknown`", str(cm.exception))
+        self.assertFalse((self.runner.journal.steps / "s.reconciled.json").exists())
+
+    def test_missing_confirmation_source_refuses(self):
+        self.unknown_record()
+        settle_effect(exit_code=1923, aborted=True, sources=(PRIMARY,))(self.rpc)
+        with self.assertRaises(spc.Refusal):
+            self.reconcile()
+        self.assertFalse((self.runner.journal.steps / "s.reconciled.json").exists())
+
+    def test_old_broadcast_before_the_baseline_does_not_count(self):
+        self.unknown_record()
+        with self.assertRaises(spc.Refusal) as cm:
+            self.reconcile()
+        self.assertIn("0 messages", str(cm.exception))
 
 
 class FlagFixtureDefault(unittest.TestCase):

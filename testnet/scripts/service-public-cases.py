@@ -357,8 +357,17 @@ class Journal:
         os.replace(tmp, path)
 
     def result(self, label: str) -> dict | None:
-        path = self.steps / f"{label}.done.json"
-        return json.loads(path.read_text()) if path.exists() else None
+        """The step's record: a read-only reconciliation, if one was made, else the original."""
+        for suffix in ("reconciled", "done"):
+            path = self.steps / f"{label}.{suffix}.json"
+            if path.exists():
+                return json.loads(path.read_text())
+        return None
+
+    def reconciled(self, label: str, record: dict) -> None:
+        path = self.steps / f"{label}.reconciled.json"
+        with path.open("x") as fh:
+            json.dump({"label": label, "utc": utc(now()), **record}, fh, sort_keys=True)
 
     def attempted(self, label: str) -> bool:
         return (self.steps / f"{label}.attempt.json").exists()
@@ -783,7 +792,12 @@ class Runner:
 
             self.wait(broadcast, REFUSAL_OBSERVE_S)
             record["payer_tx_after"] = [r["transaction_id"] for r in sent]
-            if sent or rc is None:
+            if rc is not None and len(sent) == 1 and observe:
+                # The CLI broadcast the message and then reported the contract's own failure
+                # (or its own) with a non-zero exit. Exactly one message is on chain, so the
+                # contract transaction decides exactly as for a clean exit.
+                record["cli_reported_failure"] = True
+            elif sent or rc is None:
                 record["verdict"] = "unknown"
             elif expect_exit != 0:
                 # A negative control the CLI already refuses client-side: nothing was sent, the
@@ -796,10 +810,11 @@ class Runner:
                 )
             else:
                 record["verdict"] = "cli-refused"
-            self.journal.done(label, record)
-            if record["verdict"] == "cli-refused-before-broadcast":
-                return record
-            raise Refusal(f"{label}: CLI exit {rc}; {record['verdict']}; reconciled read-only")
+            if "verdict" in record:
+                self.journal.done(label, record)
+                if record["verdict"] == "cli-refused-before-broadcast":
+                    return record
+                raise Refusal(f"{label}: CLI exit {rc}; {record['verdict']}; reconciled read-only")
         found: dict = {}
 
         def settled() -> bool:
@@ -2111,6 +2126,91 @@ class Runner:
             out[wallet] = {"returned_nanotos": amount, "tx": rec["tx"]}
         return out
 
+    def reconcile(self, label: str) -> dict:
+        """Read-only reconciliation of a step that ended `unknown` with exactly one broadcast.
+
+        Nothing is sent. The payer's single message to the observed contract after the step's
+        baseline is located, the contract transaction it produced is read and confirmed on
+        every source, and the verdict follows the same rules as a live step. The original
+        record is kept; the reconciliation is written beside it and replayed from then on.
+        """
+        self.preflight(value_action=False)
+        done = self.journal.result(label)
+        if done is None:
+            raise Refusal(f"{label} has no record")
+        if done.get("reconciled"):
+            raise Refusal(f"{label} was already reconciled")
+        if done.get("verdict") != "unknown":
+            raise Refusal(f"{label} ended {done.get('verdict')!r}; only `unknown` is reconciled")
+        payer, observe = done.get("payer"), done.get("observe")
+        before = done.get("before") or {}
+        if not payer or not observe or "payer_lt" not in before:
+            raise Refusal(f"{label} lacks payer/observe/baseline; reconcile by hand")
+        sends = self.sends_to(payer, int(before["payer_lt"]), observe)
+        if len(sends) != 1:
+            raise Refusal(f"{label}: payer sent {len(sends)} messages to {observe}; by hand")
+        out_hash = [
+            m["hash"] for m in sends[0]["out_msgs"] if same_addr(m.get("destination"), observe)
+        ][0]
+        rows = self.rpc.transactions_after(observe, int(before.get("observe_lt") or 0))
+        hit = [r for r in rows if (r.get("in_msg") or {}).get("hash") == out_hash]
+        if len(hit) != 1:
+            raise Refusal(f"{label}: {len(hit)} contract transactions carry the message")
+        tx = hit[0]
+        compute = tx.get("compute") or {}
+        action = tx.get("action")
+        confirmations = {
+            url: any(
+                r["transaction_id"]["hash"] == tx["transaction_id"]["hash"]
+                for r in self.rpc.transactions_after(
+                    observe, int(before.get("observe_lt") or 0), url
+                )
+            )
+            for url in self.rpc.confirms
+        }
+        record = dict(done)
+        record.update(
+            {
+                "reconciled": True,
+                "reconciled_from_verdict": done.get("verdict"),
+                "payer_tx": sends[0]["transaction_id"],
+                "tx": tx["transaction_id"],
+                "block_id": tx.get("block_id"),
+                "compute": compute,
+                "aborted": tx.get("aborted"),
+                "action": action,
+                "in_msg_hash": out_hash,
+                "out_msgs": [
+                    {k: m.get(k) for k in ("destination", "value", "bounced", "hash")}
+                    for m in tx.get("out_msgs", [])
+                ],
+                "confirmed_on": confirmations,
+                "state_check": "unavailable",
+            }
+        )
+        if not all(confirmations.values()):
+            raise Refusal(f"{label}: transaction not seen on every confirmation source")
+        expect_exit = int(done.get("expect_exit") or 0)
+        if expect_exit == 0:
+            action_ok = action is None or action.get("success") is not False
+            ok = (
+                compute.get("success") is True
+                and compute.get("exit_code") == 0
+                and tx.get("aborted") is False
+                and action_ok
+            )
+            record["verdict"] = "settled" if ok else "unexpected-abort"
+        else:
+            ok = (
+                tx.get("aborted") is True
+                and compute.get("success") is False
+                and compute.get("exit_code") == expect_exit
+            )
+            record["verdict"] = "refused-as-intended" if ok else "refusal-control-failed"
+        self.journal.reconciled(label, record)
+        self.journal.log(kind="reconciled", label=label, verdict=record["verdict"])
+        return record
+
     def status(self) -> dict:
         actors = self.actors() if self.actors_path.exists() else {}
         balances = {n: self.rpc.balance(a) for n, a in actors.get("wallets", {}).items()}
@@ -2273,6 +2373,8 @@ def build_parser() -> argparse.ArgumentParser:
     r = sub.add_parser("return-funds")
     r.add_argument("--to", required=True)
     sub.add_parser("status")
+    rc = sub.add_parser("reconcile")
+    rc.add_argument("label")
     return p
 
 
@@ -2296,6 +2398,8 @@ def main(argv: list[str] | None = None) -> int:
             out = runner.case(args.name)
         elif args.command == "return-funds":
             out = runner.return_funds(args.to)
+        elif args.command == "reconcile":
+            out = runner.reconcile(args.label)
         else:
             out = runner.status()
     except Refusal as exc:
