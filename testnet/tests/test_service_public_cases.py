@@ -3126,27 +3126,49 @@ class Sc03eFlagFixture(unittest.TestCase):
             checker.check_flags(self.plan(), self.flags)
         self.assertIn("task-send-prepare", str(cm.exception))
 
-    def test_a_fixture_with_task_send_prepare_accepts_the_plan(self):
-        flags = json.loads(json.dumps(self.flags))
-        flags["commands"]["agent account task-send-prepare"] = {
-            "flags": [
-                "--wallet",
-                "--target",
-                "--value",
-                "--body-boc",
-                "--valid-until",
-                "--action-id",
-                "--yes",
-                "--signed-boc-out",
-            ],
-            "possible_values": [],
-        }
-        planned = self.plan()
+    def test_the_fixture_recorded_from_the_merge_commit_cli_accepts_the_plan(self):
+        # Recorded from tosctl built at tos cf2901a42 (#424 merge): same commands and flags as
+        # the pinned fixture plus task-send-prepare and task-send-broadcast.
+        flags = json.loads(
+            (spc.FLAG_FIXTURE.parent / "service-public-cases-cli-flags-cf2901a.json").read_text()
+        )
+        self.assertEqual(
+            flags["cli_sha256"], "6ff57ea19191347a906ad431efe82b5fdd8439533a2ad6ab4844e10853870a32"
+        )
+        for path, known in self.flags["commands"].items():
+            self.assertEqual(flags["commands"][path], known, path)
+        args = spc.build_parser().parse_args(
+            [
+                "--private-dir",
+                "/nonexistent",
+                "--evidence-dir",
+                "/nonexistent",
+                "--cli",
+                "/x",
+                "--cli-sha256",
+                flags["cli_sha256"],
+                "--rpc",
+                PRIMARY,
+                "--genesis-root",
+                "r",
+                "--genesis-file",
+                "f",
+                "status",
+            ]
+        )
+        planner = spc.PlanRunner(args, WALLETS)
+        planner.case_fn("sc03e")(planner.wallets)
+        planned = planner.recorded
         self.assertEqual([p["label"] for p in planned], ["sc03e-prepare"])
         self.assertFalse(planned[0]["value"])
         checker = spc.Runner.__new__(spc.Runner)
-        checker.args = self.args
+        checker.args = args
         checker.check_flags(planned, flags)
+        # The new binary also still accepts every other case's plan.
+        for name in spc.Runner.CASES:
+            p = spc.PlanRunner(args, WALLETS)
+            p.case_fn(name)(p.wallets)
+            checker.check_flags(p.recorded, flags)
 
 
 class ExternalDuplicateControl(RunnerCase):
