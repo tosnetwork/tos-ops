@@ -219,6 +219,42 @@ class StepControls(RunnerCase):
             json.loads((self.runner.journal.steps / "s.attempt.json").read_text())["kind"], "value"
         )
 
+    def test_step_records_carry_their_label_for_the_case_verdict(self):
+        self.cli.script["s"] = (0, "", settle_effect())
+        rec = self.step()
+        self.assertEqual(rec["label"], "s")
+        self.assertEqual(self.step()["label"], "s")
+
+        def later(rpc):
+            rpc.add(PAYER, tx(300, "P2", out=((CONTRACT, "M2"),)))
+            rpc.add(CONTRACT, tx(400, "C2", in_hash="M2", exit_code=7, aborted=True))
+
+        self.cli.script["t"] = (0, "", later)
+        control = self.runner.step(
+            "t", ["agent", "x"], payer=PAYER, observe=CONTRACT, expect_exit=7
+        )
+        verdict = spc.Runner.verdict(True, [control])
+        self.assertEqual(verdict["controls"], {"t": "refused-as-intended"})
+        self.assertEqual(verdict["controls_without_on_chain_receipt"], [])
+        self.assertEqual(verdict["controls_refused_client_side"], [])
+        self.assertTrue(verdict["pass"])
+        self.cli.script["u"] = (1, "", None)
+        refused = self.runner.step(
+            "u", ["agent", "x"], payer=PAYER, observe=CONTRACT, expect_exit=7
+        )
+        self.assertEqual(refused["label"], "u")
+        verdict = spc.Runner.verdict(True, [refused])
+        self.assertEqual(verdict["controls_without_on_chain_receipt"], ["u"])
+        self.assertFalse(verdict["pass"])
+
+    def test_old_payer_send_is_not_attributed_to_a_client_side_refusal(self):
+        self.rpc.add(PAYER, tx(50, "P0", out=((CONTRACT, "M0"),)))
+        self.cli.script["s"] = (1, "", None)
+        rec = self.step(expect_exit=7)
+        self.assertEqual(rec["verdict"], "cli-refused-before-broadcast")
+        self.assertEqual(rec["before"]["payer_lt"], 50)
+        self.assertEqual(rec["payer_tx_after"], [])
+
     def test_guards_run_before_every_step(self):
         self.cli.script["s"] = (0, "", settle_effect())
         self.step()
@@ -842,6 +878,18 @@ class DuplicateControl(RunnerCase):
         self.assertEqual(rec["verdict"], "cli-refused-before-broadcast")
         self.assertNotIn("tx", rec)
 
+    def test_client_side_refusal_is_accepted_only_where_the_case_declares_it(self):
+        rec = self.dup(rc=1)
+        self.assertTrue(rec["client_side_refusal_accepted"])
+        verdict = spc.Runner.verdict(True, [rec])
+        self.assertTrue(verdict["pass"])
+        self.assertEqual(verdict["controls_refused_client_side"], ["d"])
+        self.assertEqual(verdict["controls_without_on_chain_receipt"], [])
+        plain = {"label": "x", "verdict": "cli-refused-before-broadcast"}
+        self.assertFalse(spc.Runner.verdict(True, [plain])["pass"])
+        wrong = dict(rec, verdict="accepted-without-transfer")
+        self.assertFalse(spc.Runner.verdict(True, [wrong])["pass"])
+
     def test_cli_refusal_with_a_send_is_unknown(self):
         def effect(rpc):
             rpc.add(PAYER, tx(100, "P1", out=((CONTRACT, "M1"),)))
@@ -979,6 +1027,30 @@ class RefusalRedaction(unittest.TestCase):
             self.assertEqual(rc, 3)
             events = (evidence / "events.jsonl").read_text()
             self.assertIn("<private>", events)
+            self.assertNotIn(str(private), events)
+            crash = OSError(f"cannot open {private}/vault.json")
+            with mock.patch.object(spc.Runner, "preflight", side_effect=crash):
+                rc = spc.main(
+                    [
+                        "--private-dir",
+                        str(private),
+                        "--evidence-dir",
+                        str(evidence),
+                        "--cli",
+                        "/x",
+                        "--cli-sha256",
+                        "s",
+                        "--rpc",
+                        PRIMARY,
+                        "--genesis-root",
+                        "r",
+                        "--genesis-file",
+                        "f",
+                        "preflight",
+                    ]
+                )
+            self.assertEqual(rc, 2)
+            events = (evidence / "events.jsonl").read_text()
             self.assertNotIn(str(private), events)
 
 

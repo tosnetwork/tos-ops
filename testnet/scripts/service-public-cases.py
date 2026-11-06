@@ -734,6 +734,7 @@ class Runner:
         previous = self.journal.result(label)
         if previous:
             if previous.get("verdict") in REPLAYABLE:
+                previous.setdefault("label", label)
                 return previous
             raise Refusal(
                 f"step {label!r} already ended with verdict {previous.get('verdict')!r}; "
@@ -751,6 +752,7 @@ class Runner:
             "state": show() if show else None,
         }
         base = {
+            "label": label,
             "argv": self.cli.redact(tuple(argv)),
             "payer": payer,
             "observe": observe,
@@ -897,10 +899,25 @@ class Runner:
 
     @staticmethod
     def verdict(final_ok: bool, controls: list[dict]) -> dict:
-        without = [c["label"] for c in controls if c.get("verdict") != "refused-as-intended"]
+        """A control passes with an on-chain refusal, or with a client-side refusal only where
+        the case declared that the protected property is enforced by the CLI (no contract row
+        can exist); such controls are listed separately so the report stays explicit."""
+
+        def passed(c: dict) -> bool:
+            if c.get("verdict") == "refused-as-intended":
+                return True
+            return c.get("verdict") == "cli-refused-before-broadcast" and bool(
+                c.get("client_side_refusal_accepted")
+            )
+
+        without = [c["label"] for c in controls if not passed(c)]
+        client_side = [
+            c["label"] for c in controls if passed(c) and c.get("verdict") != "refused-as-intended"
+        ]
         return {
             "final_state_ok": final_ok,
             "controls": {c["label"]: c.get("verdict") for c in controls},
+            "controls_refused_client_side": client_side,
             "controls_without_on_chain_receipt": without,
             "pass": bool(final_ok) and not without,
         }
@@ -1859,6 +1876,7 @@ class Runner:
 
         def finish(verdict: str) -> dict:
             record["target_paid_again"] = self.rpc.balance(target) >= paid_at
+            record["client_side_refusal_accepted"] = True
             record["verdict"] = verdict
             self.journal.done(label, record)
             record["label"] = label
@@ -2288,8 +2306,9 @@ def main(argv: list[str] | None = None) -> int:
     except SystemExit:
         raise
     except Exception as exc:  # noqa: BLE001 - journaled, then surfaced as a distinct exit code
-        runner.journal.log(kind="error", command=args.command, error=repr(exc))
-        print(json.dumps({"error": repr(exc)}, indent=2))
+        error = repr(exc).replace(str(runner.private), "<private>")
+        runner.journal.log(kind="error", command=args.command, error=error)
+        print(json.dumps({"error": error}, indent=2))
         return 2
     print(json.dumps(out, indent=2, sort_keys=True, default=str))
     return 0
