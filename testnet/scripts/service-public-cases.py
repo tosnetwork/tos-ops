@@ -2,26 +2,34 @@
 """Once-only public runner for the bounded service-contract acceptance cases (SC-02..SC-08).
 
 The runner drives the pinned `tosctl` against the public testnet from a private directory
-on the coordinator and records exact receipts. It never signs the funding (pool-owner)
+on the coordinator and records exact public receipts. It never signs the funding (pool-owner)
 wallet: funding stays in `testnet-elections.py owner-fund`, and this tool only plans the
 amounts, verifies the credits and keeps the cumulative total under a hard ceiling.
 
 Guarantees the tests pin:
   * every value step has a stable label and an `O_EXCL` attempt marker written before the CLI
     is invoked; a label whose marker exists is refused, so a crash or lost reply can never lead
-    to a second send of the same step (reconciliation is read-only);
+    to a second send of the same step (reconciliation is read-only); a step that ended in any
+    verdict other than settled / refused-as-intended / cli-refused-before-broadcast is never
+    replayed or re-sent;
   * a settlement claim is the exact transaction (same hash) seen on the broadcast source and on
-    every confirmation source, with the payer as the message source, compute exit code and
-    aborted flag recorded; a refusal control must abort with the intended exit code and leave
-    the protected state unchanged;
+    every confirmation source, found through the payer's own outgoing message, with the compute
+    exit code, the aborted flag and the action result recorded; a refusal control must abort
+    with the pinned exit code and leave the protected contract state unchanged;
+  * a CLI refusal is only recorded as "nothing was sent" after a bounded observation window on
+    the payer, and such a control carries no on-chain receipt, which the case result says;
   * preflight refuses a wrong CLI binary, a different genesis on any source, a global version
-    other than the pinned one, a handover quiet window, an over-temperature package and a
-    cumulative funding total above the ceiling;
+    other than the pinned one, the window around a validator-set rotation (ConfigParam 34
+    bounds), an over-temperature package, a group-readable private directory and a cumulative
+    funding total above the ceiling; the rotation and thermal guards run again before every
+    value step;
+  * `plan <case>` lists the exact CLI argument vectors a case will use; `case` checks them
+    against the pinned CLI's own `--help` before the first send;
   * CLI stdout/stderr land in the private directory; the evidence directory only receives
-    sanitized records (labels, argv without environment, addresses, hashes, exit codes).
+    sanitized records (labels, argv with the private path redacted, addresses, hashes, codes).
 
-Commands: preflight | setup | plan-funding | record-funding | activate | case <name> |
-return-funds | status.  See `--help`.
+Commands: preflight | setup | plan-funding | record-funding | activate | plan <case> |
+case <case> | return-funds | status.  See `--help`.
 """
 
 from __future__ import annotations
@@ -31,6 +39,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import stat
 import subprocess
@@ -41,22 +50,24 @@ import urllib.request
 from pathlib import Path
 
 NANO = 10**9
-ROTATION_PERIOD_S = 7200
 QUIET_S = 600
 TEMP_LIMIT_C = 82.0
 CLI_TIMEOUT_S = 180
 SETTLE_TIMEOUT_S = 150
+REFUSAL_OBSERVE_S = 45
 POLL_S = 2.0
 CP8_VERSION = 16
 WALLETS = ("sc-owner", "sc-client", "sc-verifier", "sc-respondent", "sc-outsider")
 KEYS = ("sc-attestor-key", "sc-rotated-attestor-key", "sc-wrong-key")
 FUNDING_PLAN_TOS = {
-    "sc-owner": "5.0",
+    "sc-owner": "7.5",
     "sc-client": "3.0",
     "sc-verifier": "2.0",
     "sc-respondent": "1.5",
-    "sc-outsider": "1.0",
+    "sc-outsider": "2.0",
 }
+AMOUNT_RE = re.compile(r"^(\d+)(?:\.(\d{1,9}))?$")
+HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 HASH = {
     "subject": "11" * 32,
     "attested_1": "22" * 32,
@@ -78,6 +89,26 @@ HASH = {
     "request_1": "56" * 32,
     "request_2": "78" * 32,
 }
+
+# Contract exit codes (crypto/smartcont/*.fc at the pinned CLI commit) and limits.
+SERVICE_NOT_OWNER = 1900
+SERVICE_NOT_AUTHORIZED = 1923
+TASK_ACCEPT_NOT_AGENT = 101
+TASK_SETTLE_AUTHORITY = 105
+TASK_RESOLVE_AUTHORITY = 124
+DISPUTE_NOT_RESPONDENT = 2000
+DISPUTE_NOT_REVIEWER = 2001
+DISPUTE_ALREADY_RESOLVED = 2002
+ATTEST_BAD_SIGNATURE = 2101
+ATTEST_NOT_OWNER = 2102
+REGISTRY_NOT_OWNER = 1800
+REGISTRY_NOT_VERIFIER = 1801
+REGISTRY_INSUFFICIENT_BOND = 1805
+TASK_MIN_REVIEW_PERIOD_S = 3600
+TASK_HORIZON_S = 7200
+SERVICE_MIN_DEPLOY_TOS = "1.5"  # >= 1 TOS operating reserve + 0.2 TOS fee margin
+SERVICE_WITHDRAW_CAP = 50_000_000  # 0.05 TOS, at most the price of the one answered call
+REPLAYABLE = ("settled", "refused-as-intended", "cli-refused-before-broadcast")
 
 
 class Refusal(Exception):
@@ -112,9 +143,11 @@ def crc16_xmodem(data: bytes) -> int:
 
 def norm_addr(address: str) -> str:
     """Canonical `wc:hex` form of a raw or user-friendly (base64url, checksummed) address."""
+    if not isinstance(address, str) or not address:
+        raise Refusal(f"bad address {address!r}")
     if ":" in address:
         wc, _, acc = address.partition(":")
-        if len(acc) != 64 or set(acc.lower()) - set("0123456789abcdef"):
+        if not re.fullmatch(r"-?\d+", wc) or not HEX64_RE.fullmatch(acc.lower()):
             raise Refusal(f"bad raw address {address!r}")
         return f"{int(wc)}:{acc.lower()}"
     try:
@@ -128,56 +161,78 @@ def norm_addr(address: str) -> str:
 
 
 def same_addr(a: str | None, b: str | None) -> bool:
-    return bool(a) and bool(b) and norm_addr(a) == norm_addr(b)
+    try:
+        return bool(a) and bool(b) and norm_addr(a) == norm_addr(b)
+    except Refusal:
+        return False
 
 
 def tos_to_nanotos(text: str) -> int:
-    whole, _, frac = str(text).partition(".")
-    if len(frac) > 9 or not (whole or frac).replace("_", "").isdigit():
+    m = AMOUNT_RE.fullmatch(str(text).strip())
+    if not m:
         raise Refusal(f"bad TOS amount {text!r}")
-    return int(whole or "0") * NANO + int((frac + "0" * 9)[:9] or "0")
+    whole, frac = m.group(1), m.group(2) or ""
+    return int(whole) * NANO + int((frac + "0" * 9)[:9])
 
 
 def nanotos_text(value: int) -> str:
+    if value < 0:
+        raise Refusal("negative amount")
     return f"{value // NANO}.{value % NANO:09d}"
+
+
+def state_nanotos(value) -> int:
+    """A contract view amount, which the CLI prints either as nanotos or as a TOS string."""
+    if isinstance(value, bool) or value is None:
+        raise Refusal(f"amount field missing: {value!r}")
+    if isinstance(value, int):
+        return value
+    text = str(value)
+    return tos_to_nanotos(text) if "." in text else int(text)
 
 
 def boc_root_data(raw: bytes) -> bytes:
     """Data bytes of the root cell of a serialized bag of cells (no cell parsing beyond that)."""
-    if raw[:4] != bytes.fromhex("b5ee9c72"):
-        raise Refusal("not a BOC")
-    flags = raw[4]
-    size = flags & 7
-    has_index = bool(flags & 0x80)
-    off = raw[5]
-    p = 6
-    count = int.from_bytes(raw[p : p + size], "big")
-    p += size * 3  # cells, roots, absent
-    p += off  # total size
-    root = int.from_bytes(raw[p : p + size], "big")
-    p += size
-    if has_index:
-        p += count * off
-    for i in range(count):
-        d1, d2 = raw[p], raw[p + 1]
-        refs = d1 & 7
-        stored = bool(d1 & 16)
-        p += 2
-        if stored:
-            hashes = bin(d1 >> 5).count("1") + 1
-            p += hashes * 34
-        ln = (d2 + 1) // 2
-        data = raw[p : p + ln]
-        p += ln + refs * size
-        if i == root:
-            return data
+    try:
+        if raw[:4] != bytes.fromhex("b5ee9c72"):
+            raise Refusal("not a BOC")
+        flags = raw[4]
+        size = flags & 7
+        has_index = bool(flags & 0x80)
+        off = raw[5]
+        p = 6
+        count = int.from_bytes(raw[p : p + size], "big")
+        p += size * 3  # cells, roots, absent
+        p += off  # total size
+        root = int.from_bytes(raw[p : p + size], "big")
+        p += size
+        if has_index:
+            p += count * off
+        for i in range(count):
+            d1, d2 = raw[p], raw[p + 1]
+            refs = d1 & 7
+            stored = bool(d1 & 16)
+            p += 2
+            if stored:
+                hashes = bin(d1 >> 5).count("1") + 1
+                p += hashes * 34
+            ln = (d2 + 1) // 2
+            data = raw[p : p + ln]
+            if len(data) != ln:
+                raise Refusal("BOC truncated")
+            p += ln + refs * size
+            if i == root:
+                return data
+    except IndexError as exc:
+        raise Refusal("BOC truncated") from exc
     raise Refusal("BOC root missing")
 
 
-def quiet_window_distance(ts: int, anchor: int, period: int = ROTATION_PERIOD_S) -> int:
-    """Seconds to the nearest validator-set rotation on the grid anchored at `anchor`."""
-    phase = (ts - anchor) % period
-    return min(phase, period - phase)
+def quiet_window_distance(ts: int, since: int, until: int) -> int:
+    """Seconds between `ts` and the nearest validator-set boundary; 0 once `until` has passed."""
+    if ts >= until or ts < since:
+        return 0
+    return min(ts - since, until - ts)
 
 
 def package_temperatures() -> list[float]:
@@ -198,7 +253,6 @@ class Rpc:
     def __init__(self, primary: str, confirms: list[str]):
         self.primary = primary
         self.confirms = confirms
-        self.transcript: list[dict] = []
 
     @property
     def all_sources(self) -> list[str]:
@@ -213,7 +267,7 @@ class Rpc:
         try:
             with urllib.request.urlopen(req, timeout=20) as resp:
                 answer = json.loads(resp.read())
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
             raise Refusal(f"rpc {method} on {url}: {exc}") from exc
         if "result" not in answer:
             raise Refusal(f"rpc {method} on {url}: {answer.get('error')}")
@@ -232,16 +286,16 @@ class Rpc:
 
     def global_version(self) -> int:
         data = self.config_param(8)
-        if data[0] != 0xC4:
+        if len(data) < 5 or data[0] != 0xC4:
             raise Refusal("ConfigParam 8 tag")
         return int.from_bytes(data[1:5], "big")
 
-    def rotation_anchor(self) -> int:
-        """utime_since of the installed validator set (ConfigParam 34)."""
+    def rotation_bounds(self) -> tuple[int, int]:
+        """(utime_since, utime_until) of the installed validator set (ConfigParam 34)."""
         data = self.config_param(34)
-        if data[0] not in (0x11, 0x12):
+        if len(data) < 9 or data[0] not in (0x11, 0x12):
             raise Refusal("ConfigParam 34 tag")
-        return int.from_bytes(data[1:5], "big")
+        return int.from_bytes(data[1:5], "big"), int.from_bytes(data[5:9], "big")
 
     def info(self, address: str, url: str | None = None) -> dict:
         return self.call("getAddressInformation", url, address=address)
@@ -289,6 +343,10 @@ class Journal:
             os.fsync(fh.fileno())
         return path
 
+    def attempt_record(self, label: str) -> dict | None:
+        path = self.steps / f"{label}.attempt.json"
+        return json.loads(path.read_text()) if path.exists() else None
+
     def done(self, label: str, record: dict) -> None:
         path = self.steps / f"{label}.done.json"
         tmp = path.with_suffix(".tmp")
@@ -329,35 +387,52 @@ class Cli:
                     env["VAULT_URL"] = value.strip()
         return env
 
+    def redact(self, args: tuple[str, ...]) -> list[str]:
+        private = str(self.private)
+        return [a.replace(private, "<private>") if private in a else a for a in args]
+
     def run(self, label: str, *args: str, want_json: bool = False):
-        """Run tosctl once. Raw output stays private; the sanitized record is journaled."""
+        """Run tosctl once. Raw output stays private; the sanitized record is journaled.
+
+        Returns (exit code or None on timeout, stdout text or parsed JSON)."""
         self.receipts.mkdir(mode=0o700, exist_ok=True)
         argv = [str(self.path), *args, "-c", str(self.config)]
         if want_json:
             argv += ["--format", "json"]
         self.calls += 1
         started = utc(now())
-        proc = subprocess.run(
-            argv, env=self.env(), capture_output=True, timeout=CLI_TIMEOUT_S, check=False
-        )
-        (self.receipts / f"{label}.stdout").write_bytes(proc.stdout)
-        (self.receipts / f"{label}.stderr").write_bytes(proc.stderr)
+        timed_out = False
+        try:
+            proc = subprocess.run(
+                argv, env=self.env(), capture_output=True, timeout=CLI_TIMEOUT_S, check=False
+            )
+            rc, stdout, stderr = proc.returncode, proc.stdout, proc.stderr
+        except subprocess.TimeoutExpired as exc:
+            timed_out = True
+            rc, stdout, stderr = None, exc.stdout or b"", exc.stderr or b""
+        (self.receipts / f"{label}.stdout").write_bytes(stdout)
+        (self.receipts / f"{label}.stderr").write_bytes(stderr)
         self.journal.log(
             kind="cli",
             label=label,
-            argv=list(args),
-            exit_code=proc.returncode,
+            argv=self.redact(args),
+            exit_code=rc,
+            timed_out=timed_out,
             started=started,
-            stdout_sha256=hashlib.sha256(proc.stdout).hexdigest(),
-            stderr_sha256=hashlib.sha256(proc.stderr).hexdigest(),
+            stdout_sha256=hashlib.sha256(stdout).hexdigest(),
+            stderr_sha256=hashlib.sha256(stderr).hexdigest(),
         )
-        text = proc.stdout.decode("utf-8", "replace")
-        if want_json and proc.returncode == 0:
+        text = stdout.decode("utf-8", "replace")
+        if want_json and rc == 0:
             try:
-                return proc.returncode, json.loads(text)
+                return rc, json.loads(text)
             except json.JSONDecodeError as exc:
                 raise Refusal(f"{label}: CLI did not return JSON ({exc})") from exc
-        return proc.returncode, text
+        return rc, text
+
+
+def pinned_flags(path: Path) -> dict:
+    return json.loads(path.read_text())
 
 
 class Runner:
@@ -371,6 +446,7 @@ class Runner:
         self.rpc = Rpc(args.rpc, list(args.confirm_rpc or []))
         self.actors_path = self.evidence / "actors.json"
         self.ledger_path = self.evidence / "funding-ledger.jsonl"
+        self.plan_path = self.evidence / "funding-plan.json"
         self.ceiling = tos_to_nanotos(args.stop_ceiling)
 
     # ----- state files ------------------------------------------------------------------
@@ -378,6 +454,12 @@ class Runner:
         if not self.actors_path.exists():
             raise Refusal("actors.json missing; run setup first")
         return json.loads(self.actors_path.read_text())
+
+    def actor_address(self, actor: str) -> str:
+        wallets = self.actors()["wallets"]
+        if actor not in wallets:
+            raise Refusal(f"unknown actor {actor!r}; known: {sorted(wallets)}")
+        return wallets[actor]
 
     def funded_total(self) -> int:
         total = 0
@@ -403,11 +485,14 @@ class Runner:
         return pinned
 
     def check_quiet_window(self) -> dict:
-        anchor = self.args.rotation_anchor or self.rpc.rotation_anchor()
-        distance = quiet_window_distance(now(), anchor)
+        since, until = self.rpc.rotation_bounds()
+        distance = quiet_window_distance(now(), since, until)
         if distance < QUIET_S:
-            raise Refusal(f"within {distance}s of a validator-set rotation; wait")
-        return {"anchor_utime_since": anchor, "seconds_to_rotation": distance}
+            raise Refusal(
+                f"within {distance}s of a validator-set boundary (since {utc(since)}, "
+                f"until {utc(until)}); wait"
+            )
+        return {"utime_since": since, "utime_until": until, "seconds_to_boundary": distance}
 
     def check_thermal(self) -> list[float]:
         temps = package_temperatures()
@@ -418,6 +503,13 @@ class Runner:
         if max(temps) > TEMP_LIMIT_C:
             raise Refusal(f"package temperature {max(temps)} C above {TEMP_LIMIT_C}")
         return temps
+
+    def guards(self) -> dict:
+        """The two conditions that can change while a case runs; checked before every step."""
+        return {
+            "quiet_window": self.check_quiet_window(),
+            "package_temperatures_c": self.check_thermal(),
+        }
 
     def preflight(self, value_action: bool = True) -> dict:
         record = {
@@ -432,11 +524,29 @@ class Runner:
         if record["global_version"] != CP8_VERSION:
             raise Refusal(f"global version {record['global_version']} != {CP8_VERSION}")
         if value_action:
-            record["quiet_window"] = self.check_quiet_window()
-            record["package_temperatures_c"] = self.check_thermal()
+            record.update(self.guards())
         self.check_private_dir()
         self.journal.log(kind="preflight", **record)
         return record
+
+    # ----- non-value CLI steps -----------------------------------------------------------------
+    def local(self, label: str, *argv: str, want_json: bool = False):
+        """A once-only CLI step that moves no value (profile, key or wallet bookkeeping)."""
+        previous = self.journal.result(label)
+        if previous:
+            if previous.get("exit_code") == 0:
+                return previous.get("answer")
+            raise Refusal(f"step {label!r} already failed with exit {previous.get('exit_code')}")
+        if self.journal.attempted(label):
+            raise Refusal(f"step {label!r} was attempted without a result; reconcile by hand")
+        self.journal.attempt(label, {"kind": "local", "argv": self.cli.redact(argv)})
+        rc, answer = self.cli.run(label, *argv, want_json=want_json)
+        self.journal.done(
+            label, {"exit_code": rc, "answer": answer if want_json and rc == 0 else None}
+        )
+        if rc != 0:
+            raise Refusal(f"{label}: exit {rc}")
+        return answer if want_json else None
 
     # ----- setup --------------------------------------------------------------------------
     def setup(self) -> dict:
@@ -465,29 +575,17 @@ class Runner:
                 fh.write(f"VAULT_URL=file://{vault}?master_key={master}\n")
             del master
         for key in KEYS:
-            label = f"setup-key-{key}"
-            if self.journal.attempted(label):
-                continue
-            self.journal.attempt(label, {"kind": "key-add", "name": key})
-            rc, _ = self.cli.run(label, "key", "add", "--name", key)
-            if rc != 0:
-                raise Refusal(f"{label}: exit {rc}")
-            self.journal.done(label, {"exit_code": rc})
+            self.local(f"setup-key-{key}", "key", "add", "--name", key)
         for wallet in WALLETS:
-            label = f"setup-wallet-{wallet}"
-            if self.journal.attempted(label):
-                continue
-            self.journal.attempt(label, {"kind": "wallet-create", "name": wallet})
-            rc, _ = self.cli.run(label, "wallet", "create", "-n", wallet, "-v", "V3R2", "-w", "0")
-            if rc != 0:
-                raise Refusal(f"{label}: exit {rc}")
-            self.journal.done(label, {"exit_code": rc})
-        rc, rows = self.cli.run("setup-wallet-ls", "wallet", "ls", want_json=True)
-        if rc != 0:
+            self.local(
+                f"setup-wallet-{wallet}", "wallet", "create", "-n", wallet, "-v", "V3R2", "-w", "0"
+            )
+        rc, rows = self.cli.run(f"setup-wallet-ls-{self.cli.calls}", "wallet", "ls", want_json=True)
+        if rc != 0 or not isinstance(rows, list):
             raise Refusal("wallet ls failed")
         addresses = {}
         for row in rows:
-            if row.get("name") in WALLETS and row.get("address"):
+            if isinstance(row, dict) and row.get("name") in WALLETS and row.get("address"):
                 addresses[row["name"]] = norm_addr(row["address"])
         missing = [w for w in WALLETS if w not in addresses]
         if missing:
@@ -498,8 +596,9 @@ class Runner:
         return actors
 
     # ----- funding ------------------------------------------------------------------------
-    def plan_funding(self) -> dict:
+    def plan_funding(self, source: str) -> dict:
         actors = self.actors()
+        source = norm_addr(source)
         plan = []
         total = 0
         for wallet, amount in FUNDING_PLAN_TOS.items():
@@ -511,23 +610,28 @@ class Runner:
                     "to": actors["wallets"][wallet],
                     "amount_tos": amount,
                     "operation_id": f"sc-fund-{wallet.removeprefix('sc-')}-{self.args.date}",
-                    "purpose": f"service-contract public cases {wallet} ({self.args.date})",
+                    "purpose": f"service contract public cases {wallet} {self.args.date}",
                 }
             )
         if self.funded_total() + total > self.ceiling:
             raise Refusal("plan exceeds the stop ceiling")
         out = {
+            "funding_source": source,
             "plan": plan,
             "total_nanotos": total,
             "stop_ceiling_nanotos": self.ceiling,
             "tool": "testnet-elections.py owner-fund --name node-4 --new --dry-run first",
         }
-        (self.evidence / "funding-plan.json").write_text(json.dumps(out, indent=2) + "\n")
+        self.plan_path.write_text(json.dumps(out, indent=2) + "\n")
         return out
 
+    def funding_source(self) -> str:
+        if not self.plan_path.exists():
+            raise Refusal("funding-plan.json missing; run plan-funding first")
+        return norm_addr(json.loads(self.plan_path.read_text())["funding_source"])
+
     def record_funding(self, actor: str, amount: str, operation_id: str) -> dict:
-        actors = self.actors()
-        address = actors["wallets"][actor]
+        address = self.actor_address(actor)
         nanotos = tos_to_nanotos(amount)
         if nanotos <= 0:
             raise Refusal("amount must be positive")
@@ -571,6 +675,9 @@ class Runner:
                 out[wallet] = "unfunded"
                 continue
             label = f"activate-{wallet}"
+            if self.journal.attempted(label):
+                raise Refusal(f"{label} was attempted before and the wallet is {state}")
+            self.guards()
             self.journal.attempt(label, {"kind": "wallet-activate", "address": address})
             rc, _ = self.cli.run(label, "wallet", "activate", "-n", wallet)
             ok = rc == 0 and self.wait(lambda: self.rpc.state(address) == "active")
@@ -583,14 +690,26 @@ class Runner:
     # ----- generic value step -------------------------------------------------------------
     def wait(self, predicate, timeout: float | None = None) -> bool:
         deadline = time.monotonic() + (SETTLE_TIMEOUT_S if timeout is None else timeout)
-        while time.monotonic() < deadline:
+        while True:
             try:
                 if predicate():
                     return True
             except Refusal:
                 pass
+            if time.monotonic() >= deadline:
+                return False
             time.sleep(POLL_S)
-        return False
+
+    def sends_to(self, payer: str, since_lt: int, observe: str | None) -> list[dict]:
+        """Payer transactions after `since_lt` that carry a message to `observe` (any, if None)."""
+        rows = self.rpc.transactions_after(payer, since_lt)
+        if observe is None:
+            return [r for r in rows if r.get("out_msgs")]
+        return [
+            r
+            for r in rows
+            if any(same_addr(m.get("destination"), observe) for m in r.get("out_msgs", []))
+        ]
 
     def step(
         self,
@@ -598,29 +717,28 @@ class Runner:
         argv: list[str],
         payer: str,
         observe: str | None,
-        expect_exit: int | None = 0,
+        expect_exit: int = 0,
         want_json: bool = False,
-        show: callable | None = None,
+        show=None,
     ) -> dict:
         """One CLI action that sends exactly one message from `payer` (an actor wallet).
 
         `observe` is the contract address whose next transaction must be the message from
         `payer` (None for a deploy whose address is only known from the CLI answer).
-        `expect_exit` 0 = must succeed; an int = must abort with that compute exit code;
-        None = must abort (code recorded, not pinned). The protected state read by `show`
-        before and after must be unchanged for a refusal control.
+        `expect_exit` 0 = must succeed; another code = must abort with exactly that compute exit
+        code while the protected state read by `show` stays unchanged.
         """
         previous = self.journal.result(label)
         if previous:
-            if previous.get("verdict") in ("settled", "refused-as-intended"):
+            if previous.get("verdict") in REPLAYABLE:
                 return previous
             raise Refusal(
                 f"step {label!r} already ended with verdict {previous.get('verdict')!r}; "
                 "it is never re-sent"
             )
-        if os.environ.get("SC_DRILL_CRASH") == label:
-            self.journal.attempt(label, {"kind": "drill", "argv": argv, "payer": payer})
-            raise SystemExit(f"drill: process lost after the attempt marker of {label}")
+        if self.journal.attempted(label):
+            raise Refusal(f"step {label!r} was attempted without a result; reconcile read-only")
+        self.guards()
         before = {
             "head": self.rpc.head(),
             "payer_lt": self.rpc.last_lt(payer),
@@ -629,30 +747,38 @@ class Runner:
             "observe_balance": self.rpc.balance(observe) if observe else None,
             "state": show() if show else None,
         }
-        self.journal.attempt(
-            label,
-            {
-                "argv": argv,
-                "payer": payer,
-                "observe": observe,
-                "expect_exit": expect_exit,
-                "before": before,
-            },
-        )
+        base = {
+            "argv": self.cli.redact(tuple(argv)),
+            "payer": payer,
+            "observe": observe,
+            "expect_exit": expect_exit,
+            "before": before,
+        }
+        if os.environ.get("SC_DRILL_CRASH") == label:
+            self.journal.attempt(label, {"kind": "drill", **base})
+            raise SystemExit(f"drill: process lost after the attempt marker of {label}")
+        self.journal.attempt(label, {"kind": "value", **base})
         rc, answer = self.cli.run(label, *argv, want_json=want_json)
-        record: dict = {"exit_code": rc, "argv": argv, "payer": payer, "before": before}
+        record: dict = {"exit_code": rc, **base}
         if want_json and rc == 0 and isinstance(answer, dict):
             record["answer"] = {
-                k: v
-                for k, v in answer.items()
-                if k in ("address", "request_id", "tx_hash", "status")
+                k: v for k, v in answer.items() if k in ("address", "request_id", "status")
             }
             answered = answer.get("address")
             observe = observe or (norm_addr(answered) if answered else None)
+            record["observe"] = observe
         if rc != 0:
-            # The CLI refused before or while broadcasting: reconcile read-only, never retry.
-            record["payer_tx_after"] = self.rpc.transactions_after(payer, before["payer_lt"])
-            if record["payer_tx_after"]:
+            # The CLI refused, timed out or crashed. Watch the payer for a bounded window: a
+            # message that was broadcast anyway makes the outcome unknown. Never retry.
+            sent: list[dict] = []
+
+            def broadcast() -> bool:
+                sent[:] = self.sends_to(payer, before["payer_lt"], observe)
+                return bool(sent)
+
+            self.wait(broadcast, REFUSAL_OBSERVE_S)
+            record["payer_tx_after"] = [r["transaction_id"] for r in sent]
+            if sent or rc is None:
                 record["verdict"] = "unknown"
             elif expect_exit != 0:
                 # A negative control the CLI already refuses client-side: nothing was sent, the
@@ -672,14 +798,10 @@ class Runner:
         found: dict = {}
 
         def settled() -> bool:
-            payer_rows = self.rpc.transactions_after(payer, before["payer_lt"])
-            sends = [
-                r
-                for r in payer_rows
-                if any(same_addr(m.get("destination"), observe) for m in r.get("out_msgs", []))
-            ]
+            sends = self.sends_to(payer, before["payer_lt"], observe)
             if len(sends) > 1:
-                raise Refusal(f"{label}: payer sent more than one message to {observe}")
+                found["error"] = f"payer sent {len(sends)} messages to {observe}"
+                return True
             if not sends or not observe:
                 return False
             out_hash = [
@@ -693,12 +815,19 @@ class Runner:
             found["tx"] = hit[0]
             return True
 
-        if not self.wait(settled):
+        observed = self.wait(settled)
+        if "error" in found:
+            record["verdict"] = "multiple-sends-observed"
+            record["error"] = found["error"]
+            self.journal.done(label, record)
+            raise Refusal(f"{label}: {found['error']}; stop and reconcile by hand")
+        if not observed:
             record["verdict"] = "unknown-not-observed"
             self.journal.done(label, record)
             raise Refusal(f"{label}: the exact message was not observed in time; no retry")
         tx = found["tx"]
         compute = tx.get("compute") or {}
+        action = tx.get("action")
         confirmations = {}
         for url in self.rpc.confirms:
             confirmations[url] = self.wait(
@@ -710,13 +839,12 @@ class Runner:
         after_state = show() if show else None
         record.update(
             {
-                "observe": observe,
                 "payer_tx": found["payer_tx"]["transaction_id"],
                 "tx": tx["transaction_id"],
                 "block_id": tx.get("block_id"),
                 "compute": compute,
                 "aborted": tx.get("aborted"),
-                "action": tx.get("action"),
+                "action": action,
                 "in_msg_hash": (tx.get("in_msg") or {}).get("hash"),
                 "out_msgs": [
                     {k: m.get(k) for k in ("destination", "value", "bounced", "hash")}
@@ -736,44 +864,94 @@ class Runner:
             self.journal.done(label, record)
             raise Refusal(f"{label}: transaction not seen on every confirmation source")
         if expect_exit == 0:
+            action_ok = action is None or action.get("success") is not False
             ok = (
                 compute.get("success") is True
                 and compute.get("exit_code") == 0
                 and tx.get("aborted") is False
+                and action_ok
             )
             record["verdict"] = "settled" if ok else "unexpected-abort"
         else:
             aborted = tx.get("aborted") is True and compute.get("success") is False
-            code_ok = expect_exit is None or compute.get("exit_code") == expect_exit
+            code_ok = compute.get("exit_code") == expect_exit
             state_ok = show is None or before["state"] == after_state
             ok = aborted and code_ok and state_ok
             record["verdict"] = "refused-as-intended" if ok else "refusal-control-failed"
         self.journal.done(label, record)
         if not ok:
-            raise Refusal(f"{label}: {record['verdict']} ({compute})")
+            raise Refusal(f"{label}: {record['verdict']} ({compute}, aborted={tx.get('aborted')})")
         return record
 
     def show(self, *argv: str):
         def read():
-            rc, data = self.cli.run(f"show-{self.cli.calls:05d}", *argv, want_json=True)
-            if rc != 0:
+            rc, data = self.cli.run(f"show-{secrets.token_hex(4)}", *argv, want_json=True)
+            if rc != 0 or not isinstance(data, dict):
                 raise Refusal(f"show failed: {argv}")
             return data
 
         return read
 
+    @staticmethod
+    def verdict(final_ok: bool, controls: list[dict]) -> dict:
+        without = [c["label"] for c in controls if c.get("verdict") != "refused-as-intended"]
+        return {
+            "final_state_ok": final_ok,
+            "controls": {c["label"]: c.get("verdict") for c in controls},
+            "controls_without_on_chain_receipt": without,
+            "pass": bool(final_ok) and not without,
+        }
+
     # ----- cases --------------------------------------------------------------------------
+    CASES = ("sc02", "sc03", "sc04", "sc05", "sc06", "sc07", "sc08")
+
+    def case_fn(self, name: str):
+        fn = getattr(self, f"case_{name}", None)
+        if name not in self.CASES or fn is None:
+            raise Refusal(f"unknown case {name}; known: {self.CASES}")
+        return fn
+
+    def plan(self, name: str) -> list[dict]:
+        """The CLI argument vectors a case will issue, produced by a dry pass without any send."""
+        planner = PlanRunner(self.args, self.actors()["wallets"])
+        planner.case_fn(name)(planner.wallets)
+        return planner.recorded
+
+    def check_flags(self, planned: list[dict], flags: dict) -> None:
+        """Every `--flag` and `--operation` value of a plan exists in the pinned CLI's help."""
+        if flags.get("cli_sha256") != self.args.cli_sha256:
+            raise Refusal("flag fixture was recorded from a different CLI binary")
+        for item in planned:
+            argv = item["argv"]
+            path = " ".join(argv[:3]) if argv[0] == "agent" else " ".join(argv[:2])
+            known = flags["commands"].get(path)
+            if not known:
+                raise Refusal(f"{item['label']}: command {path!r} is not in the flag fixture")
+            for i, token in enumerate(argv):
+                if token.startswith("--") and token not in known["flags"]:
+                    raise Refusal(f"{item['label']}: {path} does not accept {token}")
+                if token == "--operation":
+                    values = {
+                        v.strip() for group in known["possible_values"] for v in group.split(",")
+                    }
+                    if values and argv[i + 1] not in values:
+                        raise Refusal(f"{item['label']}: {path} has no operation {argv[i + 1]}")
+
     def case(self, name: str) -> dict:
         self.preflight()
-        actors = self.actors()["wallets"]
-        fn = getattr(self, f"case_{name.replace('-', '_')}", None)
-        if fn is None:
-            raise Refusal(f"unknown case {name}")
-        result = fn(actors)
+        planned = self.plan(name)
+        if self.args.flag_fixture:
+            self.check_flags(planned, pinned_flags(Path(self.args.flag_fixture)))
+        self.journal.log(kind="case-start", case=name, planned_steps=[p["label"] for p in planned])
+        result = self.case_fn(name)(self.actors()["wallets"])
         (self.evidence / f"{name}-RESULT.json").write_text(
             json.dumps({"case": name, "utc": utc(now()), **result}, indent=2, sort_keys=True) + "\n"
         )
         return result
+
+    def wait_active(self, address: str, what: str) -> None:
+        if not self.wait(lambda: self.rpc.state(address) == "active"):
+            raise Refusal(f"{what} at {address} is not active")
 
     def case_sc07(self, w: dict) -> dict:
         owner, outsider = w["sc-owner"], w["sc-outsider"]
@@ -805,9 +983,9 @@ class Runner:
         )
         address = deploy["observe"]
         show = self.show("agent", "attestation", "show", "--name", "sc07")
-        if not self.wait(lambda: self.rpc.state(address) == "active"):
-            raise Refusal("sc07 not active")
+        self.wait_active(address, "sc07 attestation")
         send = ["agent", "attestation", "send", "--name", "sc07", "--yes", "--amount", "0.1"]
+        controls = []
         self.step(
             "sc07-attest-valid",
             send
@@ -825,39 +1003,43 @@ class Runner:
             observe=address,
             show=show,
         )
-        self.step(
-            "sc07-attest-wrong-key",
-            send
-            + [
-                "--operation",
-                "attest",
-                "--from",
-                "sc-outsider",
-                "--attested-hash",
-                HASH["attested_2"],
-                "--signer-vault-key",
-                "sc-wrong-key",
-            ],
-            payer=outsider,
-            observe=address,
-            expect_exit=2101,
-            show=show,
+        controls.append(
+            self.step(
+                "sc07-attest-wrong-key",
+                send
+                + [
+                    "--operation",
+                    "attest",
+                    "--from",
+                    "sc-outsider",
+                    "--attested-hash",
+                    HASH["attested_2"],
+                    "--signer-vault-key",
+                    "sc-wrong-key",
+                ],
+                payer=outsider,
+                observe=address,
+                expect_exit=ATTEST_BAD_SIGNATURE,
+                show=show,
+            )
         )
-        self.step(
-            "sc07-rotate-outsider",
-            send
-            + [
-                "--operation",
-                "rotate-key",
-                "--from",
-                "sc-outsider",
-                "--new-signer-vault-key",
-                "sc-rotated-attestor-key",
-            ],
-            payer=outsider,
-            observe=address,
-            expect_exit=2102,
-            show=show,
+        controls.append(
+            self.step(
+                "sc07-rotate-outsider",
+                send
+                + [
+                    "--operation",
+                    "rotate-key",
+                    "--from",
+                    "sc-outsider",
+                    "--new-signer-vault-key",
+                    "sc-rotated-attestor-key",
+                ],
+                payer=outsider,
+                observe=address,
+                expect_exit=ATTEST_NOT_OWNER,
+                show=show,
+            )
         )
         self.step(
             "sc07-rotate-owner",
@@ -874,13 +1056,15 @@ class Runner:
             observe=address,
             show=show,
         )
-        self.step(
-            "sc07-revoke-outsider",
-            send + ["--operation", "revoke", "--from", "sc-outsider"],
-            payer=outsider,
-            observe=address,
-            expect_exit=2102,
-            show=show,
+        controls.append(
+            self.step(
+                "sc07-revoke-outsider",
+                send + ["--operation", "revoke", "--from", "sc-outsider"],
+                payer=outsider,
+                observe=address,
+                expect_exit=ATTEST_NOT_OWNER,
+                show=show,
+            )
         )
         self.step(
             "sc07-revoke-owner",
@@ -890,11 +1074,8 @@ class Runner:
             show=show,
         )
         final = show()
-        return {
-            "address": address,
-            "final_state": final,
-            "pass": final.get("revoked") is True and final.get("has_attestation") is False,
-        }
+        final_ok = final.get("revoked") is True and final.get("has_attestation") is False
+        return {"address": address, "final_state": final, **self.verdict(final_ok, controls)}
 
     def case_sc04(self, w: dict) -> dict:
         owner, client, outsider = w["sc-owner"], w["sc-client"], w["sc-outsider"]
@@ -931,7 +1112,7 @@ class Runner:
                 "--from",
                 "sc-owner",
                 "--amount",
-                "1.2",
+                SERVICE_MIN_DEPLOY_TOS,
                 "-w",
                 "0",
                 "--yes",
@@ -942,67 +1123,62 @@ class Runner:
         )
         address = deploy["observe"]
         show = self.show("agent", "service", "show", "--name", "sc04")
-        if not self.wait(lambda: self.rpc.state(address) == "active"):
-            raise Refusal("sc04 not active")
+        self.wait_active(address, "sc04 service")
+        # Message values are left to the CLI, which quotes them from the on-chain policy
+        # (price + storage fee + admission allowance for a call, payout allowance otherwise).
         send = ["agent", "service", "send", "--name", "sc04", "--yes"]
-        self.step(
-            "sc04-call-outsider",
-            send
-            + [
-                "--operation",
-                "call",
-                "--from",
-                "sc-outsider",
-                "--request-hash",
-                HASH["request_2"],
-                "--amount",
-                "0.45",
-            ],
-            payer=outsider,
-            observe=address,
-            expect_exit=None,
-            show=show,
+        controls = []
+        controls.append(
+            self.step(
+                "sc04-call-outsider",
+                send
+                + [
+                    "--operation",
+                    "call",
+                    "--from",
+                    "sc-outsider",
+                    "--request-hash",
+                    HASH["request_2"],
+                ],
+                payer=outsider,
+                observe=address,
+                expect_exit=SERVICE_NOT_AUTHORIZED,
+                show=show,
+            )
         )
         self.step(
             "sc04-call-client",
             send
-            + [
-                "--operation",
-                "call",
-                "--from",
-                "sc-client",
-                "--request-hash",
-                HASH["request_1"],
-                "--amount",
-                "0.45",
-            ],
+            + ["--operation", "call", "--from", "sc-client", "--request-hash", HASH["request_1"]],
             payer=client,
             observe=address,
             show=show,
         )
         state = show()
-        request_id = str(state.get("next_request_id", 1) - 1) if "next_request_id" in state else "0"
-        self.step(
-            "sc04-respond-outsider",
-            send
-            + [
-                "--operation",
-                "respond",
-                "--from",
-                "sc-outsider",
-                "--request-id",
-                request_id,
-                "--response-hash",
-                HASH["response"],
-                "--signer-vault-key",
-                "sc-attestor-key",
-                "--amount",
-                "0.1",
-            ],
-            payer=outsider,
-            observe=address,
-            expect_exit=None,
-            show=show,
+        if "next_request_id" not in state:
+            raise Refusal("service view has no next_request_id")
+        request_id = str(int(state["next_request_id"]) - 1)
+        controls.append(
+            self.step(
+                "sc04-respond-outsider",
+                send
+                + [
+                    "--operation",
+                    "respond",
+                    "--from",
+                    "sc-outsider",
+                    "--request-id",
+                    request_id,
+                    "--response-hash",
+                    HASH["response"],
+                    "--signer-vault-key",
+                    "sc-attestor-key",
+                ],
+                payer=outsider,
+                observe=address,
+                expect_exit=SERVICE_NOT_OWNER,
+                show=show,
+            )
         )
         self.step(
             "sc04-respond-owner",
@@ -1018,31 +1194,33 @@ class Runner:
                 HASH["response"],
                 "--signer-vault-key",
                 "sc-attestor-key",
-                "--amount",
-                "0.1",
             ],
             payer=owner,
             observe=address,
             show=show,
         )
-        self.step(
-            "sc04-withdraw-outsider",
-            send
-            + [
-                "--operation",
-                "withdraw-revenue",
-                "--from",
-                "sc-outsider",
-                "--withdraw-amount",
-                "0.01",
-                "--amount",
-                "0.1",
-            ],
-            payer=outsider,
-            observe=address,
-            expect_exit=1900,
-            show=show,
+        controls.append(
+            self.step(
+                "sc04-withdraw-outsider",
+                send
+                + [
+                    "--operation",
+                    "withdraw-revenue",
+                    "--from",
+                    "sc-outsider",
+                    "--withdraw-amount",
+                    "0.01",
+                ],
+                payer=outsider,
+                observe=address,
+                expect_exit=SERVICE_NOT_OWNER,
+                show=show,
+            )
         )
+        withdrawable = state_nanotos(show().get("withdrawable_revenue"))
+        if withdrawable <= 0:
+            raise Refusal("no withdrawable revenue after the answered call")
+        amount = nanotos_text(min(withdrawable, SERVICE_WITHDRAW_CAP))
         self.step(
             "sc04-withdraw-owner",
             send
@@ -1052,71 +1230,78 @@ class Runner:
                 "--from",
                 "sc-owner",
                 "--withdraw-amount",
-                "0.1",
-                "--amount",
-                "0.1",
+                amount,
             ],
             payer=owner,
             observe=address,
             show=show,
         )
         final = show()
+        final_ok = int(final.get("pending_count", -1)) == 0 and state_nanotos(
+            final.get("withdrawable_revenue")
+        ) == withdrawable - tos_to_nanotos(amount)
         return {
             "address": address,
             "request_id": request_id,
+            "withdrawn_tos": amount,
             "final_state": final,
-            "pass": final.get("pending_count") == 0,
+            **self.verdict(final_ok, controls),
         }
 
+    def task_create_argv(self, name: str, w: dict) -> list[str]:
+        return [
+            "agent",
+            "task",
+            "create",
+            "--name",
+            name,
+            "--creator",
+            w["sc-owner"],
+            "--agent",
+            w["sc-client"],
+            "--verifier",
+            w["sc-verifier"],
+            "--budget",
+            "1",
+            "--deadline",
+            str(now() + TASK_HORIZON_S),
+            "--review-period",
+            str(TASK_MIN_REVIEW_PERIOD_S),
+            "--policy-hash",
+            HASH["policy"],
+            "--from",
+            "sc-owner",
+            "--amount",
+            "1.3",
+            "-w",
+            "0",
+            "--yes",
+        ]
+
     def case_sc05(self, w: dict) -> dict:
-        creator, agent, verifier = w["sc-owner"], w["sc-client"], w["sc-verifier"]
-        deadline = str(now() + 3600)
+        creator, agent = w["sc-owner"], w["sc-client"]
         deploy = self.step(
             "sc05-create",
-            [
-                "agent",
-                "task",
-                "create",
-                "--name",
-                "sc05",
-                "--creator",
-                creator,
-                "--agent",
-                agent,
-                "--verifier",
-                verifier,
-                "--budget",
-                "1",
-                "--deadline",
-                deadline,
-                "--review-period",
-                "600",
-                "--policy-hash",
-                HASH["policy"],
-                "--from",
-                "sc-owner",
-                "--amount",
-                "1.3",
-                "-w",
-                "0",
-                "--yes",
-            ],
+            self.task_create_argv("sc05", w),
             payer=creator,
             observe=None,
             want_json=True,
         )
         address = deploy["observe"]
         show = self.show("agent", "task", "show", "--name", "sc05")
-        if not self.wait(lambda: show().get("status") == "open"):
-            raise Refusal("sc05 not open")
-        send = ["agent", "task", "send", "--name", "sc05", "--yes", "--amount", "0.1"]
-        self.step(
-            "sc05-accept-creator",
-            send + ["--operation", "accept", "--from", "sc-owner"],
-            payer=creator,
-            observe=address,
-            expect_exit=None,
-            show=show,
+        self.wait_active(address, "sc05 task")
+        # Task message values are quoted by the CLI from the escrow's fee schedule.
+        send = ["agent", "task", "send", "--name", "sc05", "--yes"]
+        controls = []
+        controls.append(
+            self.step(
+                "sc05-accept-creator",
+                send + ["--operation", "accept", "--from", "sc-owner"],
+                payer=creator,
+                observe=address,
+                expect_exit=TASK_ACCEPT_NOT_AGENT,
+                show=show,
+            )
         )
         self.step(
             "sc05-accept-agent",
@@ -1142,13 +1327,15 @@ class Runner:
             observe=address,
             show=show,
         )
-        self.step(
-            "sc05-settle-agent",
-            send + ["--operation", "settle", "--from", "sc-client", "--payout", "0.6"],
-            payer=agent,
-            observe=address,
-            expect_exit=None,
-            show=show,
+        controls.append(
+            self.step(
+                "sc05-settle-agent",
+                send + ["--operation", "settle", "--from", "sc-client", "--payout", "0.6"],
+                payer=agent,
+                observe=address,
+                expect_exit=TASK_SETTLE_AUTHORITY,
+                show=show,
+            )
         )
         agent_before = self.rpc.balance(agent)
         self.step(
@@ -1160,11 +1347,12 @@ class Runner:
         )
         paid = self.wait(lambda: self.rpc.balance(agent) >= agent_before + tos_to_nanotos("0.59"))
         final = show()
+        final_ok = final.get("status") == "settled" and paid
         return {
             "address": address,
             "final_state": final,
             "agent_paid": paid,
-            "pass": final.get("status") == "settled" and paid,
+            **self.verdict(final_ok, controls),
         }
 
     def case_sc06(self, w: dict) -> dict:
@@ -1189,7 +1377,7 @@ class Runner:
                 "--reviewer",
                 reviewer,
                 "--deadline",
-                str(now() + 3600),
+                str(now() + TASK_HORIZON_S),
                 "--subject-hash",
                 HASH["subject"],
                 "--claimant-evidence-hash",
@@ -1208,24 +1396,26 @@ class Runner:
         )
         address = deploy["observe"]
         show = self.show("agent", "dispute", "show", "--name", "sc06")
-        if not self.wait(lambda: self.rpc.state(address) == "active"):
-            raise Refusal("sc06 not active")
+        self.wait_active(address, "sc06 dispute")
         send = ["agent", "dispute", "send", "--name", "sc06", "--yes", "--amount", "0.1"]
-        self.step(
-            "sc06-evidence-outsider",
-            send
-            + [
-                "--operation",
-                "submit-respondent-evidence",
-                "--from",
-                "sc-outsider",
-                "--respondent-evidence-hash",
-                HASH["respondent_evidence"],
-            ],
-            payer=outsider,
-            observe=address,
-            expect_exit=2000,
-            show=show,
+        controls = []
+        controls.append(
+            self.step(
+                "sc06-evidence-outsider",
+                send
+                + [
+                    "--operation",
+                    "submit-respondent-evidence",
+                    "--from",
+                    "sc-outsider",
+                    "--respondent-evidence-hash",
+                    HASH["respondent_evidence"],
+                ],
+                payer=outsider,
+                observe=address,
+                expect_exit=DISPUTE_NOT_RESPONDENT,
+                show=show,
+            )
         )
         self.step(
             "sc06-evidence-respondent",
@@ -1242,23 +1432,25 @@ class Runner:
             observe=address,
             show=show,
         )
-        self.step(
-            "sc06-rule-outsider",
-            send
-            + [
-                "--operation",
-                "rule",
-                "--from",
-                "sc-outsider",
-                "--ruling",
-                "claimant",
-                "--ruling-hash",
-                HASH["ruling"],
-            ],
-            payer=outsider,
-            observe=address,
-            expect_exit=2001,
-            show=show,
+        controls.append(
+            self.step(
+                "sc06-rule-outsider",
+                send
+                + [
+                    "--operation",
+                    "rule",
+                    "--from",
+                    "sc-outsider",
+                    "--ruling",
+                    "claimant",
+                    "--ruling-hash",
+                    HASH["ruling"],
+                ],
+                payer=outsider,
+                observe=address,
+                expect_exit=DISPUTE_NOT_REVIEWER,
+                show=show,
+            )
         )
         self.step(
             "sc06-rule-reviewer",
@@ -1277,30 +1469,29 @@ class Runner:
             observe=address,
             show=show,
         )
-        self.step(
-            "sc06-rule-again",
-            send
-            + [
-                "--operation",
-                "rule",
-                "--from",
-                "sc-verifier",
-                "--ruling",
-                "respondent",
-                "--ruling-hash",
-                HASH["ruling"],
-            ],
-            payer=reviewer,
-            observe=address,
-            expect_exit=None,
-            show=show,
+        controls.append(
+            self.step(
+                "sc06-rule-again",
+                send
+                + [
+                    "--operation",
+                    "rule",
+                    "--from",
+                    "sc-verifier",
+                    "--ruling",
+                    "respondent",
+                    "--ruling-hash",
+                    HASH["ruling"],
+                ],
+                payer=reviewer,
+                observe=address,
+                expect_exit=DISPUTE_ALREADY_RESOLVED,
+                show=show,
+            )
         )
         final = show()
-        return {
-            "address": address,
-            "final_state": final,
-            "pass": final.get("status") == "resolved" and final.get("ruling") == "claimant",
-        }
+        final_ok = final.get("status") == "resolved" and final.get("ruling") == "claimant"
+        return {"address": address, "final_state": final, **self.verdict(final_ok, controls)}
 
     def case_sc02(self, w: dict) -> dict:
         owner, verifier, outsider = w["sc-owner"], w["sc-verifier"], w["sc-outsider"]
@@ -1340,8 +1531,7 @@ class Runner:
         )
         address = deploy["observe"]
         show = self.show("agent", "registry", "show", "--name", "sc02")
-        if not self.wait(lambda: self.rpc.state(address) == "active"):
-            raise Refusal("sc02 not active")
+        self.wait_active(address, "sc02 registry")
         send = ["agent", "registry", "send", "--name", "sc02", "--yes", "--amount", "0.1"]
         meta = [
             "--task-categories-hash",
@@ -1353,13 +1543,16 @@ class Runner:
             "--verification-method-hash",
             HASH["verification_method"],
         ]
-        self.step(
-            "sc02-update-outsider",
-            send + ["--operation", "update-metadata", "--from", "sc-outsider"] + meta,
-            payer=outsider,
-            observe=address,
-            expect_exit=1800,
-            show=show,
+        controls = []
+        controls.append(
+            self.step(
+                "sc02-update-outsider",
+                send + ["--operation", "update-metadata", "--from", "sc-outsider"] + meta,
+                payer=outsider,
+                observe=address,
+                expect_exit=REGISTRY_NOT_OWNER,
+                show=show,
+            )
         )
         self.step(
             "sc02-update-owner",
@@ -1368,13 +1561,16 @@ class Runner:
             observe=address,
             show=show,
         )
-        self.step(
-            "sc02-reputation-outsider",
-            send + ["--operation", "update-reputation", "--from", "sc-outsider", "--delta", "10"],
-            payer=outsider,
-            observe=address,
-            expect_exit=1801,
-            show=show,
+        controls.append(
+            self.step(
+                "sc02-reputation-outsider",
+                send
+                + ["--operation", "update-reputation", "--from", "sc-outsider", "--delta", "10"],
+                payer=outsider,
+                observe=address,
+                expect_exit=REGISTRY_NOT_VERIFIER,
+                show=show,
+            )
         )
         self.step(
             "sc02-reputation-verifier",
@@ -1383,14 +1579,23 @@ class Runner:
             observe=address,
             show=show,
         )
-        self.step(
-            "sc02-overdraw-bond",
-            send
-            + ["--operation", "withdraw-bond", "--from", "sc-owner", "--withdraw-amount", "100"],
-            payer=owner,
-            observe=address,
-            expect_exit=1805,
-            show=show,
+        controls.append(
+            self.step(
+                "sc02-overdraw-bond",
+                send
+                + [
+                    "--operation",
+                    "withdraw-bond",
+                    "--from",
+                    "sc-owner",
+                    "--withdraw-amount",
+                    "100",
+                ],
+                payer=owner,
+                observe=address,
+                expect_exit=REGISTRY_INSUFFICIENT_BOND,
+                show=show,
+            )
         )
         self.step(
             "sc02-withdraw-bond",
@@ -1408,36 +1613,27 @@ class Runner:
             show=show,
         )
         final = show()
-        return {
-            "address": address,
-            "final_state": final,
-            "pass": final.get("active") is False and final.get("reputation_score") == 10,
-        }
+        final_ok = final.get("active") is False and int(final.get("reputation_score", -1)) == 10
+        return {"address": address, "final_state": final, **self.verdict(final_ok, controls)}
 
     def case_sc03(self, w: dict) -> dict:
         owner, target = w["sc-owner"], w["sc-verifier"]
-        label = "sc03-agent-wallet-create"
-        if not self.journal.attempted(label):
-            self.journal.attempt(label, {"kind": "local-profile"})
-            rc, _ = self.cli.run(
-                label,
-                "agent",
-                "wallet",
-                "create",
-                "--name",
-                "sc03-agent",
-                "-v",
-                "V5R1",
-                "-w",
-                "0",
-                "--max-per-tx",
-                "0.5",
-                "--daily-limit",
-                "2",
-            )
-            self.journal.done(label, {"exit_code": rc})
-            if rc != 0:
-                raise Refusal(f"{label}: exit {rc}")
+        self.local(
+            "sc03-agent-wallet-create",
+            "agent",
+            "wallet",
+            "create",
+            "-n",
+            "sc03-agent",
+            "-v",
+            "V5R1",
+            "-w",
+            "0",
+            "--max-per-tx",
+            "0.5",
+            "--daily-limit",
+            "2",
+        )
         deploy = self.step(
             "sc03-account-deploy",
             [
@@ -1459,12 +1655,13 @@ class Runner:
             want_json=True,
         )
         account = deploy["observe"]
-        rc, profile = self.cli.run(
+        profile = self.local(
             "sc03-agent-wallet-show", "agent", "wallet", "show", "-n", "sc03-agent", want_json=True
         )
-        if rc != 0:
-            raise Refusal("agent wallet show failed")
-        agent_wallet = norm_addr(profile.get("address") or profile["result"]["address"])
+        answered = (profile or {}).get("address") or ((profile or {}).get("result") or {}).get(
+            "address"
+        )
+        agent_wallet = norm_addr(answered)
         self.step(
             "sc03-agent-wallet-fund",
             [
@@ -1482,14 +1679,11 @@ class Runner:
             payer=owner,
             observe=agent_wallet,
         )
-        label = "sc03-agent-wallet-activate"
-        if not self.journal.attempted(label):
-            self.journal.attempt(label, {"kind": "wallet-activate", "address": agent_wallet})
-            rc, _ = self.cli.run(label, "agent", "wallet", "activate", "-n", "sc03-agent")
-            ok = rc == 0 and self.wait(lambda: self.rpc.state(agent_wallet) == "active")
-            self.journal.done(label, {"exit_code": rc, "active": ok})
-            if not ok:
-                raise Refusal("agent wallet not active")
+        if self.rpc.state(agent_wallet) != "active":
+            self.local(
+                "sc03-agent-wallet-activate", "agent", "wallet", "activate", "-n", "sc03-agent"
+            )
+            self.wait_active(agent_wallet, "sc03 agent wallet")
         action_1 = secrets.token_hex(32)
         target_before = self.rpc.balance(target)
         self.step(
@@ -1516,13 +1710,12 @@ class Runner:
         delivered = self.wait(
             lambda: self.rpc.balance(target) >= target_before + tos_to_nanotos("0.09")
         )
-        label = "sc03-task-send-1-duplicate"
-        duplicate_blocked = None
-        if not self.journal.attempted(label):
-            self.journal.attempt(label, {"kind": "duplicate-action-id", "action_id": action_1})
-            lt = self.rpc.last_lt(account)
-            rc, _ = self.cli.run(
-                label,
+        # Replaying the same action id must not execute a second transfer. The CLI may refuse
+        # it client-side (no on-chain row) or the account may refuse it on chain; a second
+        # successful transfer is the failure.
+        duplicate = self.duplicate_control(
+            "sc03-task-send-1-duplicate",
+            [
                 "agent",
                 "account",
                 "task-send",
@@ -1537,36 +1730,22 @@ class Runner:
                 "--action-id",
                 action_1,
                 "--yes",
-            )
-            time.sleep(POLL_S * 5)
-            repeated = [
-                r for r in self.rpc.transactions_after(account, lt) if r.get("aborted") is False
-            ]
-            duplicate_blocked = rc != 0 or not repeated
-            self.journal.done(
-                label,
-                {
-                    "exit_code": rc,
-                    "new_successful_tx": len(repeated),
-                    "duplicate_blocked": duplicate_blocked,
-                },
-            )
-        label = "sc03-policy-local"
-        if not self.journal.attempted(label):
-            self.journal.attempt(label, {"kind": "local-profile"})
-            rc, _ = self.cli.run(
-                label,
-                "agent",
-                "wallet",
-                "update-policy",
-                "--name",
-                "sc03-agent",
-                "--max-per-tx",
-                "0.2",
-                "--daily-limit",
-                "1",
-            )
-            self.journal.done(label, {"exit_code": rc})
+            ],
+            account,
+            target,
+        )
+        self.local(
+            "sc03-policy-local",
+            "agent",
+            "wallet",
+            "update-policy",
+            "-n",
+            "sc03-agent",
+            "--max-per-tx",
+            "0.2",
+            "--daily-limit",
+            "1",
+        )
         self.step(
             "sc03-update-policy",
             [
@@ -1582,13 +1761,7 @@ class Runner:
             payer=agent_wallet,
             observe=account,
         )
-        label = "sc03-rotate-local"
-        if not self.journal.attempted(label):
-            self.journal.attempt(label, {"kind": "local-profile"})
-            rc, _ = self.cli.run(
-                label, "agent", "wallet", "rotate-controller", "--name", "sc03-agent"
-            )
-            self.journal.done(label, {"exit_code": rc})
+        self.local("sc03-rotate-local", "agent", "wallet", "rotate-controller", "-n", "sc03-agent")
         self.step(
             "sc03-rotate-controller",
             [
@@ -1629,31 +1802,74 @@ class Runner:
         delivered_2 = self.wait(
             lambda: self.rpc.balance(target) >= target_before_2 + tos_to_nanotos("0.09")
         )
-        rc, status = self.cli.run(
-            "sc03-status",
-            "agent",
-            "account",
-            "status",
-            "--wallet",
-            "sc03-agent",
-            "-w",
-            "0",
-            want_json=True,
+        status = self.local(
+            "sc03-status", "agent", "account", "status", "--wallet", "sc03-agent", want_json=True
         )
+        final_ok = bool(delivered and delivered_2 and duplicate["verdict"] != "DUPLICATE-EXECUTED")
         return {
             "account": account,
             "agent_wallet": agent_wallet,
             "status": status,
             "first_transfer_delivered": delivered,
-            "duplicate_blocked": duplicate_blocked,
             "transfer_after_rotation_delivered": delivered_2,
-            "pass": bool(delivered and delivered_2 and duplicate_blocked),
+            **self.verdict(final_ok, [duplicate]),
         }
 
+    def duplicate_control(self, label: str, argv: list[str], account: str, target: str) -> dict:
+        """Replay of an already executed action id: it must not pay the target a second time.
+
+        The CLI may refuse it client-side (no on-chain row) or the account may refuse it on
+        chain; the verdict says which. A second successful transfer is the failure.
+        """
+        duplicate = self.journal.result(label)
+        if duplicate is not None:
+            duplicate.setdefault("label", label)
+            return duplicate
+        if self.journal.attempted(label):
+            raise Refusal(f"{label} was attempted without a result; reconcile read-only")
+        self.guards()
+        account_lt = self.rpc.last_lt(account)
+        target_mid = self.rpc.balance(target)
+        self.journal.attempt(label, {"kind": "value", "argv": self.cli.redact(tuple(argv))})
+        rc, _ = self.cli.run(label, *argv)
+        executed: list[dict] = []
+        paid_at = target_mid + tos_to_nanotos("0.09")
+
+        def repeated() -> bool:
+            executed[:] = [
+                r
+                for r in self.rpc.transactions_after(account, account_lt)
+                if r.get("aborted") is False
+            ]
+            return bool(executed) or self.rpc.balance(target) >= paid_at
+
+        self.wait(repeated, REFUSAL_OBSERVE_S if rc != 0 else None)
+        paid_again = self.rpc.balance(target) >= paid_at
+        if paid_again:
+            verdict = "DUPLICATE-EXECUTED"
+        elif rc != 0 and not executed:
+            verdict = "cli-refused-before-broadcast"
+        elif executed:
+            verdict = "accepted-without-transfer"
+        else:
+            verdict = "refused-as-intended"
+        duplicate = {
+            "exit_code": rc,
+            "new_successful_tx": len(executed),
+            "target_paid_again": paid_again,
+            "verdict": verdict,
+        }
+        self.journal.done(label, duplicate)
+        duplicate["label"] = label
+        return duplicate
+
     def case_sc08(self, w: dict) -> dict:
-        """Integrated journey over the already deployed actors plus a disputed task branch and
-        the lost-reply drill (run twice: the first run exits at the drill label, the second must
-        refuse that label and continue read-only)."""
+        """Integrated journey with a disputed task and the lost-reply drill.
+
+        Run once with `SC_DRILL_CRASH=sc08-resolve-verifier`: the process exits after that
+        step's attempt marker. The second run must refuse to re-send that label, prove nothing
+        reached the chain after the marker, and only then issue the resolve under a new label.
+        """
         creator, agent, verifier = w["sc-owner"], w["sc-client"], w["sc-verifier"]
         parts = {}
         for name in ("sc02", "sc03", "sc04", "sc05", "sc06", "sc07"):
@@ -1661,46 +1877,18 @@ class Runner:
             if not path.exists():
                 raise Refusal(f"sc08 needs {name} first")
             parts[name] = json.loads(path.read_text())
-        deadline = str(now() + 3600)
         deploy = self.step(
             "sc08-task-create",
-            [
-                "agent",
-                "task",
-                "create",
-                "--name",
-                "sc08",
-                "--creator",
-                creator,
-                "--agent",
-                agent,
-                "--verifier",
-                verifier,
-                "--budget",
-                "1",
-                "--deadline",
-                deadline,
-                "--review-period",
-                "600",
-                "--policy-hash",
-                HASH["policy"],
-                "--from",
-                "sc-owner",
-                "--amount",
-                "1.3",
-                "-w",
-                "0",
-                "--yes",
-            ],
+            self.task_create_argv("sc08", w),
             payer=creator,
             observe=None,
             want_json=True,
         )
         address = deploy["observe"]
         show = self.show("agent", "task", "show", "--name", "sc08")
-        if not self.wait(lambda: show().get("status") == "open"):
-            raise Refusal("sc08 task not open")
-        send = ["agent", "task", "send", "--name", "sc08", "--yes", "--amount", "0.1"]
+        self.wait_active(address, "sc08 task")
+        send = ["agent", "task", "send", "--name", "sc08", "--yes"]
+        controls = []
         self.step(
             "sc08-accept",
             send + ["--operation", "accept", "--from", "sc-client"],
@@ -1733,48 +1921,49 @@ class Runner:
             observe=address,
             show=show,
         )
-        self.step(
-            "sc08-resolve-agent",
-            send + ["--operation", "resolve", "--from", "sc-client", "--payout", "0.4"],
-            payer=agent,
-            observe=address,
-            expect_exit=None,
-            show=show,
+        controls.append(
+            self.step(
+                "sc08-resolve-agent",
+                send + ["--operation", "resolve", "--from", "sc-client", "--payout", "0.4"],
+                payer=agent,
+                observe=address,
+                expect_exit=TASK_RESOLVE_AUTHORITY,
+                show=show,
+            )
         )
         drill = "sc08-resolve-verifier"
-        drilled = self.journal.attempted(drill) and not self.journal.result(drill)
-        if drilled:
-            # The first run was lost after the attempt marker: reconcile read-only and record.
-            attempt = json.loads((self.journal.steps / f"{drill}.attempt.json").read_text())
-            rows = (
-                self.rpc.transactions_after(address, attempt["before"]["observe_lt"] or 0)
-                if "before" in attempt
-                else []
-            )
-            self.journal.done(
-                drill,
-                {
-                    "verdict": "lost-reply-reconciled",
-                    "transactions_after_marker": len(rows),
-                    "re_sent": False,
-                },
-            )
+        resolve = send + ["--operation", "resolve", "--from", "sc-verifier", "--payout", "0.4"]
+        attempt = self.journal.attempt_record(drill)
+        drill_state = "not-exercised"
+        if attempt and not self.journal.result(drill):
+            # A marker without a result: the first run was lost after writing it. Re-send only
+            # when the marker says it was the drill and nothing reached the chain after it.
+            before = attempt.get("before") or {}
+            after_contract = self.rpc.transactions_after(address, before.get("observe_lt") or 0)
+            after_payer = self.sends_to(verifier, before.get("payer_lt") or 0, address)
+            record = {
+                "verdict": "lost-reply-reconciled",
+                "kind": attempt.get("kind"),
+                "contract_tx_after_marker": len(after_contract),
+                "payer_sends_after_marker": len(after_payer),
+                "re_sent": False,
+            }
+            if attempt.get("kind") != "drill" or after_contract or after_payer:
+                record["verdict"] = "lost-reply-unresolved"
+                self.journal.done(drill, record)
+                raise Refusal(
+                    f"{drill}: marker without result and the chain is not provably "
+                    "untouched; reconcile by hand, never re-send"
+                )
+            self.journal.done(drill, record)
+            drill_state = "reconciled"
             self.step(
-                "sc08-resolve-verifier-2",
-                send + ["--operation", "resolve", "--from", "sc-verifier", "--payout", "0.4"],
-                payer=verifier,
-                observe=address,
-                show=show,
+                "sc08-resolve-verifier-2", resolve, payer=verifier, observe=address, show=show
             )
         else:
-            self.step(
-                drill,
-                send + ["--operation", "resolve", "--from", "sc-verifier", "--payout", "0.4"],
-                payer=verifier,
-                observe=address,
-                show=show,
-            )
+            self.step(drill, resolve, payer=verifier, observe=address, show=show)
         final = show()
+        final_ok = final.get("status") == "settled"
         return {
             "address": address,
             "final_state": final,
@@ -1782,13 +1971,17 @@ class Runner:
                 k: {"address": v.get("address") or v.get("account"), "pass": v.get("pass")}
                 for k, v in parts.items()
             },
-            "lost_reply_drill": "reconciled" if drilled else "not-exercised",
-            "pass": final.get("status") == "settled",
+            "lost_reply_drill": drill_state,
+            **self.verdict(final_ok, controls),
         }
 
     # ----- wrap-up ------------------------------------------------------------------------
     def return_funds(self, to: str) -> dict:
         self.preflight()
+        to = norm_addr(to)
+        source = self.funding_source()
+        if to != source:
+            raise Refusal(f"return destination {to} is not the recorded funding source {source}")
         actors = self.actors()["wallets"]
         out = {}
         keep = tos_to_nanotos("0.05")
@@ -1797,10 +1990,9 @@ class Runner:
             if balance <= keep * 2:
                 out[wallet] = {"skipped": balance}
                 continue
-            label = f"return-{wallet}"
             amount = balance - keep
             rec = self.step(
-                label,
+                f"return-{wallet}",
                 [
                     "wallet",
                     "send",
@@ -1826,6 +2018,124 @@ class Runner:
         return {"funded_total_nanotos": self.funded_total(), "balances": balances, "steps": steps}
 
 
+class PlanRunner(Runner):
+    """A dry pass over a case: records every CLI argument vector and sends nothing."""
+
+    def __init__(self, args: argparse.Namespace, wallets: dict):
+        self.args = args
+        self.wallets = dict(wallets)
+        self.recorded: list[dict] = []
+        self.fake = "0:" + "0f" * 32
+
+    def guards(self) -> dict:
+        return {}
+
+    def local(self, label, *argv, want_json=False):
+        self.recorded.append({"label": label, "argv": list(argv), "value": False})
+        return {"address": self.fake, "result": {"address": self.fake}} if want_json else None
+
+    def step(self, label, argv, payer, observe, expect_exit=0, want_json=False, show=None):
+        self.recorded.append(
+            {
+                "label": label,
+                "argv": list(argv),
+                "value": True,
+                "payer": payer,
+                "expect_exit": expect_exit,
+            }
+        )
+        return {
+            "label": label,
+            "observe": observe or self.fake,
+            "argv": list(argv),
+            "verdict": "settled" if expect_exit == 0 else "refused-as-intended",
+        }
+
+    def show(self, *argv):
+        return lambda: {
+            "status": "settled",
+            "ruling": "claimant",
+            "revoked": True,
+            "has_attestation": False,
+            "active": False,
+            "reputation_score": 10,
+            "next_request_id": 1,
+            "pending_count": 0,
+            "withdrawable_revenue": 250_000_000,
+        }
+
+    def wait(self, predicate, timeout=None):
+        return True
+
+    def wait_active(self, address, what):
+        return None
+
+    def duplicate_control(self, label, argv, account, target):
+        self.recorded.append(
+            {"label": label, "argv": list(argv), "value": True, "payer": account, "expect_exit": -1}
+        )
+        return {"label": label, "verdict": "refused-as-intended"}
+
+    @property
+    def rpc(self):
+        return _PlanRpc()
+
+    @property
+    def journal(self):
+        return _PlanJournal()
+
+    @property
+    def evidence(self):
+        return _PlanEvidence()
+
+
+class _PlanRpc:
+    def balance(self, address):
+        return 10 * NANO
+
+    def state(self, address):
+        return "active"
+
+    def last_lt(self, address, url=None):
+        return 0
+
+    def transactions_after(self, address, lt, url=None):
+        return []
+
+
+class _PlanJournal:
+    def result(self, label):
+        return None
+
+    def attempted(self, label):
+        return False
+
+    def attempt_record(self, label):
+        return None
+
+    def attempt(self, label, record):
+        return None
+
+    def done(self, label, record):
+        return None
+
+
+class _PlanEvidence:
+    def __truediv__(self, name):
+        return _PlanPart(name)
+
+
+class _PlanPart:
+    def __init__(self, name):
+        self.name = name
+
+    def exists(self):
+        return True
+
+    def read_text(self):
+        return json.dumps({"address": "0:" + "0f" * 32, "pass": True})
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -1840,22 +2150,24 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--genesis-file", required=True)
     p.add_argument("--stop-ceiling", default="20", help="hard cumulative funding ceiling, TOS")
     p.add_argument(
-        "--rotation-anchor",
-        type=int,
-        default=0,
-        help="utime_since of the installed set; 0 = read ConfigParam 34",
+        "--flag-fixture",
+        default="",
+        help="JSON of the pinned CLI's accepted flags per command (tests/data)",
     )
     p.add_argument("--skip-thermal", action="store_true")
     p.add_argument("--date", default=time.strftime("%Y%m%d", time.gmtime()))
     sub = p.add_subparsers(dest="command", required=True)
     sub.add_parser("preflight")
     sub.add_parser("setup")
-    sub.add_parser("plan-funding")
+    pf = sub.add_parser("plan-funding")
+    pf.add_argument("--funding-source", required=True, help="pool-owner address funds come from")
     rf = sub.add_parser("record-funding")
     rf.add_argument("--actor", required=True)
     rf.add_argument("--amount", required=True)
     rf.add_argument("--operation-id", required=True)
     sub.add_parser("activate")
+    pl = sub.add_parser("plan")
+    pl.add_argument("name")
     c = sub.add_parser("case")
     c.add_argument("name")
     r = sub.add_parser("return-funds")
@@ -1873,11 +2185,13 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "setup":
             out = runner.setup()
         elif args.command == "plan-funding":
-            out = runner.plan_funding()
+            out = runner.plan_funding(args.funding_source)
         elif args.command == "record-funding":
             out = runner.record_funding(args.actor, args.amount, args.operation_id)
         elif args.command == "activate":
             out = runner.activate()
+        elif args.command == "plan":
+            out = runner.plan(args.name)
         elif args.command == "case":
             out = runner.case(args.name)
         elif args.command == "return-funds":
@@ -1888,6 +2202,12 @@ def main(argv: list[str] | None = None) -> int:
         runner.journal.log(kind="refusal", command=args.command, reason=str(exc))
         print(json.dumps({"refused": str(exc)}, indent=2))
         return 3
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001 - journaled, then surfaced as a distinct exit code
+        runner.journal.log(kind="error", command=args.command, error=repr(exc))
+        print(json.dumps({"error": repr(exc)}, indent=2))
+        return 2
     print(json.dumps(out, indent=2, sort_keys=True, default=str))
     return 0
 
