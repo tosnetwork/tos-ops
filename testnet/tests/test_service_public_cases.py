@@ -10,6 +10,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -116,7 +117,7 @@ class FakeCli:
         self.script = {}
         self.calls_count = 0
 
-    def run(self, label, *args, want_json=False):
+    def run(self, label, *args, want_json=False, format_flag=True):
         self.calls.append((label, list(args)))
         self.calls_count += 1
         rc, text, effect = self.script.get(label, (0, "{}", None))
@@ -2775,11 +2776,13 @@ class Sc03eExpiry(RunnerCase):
             self.clock.update(utime=self.clock["utime"] + 10**10) or predicate()
         )
         self.calls = []
+        self.format_flags = []
         self.answer_override = {}
         self.write_override = None
 
-        def local(label, *argv, want_json=False):
+        def local(label, *argv, want_json=False, format_flag=True):
             self.calls.append((label, list(argv)))
+            self.format_flags.append(format_flag)
             vu = int(argv[argv.index("--valid-until") + 1])
             out = Path(argv[argv.index("--signed-boc-out") + 1])
             msg = agent_request(self.state["seqno"], self.state["controller_epoch"], vu)
@@ -2822,6 +2825,8 @@ class Sc03eExpiry(RunnerCase):
         [(label, argv)] = self.calls
         self.assertEqual(label, "sc03e-prepare")
         self.assertEqual(argv[:3], ["agent", "account", "task-send-prepare"])
+        # task-send-prepare prints JSON itself and rejects the global --format flag.
+        self.assertEqual(self.format_flags, [False])
         [(blabel, expect, raw, msg_hash)] = self.broadcasts
         self.assertEqual((blabel, expect), ("sc03e-expired", spc.AGENT_EXPIRED))
         saved = Path(argv[argv.index("--signed-boc-out") + 1])
@@ -2829,6 +2834,39 @@ class Sc03eExpiry(RunnerCase):
         self.assertEqual(oct(saved.parent.stat().st_mode & 0o777), "0o700")
         self.assertTrue(str(saved).startswith(str(self.private)))
         self.assertEqual(result["prepared"]["seqno"], 4)
+
+    def test_a_first_prepare_refused_at_argument_parsing_is_retried_under_a_new_label(self):
+        self.runner.journal.attempt("sc03e-prepare", {"kind": "local"})
+        self.runner.journal.done("sc03e-prepare", {"exit_code": 2, "answer": None})
+        result = self.runner.case_sc03e(WALLETS)
+        self.assertTrue(result["pass"])
+        self.assertEqual([label for label, _ in self.calls], ["sc03e-prepare-r2"])
+        self.assertEqual(self.runner.journal.result("sc03e-prepare")["exit_code"], 2)
+
+    def test_any_other_prepare_failure_is_never_retried(self):
+        for code in (1, None):
+            runner_label = self.runner.sc03e_prepare_label
+            self.runner.journal.attempt(f"probe-{code}", {})
+            first = {"exit_code": code, "answer": None}
+            self.runner.journal.result = lambda label, first=first: (
+                first if label == "sc03e-prepare" else None
+            )
+            self.assertEqual(runner_label(), "sc03e-prepare", code)
+
+    def test_cli_run_appends_the_format_flag_only_when_asked(self):
+        cli = spc.Cli(Path("/bin/echo"), "x", self.private, self.runner.journal)
+        cli.env = lambda: dict(os.environ)
+        seen = []
+
+        def fake_run(argv, **kw):
+            seen.append(argv)
+            return subprocess.CompletedProcess(argv, 0, b"{}", b"")
+
+        with mock.patch.object(spc.subprocess, "run", fake_run):
+            cli.run("with-format", "agent", "x", want_json=True)
+            cli.run("without-format", "agent", "x", want_json=True, format_flag=False)
+        self.assertEqual(seen[0][-2:], ["--format", "json"])
+        self.assertNotIn("--format", seen[1])
 
     def test_a_prepared_answer_for_another_sequence_is_never_broadcast(self):
         self.answer_override = {"seqno": 3}
@@ -3014,7 +3052,7 @@ class Sc03eExpiry(RunnerCase):
         other = "0:" + "ab" * 32
         msg = agent_request(4, 2, 0, account=other)
 
-        def local(label, *argv, want_json=False):
+        def local(label, *argv, want_json=False, format_flag=True):
             vu = int(argv[argv.index("--valid-until") + 1])
             msg2 = agent_request(4, 2, vu, account=other)
             raw = spc.boc_encode(msg2)
@@ -3091,6 +3129,21 @@ class Sc03eFlagFixture(unittest.TestCase):
     """SC-03e needs task-send-prepare: the pinned CLI fixture refuses it, a fixture that lists
     the command accepts exactly the flags the case uses."""
 
+    args_base = [
+        "--private-dir",
+        "/nonexistent",
+        "--evidence-dir",
+        "/nonexistent",
+        "--cli",
+        "/x",
+        "--rpc",
+        PRIMARY,
+        "--genesis-root",
+        "r",
+        "--genesis-file",
+        "f",
+    ]
+
     @classmethod
     def setUpClass(cls):
         cls.flags = json.loads(spc.FLAG_FIXTURE.read_text())
@@ -3118,6 +3171,21 @@ class Sc03eFlagFixture(unittest.TestCase):
         planner = spc.PlanRunner(self.args, WALLETS)
         planner.case_fn("sc03e")(planner.wallets)
         return planner.recorded
+
+    def test_the_flag_check_sees_the_implicit_format_flag(self):
+        flags = json.loads(
+            (spc.FLAG_FIXTURE.parent / "service-public-cases-cli-flags-cf2901a.json").read_text()
+        )
+        planner = spc.PlanRunner(self.args, WALLETS)
+        planner.local("probe", "agent", "account", "task-send-prepare", want_json=True)
+        self.assertEqual(planner.recorded[0]["argv"][-2:], ["--format", "json"])
+        checker = spc.Runner.__new__(spc.Runner)
+        checker.args = spc.build_parser().parse_args(
+            [*self.args_base, "--cli-sha256", flags["cli_sha256"], "status"]
+        )
+        with self.assertRaises(spc.Refusal) as cm:
+            checker.check_flags(planner.recorded, flags)
+        self.assertIn("--format", str(cm.exception))
 
     def test_the_pinned_cli_fixture_refuses_the_case(self):
         checker = spc.Runner.__new__(spc.Runner)
