@@ -836,21 +836,29 @@ class Runner:
             # message that was broadcast anyway makes the outcome unknown. Never retry.
             sent: list[dict] = []
 
+            observation_failed = False
+
             def broadcast() -> bool:
-                if external:
-                    sent[:] = self.external_arrivals(observe, before["observe_lt"] or 0)
-                else:
-                    sent[:] = self.sends_to(payer, before["payer_lt"], observe)
+                nonlocal observation_failed
+                try:
+                    if external:
+                        sent[:] = self.external_arrivals(observe, before["observe_lt"] or 0)
+                    else:
+                        sent[:] = self.sends_to(payer, before["payer_lt"], observe)
+                except Refusal:
+                    observation_failed = True
+                    raise
                 return bool(sent)
 
             self.wait(broadcast, REFUSAL_OBSERVE_S)
             record["payer_tx_after"] = [r["transaction_id"] for r in sent]
+            record["broadcast_observation_failed"] = observation_failed
             if rc is not None and len(sent) == 1 and observe:
                 # The CLI broadcast the message and then reported the contract's own failure
                 # (or its own) with a non-zero exit. Exactly one message is on chain, so the
                 # contract transaction decides exactly as for a clean exit.
                 record["cli_reported_failure"] = True
-            elif sent or rc is None:
+            elif sent or rc is None or observation_failed:
                 record["verdict"] = "unknown"
             elif expect_exit != 0:
                 # A negative control the CLI already refuses client-side: nothing was sent, the
@@ -1359,10 +1367,20 @@ class Runner:
                 show=show,
             )
         )
-        withdrawable = state_nanotos(show().get("withdrawable_revenue"))
-        if withdrawable <= 0:
-            raise Refusal("no withdrawable revenue after the answered call")
-        amount = nanotos_text(min(withdrawable, SERVICE_WITHDRAW_CAP))
+        withdrawal = self.journal.result("sc04-withdraw-owner")
+        if withdrawal is not None:
+            if withdrawal.get("verdict") != "settled":
+                raise Refusal("original service withdrawal is unresolved; reconcile read-only")
+            before_state = (withdrawal.get("before") or {}).get("state") or {}
+            withdrawable = state_nanotos(before_state.get("withdrawable_revenue"))
+            amount = self.argv_value(withdrawal, "--withdraw-amount")
+            if not 0 < tos_to_nanotos(amount) <= min(withdrawable, SERVICE_WITHDRAW_CAP):
+                raise Refusal("recorded service withdrawal exceeds its original baseline")
+        else:
+            withdrawable = state_nanotos(show().get("withdrawable_revenue"))
+            if withdrawable <= 0:
+                raise Refusal("no withdrawable revenue after the answered call")
+            amount = nanotos_text(min(withdrawable, SERVICE_WITHDRAW_CAP))
         self.step(
             "sc04-withdraw-owner",
             send
@@ -2030,7 +2048,10 @@ class Runner:
 
         def finish(verdict: str) -> dict:
             record["target_paid_again"] = self.rpc.balance(target) >= paid_at
-            record["client_side_refusal_accepted"] = True
+            if verdict == "cli-refused-before-broadcast":
+                # Accepted by declaration only after a clean observation window proved that
+                # nothing left the payer (the contract keeps no action id).
+                record["client_side_refusal_accepted"] = True
             record["verdict"] = verdict
             self.journal.done(label, record)
             record["label"] = label
@@ -2039,18 +2060,29 @@ class Runner:
         if rc != 0:
             sent: list[dict] = []
 
+            observation_failed = False
+
             def broadcast() -> bool:
-                if external:
-                    sent[:] = self.external_arrivals(account, before["observe_lt"])
-                else:
-                    sent[:] = self.sends_to(payer, before["payer_lt"], account)
+                nonlocal observation_failed
+                try:
+                    if external:
+                        sent[:] = self.external_arrivals(account, before["observe_lt"])
+                    else:
+                        sent[:] = self.sends_to(payer, before["payer_lt"], account)
+                except Refusal:
+                    observation_failed = True
+                    raise
                 return bool(sent)
 
             self.wait(broadcast, REFUSAL_OBSERVE_S)
             record["payer_tx_after"] = [r["transaction_id"] for r in sent]
-            if sent or rc is None:
+            record["broadcast_observation_failed"] = observation_failed
+            if sent or rc is None or observation_failed:
                 finish("unknown")
-                raise Refusal(f"{label}: CLI exit {rc} but a message left the wallet; reconcile")
+                raise Refusal(
+                    f"{label}: CLI exit {rc}; a message left the wallet or the observation "
+                    "failed; reconcile read-only"
+                )
             if self.rpc.balance(target) >= paid_at:
                 return finish("DUPLICATE-EXECUTED")
             return finish("cli-refused-before-broadcast")
@@ -2143,7 +2175,10 @@ class Runner:
             path = self.evidence / f"{name}-RESULT.json"
             if not path.exists():
                 raise Refusal(f"sc08 needs {name} first")
-            parts[name] = json.loads(path.read_text())
+            part = json.loads(path.read_text())
+            if not isinstance(part, dict) or part.get("pass") is not True:
+                raise Refusal(f"sc08 prerequisite {name} did not pass")
+            parts[name] = part
         deploy = self.step(
             "sc08-task-create",
             self.task_create_argv("sc08", w),

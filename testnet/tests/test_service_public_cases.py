@@ -802,6 +802,175 @@ class RetryLabel(RunnerCase):
         self.assertEqual(self.runner.retry_label("t"), "t")
 
 
+class RpcOutage(RunnerCase):
+    """A read outage during the post-refusal observation window proves nothing: the outcome
+    stays unknown (never a client-side refusal) and the label is never retried."""
+
+    def outage(self):
+        return mock.patch.object(
+            self.rpc, "transactions_after", side_effect=spc.Refusal("injected read outage")
+        )
+
+    def exercise(self, external, negative):
+        self.cli.script["s"] = (1, "", None)
+        with self.outage():
+            with self.assertRaises(spc.Refusal):
+                self.step(
+                    external=external,
+                    expect_exit=1800 if negative else 0,
+                    show=lambda: {"owner": "a"},
+                )
+        record = self.runner.journal.result("s")
+        self.assertEqual(record["verdict"], "unknown")
+        self.assertTrue(record["broadcast_observation_failed"])
+        self.assertEqual(record["payer_tx_after"], [])
+        self.assertEqual(self.runner.retry_label("s"), "s")
+        with self.assertRaises(spc.Refusal):
+            self.step(external=external, expect_exit=1800 if negative else 0)
+        self.assertEqual(self.cli.calls_count, 1)
+
+    def test_internal_positive_step_stays_unknown(self):
+        self.exercise(False, False)
+
+    def test_internal_negative_control_stays_unknown(self):
+        self.exercise(False, True)
+
+    def test_external_positive_step_stays_unknown(self):
+        self.exercise(True, False)
+
+    def test_external_negative_control_stays_unknown(self):
+        self.exercise(True, True)
+
+    def duplicate(self, external):
+        self.cli.script["s"] = (1, "", None)
+        with self.outage():
+            with self.assertRaises(spc.Refusal):
+                self.runner.duplicate_control(
+                    "s", ["agent", "x"], PAYER, CONTRACT, TARGET, external=external
+                )
+        record = self.runner.journal.result("s")
+        self.assertEqual(record["verdict"], "unknown")
+        self.assertTrue(record["broadcast_observation_failed"])
+        self.assertNotIn("client_side_refusal_accepted", record)
+
+    def test_internal_duplicate_control_stays_unknown(self):
+        self.duplicate(False)
+
+    def test_external_duplicate_control_stays_unknown(self):
+        self.duplicate(True)
+
+    def test_a_clean_observation_window_still_records_a_client_side_refusal(self):
+        self.cli.script["s"] = (1, "", None)
+        record = self.step(expect_exit=1800, show=lambda: {"owner": "a"})
+        self.assertEqual(record["verdict"], "cli-refused-before-broadcast")
+        self.assertFalse(record["broadcast_observation_failed"])
+
+
+class WithdrawalResume(RunnerCase):
+    """SC-04 resumed after its owner withdrawal settled must replay the recorded withdrawal
+    against its recorded pre-withdrawal baseline, and must fence an unresolved or invalid one."""
+
+    def record_withdrawal(self, verdict, before, amount):
+        self.runner.journal.done(
+            "sc04-withdraw-owner",
+            {
+                "label": "sc04-withdraw-owner",
+                "verdict": verdict,
+                "argv": ["--withdraw-amount", amount],
+                "before": {"state": {"withdrawable_revenue": before}},
+            },
+        )
+
+    def fake_case(self, current, allow_withdrawal):
+        seen = []
+
+        def step(label, argv, **kw):
+            seen.append(label)
+            if label == "sc04-withdraw-owner" and not allow_withdrawal:
+                raise AssertionError("unsafe withdrawal replay reached")
+            previous = self.runner.journal.result(label)
+            if previous:
+                return previous
+            verdict = "refused-as-intended" if kw.get("expect_exit") else "settled"
+            return {"label": label, "observe": CONTRACT, "verdict": verdict}
+
+        self.runner.step = step
+        self.runner.wait_active = lambda *a: None
+        self.runner.show = lambda *a: (
+            lambda: {
+                "next_request_id": 1,
+                "pending_count": 0,
+                "withdrawable_revenue": current,
+            }
+        )
+        return seen
+
+    def resume(self, before, amount, current):
+        self.record_withdrawal("settled", before, amount)
+        seen = self.fake_case(current, allow_withdrawal=True)
+        result = self.runner.case_sc04(WALLETS)
+        self.assertTrue(result["pass"])
+        self.assertEqual(result["withdrawn_tos"], amount)
+        self.assertIn("sc04-withdraw-owner", seen)
+        self.assertEqual(self.cli.calls_count, 0)
+
+    def test_completed_full_withdrawal_resumes(self):
+        self.resume("0.05", "0.050000000", "0")
+
+    def test_completed_partial_withdrawal_resumes(self):
+        self.resume("0.25", "0.050000000", "0.20")
+
+    def refuse(self, verdict, before, amount):
+        self.record_withdrawal(verdict, before, amount)
+        self.fake_case("0.25", allow_withdrawal=False)
+        with self.assertRaises(spc.Refusal):
+            self.runner.case_sc04(WALLETS)
+
+    def test_unresolved_withdrawal_stays_fenced(self):
+        self.refuse("unknown", "0.25", "0.05")
+
+    def test_zero_recorded_withdrawal_refuses(self):
+        self.refuse("settled", "0.25", "0")
+
+    def test_recorded_amount_above_its_baseline_refuses(self):
+        self.refuse("settled", "0.01", "0.05")
+
+
+class ComponentPrerequisite(RunnerCase):
+    """SC-08 spends nothing unless every component result is an object with a literal pass."""
+
+    def exercise(self, failed):
+        self.evidence.mkdir(exist_ok=True)
+        for name in ("sc02", "sc03", "sc04", "sc05", "sc06", "sc07"):
+            record = {"address": CONTRACT, "pass": True}
+            if name == "sc04":
+                record = failed
+            (self.evidence / f"{name}-RESULT.json").write_text(json.dumps(record))
+        calls = []
+
+        def step(*a, **k):
+            calls.append(a)
+            raise AssertionError("value step reached before the prerequisite refusal")
+
+        self.runner.step = step
+        with self.assertRaises(spc.Refusal):
+            self.runner.case_sc08(WALLETS)
+        self.assertEqual(calls, [])
+        self.assertEqual(self.cli.calls_count, 0)
+
+    def test_failed_component_stops_before_spending(self):
+        self.exercise({"pass": False})
+
+    def test_missing_component_verdict_stops_before_spending(self):
+        self.exercise({})
+
+    def test_truthy_string_is_not_a_passing_verdict(self):
+        self.exercise({"pass": "true"})
+
+    def test_nonobject_component_refuses(self):
+        self.exercise([])
+
+
 class DrillRecovery(RunnerCase):
     """The lost-reply recovery of SC-08 re-sends only when the marker is the drill's and the
     chain is provably untouched after it."""
