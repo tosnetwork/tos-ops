@@ -1458,6 +1458,24 @@ class RefusalRedaction(unittest.TestCase):
 
 
 class Helpers(unittest.TestCase):
+    def test_transferred_reads_the_record_not_the_chain(self):
+        friendly = spc.friendly_addr(TARGET) if hasattr(spc, "friendly_addr") else TARGET
+        rec = {"out_msgs": [{"destination": friendly, "value": "100000000", "bounced": False}]}
+        self.assertTrue(spc.Runner.transferred(rec, TARGET, "0.09"))
+        self.assertFalse(spc.Runner.transferred(rec, TARGET, "0.11"))
+        self.assertFalse(spc.Runner.transferred(rec, PAYER, "0.09"))
+        bounced = {"out_msgs": [{"destination": TARGET, "value": "100000000", "bounced": True}]}
+        self.assertFalse(spc.Runner.transferred(bounced, TARGET, "0.09"))
+        self.assertFalse(spc.Runner.transferred({}, TARGET, "0.09"))
+
+    def test_argv_value_comes_from_the_recorded_vector(self):
+        rec = {"label": "x", "argv": ["agent", "--action-id", "ab" * 32, "--yes"]}
+        self.assertEqual(spc.Runner.argv_value(rec, "--action-id"), "ab" * 32)
+        with self.assertRaises(spc.Refusal):
+            spc.Runner.argv_value(rec, "--value")
+        with self.assertRaises(spc.Refusal):
+            spc.Runner.argv_value({"argv": ["--action-id"]}, "--action-id")
+
     def test_amount_round_trip(self):
         for text in ("0.000000001", "1.5", "3088.636365049", "20"):
             n = spc.tos_to_nanotos(text)

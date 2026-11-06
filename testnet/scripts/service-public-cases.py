@@ -940,6 +940,26 @@ class Runner:
         return read
 
     @staticmethod
+    def transferred(record: dict, to: str, min_tos: str) -> bool:
+        """Whether the step's contract transaction carried at least `min_tos` to `to` without a
+        bounce; read from the record, so a replayed step gives the same answer."""
+        floor = tos_to_nanotos(min_tos)
+        return any(
+            same_addr(m.get("destination"), to)
+            and not m.get("bounced")
+            and int(m.get("value") or 0) >= floor
+            for m in record.get("out_msgs") or []
+        )
+
+    @staticmethod
+    def argv_value(record: dict, flag: str) -> str:
+        """The value that followed `flag` in the step's recorded argument vector."""
+        argv = list(record.get("argv") or [])
+        if flag not in argv or argv.index(flag) + 1 >= len(argv):
+            raise Refusal(f"{record.get('label')}: {flag} missing from the recorded argv")
+        return str(argv[argv.index(flag) + 1])
+
+    @staticmethod
     def positive_outcome(tx: dict, before_balance: int | None, after_balance: int | None) -> str:
         """How a step that had to succeed settled: `executed`, `credited-without-compute`
         (a plain value transfer to an account without code: compute phase skipped, nothing
@@ -1772,9 +1792,7 @@ class Runner:
                 "sc03-agent-wallet-activate", "agent", "wallet", "activate", "-n", "sc03-agent"
             )
             self.wait_active(agent_wallet, "sc03 agent wallet")
-        action_1 = secrets.token_hex(32)
-        target_before = self.rpc.balance(target)
-        self.step(
+        first = self.step(
             "sc03-task-send-1",
             [
                 "agent",
@@ -1789,16 +1807,16 @@ class Runner:
                 "--valid-until",
                 str(now() + 300),
                 "--action-id",
-                action_1,
+                secrets.token_hex(32),
                 "--yes",
             ],
             payer=account,
             observe=account,
             external=True,
         )
-        delivered = self.wait(
-            lambda: self.rpc.balance(target) >= target_before + tos_to_nanotos("0.09")
-        )
+        # Replay-safe: the delivery and the action id to replay come from the step's own record.
+        delivered = self.transferred(first, target, "0.09")
+        action_1 = self.argv_value(first, "--action-id")
         # Replaying the same action id must not execute a second transfer. The CLI refuses it
         # client-side from its custody journal (the account contract stores no action id), so
         # no on-chain row is expected; a second successful transfer is the failure.
@@ -1869,8 +1887,7 @@ class Runner:
             observe=account,
             external=True,
         )
-        target_before_2 = self.rpc.balance(target)
-        self.step(
+        second = self.step(
             "sc03-task-send-2",
             [
                 "agent",
@@ -1891,9 +1908,7 @@ class Runner:
             payer=agent_wallet,
             observe=account,
         )
-        delivered_2 = self.wait(
-            lambda: self.rpc.balance(target) >= target_before_2 + tos_to_nanotos("0.09")
-        )
+        delivered_2 = self.transferred(second, target, "0.09")
         status = self.local(
             "sc03-status", "agent", "account", "status", "--wallet", "sc03-agent", want_json=True
         )
