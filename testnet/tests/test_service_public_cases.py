@@ -2268,8 +2268,13 @@ class CasePlans(unittest.TestCase):
         checker.args = self.args
         checker.check_flags(planned, self.flags)
 
+    # Cases that need a CLI newer than the pinned one; the pinned fixture must refuse them.
+    NEEDS_NEWER_CLI = {"sc03e"}
+
     def test_every_case_plans_and_matches_the_cli_flags(self):
         for name in spc.Runner.CASES:
+            if name in self.NEEDS_NEWER_CLI:
+                continue
             planned = self.plan(name)
             self.assertTrue(planned, name)
             self.check(planned)
@@ -2732,6 +2737,272 @@ class ExternalSteps(RunnerCase):
         with self.assertRaises(spc.Refusal):
             self.ext(effect=external_effect(sources=(PRIMARY,)))
         self.assertEqual(self.runner.journal.result("s")["verdict"], "not-confirmed-on-all-sources")
+
+
+def agent_request(seqno, epoch, valid_until, account=None):
+    """SAMPLE_MSG with its signature-covered header rewritten (and optionally re-addressed)."""
+    msg = SAMPLE_MSG()
+    body = msg.refs[0]
+    s = spc.AGENT_EXTERNAL_SIGNATURE_BITS
+    bits = (
+        body.bits[: s + 64]
+        + format(epoch, "064b")
+        + format(seqno, "032b")
+        + format(valid_until, "032b")
+        + body.bits[s + 192 :]
+    )
+    head = msg.bits
+    if account is not None:
+        head = head[:15] + format(int(account.split(":")[1], 16), "0256b") + head[271:]
+    return spc.Cell(head, [spc.Cell(bits, body.refs)])
+
+
+class Sc03eExpiry(RunnerCase):
+    """SC-03e broadcasts one saved, still-current but expired request exactly once."""
+
+    def setUp(self):
+        super().setUp()
+        self.evidence.mkdir(exist_ok=True)
+        for name in ("sc03", "sc03x"):
+            (self.evidence / f"{name}-RESULT.json").write_text(
+                json.dumps({"account": SAMPLE_ACCOUNT, "agent_wallet": PAYER, "pass": True})
+            )
+        self.state = {"seqno": 4, "controller_epoch": 2, "spent_today": 0}
+        self.runner.agent_account_state = lambda account, url=None: dict(self.state)
+        self.clock = {"utime": 0}
+        self.rpc.head_utime = lambda url=None: self.clock["utime"]
+        self.runner.wait = lambda predicate, timeout=None: (
+            self.clock.update(utime=self.clock["utime"] + 10**10) or predicate()
+        )
+        self.calls = []
+        self.answer_override = {}
+        self.write_override = None
+
+        def local(label, *argv, want_json=False):
+            self.calls.append((label, list(argv)))
+            vu = int(argv[argv.index("--valid-until") + 1])
+            out = Path(argv[argv.index("--signed-boc-out") + 1])
+            msg = agent_request(self.state["seqno"], self.state["controller_epoch"], vu)
+            raw = self.write_override if self.write_override is not None else spc.boc_encode(msg)
+            out.write_bytes(raw)
+            answer = {
+                "schema": "tosctl.agent-account.task-send-prepare.v1",
+                "state": "signed",
+                "action_id": argv[argv.index("--action-id") + 1],
+                "account": SAMPLE_ACCOUNT,
+                "seqno": self.state["seqno"],
+                "controller_epoch": self.state["controller_epoch"],
+                "valid_until": vu,
+                "exact_signed_boc_digest": "sha256:"
+                + hashlib.sha256(spc.boc_encode(msg)).hexdigest(),
+            }
+            answer.update(self.answer_override)
+            return answer
+
+        self.runner.local = local
+        self.broadcasts = []
+        self.runner.refusal_broadcast = lambda label, msg, account, expect, raw=None: (
+            self.broadcasts.append((label, expect, raw, spc.cell_hash_b64(msg)))
+            or {"label": label, "verdict": "refused-at-admission", "expect_exit": expect}
+        )
+
+    def test_the_saved_bytes_are_broadcast_once_after_chain_time_passes_the_deadline(self):
+        result = self.runner.case_sc03e(WALLETS)
+        self.assertTrue(result["pass"])
+        [(label, argv)] = self.calls
+        self.assertEqual(label, "sc03e-prepare")
+        self.assertEqual(argv[:3], ["agent", "account", "task-send-prepare"])
+        [(blabel, expect, raw, msg_hash)] = self.broadcasts
+        self.assertEqual((blabel, expect), ("sc03e-expired", spc.AGENT_EXPIRED))
+        saved = Path(argv[argv.index("--signed-boc-out") + 1])
+        self.assertEqual(raw, saved.read_bytes())
+        self.assertEqual(oct(saved.parent.stat().st_mode & 0o777), "0o700")
+        self.assertTrue(str(saved).startswith(str(self.private)))
+        self.assertEqual(result["prepared"]["seqno"], 4)
+
+    def test_a_prepared_answer_for_another_sequence_is_never_broadcast(self):
+        self.answer_override = {"seqno": 3}
+        with self.assertRaises(spc.Refusal) as cm:
+            self.runner.case_sc03e(WALLETS)
+        self.assertIn("task-send-prepare answer seqno=3", str(cm.exception))
+        self.assertEqual(self.broadcasts, [])
+
+    def test_a_sequence_that_moves_before_expiry_is_not_an_expiry_control(self):
+        original = self.runner.wait_chain_past
+
+        def moved(deadline):
+            self.state["seqno"] += 1
+            return original(deadline)
+
+        self.runner.wait_chain_past = moved
+        with self.assertRaises(spc.Refusal) as cm:
+            self.runner.case_sc03e(WALLETS)
+        self.assertIn("moved before expiry", str(cm.exception))
+        self.assertEqual(self.broadcasts, [])
+
+    def test_saved_bytes_that_differ_from_the_printed_digest_are_never_broadcast(self):
+        self.write_override = spc.boc_encode(agent_request(4, 2, 1))
+        with self.assertRaises(spc.Refusal) as cm:
+            self.runner.case_sc03e(WALLETS)
+        self.assertIn("digest", str(cm.exception))
+        self.assertEqual(self.broadcasts, [])
+
+    def test_a_chain_that_never_passes_the_deadline_sends_nothing(self):
+        self.runner.wait = lambda predicate, timeout=None: False
+        with self.assertRaises(spc.Refusal) as cm:
+            self.runner.case_sc03e(WALLETS)
+        self.assertIn("did not pass", str(cm.exception))
+        self.assertEqual(self.broadcasts, [])
+
+    def test_the_deadline_must_be_passed_by_the_margin_on_every_source(self):
+        seen = {}
+
+        def utime(url=None):
+            return {PRIMARY: 10**10, CONFIRM: self.clock["deadline"] + spc.EXPIRY_MARGIN_S}[url]
+
+        self.rpc.head_utime = utime
+        self.runner.wait = lambda predicate, timeout=None: predicate()
+        original = self.runner.check_prepared
+
+        def capture(answer, *a):
+            self.clock["deadline"] = answer["valid_until"]
+            seen["ok"] = True
+            return original(answer, *a)
+
+        self.runner.check_prepared = capture
+        with self.assertRaises(spc.Refusal):
+            self.runner.case_sc03e(WALLETS)
+        self.assertTrue(seen["ok"])
+        self.assertEqual(self.broadcasts, [])
+
+    def test_a_saved_request_to_another_account_is_never_broadcast(self):
+        self.write_override = b""  # placeholder replaced below
+        other = "0:" + "ab" * 32
+        msg = agent_request(4, 2, 0, account=other)
+
+        def local(label, *argv, want_json=False):
+            vu = int(argv[argv.index("--valid-until") + 1])
+            msg2 = agent_request(4, 2, vu, account=other)
+            raw = spc.boc_encode(msg2)
+            Path(argv[argv.index("--signed-boc-out") + 1]).write_bytes(raw)
+            return {
+                "schema": "tosctl.agent-account.task-send-prepare.v1",
+                "state": "signed",
+                "action_id": argv[argv.index("--action-id") + 1],
+                "account": SAMPLE_ACCOUNT,
+                "seqno": 4,
+                "controller_epoch": 2,
+                "valid_until": vu,
+                "exact_signed_boc_digest": "sha256:" + hashlib.sha256(raw).hexdigest(),
+            }
+
+        self.assertTrue(msg.bits)
+        self.runner.local = local
+        with self.assertRaises(spc.Refusal) as cm:
+            self.runner.case_sc03e(WALLETS)
+        self.assertIn("not addressed", str(cm.exception))
+        self.assertEqual(self.broadcasts, [])
+
+    def test_sources_that_disagree_on_the_account_stop_before_signing(self):
+        self.runner.agent_account_state = lambda account, url=None: (
+            {"seqno": 4 if url == PRIMARY else 5, "controller_epoch": 2, "spent_today": 0}
+        )
+        with self.assertRaises(spc.Refusal) as cm:
+            self.runner.case_sc03e(WALLETS)
+        self.assertIn("disagree", str(cm.exception))
+        self.assertEqual((self.calls, self.broadcasts), ([], []))
+
+    def test_raw_bytes_that_are_not_the_checked_message_are_refused_before_the_attempt(self):
+        runner = spc.Runner(self.runner.args)
+        runner.rpc = self.rpc
+        runner.guards = lambda: {}
+        runner.agent_account_state = lambda account, url=None: {"seqno": 1, "controller_epoch": 1}
+        runner.wait = lambda predicate, timeout=None: False
+        self.rpc.last_lt = lambda address, url=None: 0
+        self.rpc.head = lambda url=None: {"seqno": 1000}
+        runner.external_arrivals = lambda account, since, url=None: []
+        sent = []
+        self.rpc.send_boc = lambda boc_b64, url=None: sent.append(boc_b64) or {}
+        with self.assertRaises(spc.Refusal) as cm:
+            runner.refusal_broadcast(
+                "sc03e-mismatch",
+                SAMPLE_MSG(),
+                SAMPLE_ACCOUNT,
+                spc.AGENT_EXPIRED,
+                raw=spc.boc_encode(agent_request(9, 9, 9)),
+            )
+        self.assertIn("not the checked message", str(cm.exception))
+        self.assertEqual(sent, [])
+        self.assertFalse(runner.journal.attempted("sc03e-mismatch"))
+        # The same raw bytes of the checked message go out unchanged.
+        raw = spc.boc_encode(SAMPLE_MSG())
+        with self.assertRaises(spc.Refusal):
+            runner.refusal_broadcast(
+                "sc03e-match", SAMPLE_MSG(), SAMPLE_ACCOUNT, spc.AGENT_EXPIRED, raw=raw
+            )
+        self.assertEqual(sent, [base64.b64encode(raw).decode()])
+
+
+class Sc03eFlagFixture(unittest.TestCase):
+    """SC-03e needs task-send-prepare: the pinned CLI fixture refuses it, a fixture that lists
+    the command accepts exactly the flags the case uses."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.flags = json.loads(spc.FLAG_FIXTURE.read_text())
+        cls.args = spc.build_parser().parse_args(
+            [
+                "--private-dir",
+                "/nonexistent",
+                "--evidence-dir",
+                "/nonexistent",
+                "--cli",
+                "/x",
+                "--cli-sha256",
+                cls.flags["cli_sha256"],
+                "--rpc",
+                PRIMARY,
+                "--genesis-root",
+                "r",
+                "--genesis-file",
+                "f",
+                "status",
+            ]
+        )
+
+    def plan(self):
+        planner = spc.PlanRunner(self.args, WALLETS)
+        planner.case_fn("sc03e")(planner.wallets)
+        return planner.recorded
+
+    def test_the_pinned_cli_fixture_refuses_the_case(self):
+        checker = spc.Runner.__new__(spc.Runner)
+        checker.args = self.args
+        with self.assertRaises(spc.Refusal) as cm:
+            checker.check_flags(self.plan(), self.flags)
+        self.assertIn("task-send-prepare", str(cm.exception))
+
+    def test_a_fixture_with_task_send_prepare_accepts_the_plan(self):
+        flags = json.loads(json.dumps(self.flags))
+        flags["commands"]["agent account task-send-prepare"] = {
+            "flags": [
+                "--wallet",
+                "--target",
+                "--value",
+                "--body-boc",
+                "--valid-until",
+                "--action-id",
+                "--yes",
+                "--signed-boc-out",
+            ],
+            "possible_values": [],
+        }
+        planned = self.plan()
+        self.assertEqual([p["label"] for p in planned], ["sc03e-prepare"])
+        self.assertFalse(planned[0]["value"])
+        checker = spc.Runner.__new__(spc.Runner)
+        checker.args = self.args
+        checker.check_flags(planned, flags)
 
 
 class ExternalDuplicateControl(RunnerCase):
