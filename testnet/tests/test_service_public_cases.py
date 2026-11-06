@@ -2801,10 +2801,20 @@ class Sc03eExpiry(RunnerCase):
 
         self.runner.local = local
         self.broadcasts = []
-        self.runner.refusal_broadcast = lambda label, msg, account, expect, raw=None: (
+
+        def broadcast(label, msg, account, expect, raw=None, licence=None):
             self.broadcasts.append((label, expect, raw, spc.cell_hash_b64(msg)))
-            or {"label": label, "verdict": "refused-at-admission", "expect_exit": expect}
-        )
+            record = {
+                "label": label,
+                "verdict": "refused-at-admission",
+                "expect_exit": expect,
+                "licence": licence,
+            }
+            self.runner.journal.attempt(label, record)
+            self.runner.journal.done(label, record)
+            return record
+
+        self.runner.refusal_broadcast = broadcast
 
     def test_the_saved_bytes_are_broadcast_once_after_chain_time_passes_the_deadline(self):
         result = self.runner.case_sc03e(WALLETS)
@@ -2935,24 +2945,48 @@ class Sc03eExpiry(RunnerCase):
 
     def test_a_resumed_report_keeps_the_times_that_licensed_the_broadcast(self):
         first = self.runner.case_sc03e(WALLETS)
-        recorded = self.runner.journal.result("sc03e-chain-time")
-        self.assertEqual(recorded["shard_utime"], first["shard_time_at_broadcast"])
-        done = {"verdict": "refused-at-admission", "expect_exit": spc.AGENT_EXPIRED}
-        self.runner.journal.attempt("sc03e-expired", {})
-        self.runner.journal.done("sc03e-expired", done)
-        self.runner.journal.attempt("sc03e-prepare", {})
-        self.runner.journal.done("sc03e-prepare", {"exit_code": 0, "answer": {"valid_until": 5}})
-        self.clock["utime"] = 1
+        marker = self.runner.journal.result("sc03e-expired")
+        self.assertEqual(marker["licence"]["shard_utime"], first["shard_time_at_broadcast"])
+        real = spc.Runner.refusal_broadcast.__get__(self.runner)
+        self.runner.refusal_broadcast = real  # a done marker is returned, never re-sent
         self.runner.wait_chain_past = lambda *a: self.fail("resume must not re-read chain time")
-        self.runner.local = lambda *a, **k: {
-            "seqno": 4,
-            "controller_epoch": 2,
-            "valid_until": 5,
-            "exact_signed_boc_digest": "sha256:x",
-        }
         self.runner.read_expiry_probe = lambda path, prepared, account: (b"", SAMPLE_MSG())
         again = self.runner.case_sc03e(WALLETS)
         self.assertEqual(again["shard_time_at_broadcast"], first["shard_time_at_broadcast"])
+        self.assertEqual(len(self.broadcasts), 1)
+
+    def test_a_restart_before_the_broadcast_marker_re_judges_and_sends_once(self):
+        crashed = {"once": True}
+        original = self.runner.read_expiry_probe
+
+        def crash(path, prepared, account):
+            if crashed.pop("once", False):
+                raise RuntimeError("simulated crash after the expiry check")
+            return original(path, prepared, account)
+
+        self.runner.read_expiry_probe = crash
+        with self.assertRaises(RuntimeError):
+            self.runner.case_sc03e(WALLETS)
+        self.assertEqual(self.broadcasts, [])
+        waits = []
+        judge = self.runner.wait_chain_past
+        self.runner.wait_chain_past = lambda d, a: waits.append(d) or judge(d, a)
+        result = self.runner.case_sc03e(WALLETS)
+        self.assertTrue(result["pass"])
+        self.assertEqual(len(waits), 1)
+        self.assertEqual(len(self.broadcasts), 1)
+
+    def test_an_attempt_marker_without_a_result_is_never_re_sent(self):
+        self.runner.journal.attempt("sc03e-expired", {"kind": "refusal-broadcast"})
+        real = spc.Runner.refusal_broadcast.__get__(self.runner)
+        sent = []
+        self.rpc.send_boc = lambda boc_b64, url=None: sent.append(boc_b64) or {}
+        self.runner.refusal_broadcast = real
+        self.runner.guards = lambda: {}
+        with self.assertRaises(spc.Refusal) as cm:
+            self.runner.case_sc03e(WALLETS)
+        self.assertIn("attempted without a result", str(cm.exception))
+        self.assertEqual(sent, [])
 
     def test_the_deadline_must_be_passed_by_the_margin_on_every_source(self):
         seen = {}
@@ -3038,9 +3072,19 @@ class Sc03eExpiry(RunnerCase):
         raw = spc.boc_encode(SAMPLE_MSG())
         with self.assertRaises(spc.Refusal):
             runner.refusal_broadcast(
-                "sc03e-match", SAMPLE_MSG(), SAMPLE_ACCOUNT, spc.AGENT_EXPIRED, raw=raw
+                "sc03e-match",
+                SAMPLE_MSG(),
+                SAMPLE_ACCOUNT,
+                spc.AGENT_EXPIRED,
+                raw=raw,
+                licence={"deadline": 5, "shard_utime": {PRIMARY: 26}},
             )
         self.assertEqual(sent, [base64.b64encode(raw).decode()])
+        # The licence is part of the attempt marker, written before the send.
+        self.assertEqual(
+            runner.journal.attempt_record("sc03e-match")["licence"],
+            {"deadline": 5, "shard_utime": {PRIMARY: 26}},
+        )
 
 
 class Sc03eFlagFixture(unittest.TestCase):

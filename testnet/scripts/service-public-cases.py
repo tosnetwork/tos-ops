@@ -2701,12 +2701,20 @@ class Runner:
         return {"label": label, "tx": original["tx"], "in_msg_hash": msg_hash}, msg
 
     def refusal_broadcast(
-        self, label: str, msg: Cell, account: str, expect_exit: int, raw: bytes | None = None
+        self,
+        label: str,
+        msg: Cell,
+        account: str,
+        expect_exit: int,
+        raw: bytes | None = None,
+        licence: dict | None = None,
     ) -> dict:
         """Broadcast a message the account must refuse before accepting it.
 
         `raw` sends exactly those bytes (a message the CLI signed and saved) instead of the
-        runner's own encoding of `msg`; they must decode to the same message hash.
+        runner's own encoding of `msg`; they must decode to the same message hash. `licence`
+        (the observation that justified sending) is written into the attempt marker itself, so
+        it exists exactly when a broadcast may have happened.
 
         Nothing can be paid: a request refused before `accept_message()` never becomes a
         transaction, and the node reports the refusal itself when it admits the message
@@ -2742,6 +2750,8 @@ class Runner:
             "message_boc_sha256": hashlib.sha256(base64.b64decode(boc_b64)).hexdigest(),
             "before": before,
         }
+        if licence is not None:
+            record["licence"] = licence
         self.journal.attempt(label, record)
         answer = self.rpc.send_boc(boc_b64)
         record["rpc_answer"] = answer
@@ -3007,10 +3017,11 @@ class Runner:
         else:
             # Resumed after the broadcast: the account has the state the broadcast left.
             prepared = answer
-        recorded = self.journal.result("sc03e-chain-time")
-        if control is not None and recorded is not None:
-            chain_times = recorded["shard_utime"]
+        if control is not None:
+            # Done: report the times recorded in the broadcast's own marker; nothing is re-sent.
+            chain_times = (control.get("licence") or {}).get("shard_utime")
         else:
+            # Not yet broadcast (or interrupted before the marker): re-judge from scratch.
             chain_times = self.wait_chain_past(valid_until, account)
         state1 = self.agreed_agent_state(account)
         if (state1["seqno"], state1["controller_epoch"]) != (
@@ -3019,15 +3030,14 @@ class Runner:
         ):
             raise Refusal("the prepared sequence moved before expiry; not an expiry control")
         raw, msg = self.read_expiry_probe(path, prepared, account)
-        if control is None:
-            # The observation that licensed the broadcast is kept with it, so a resumed report
-            # shows the times that were checked, not later reads.
-            self.journal.attempt("sc03e-chain-time", {"kind": "observation"})
-            self.journal.done(
-                "sc03e-chain-time",
-                {"exit_code": 0, "deadline": valid_until, "shard_utime": chain_times},
-            )
-        control = self.refusal_broadcast("sc03e-expired", msg, account, AGENT_EXPIRED, raw=raw)
+        control = self.refusal_broadcast(
+            "sc03e-expired",
+            msg,
+            account,
+            AGENT_EXPIRED,
+            raw=raw,
+            licence={"deadline": valid_until, "shard_utime": chain_times},
+        )
         state2 = self.agreed_agent_state(account)
         return {
             "account": account,
@@ -3694,7 +3704,7 @@ class PlanRunner(Runner):
         )
         return {"label": label, "verdict": "refused-as-intended"}
 
-    def refusal_broadcast(self, label, msg, account, expect_exit, raw=None):
+    def refusal_broadcast(self, label, msg, account, expect_exit, raw=None, licence=None):
         return {"label": label, "verdict": "refused-at-admission", "expect_exit": expect_exit}
 
     def agreed_agent_state(self, account):
