@@ -100,8 +100,24 @@ HASH = {
 SERVICE_NOT_OWNER = 1900
 SERVICE_NOT_AUTHORIZED = 1923
 TASK_ACCEPT_NOT_AGENT = 101
+TASK_SETTLE_NOT_SUBMITTED = 104  # settle in any status other than result_submitted
 TASK_SETTLE_AUTHORITY = 105
 TASK_RESOLVE_AUTHORITY = 124
+# Agent-account refusals that happen before accept_message(): the node rejects the external
+# message at admission ("exitcode=N" in the sendBoc error) and no transaction can exist.
+AGENT_BAD_SIGNATURE = 1704
+AGENT_BAD_SEQNO = 1705
+AGENT_STALE_CONTROLLER = 1710
+AGENT_EXTERNAL_SIGNATURE_BITS = 512
+# An executed controller request of the public testnet (SC-03, 2026-11-06), as carried by its
+# transaction: a public message whose hash the chain reports as the transaction's in_msg hash.
+# The planner and the tests parse it; nothing in it is secret.
+SAMPLE_AGENT_REQUEST_BOC = (
+    "te6ccgEBAwEAqQABRYgB6ubp2LaRkBGjiQlZ49/saG+jkMHkowybfYb1ogT0qzIMAQH7o4rs/u4hNchj5X08Ofe0"
+    "AdTgB+ecmMTdZhHGXpCnZAkHAQDz5QAhK6ol3XKmO8PdUsrNVlysuJ2wCr80lbtACUFHUAMAAAACAAAAAAAAAAEA"
+    "AAACau1dqYAZXuPXhP2BFCZdA/CFiK9Zkt3ZtaoQKi77N5NdCuDwXGgL68IBAgAA"
+)
+SAMPLE_AGENT_REQUEST_HASH = "UEOm2JO876SysgF7jRy/uOepTot+liQBx+X81h55EeA="
 DISPUTE_NOT_RESPONDENT = 2000
 DISPUTE_NOT_REVIEWER = 2001
 DISPUTE_ALREADY_RESOLVED = 2002
@@ -246,6 +262,185 @@ def boc_root_data(raw: bytes) -> bytes:
     raise Refusal("BOC root missing")
 
 
+class Cell:
+    """An ordinary TVM cell: a bit string and up to four child cells."""
+
+    __slots__ = ("bits", "refs")
+
+    def __init__(self, bits: str, refs: list):
+        if len(bits) > 1023 or len(refs) > 4 or set(bits) - {"0", "1"}:
+            raise Refusal("cell out of bounds")
+        self.bits = bits
+        self.refs = list(refs)
+
+
+def _cell_bits(data: bytes, d2: int) -> str:
+    bits = "".join(f"{b:08b}" for b in data)
+    if d2 % 2 == 1:
+        # Completion tag: the last set bit and everything after it is padding.
+        if "1" not in bits:
+            raise Refusal("cell padding without a completion tag")
+        bits = bits[: bits.rindex("1")]
+    return bits
+
+
+def _cell_data(bits: str) -> bytes:
+    if len(bits) % 8:
+        bits = bits + "1" + "0" * (7 - len(bits) % 8)
+    return int(bits, 2).to_bytes(len(bits) // 8, "big") if bits else b""
+
+
+def _descriptors(c: Cell) -> bytes:
+    return bytes([len(c.refs), (len(c.bits) + 7) // 8 + len(c.bits) // 8])
+
+
+def boc_decode(raw: bytes) -> Cell:
+    """The single root of a serialized bag of ordinary cells (index and CRC tolerated)."""
+    try:
+        if raw[:4] != bytes.fromhex("b5ee9c72"):
+            raise Refusal("not a BOC")
+        flags = raw[4]
+        size, off = flags & 7, raw[5]
+        has_index, has_crc = bool(flags & 0x80), bool(flags & 0x40)
+        p = 6
+        count = int.from_bytes(raw[p : p + size], "big")
+        roots = int.from_bytes(raw[p + size : p + 2 * size], "big")
+        p += 3 * size + off  # cells, roots, absent, total cell size
+        if roots != 1:
+            raise Refusal(f"BOC with {roots} roots")
+        root_idx = int.from_bytes(raw[p : p + size], "big")
+        if root_idx >= count:
+            raise Refusal("BOC root index out of range")
+        p += size + (count * off if has_index else 0)
+        raw_cells = []
+        for i in range(count):
+            d1, d2 = raw[p], raw[p + 1]
+            if d1 & 8:
+                raise Refusal("exotic cell")
+            refs = d1 & 7
+            ln = (d2 + 1) // 2
+            data = raw[p + 2 : p + 2 + ln]
+            if len(data) != ln:
+                raise Refusal("BOC truncated")
+            p += 2 + ln
+            ref_idx = [
+                int.from_bytes(raw[p + j * size : p + (j + 1) * size], "big") for j in range(refs)
+            ]
+            if any(r <= i or r >= count for r in ref_idx):
+                raise Refusal("BOC reference order")
+            p += refs * size
+            raw_cells.append((_cell_bits(data, d2), ref_idx))
+        if has_crc:
+            p += 4
+        if p != len(raw):
+            raise Refusal("BOC has trailing bytes")
+    except IndexError as exc:
+        raise Refusal("BOC truncated") from exc
+    cells: list = [None] * count
+    for i in range(count - 1, -1, -1):
+        bits, ref_idx = raw_cells[i]
+        cells[i] = Cell(bits, [cells[r] for r in ref_idx])
+    return cells[root_idx]
+
+
+def boc_encode(root: Cell) -> bytes:
+    """Serialize a tree of ordinary cells (no index, no CRC); children follow their parent."""
+    order: list[Cell] = []
+
+    def visit(c: Cell) -> None:
+        order.append(c)
+        for r in c.refs:
+            visit(r)
+
+    visit(root)
+    if len(order) > 255:
+        raise Refusal("BOC too large for this encoder")
+    index = {id(c): i for i, c in enumerate(order)}
+    if len(index) != len(order):
+        raise Refusal("shared cells are not supported")
+    body = b"".join(
+        _descriptors(c) + _cell_data(c.bits) + b"".join(bytes([index[id(r)]]) for r in c.refs)
+        for c in order
+    )
+    off = max(1, (len(body).bit_length() + 7) // 8)
+    return (
+        bytes.fromhex("b5ee9c72")
+        + bytes([1, off, len(order), 1, 0])
+        + len(body).to_bytes(off, "big")
+        + b"\x00"
+        + body
+    )
+
+
+def cell_depth(c: Cell) -> int:
+    return 0 if not c.refs else 1 + max(cell_depth(r) for r in c.refs)
+
+
+def cell_hash(c: Cell) -> bytes:
+    """Representation hash of an ordinary level-0 cell, as the chain reports it."""
+    rep = _descriptors(c) + _cell_data(c.bits)
+    rep += b"".join(cell_depth(r).to_bytes(2, "big") for r in c.refs)
+    rep += b"".join(cell_hash(r) for r in c.refs)
+    return hashlib.sha256(rep).digest()
+
+
+def cell_hash_b64(c: Cell) -> str:
+    return base64.b64encode(cell_hash(c)).decode()
+
+
+def transaction_in_message(tx: Cell) -> Cell:
+    """The inbound message of a serialized transaction (its first reference holds
+    `in_msg:(Maybe ^Message)` followed by the outbound queue)."""
+    if not tx.refs or not tx.refs[0].bits or tx.refs[0].bits[0] != "1" or not tx.refs[0].refs:
+        raise Refusal("transaction has no inbound message")
+    return tx.refs[0].refs[0]
+
+
+def external_message_parts(msg: Cell) -> dict:
+    """Destination and body of an inbound external message (`ext_in_msg_info`, no StateInit,
+    body in a reference)."""
+    b = msg.bits
+    if len(b) < 276 or b[:2] != "10" or b[2:4] != "00" or b[4:6] != "10" or b[6] != "0":
+        raise Refusal("not an ext_in_msg_info to a standard address")
+    wc = int(b[7:15], 2)
+    wc = wc - 256 if wc >= 128 else wc
+    addr = f"{wc}:{int(b[15:271], 2):064x}"
+    fee_len = int(b[271:275], 2)
+    p = 275 + fee_len * 8
+    if len(b) < p + 2 or b[p] != "0":
+        raise Refusal("external message carries a StateInit")
+    if b[p + 1] != "1" or len(b) != p + 2 or not msg.refs:
+        raise Refusal("external message body is not a reference")
+    return {"destination": addr, "body": msg.refs[0]}
+
+
+def agent_external_header(body: Cell) -> dict:
+    """Signature-covered header of an agent-account controller request."""
+    b = body.bits
+    s = AGENT_EXTERNAL_SIGNATURE_BITS
+    if len(b) < s + 32 + 32 + 64 + 32 + 32:
+        raise Refusal("agent request body too short")
+    gid = int(b[s + 32 : s + 64], 2)
+    return {
+        "op": f"0x{int(b[s : s + 32], 2):08x}",
+        "global_id": gid - (1 << 32) if gid >= 1 << 31 else gid,
+        "controller_epoch": int(b[s + 64 : s + 128], 2),
+        "seqno": int(b[s + 128 : s + 160], 2),
+        "valid_until": int(b[s + 160 : s + 192], 2),
+    }
+
+
+def with_flipped_signature_bit(msg: Cell) -> Cell:
+    """A copy of an external message whose first signature bit is inverted: same destination,
+    same payload, a signature that cannot verify."""
+    parts = external_message_parts(msg)
+    body = parts["body"]
+    if len(body.bits) < AGENT_EXTERNAL_SIGNATURE_BITS:
+        raise Refusal("body shorter than a signature")
+    flipped = ("1" if body.bits[0] == "0" else "0") + body.bits[1:]
+    return Cell(msg.bits, [Cell(flipped, body.refs)])
+
+
 def quiet_window_distance(ts: int, since: int, until: int) -> int:
     """Seconds between `ts` and the nearest validator-set boundary; 0 once `until` has passed."""
     if ts >= until or ts < since:
@@ -301,6 +496,41 @@ class Rpc:
     def config_param(self, idx: int) -> bytes:
         res = self.call("getConfigParam", config_id=idx)
         return boc_root_data(base64.b64decode(res["config"]["bytes"]))
+
+    def send_boc(self, boc_b64: str, url: str | None = None) -> dict:
+        """Broadcast a serialized message; the node's refusal is an answer, not a transport
+        failure, so it is returned (`{"error": ...}`) instead of raised."""
+        url = url or self.primary
+        body = json.dumps(
+            {"jsonrpc": "2.0", "id": 1, "method": "sendBoc", "params": {"boc": boc_b64}}
+        )
+        req = urllib.request.Request(
+            url, data=body.encode(), headers={"Content-Type": "application/json"}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                answer = json.loads(resp.read())
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+            raise Refusal(f"rpc sendBoc on {url}: {exc}") from exc
+        if "result" in answer:
+            return {"result": answer["result"]}
+        err = answer.get("error")
+        if not isinstance(err, dict):
+            raise Refusal(f"rpc sendBoc on {url}: malformed answer")
+        return {"error": {k: err.get(k) for k in ("code", "message", "data")}}
+
+    def run_get_method(self, address: str, method: str, url: str | None = None) -> list:
+        res = self.call("runGetMethod", url, address=address, method=method, stack=[])
+        if res.get("exit_code") != 0:
+            raise Refusal(f"{method} on {address}: exit {res.get('exit_code')}")
+        return list(res.get("stack") or [])
+
+    def transaction_by_hash(self, address: str, tx_hash: str, url: str | None = None) -> dict:
+        rows = self.call("getTransactions", url, address=address, limit=10)
+        hit = [r for r in rows if r["transaction_id"]["hash"] == tx_hash]
+        if len(hit) != 1:
+            raise Refusal(f"transaction {tx_hash} of {address} is not in the latest page")
+        return hit[0]
 
     def global_version(self) -> int:
         data = self.config_param(8)
@@ -835,8 +1065,15 @@ class Runner:
         if os.environ.get("SC_DRILL_CRASH") == label:
             self.journal.attempt(label, {"kind": "drill", **base})
             raise SystemExit(f"drill: process lost after the attempt marker of {label}")
-        self.journal.attempt(label, {"kind": "value", **base})
+        after_send_drill = os.environ.get("SC_DRILL_CRASH_AFTER_SEND") == label
+        self.journal.attempt(
+            label, {"kind": "drill-after-send" if after_send_drill else "value", **base}
+        )
         rc, answer = self.cli.run(label, *argv, want_json=want_json)
+        if after_send_drill:
+            # The message has left the wallet and the reply is lost before any record is written.
+            self.journal.log(kind="drill-crash-after-send", label=label, exit_code=rc)
+            raise SystemExit(f"drill: process lost after the CLI returned for {label}")
         record: dict = {"exit_code": rc, **base}
         if want_json and rc == 0 and isinstance(answer, dict):
             record["answer"] = {
@@ -1066,7 +1303,7 @@ class Runner:
         }
 
     # ----- cases --------------------------------------------------------------------------
-    CASES = ("sc02", "sc03", "sc04", "sc05", "sc06", "sc07", "sc08")
+    CASES = ("sc02", "sc03", "sc04", "sc05", "sc06", "sc07", "sc08", "sc03x", "sc05x", "sc08x")
 
     def case_fn(self, name: str):
         fn = getattr(self, f"case_{name}", None)
@@ -2296,6 +2533,388 @@ class Runner:
             **self.verdict(final_ok, controls),
         }
 
+    # ----- follow-on cases on the already deployed components ------------------------------
+    def component_result(self, name: str) -> dict:
+        """A component case's RESULT file, accepted only as an object with a literal pass."""
+        path = self.evidence / f"{name}-RESULT.json"
+        if not path.exists():
+            raise Refusal(f"{name}-RESULT.json missing; run {name} first")
+        part = json.loads(path.read_text())
+        if not isinstance(part, dict) or part.get("pass") is not True:
+            raise Refusal(f"component {name} did not pass")
+        return part
+
+    def agent_account_state(self, account: str, url: str | None = None) -> dict:
+        """seqno and controller epoch of an agent account, read with its own get method (the
+        stack is reported top first: the last returned field comes first)."""
+        stack = self.rpc.run_get_method(account, "get_agent_account_data", url)
+        if len(stack) != 12 or any(stack[i][0] != "num" for i in (0, 2, 8)):
+            raise Refusal(f"get_agent_account_data on {account}: unexpected stack shape")
+        return {
+            "seqno": int(stack[2][1]),
+            "controller_epoch": int(stack[8][1]),
+            "spent_today": int(stack[0][1]),
+        }
+
+    def sc03_original_message(self, account: str) -> tuple[dict, Cell]:
+        """The executed SC-03 controller request, read back from its own transaction and bound
+        to the chain by its message hash (the transaction's `in_msg.hash` and the step record)."""
+        label = "sc03-task-send-2-retry"
+        original = self.journal.result(label)
+        if not original or original.get("verdict") != "settled" or not original.get("external"):
+            raise Refusal(f"{label} is not a settled external step; nothing to replay")
+        row = self.rpc.transaction_by_hash(account, original["tx"]["hash"])
+        msg = transaction_in_message(boc_decode(base64.b64decode(row["data"])))
+        msg_hash = cell_hash_b64(msg)
+        if msg_hash != (row.get("in_msg") or {}).get("hash") or msg_hash != original.get(
+            "in_msg_hash"
+        ):
+            raise Refusal("extracted message hash does not match the chain's in_msg hash")
+        return {"label": label, "tx": original["tx"], "in_msg_hash": msg_hash}, msg
+
+    def refusal_broadcast(self, label: str, msg: Cell, account: str, expect_exit: int) -> dict:
+        """Broadcast a message the account must refuse before accepting it.
+
+        Nothing can be paid: a request refused before `accept_message()` never becomes a
+        transaction, and the node reports the refusal itself when it admits the message
+        ("exitcode=N" in the sendBoc error). The record keeps the node's answer verbatim, then
+        proves on every source that no external message reached the account inside the
+        observation window and that its seqno and controller epoch did not move.
+        """
+        done = self.journal.result(label)
+        if done is not None:
+            if done.get("verdict") != "refused-at-admission":
+                raise Refusal(f"{label} ended {done.get('verdict')!r}; never re-broadcast")
+            done.setdefault("label", label)
+            return done
+        if self.journal.attempted(label):
+            raise Refusal(f"{label} was attempted without a result; reconcile read-only")
+        self.guards()
+        boc_b64 = base64.b64encode(boc_encode(msg)).decode()
+        before = {
+            "head": self.rpc.head(),
+            "observe_lt": self.rpc.last_lt(account),
+            "state": {url: self.agent_account_state(account, url) for url in self.rpc.all_sources},
+        }
+        record: dict = {
+            "kind": "refusal-broadcast",
+            "observe": account,
+            "expect_exit": expect_exit,
+            "message_hash": cell_hash_b64(msg),
+            "message_boc_sha256": hashlib.sha256(base64.b64decode(boc_b64)).hexdigest(),
+            "before": before,
+        }
+        self.journal.attempt(label, record)
+        answer = self.rpc.send_boc(boc_b64)
+        record["rpc_answer"] = answer
+        message = str((answer.get("error") or {}).get("message") or "")
+        record["admission_refused_with_expected_exit"] = f"exitcode={expect_exit}" in message
+
+        def arrived() -> bool:
+            return bool(self.external_arrivals(account, before["observe_lt"]))
+
+        observed = self.wait(arrived, REFUSAL_OBSERVE_S)
+        record["arrivals"] = {
+            url: len(self.external_arrivals(account, before["observe_lt"], url))
+            for url in self.rpc.all_sources
+        }
+        record["after"] = {
+            "state": {url: self.agent_account_state(account, url) for url in self.rpc.all_sources}
+        }
+        unchanged = record["after"]["state"] == before["state"]
+        if observed or any(record["arrivals"].values()) or not unchanged:
+            record["verdict"] = "EXECUTED-OR-STATE-MOVED"
+        elif record["admission_refused_with_expected_exit"]:
+            record["verdict"] = "refused-at-admission"
+        else:
+            record["verdict"] = "refusal-control-failed"
+        self.journal.done(label, record)
+        self.journal.log(kind="refusal-broadcast", label=label, verdict=record["verdict"])
+        record["label"] = label
+        if record["verdict"] != "refused-at-admission":
+            raise Refusal(f"{label}: {record['verdict']} ({message[:200]!r})")
+        return record
+
+    def case_sc03x(self, w: dict) -> dict:
+        """Refusal coverage on the SC-03 agent account with the account's own public history.
+
+        The executed controller request of SC-03 is read back from its transaction, bound to
+        the chain by its message hash, and broadcast again unchanged (replay: bad seqno), with
+        one signature bit inverted (wrong signer) and, after a real controller rotation by the
+        owner wallet, unchanged once more (stale controller). Each refusal is the node's own
+        admission verdict plus an unchanged account on every source. Expiry is recorded as not
+        producible: the pinned CLI signs and broadcasts in one call and the contract checks the
+        seqno before the deadline.
+        """
+        base = self.component_result("sc03")
+        account = norm_addr(base["account"])
+        agent_wallet = norm_addr(base["agent_wallet"])
+        original, msg = self.sc03_original_message(account)
+        parts = external_message_parts(msg)
+        if not same_addr(parts["destination"], account):
+            raise Refusal("original message is not addressed to the agent account")
+        header = agent_external_header(parts["body"])
+        state0 = self.agent_account_state(account)
+        if (
+            header["seqno"] >= state0["seqno"]
+            or header["controller_epoch"] > state0["controller_epoch"]
+        ):
+            raise Refusal("original request is still current; a replay could execute")
+        controls = [
+            self.refusal_broadcast("sc03x-replay", msg, account, AGENT_BAD_SEQNO),
+            self.refusal_broadcast(
+                "sc03x-wrong-signer", with_flipped_signature_bit(msg), account, AGENT_BAD_SIGNATURE
+            ),
+        ]
+        self.local("sc03x-rotate-local", "agent", "wallet", "rotate-controller", "-n", "sc03-agent")
+        rotation = self.step(
+            "sc03x-rotate-controller",
+            [
+                "agent",
+                "account",
+                "rotate-controller",
+                "--wallet",
+                "sc03-agent",
+                "--amount",
+                "0.05",
+                "--yes",
+            ],
+            payer=agent_wallet,
+            observe=account,
+        )
+        state1 = self.agent_account_state(account)
+        rotated = state1["controller_epoch"] == state0["controller_epoch"] + 1
+        if not rotated:
+            raise Refusal("controller epoch did not advance after the rotation")
+        controls.append(
+            self.refusal_broadcast(
+                "sc03x-replay-stale-controller", msg, account, AGENT_STALE_CONTROLLER
+            )
+        )
+        state2 = self.agent_account_state(account)
+        final_ok = (
+            all(c["verdict"] == "refused-at-admission" for c in controls)
+            and rotation["verdict"] == "settled"
+            and state2 == state1
+        )
+        return {
+            "account": account,
+            "original": {**original, "header": header},
+            "state_before": state0,
+            "state_after_rotation": state1,
+            "state_final": state2,
+            "rotation": {"label": "sc03x-rotate-controller", "verdict": rotation["verdict"]},
+            "controls": {
+                c["label"]: {
+                    "verdict": c["verdict"],
+                    "expect_exit": c["expect_exit"],
+                    "node_answer": (c.get("rpc_answer") or {}).get("error"),
+                    "arrivals": c.get("arrivals"),
+                }
+                for c in controls
+            },
+            "expiry_control": {
+                "status": "not-run",
+                "reason": "the pinned CLI signs and broadcasts in one call (no sign-only mode) "
+                "and the contract checks the seqno before valid_until, so no public expiry "
+                "refusal can be produced for this account without a new signing path",
+            },
+            "pass": final_ok,
+        }
+
+    def case_sc05x(self, w: dict) -> dict:
+        """Duplicate settlement of the already settled SC-05 task must be refused with no second
+        payout: the escrow accepts settle only in `result_submitted`."""
+        part = self.component_result("sc05")
+        address = norm_addr(part["address"])
+        creator, agent = w["sc-owner"], w["sc-client"]
+        show = self.show("agent", "task", "show", "--name", "sc05")
+        state0 = show()
+        if state0.get("status") != "settled":
+            raise Refusal(f"sc05 task is {state0.get('status')!r}, not settled; wrong premise")
+        agent_before = self.rpc.balance(agent)
+        settle_again = self.step(
+            "sc05x-settle-again",
+            [
+                "agent",
+                "task",
+                "send",
+                "--name",
+                "sc05",
+                "--yes",
+                "--operation",
+                "settle",
+                "--from",
+                "sc-owner",
+                "--payout",
+                "0.6",
+            ],
+            payer=creator,
+            observe=address,
+            expect_exit=TASK_SETTLE_NOT_SUBMITTED,
+            show=show,
+        )
+        paid_again = self.transferred(settle_again, agent, "0.000000001")
+        final = show()
+        final_ok = final.get("status") == "settled" and not paid_again
+        return {
+            "address": address,
+            "agent_paid_again": paid_again,
+            "agent_balance_before": agent_before,
+            "agent_balance_after": self.rpc.balance(agent),
+            "final_state": final,
+            **self.verdict(final_ok, [settle_again]),
+        }
+
+    def component_bindings(self, parts: dict) -> dict:
+        """Hashes the SC-08x task commits to on chain, derived from every component contract's
+        address and its latest transaction when the journey starts; recorded once in the journal
+        so a resumed run commits to the same values, and recomputable by anyone from the chain."""
+        stored = self.journal.result("sc08x-bindings")
+        if stored is not None:
+            return stored["bindings"]
+        anchors = {}
+        for name, part in sorted(parts.items()):
+            address = norm_addr(part.get("address") or part.get("account"))
+            last = self.rpc.info(address).get("last_transaction_id") or {}
+            if not last.get("lt") or not last.get("hash"):
+                raise Refusal(f"component {name} has no transaction to anchor")
+            anchors[name] = {"address": address, "lt": str(last["lt"]), "hash": last["hash"]}
+        preimage = "|".join(f"{n}:{a['address']}:{a['lt']}:{a['hash']}" for n, a in anchors.items())
+        bindings = {
+            "anchors": anchors,
+            "preimage": preimage,
+            "result_hash": hashlib.sha256(f"sc08x-result|{preimage}".encode()).hexdigest(),
+            "evidence_hash": hashlib.sha256(f"sc08x-evidence|{preimage}".encode()).hexdigest(),
+            "dispute_hash": hashlib.sha256(f"sc08x-dispute|{preimage}".encode()).hexdigest(),
+        }
+        self.journal.attempt("sc08x-bindings", {"kind": "local"})
+        self.journal.done("sc08x-bindings", {"exit_code": 0, "bindings": bindings})
+        return bindings
+
+    def case_sc08x(self, w: dict) -> dict:
+        """Integrated journey whose on-chain hashes bind the component contracts, with the
+        lost reply AFTER forwarding.
+
+        Run once with `SC_DRILL_CRASH_AFTER_SEND=sc08x-resolve-verifier`: the process exits
+        right after the CLI returned for that step, so the message is on its way and no record
+        exists. The second run must not re-send: it reconciles the attempt read-only from the
+        exact message and continues from the recovered record.
+        """
+        creator, agent, verifier = w["sc-owner"], w["sc-client"], w["sc-verifier"]
+        parts = {
+            name: self.component_result(name)
+            for name in ("sc02", "sc03", "sc04", "sc05", "sc06", "sc07")
+        }
+        bindings = self.component_bindings(parts)
+        needed = tos_to_nanotos("1.31")
+        if self.journal.result("sc08x-task-create") is None and self.rpc.balance(creator) < needed:
+            raise Refusal(
+                "sc-owner holds less than 1.31 TOS; fund it first (plan-funding/record-funding)"
+            )
+        deploy = self.step(
+            "sc08x-task-create",
+            self.task_create_argv("sc08x", w),
+            payer=creator,
+            observe=None,
+            want_json=True,
+        )
+        address = deploy["observe"]
+        show = self.show("agent", "task", "show", "--name", "sc08x")
+        self.wait_active(address, "sc08x task")
+        send = ["agent", "task", "send", "--name", "sc08x", "--yes"]
+        controls = []
+        self.step(
+            "sc08x-accept",
+            send + ["--operation", "accept", "--from", "sc-client"],
+            payer=agent,
+            observe=address,
+            show=show,
+        )
+        self.step(
+            "sc08x-result",
+            send
+            + [
+                "--operation",
+                "result",
+                "--from",
+                "sc-client",
+                "--result-hash",
+                bindings["result_hash"],
+                "--evidence-hash",
+                bindings["evidence_hash"],
+            ],
+            payer=agent,
+            observe=address,
+            show=show,
+        )
+        self.step(
+            "sc08x-dispute",
+            send
+            + [
+                "--operation",
+                "dispute",
+                "--from",
+                "sc-owner",
+                "--dispute-hash",
+                bindings["dispute_hash"],
+            ],
+            payer=creator,
+            observe=address,
+            show=show,
+        )
+        controls.append(
+            self.step(
+                "sc08x-resolve-agent",
+                send + ["--operation", "resolve", "--from", "sc-client", "--payout", "0.4"],
+                payer=agent,
+                observe=address,
+                expect_exit=TASK_RESOLVE_AUTHORITY,
+                show=show,
+            )
+        )
+        drill = "sc08x-resolve-verifier"
+        drill_state = "not-exercised"
+        attempt = self.journal.attempt_record(drill)
+        if attempt and not self.journal.result(drill):
+            if attempt.get("kind") != "drill-after-send":
+                raise Refusal(
+                    f"{drill}: marker without result is not the after-send drill; by hand"
+                )
+            self.reconcile_attempt(drill)
+            drill_state = "reconciled-after-forward"
+        resolve = self.step(
+            drill,
+            send + ["--operation", "resolve", "--from", "sc-verifier", "--payout", "0.4"],
+            payer=verifier,
+            observe=address,
+            show=show,
+        )
+        final = show()
+        bound = all(
+            str(final.get(k)) == bindings[k]
+            for k in ("result_hash", "evidence_hash", "dispute_hash")
+        )
+        final_ok = final.get("status") == "settled" and bound and resolve["verdict"] == "settled"
+        return {
+            "address": address,
+            "final_state": final,
+            "bindings": bindings,
+            "bindings_on_chain": bound,
+            "components": {
+                k: norm_addr(v.get("address") or v.get("account")) for k, v in parts.items()
+            },
+            "lost_reply_drill": drill_state,
+            "resolve": {
+                "verdict": resolve["verdict"],
+                "tx": resolve.get("tx"),
+                "in_msg_hash": resolve.get("in_msg_hash"),
+                "reconciled_from": resolve.get("reconciled_from"),
+                "re_sent": resolve.get("re_sent"),
+            },
+            **self.verdict(final_ok, controls),
+        }
+
     # ----- wrap-up ------------------------------------------------------------------------
     def return_funds(self, to: str) -> dict:
         self.preflight()
@@ -2545,6 +3164,98 @@ class Runner:
         self.journal.log(kind="reconciled", label=label, verdict=record["verdict"])
         return record
 
+    def reconcile_attempt(self, label: str) -> dict:
+        """Read-only recovery of a step whose process was lost after the CLI returned: the
+        attempt marker (argv, payer, baselines) is the durable identity, the exact message after
+        the payer's baseline is located on chain and confirmed on every source, and the result
+        is written as the step's record so the case replays it. Nothing is re-sent: no message,
+        or more than one, stays by hand.
+        """
+        self.preflight(value_action=False)
+        attempt = self.journal.attempt_record(label)
+        if attempt is None:
+            raise Refusal(f"{label} has no attempt marker")
+        if self.journal.result(label) is not None:
+            raise Refusal(f"{label} already has a result")
+        payer, observe = attempt.get("payer"), attempt.get("observe")
+        before = attempt.get("before") or {}
+        if not payer or not observe or "payer_lt" not in before:
+            raise Refusal(f"{label}: marker lacks payer/observe/baseline; by hand")
+        if attempt.get("external"):
+            arrivals = self.external_arrivals(observe, int(before.get("observe_lt") or 0))
+            if len(arrivals) != 1:
+                raise Refusal(
+                    f"{label}: {len(arrivals)} external messages reached {observe}; by hand"
+                )
+            tx, payer_tx, out_hash = (
+                arrivals[0],
+                None,
+                (arrivals[0].get("in_msg") or {}).get("hash"),
+            )
+        else:
+            sends = self.sends_to(payer, int(before["payer_lt"]), observe)
+            if len(sends) != 1:
+                raise Refusal(f"{label}: payer sent {len(sends)} messages to {observe}; by hand")
+            payer_tx = sends[0]
+            out_hash = [
+                m["hash"] for m in payer_tx["out_msgs"] if same_addr(m.get("destination"), observe)
+            ][0]
+            rows = self.rpc.transactions_after(observe, int(before.get("observe_lt") or 0))
+            hit = [r for r in rows if (r.get("in_msg") or {}).get("hash") == out_hash]
+            if len(hit) != 1:
+                raise Refusal(f"{label}: {len(hit)} contract transactions carry the message")
+            tx = hit[0]
+        confirmations = {
+            url: any(
+                r["transaction_id"]["hash"] == tx["transaction_id"]["hash"]
+                for r in self.rpc.transactions_after(
+                    observe, int(before.get("observe_lt") or 0), url
+                )
+            )
+            for url in self.rpc.confirms
+        }
+        if not all(confirmations.values()):
+            raise Refusal(f"{label}: transaction not seen on every confirmation source")
+        compute = tx.get("compute") or {}
+        after_balance = self.rpc.balance(observe)
+        record = {k: v for k, v in attempt.items() if k != "kind"}
+        record.update(
+            {
+                "exit_code": None,
+                "reconciled_from": "attempt-without-result",
+                "re_sent": False,
+                "payer_tx": (payer_tx or {}).get("transaction_id"),
+                "tx": tx["transaction_id"],
+                "block_id": tx.get("block_id"),
+                "compute": compute,
+                "aborted": tx.get("aborted"),
+                "action": tx.get("action"),
+                "in_msg_hash": out_hash,
+                "out_msgs": [
+                    {k: m.get(k) for k in ("destination", "value", "bounced", "hash")}
+                    for m in tx.get("out_msgs", [])
+                ],
+                "confirmed_on": confirmations,
+                "after": {"observe_balance": after_balance},
+            }
+        )
+        expect_exit = int(attempt.get("expect_exit") or 0)
+        if expect_exit == 0:
+            how = self.positive_outcome(tx, before.get("observe_balance") or 0, after_balance)
+            record["settled_as"] = how or None
+            record["verdict"] = "settled" if how else "unexpected-abort"
+        else:
+            ok = (
+                tx.get("aborted") is True
+                and compute.get("success") is False
+                and compute.get("exit_code") == expect_exit
+            )
+            record["verdict"] = "refused-as-intended" if ok else "refusal-control-failed"
+        self.journal.done(label, record)
+        self.journal.log(kind="reconciled-attempt", label=label, verdict=record["verdict"])
+        record["label"] = label
+        return record
+
     def status(self) -> dict:
         actors = self.actors() if self.actors_path.exists() else {}
         balances = {n: self.rpc.balance(a) for n, a in actors.get("wallets", {}).items()}
@@ -2619,6 +3330,29 @@ class PlanRunner(Runner):
         )
         return {"label": label, "verdict": "refused-as-intended"}
 
+    def refusal_broadcast(self, label, msg, account, expect_exit):
+        return {"label": label, "verdict": "refused-at-admission", "expect_exit": expect_exit}
+
+    def sc03_original_message(self, account):
+        msg = boc_decode(base64.b64decode(SAMPLE_AGENT_REQUEST_BOC))
+        return {
+            "label": "sc03-task-send-2-retry",
+            "tx": None,
+            "in_msg_hash": cell_hash_b64(msg),
+        }, msg
+
+    def agent_account_state(self, account, url=None):
+        # Each read of the planner's stand-in account moves the controller epoch forward, so
+        # the SC-03x plan passes its own rotation check without reaching the chain.
+        self.plan_epoch = getattr(self, "plan_epoch", 0) + 1
+        return {"seqno": 3, "controller_epoch": self.plan_epoch, "spent_today": 0}
+
+    def component_bindings(self, parts):
+        return {k: "00" * 32 for k in ("result_hash", "evidence_hash", "dispute_hash")}
+
+    def reconcile_attempt(self, label):
+        return {"label": label, "verdict": "settled"}
+
     @property
     def rpc(self):
         return _PlanRpc()
@@ -2676,7 +3410,12 @@ class _PlanPart:
         return True
 
     def read_text(self):
-        return json.dumps({"address": "0:" + "0f" * 32, "pass": True})
+        fake = "0:" + "0f" * 32
+        # The stand-in SC-03 account is the destination of the sample request, so the plan
+        # passes the same destination check as a live run.
+        sample = boc_decode(base64.b64decode(SAMPLE_AGENT_REQUEST_BOC))
+        account = external_message_parts(sample)["destination"]
+        return json.dumps({"address": fake, "account": account, "agent_wallet": fake, "pass": True})
 
 
 def build_parser() -> argparse.ArgumentParser:

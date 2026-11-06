@@ -6,6 +6,7 @@ against the flags the pinned CLI itself prints (tests/data/service-public-cases-
 """
 
 import base64
+import hashlib
 import importlib.util
 import json
 import os
@@ -1292,6 +1293,508 @@ class ComponentPrerequisite(RunnerCase):
 
     def test_nonobject_component_refuses(self):
         self.exercise([])
+
+
+SAMPLE_MSG = lambda: spc.boc_decode(base64.b64decode(spc.SAMPLE_AGENT_REQUEST_BOC))  # noqa: E731
+SAMPLE_ACCOUNT = "0:f57374ec5b48c808d1c484acf1eff63437d1c860f251864dbec37ad1027a5599"
+
+
+class BocCodec(unittest.TestCase):
+    """The minimal cell codec reproduces the chain's own message hash, byte for byte."""
+
+    def test_sample_message_hashes_to_the_chain_reported_in_msg_hash(self):
+        msg = SAMPLE_MSG()
+        self.assertEqual(spc.cell_hash_b64(msg), spc.SAMPLE_AGENT_REQUEST_HASH)
+
+    def test_encoding_is_byte_identical_and_round_trips(self):
+        raw = base64.b64decode(spc.SAMPLE_AGENT_REQUEST_BOC)
+        msg = spc.boc_decode(raw)
+        self.assertEqual(spc.boc_encode(msg), raw)
+        self.assertEqual(
+            spc.cell_hash_b64(spc.boc_decode(spc.boc_encode(msg))), spc.SAMPLE_AGENT_REQUEST_HASH
+        )
+
+    def test_external_message_parts_and_agent_header(self):
+        parts = spc.external_message_parts(SAMPLE_MSG())
+        self.assertEqual(parts["destination"], SAMPLE_ACCOUNT)
+        header = spc.agent_external_header(parts["body"])
+        self.assertEqual(header["global_id"], 2)
+        self.assertEqual(header["controller_epoch"], 1)
+        self.assertEqual(header["seqno"], 2)
+        self.assertEqual(header["valid_until"], 1793940905)
+
+    def test_flipping_the_signature_bit_changes_only_the_body_and_the_hash(self):
+        msg = SAMPLE_MSG()
+        bad = spc.with_flipped_signature_bit(msg)
+        self.assertEqual(bad.bits, msg.bits)
+        self.assertNotEqual(bad.refs[0].bits[0], msg.refs[0].bits[0])
+        self.assertEqual(bad.refs[0].bits[1:], msg.refs[0].bits[1:])
+        self.assertNotEqual(spc.cell_hash_b64(bad), spc.SAMPLE_AGENT_REQUEST_HASH)
+        self.assertEqual(spc.external_message_parts(bad)["destination"], SAMPLE_ACCOUNT)
+        self.assertEqual(
+            spc.agent_external_header(bad.refs[0]), spc.agent_external_header(msg.refs[0])
+        )
+
+    def test_transaction_in_message_is_the_first_reference_of_the_first_reference(self):
+        msg = SAMPLE_MSG()
+        tx = spc.Cell("0111" + "0" * 60, [spc.Cell("1", [msg]), spc.Cell("", [])])
+        self.assertEqual(spc.cell_hash(spc.transaction_in_message(tx)), spc.cell_hash(msg))
+        with self.assertRaises(spc.Refusal):
+            spc.transaction_in_message(spc.Cell("0111", [spc.Cell("0", []), spc.Cell("", [])]))
+
+    def test_malformed_bags_are_refused(self):
+        raw = base64.b64decode(spc.SAMPLE_AGENT_REQUEST_BOC)
+        exotic = raw[:11] + bytes([raw[11] | 8]) + raw[12:]
+        root_out_of_range = raw[:10] + bytes([raw[10] | 8]) + raw[11:]
+        for bad in (raw[:-1], raw + b"\x00", b"\x00" + raw[1:], exotic, root_out_of_range):
+            with self.assertRaises(spc.Refusal, msg=bad[:12].hex()):
+                spc.boc_decode(bad)
+
+    def test_internal_or_inline_body_messages_are_not_external_requests(self):
+        msg = SAMPLE_MSG()
+        internal = spc.Cell("0" + msg.bits[1:], msg.refs)
+        with self.assertRaises(spc.Refusal):
+            spc.external_message_parts(internal)
+        inline = spc.Cell(msg.bits[:-1] + "0" + "1" * 8, [])
+        with self.assertRaises(spc.Refusal):
+            spc.external_message_parts(inline)
+
+
+class RefusalBroadcast(RunnerCase):
+    """A message the account refuses at admission: the node's own exit code, no arrival, no
+    state movement, recorded once."""
+
+    def setUp(self):
+        super().setUp()
+        self.msg = SAMPLE_MSG()
+        self.sent = []
+        self.states = {PRIMARY: {"seqno": 3, "controller_epoch": 1, "spent_today": 0}}
+        self.states[CONFIRM] = dict(self.states[PRIMARY])
+        self.answer = {
+            "error": {
+                "code": -32603,
+                "message": "sendBoc failed: ... exitcode=1705, steps=50",
+                "data": None,
+            }
+        }
+        self.rpc.send_boc = lambda boc, url=None: self.sent.append(boc) or self.answer
+        self.runner.agent_account_state = lambda account, url=None: dict(
+            self.states[url or PRIMARY]
+        )
+        self.runner.guards = lambda: {}
+
+    def broadcast(self, expect=1705):
+        return self.runner.refusal_broadcast("r", self.msg, SAMPLE_ACCOUNT, expect)
+
+    def test_expected_exit_code_with_an_unchanged_account_is_refused_at_admission(self):
+        rec = self.broadcast()
+        self.assertEqual(rec["verdict"], "refused-at-admission")
+        self.assertTrue(rec["admission_refused_with_expected_exit"])
+        self.assertEqual(rec["message_hash"], spc.SAMPLE_AGENT_REQUEST_HASH)
+        self.assertEqual(rec["arrivals"], {PRIMARY: 0, CONFIRM: 0})
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(base64.b64decode(self.sent[0]), spc.boc_encode(self.msg))
+        self.assertEqual(self.runner.journal.result("r")["verdict"], "refused-at-admission")
+
+    def test_a_different_exit_code_fails_the_control(self):
+        with self.assertRaises(spc.Refusal):
+            self.broadcast(expect=1704)
+        self.assertEqual(self.runner.journal.result("r")["verdict"], "refusal-control-failed")
+
+    def test_an_accepted_broadcast_is_the_failure_even_without_an_arrival_yet(self):
+        self.answer = {"result": {"status": 1}}
+        with self.assertRaises(spc.Refusal):
+            self.broadcast()
+        self.assertEqual(self.runner.journal.result("r")["verdict"], "refusal-control-failed")
+
+    def test_an_arrival_inside_the_window_is_executed(self):
+        def accept_and_execute(boc, url=None):
+            self.rpc.add(SAMPLE_ACCOUNT, tx(10, "X1", in_hash="E1", kind="external"))
+            return self.answer
+
+        self.rpc.send_boc = accept_and_execute
+        with self.assertRaises(spc.Refusal):
+            self.broadcast()
+        self.assertEqual(self.runner.journal.result("r")["verdict"], "EXECUTED-OR-STATE-MOVED")
+
+    def test_a_state_move_on_one_source_is_the_failure(self):
+        calls = []
+
+        def state(account, url=None):
+            calls.append(url)
+            moved = len(calls) > 2 and url == CONFIRM
+            return {"seqno": 4 if moved else 3, "controller_epoch": 1, "spent_today": 0}
+
+        self.runner.agent_account_state = state
+        with self.assertRaises(spc.Refusal):
+            self.broadcast()
+        self.assertEqual(self.runner.journal.result("r")["verdict"], "EXECUTED-OR-STATE-MOVED")
+
+    def test_a_recorded_refusal_replays_without_a_second_broadcast(self):
+        self.broadcast()
+        rec = self.broadcast()
+        self.assertEqual(rec["verdict"], "refused-at-admission")
+        self.assertEqual(len(self.sent), 1)
+
+    def test_a_failed_record_or_a_bare_marker_is_never_re_broadcast(self):
+        with self.assertRaises(spc.Refusal):
+            self.broadcast(expect=1704)
+        with self.assertRaises(spc.Refusal):
+            self.broadcast(expect=1704)
+        self.assertEqual(len(self.sent), 1)
+        self.runner.journal.attempt("m", {})
+        with self.assertRaises(spc.Refusal):
+            self.runner.refusal_broadcast("m", self.msg, SAMPLE_ACCOUNT, 1705)
+        self.assertEqual(len(self.sent), 1)
+
+
+class Sc03xGates(RunnerCase):
+    """SC-03x replays only a request that can no longer execute, bound to the chain's hash."""
+
+    def setUp(self):
+        super().setUp()
+        self.evidence.mkdir(exist_ok=True)
+        (self.evidence / "sc03-RESULT.json").write_text(
+            json.dumps({"account": SAMPLE_ACCOUNT, "agent_wallet": PAYER, "pass": True})
+        )
+        self.runner.journal.attempt("sc03-task-send-2-retry", {})
+        self.runner.journal.done(
+            "sc03-task-send-2-retry",
+            {
+                "verdict": "settled",
+                "external": True,
+                "tx": {"lt": "5", "hash": "T"},
+                "in_msg_hash": spc.SAMPLE_AGENT_REQUEST_HASH,
+            },
+        )
+        raw_tx = spc.boc_encode(
+            spc.Cell("0111" + "0" * 60, [spc.Cell("1", [SAMPLE_MSG()]), spc.Cell("", [])])
+        )
+        self.row = {
+            "data": base64.b64encode(raw_tx).decode(),
+            "in_msg": {"hash": spc.SAMPLE_AGENT_REQUEST_HASH},
+        }
+        self.rpc.transaction_by_hash = lambda address, h, url=None: self.row
+        self.state = {"seqno": 3, "controller_epoch": 1, "spent_today": 0}
+        self.runner.agent_account_state = lambda account, url=None: dict(self.state)
+        self.broadcasts = []
+        self.runner.refusal_broadcast = lambda label, msg, account, expect: (
+            self.broadcasts.append(label)
+            or {
+                "label": label,
+                "verdict": "refused-at-admission",
+                "expect_exit": expect,
+            }
+        )
+        self.runner.local = lambda *a, **k: None
+        self.runner.step = lambda label, argv, **kw: {"label": label, "verdict": "settled"}
+
+    def test_a_still_current_request_is_never_broadcast(self):
+        self.state["seqno"] = 2
+        with self.assertRaises(spc.Refusal) as cm:
+            self.runner.case_sc03x(WALLETS)
+        self.assertIn("still current", str(cm.exception))
+        self.assertEqual(self.broadcasts, [])
+
+    def test_a_hash_mismatch_with_the_chain_stops_before_any_broadcast(self):
+        self.row = {**self.row, "in_msg": {"hash": "other"}}
+        with self.assertRaises(spc.Refusal):
+            self.runner.case_sc03x(WALLETS)
+        self.assertEqual(self.broadcasts, [])
+
+    def test_a_rotation_that_does_not_advance_the_epoch_stops_before_the_stale_replay(self):
+        with self.assertRaises(spc.Refusal) as cm:
+            self.runner.case_sc03x(WALLETS)
+        self.assertIn("epoch did not advance", str(cm.exception))
+        self.assertEqual(self.broadcasts, ["sc03x-replay", "sc03x-wrong-signer"])
+
+    def test_full_journey_passes_with_three_admission_refusals(self):
+        reads = []
+
+        def state(account, url=None):
+            reads.append(1)
+            return {"seqno": 3, "controller_epoch": 1 if len(reads) == 1 else 2, "spent_today": 0}
+
+        self.runner.agent_account_state = state
+        out = self.runner.case_sc03x(WALLETS)
+        self.assertTrue(out["pass"])
+        self.assertEqual(
+            self.broadcasts, ["sc03x-replay", "sc03x-wrong-signer", "sc03x-replay-stale-controller"]
+        )
+        self.assertEqual(out["original"]["header"]["seqno"], 2)
+        self.assertEqual(out["controls"]["sc03x-replay"]["expect_exit"], spc.AGENT_BAD_SEQNO)
+        self.assertEqual(
+            out["controls"]["sc03x-wrong-signer"]["expect_exit"], spc.AGENT_BAD_SIGNATURE
+        )
+        self.assertEqual(
+            out["controls"]["sc03x-replay-stale-controller"]["expect_exit"],
+            spc.AGENT_STALE_CONTROLLER,
+        )
+        self.assertEqual(out["expiry_control"]["status"], "not-run")
+
+
+class Sc05xDuplicateSettle(RunnerCase):
+    """A second settle of the settled SC-05 task must abort with exit 104 and pay nothing."""
+
+    def setUp(self):
+        super().setUp()
+        self.evidence.mkdir(exist_ok=True)
+        (self.evidence / "sc05-RESULT.json").write_text(
+            json.dumps({"address": CONTRACT, "pass": True})
+        )
+        self.status = "settled"
+        self.runner.show = lambda *a: lambda: {"status": self.status}
+        self.steps = []
+
+    def fake_step(self, out_msgs):
+        def step(label, argv, **kw):
+            self.steps.append((label, argv, kw.get("expect_exit")))
+            return {
+                "label": label,
+                "verdict": "refused-as-intended" if kw.get("expect_exit") else "settled",
+                "out_msgs": out_msgs,
+            }
+
+        self.runner.step = step
+
+    def test_refused_duplicate_without_a_payout_passes(self):
+        self.fake_step([{"destination": WALLETS["sc-owner"], "value": "1046613", "bounced": True}])
+        out = self.runner.case_sc05x(WALLETS)
+        self.assertTrue(out["pass"])
+        self.assertFalse(out["agent_paid_again"])
+        label, argv, expect = self.steps[0]
+        self.assertEqual(label, "sc05x-settle-again")
+        self.assertEqual(expect, spc.TASK_SETTLE_NOT_SUBMITTED)
+        self.assertEqual(argv[argv.index("--from") + 1], "sc-owner")
+        self.assertEqual(argv[argv.index("--operation") + 1], "settle")
+
+    def test_a_second_payout_fails_the_case(self):
+        self.fake_step(
+            [{"destination": WALLETS["sc-client"], "value": "600000000", "bounced": False}]
+        )
+        out = self.runner.case_sc05x(WALLETS)
+        self.assertTrue(out["agent_paid_again"])
+        self.assertFalse(out["pass"])
+
+    def test_even_a_tiny_second_payout_fails_the_case(self):
+        self.fake_step(
+            [{"destination": WALLETS["sc-client"], "value": "10000000", "bounced": False}]
+        )
+        out = self.runner.case_sc05x(WALLETS)
+        self.assertTrue(out["agent_paid_again"])
+        self.assertFalse(out["pass"])
+
+    def test_a_task_that_is_not_settled_is_the_wrong_premise(self):
+        self.status = "result_submitted"
+        self.fake_step([])
+        with self.assertRaises(spc.Refusal):
+            self.runner.case_sc05x(WALLETS)
+        self.assertEqual(self.steps, [])
+
+
+class AfterSendDrill(RunnerCase):
+    """The after-send drill exits once the CLI has returned, leaving a marker and no record; the
+    recovery reconciles the marker read-only and never calls the CLI again."""
+
+    def test_the_process_is_lost_after_the_cli_returned(self):
+        with mock.patch.dict(os.environ, {"SC_DRILL_CRASH_AFTER_SEND": "s"}):
+            with self.assertRaises(SystemExit):
+                self.step()
+        self.assertEqual(self.cli.calls_count, 1)
+        marker = self.runner.journal.attempt_record("s")
+        self.assertEqual(marker["kind"], "drill-after-send")
+        self.assertIsNone(self.runner.journal.result("s"))
+
+    def test_the_marker_is_reconciled_from_the_exact_message_and_replayed(self):
+        with mock.patch.dict(os.environ, {"SC_DRILL_CRASH_AFTER_SEND": "s"}):
+            self.cli.script["s"] = (0, "{}", settle_effect())
+            with self.assertRaises(SystemExit):
+                self.step()
+        with mock.patch.object(spc.Runner, "preflight", return_value={}):
+            rec = self.runner.reconcile_attempt("s")
+        self.assertEqual(rec["verdict"], "settled")
+        self.assertFalse(rec["re_sent"])
+        self.assertEqual(rec["reconciled_from"], "attempt-without-result")
+        self.assertEqual(rec["tx"]["hash"], "C1")
+        self.assertEqual(rec["in_msg_hash"], "M1")
+        self.assertEqual(rec["argv"], ["agent", "x"])
+        replay = self.step()
+        self.assertEqual(replay["verdict"], "settled")
+        self.assertEqual(replay["tx"]["hash"], "C1")
+        self.assertEqual(self.cli.calls_count, 1)
+
+    def test_nothing_on_chain_stays_by_hand_and_is_not_re_sent(self):
+        with mock.patch.dict(os.environ, {"SC_DRILL_CRASH_AFTER_SEND": "s"}):
+            with self.assertRaises(SystemExit):
+                self.step()
+        with mock.patch.object(spc.Runner, "preflight", return_value={}):
+            with self.assertRaises(spc.Refusal):
+                self.runner.reconcile_attempt("s")
+        with self.assertRaises(spc.Refusal):
+            self.step()
+        self.assertEqual(self.cli.calls_count, 1)
+        self.assertIsNone(self.runner.journal.result("s"))
+
+    def test_two_payer_sends_after_the_marker_stay_by_hand(self):
+        with mock.patch.dict(os.environ, {"SC_DRILL_CRASH_AFTER_SEND": "s"}):
+            self.cli.script["s"] = (0, "{}", settle_effect())
+            with self.assertRaises(SystemExit):
+                self.step()
+        self.rpc.add(PAYER, tx(300, "P2", out=((CONTRACT, "M2"),)))
+        self.rpc.add(CONTRACT, tx(400, "C2", in_hash="M2"))
+        with mock.patch.object(spc.Runner, "preflight", return_value={}):
+            with self.assertRaises(spc.Refusal) as cm:
+                self.runner.reconcile_attempt("s")
+        self.assertIn("2 messages", str(cm.exception))
+        self.assertIsNone(self.runner.journal.result("s"))
+
+    def test_two_messages_or_a_missing_confirmation_stay_by_hand(self):
+        with mock.patch.dict(os.environ, {"SC_DRILL_CRASH_AFTER_SEND": "s"}):
+            self.cli.script["s"] = (0, "{}", settle_effect(sources=(PRIMARY,)))
+            with self.assertRaises(SystemExit):
+                self.step()
+        with mock.patch.object(spc.Runner, "preflight", return_value={}):
+            with self.assertRaises(spc.Refusal):
+                self.runner.reconcile_attempt("s")
+            self.rpc.add(PAYER, tx(300, "P2", out=((CONTRACT, "M2"),)))
+            with self.assertRaises(spc.Refusal):
+                self.runner.reconcile_attempt("s")
+        self.assertIsNone(self.runner.journal.result("s"))
+
+    def test_a_marker_that_already_has_a_result_is_not_reconciled_twice(self):
+        self.cli.script["s"] = (0, "{}", settle_effect())
+        self.step()
+        with mock.patch.object(spc.Runner, "preflight", return_value={}):
+            with self.assertRaises(spc.Refusal):
+                self.runner.reconcile_attempt("s")
+
+    def test_a_negative_control_marker_is_judged_by_its_expected_exit(self):
+        with mock.patch.dict(os.environ, {"SC_DRILL_CRASH_AFTER_SEND": "s"}):
+            self.cli.script["s"] = (0, "{}", settle_effect(exit_code=104, aborted=True))
+            with self.assertRaises(SystemExit):
+                self.step(expect_exit=104, show=lambda: {"status": "settled"})
+        with mock.patch.object(spc.Runner, "preflight", return_value={}):
+            rec = self.runner.reconcile_attempt("s")
+        self.assertEqual(rec["verdict"], "refused-as-intended")
+
+
+class Sc08xJourney(RunnerCase):
+    """SC-08x binds the component contracts into the task's hashes and recovers the resolve
+    from an after-send marker without re-sending."""
+
+    def setUp(self):
+        super().setUp()
+        self.write_actors()
+        self.evidence.mkdir(exist_ok=True)
+        for i, name in enumerate(("sc02", "sc03", "sc04", "sc05", "sc06", "sc07")):
+            addr = f"0:{i + 1:02x}" + "ab" * 31
+            (self.evidence / f"{name}-RESULT.json").write_text(
+                json.dumps({"address": addr, "pass": True})
+            )
+            self.rpc.add(addr, tx(100 + i, f"L{i}"))
+        self.rpc.balances[WALLETS["sc-owner"]] = spc.tos_to_nanotos("2")
+        self.sent = []
+        self.state = {"status": "settled"}
+
+        def fake_step(label, argv, payer, observe, expect_exit=0, want_json=False, show=None):
+            self.sent.append((label, list(argv)))
+            previous = self.runner.journal.result(label)
+            if previous:
+                return previous
+            return {
+                "label": label,
+                "observe": CONTRACT,
+                "verdict": "refused-as-intended" if expect_exit else "settled",
+                "tx": {"lt": "1", "hash": "R"},
+                "in_msg_hash": "MR",
+            }
+
+        self.runner.step = fake_step
+        self.runner.show = lambda *argv: lambda: dict(self.state)
+        self.runner.wait_active = lambda address, what: None
+
+    def run_case(self):
+        out = self.runner.case_sc08x(WALLETS)
+        bindings = out["bindings"]
+        self.state.update(
+            {k: bindings[k] for k in ("result_hash", "evidence_hash", "dispute_hash")}
+        )
+        return out
+
+    def test_bindings_come_from_the_components_and_are_stored_once(self):
+        out = self.run_case()
+        b = out["bindings"]
+        self.assertEqual(set(b["anchors"]), {"sc02", "sc03", "sc04", "sc05", "sc06", "sc07"})
+        self.assertEqual(b["anchors"]["sc02"]["hash"], "L0")
+        preimage = "|".join(
+            f"{n}:{a['address']}:{a['lt']}:{a['hash']}" for n, a in sorted(b["anchors"].items())
+        )
+        self.assertEqual(b["preimage"], preimage)
+        self.assertEqual(
+            b["result_hash"], hashlib.sha256(f"sc08x-result|{preimage}".encode()).hexdigest()
+        )
+        self.assertNotEqual(b["result_hash"], b["evidence_hash"])
+        result_argv = dict(self.sent)["sc08x-result"]
+        self.assertEqual(result_argv[result_argv.index("--result-hash") + 1], b["result_hash"])
+        self.assertEqual(self.runner.journal.result("sc08x-bindings")["bindings"], b)
+        # a later component transaction does not move the stored bindings
+        self.rpc.add(b["anchors"]["sc02"]["address"], tx(500, "L9"))
+        self.assertEqual(self.runner.component_bindings({}), b)
+
+    def test_final_state_must_carry_the_bound_hashes(self):
+        out = self.runner.case_sc08x(WALLETS)  # state lacks the hashes
+        self.assertFalse(out["bindings_on_chain"])
+        self.assertFalse(out["pass"])
+
+    def test_passes_when_the_chain_shows_the_bound_hashes(self):
+        self.run_case()
+        self.sent.clear()
+        out = self.runner.case_sc08x(WALLETS)
+        self.assertTrue(out["bindings_on_chain"])
+        self.assertTrue(out["pass"])
+        self.assertEqual(out["lost_reply_drill"], "not-exercised")
+
+    def test_after_send_marker_is_reconciled_and_never_re_sent(self):
+        reconciled = []
+
+        def reconcile_attempt(label):
+            reconciled.append(label)
+            self.runner.journal.done(
+                label,
+                {
+                    "verdict": "settled",
+                    "re_sent": False,
+                    "reconciled_from": "attempt-without-result",
+                },
+            )
+            return self.runner.journal.result(label)
+
+        self.runner.reconcile_attempt = reconcile_attempt
+        self.runner.journal.attempt(
+            "sc08x-resolve-verifier", {"kind": "drill-after-send", "before": {"payer_lt": 0}}
+        )
+        out = self.run_case()
+        self.assertEqual(reconciled, ["sc08x-resolve-verifier"])
+        self.assertEqual(out["lost_reply_drill"], "reconciled-after-forward")
+        self.assertEqual(out["resolve"]["re_sent"], False)
+
+    def test_a_plain_marker_without_result_is_by_hand(self):
+        reconciled = []
+        self.runner.reconcile_attempt = lambda label: reconciled.append(label)
+        self.runner.journal.attempt(
+            "sc08x-resolve-verifier", {"kind": "value", "before": {"payer_lt": 0}}
+        )
+        with self.assertRaises(spc.Refusal) as cm:
+            self.run_case()
+        self.assertIn("not the after-send drill", str(cm.exception))
+        self.assertEqual(reconciled, [])
+        self.assertNotIn("sc08x-resolve-verifier", [label for label, _ in self.sent])
+
+    def test_underfunded_creator_stops_before_the_create(self):
+        self.rpc.balances[WALLETS["sc-owner"]] = spc.tos_to_nanotos("1.0")
+        with self.assertRaises(spc.Refusal):
+            self.run_case()
+        self.assertEqual(self.sent, [])
 
 
 class DrillRecovery(RunnerCase):
