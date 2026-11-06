@@ -108,6 +108,11 @@ TASK_RESOLVE_AUTHORITY = 124
 AGENT_BAD_SIGNATURE = 1704
 AGENT_BAD_SEQNO = 1705
 AGENT_STALE_CONTROLLER = 1710
+AGENT_EXPIRED = 1706
+AGENT_TASK_SEND_OP = "0x41475003"
+# SC-03e: a prepared request expires this far ahead; the chain must be this far past it.
+EXPIRY_LEAD_S = 90
+EXPIRY_MARGIN_S = 20
 AGENT_EXTERNAL_SIGNATURE_BITS = 512
 # An executed controller request of the public testnet (SC-03, 2026-11-06), as carried by its
 # transaction: a public message whose hash the chain reports as the transaction's in_msg hash.
@@ -557,6 +562,38 @@ class Rpc:
 
     def head(self, url: str | None = None) -> dict:
         return self.call("getMasterchainInfo", url)["last"]
+
+    def account_shard_utime(self, account: str, url: str | None = None) -> int:
+        """Generation time of the shard block that covers `account` in the source's latest
+        masterchain view: admission judges an external message's deadline against that shard
+        state's time, which can lag the masterchain."""
+        last = self.head(url)
+        wc, hexaddr = norm_addr(account).split(":")
+        prefix = int(hexaddr[:16], 16)
+        covering = []
+        for top in self.call("shards", url, seqno=last["seqno"])["shards"]:
+            if int(top["workchain"]) != int(wc):
+                continue
+            shard = int(top["shard"]) & ((1 << 64) - 1)
+            if shard == 0:
+                continue
+            low = shard & -shard  # the shard's tag bit
+            mask = ((1 << 64) - 1) ^ (low - 1) ^ low
+            if (prefix & mask) == (shard & mask):
+                covering.append(top)
+        if len(covering) != 1:
+            raise Refusal(f"{len(covering)} shard tips cover {account}; expected exactly one")
+        top = covering[0]
+        header = self.call(
+            "getBlockHeader",
+            url,
+            workchain=top["workchain"],
+            shard=top["shard"],
+            seqno=top["seqno"],
+            root_hash=top["root_hash"],
+            file_hash=top["file_hash"],
+        )
+        return int(header["gen_utime"])
 
     def config_param(self, idx: int) -> bytes:
         res = self.call("getConfigParam", config_id=idx)
@@ -1382,7 +1419,19 @@ class Runner:
         }
 
     # ----- cases --------------------------------------------------------------------------
-    CASES = ("sc02", "sc03", "sc04", "sc05", "sc06", "sc07", "sc08", "sc03x", "sc05x", "sc08x")
+    CASES = (
+        "sc02",
+        "sc03",
+        "sc04",
+        "sc05",
+        "sc06",
+        "sc07",
+        "sc08",
+        "sc03x",
+        "sc05x",
+        "sc08x",
+        "sc03e",
+    )
 
     def case_fn(self, name: str):
         fn = getattr(self, f"case_{name}", None)
@@ -2651,8 +2700,21 @@ class Runner:
             raise Refusal("extracted message hash does not match the chain's in_msg hash")
         return {"label": label, "tx": original["tx"], "in_msg_hash": msg_hash}, msg
 
-    def refusal_broadcast(self, label: str, msg: Cell, account: str, expect_exit: int) -> dict:
+    def refusal_broadcast(
+        self,
+        label: str,
+        msg: Cell,
+        account: str,
+        expect_exit: int,
+        raw: bytes | None = None,
+        licence: dict | None = None,
+    ) -> dict:
         """Broadcast a message the account must refuse before accepting it.
+
+        `raw` sends exactly those bytes (a message the CLI signed and saved) instead of the
+        runner's own encoding of `msg`; they must decode to the same message hash. `licence`
+        (the observation that justified sending) is written into the attempt marker itself, so
+        it exists exactly when a broadcast may have happened.
 
         Nothing can be paid: a request refused before `accept_message()` never becomes a
         transaction, and the node reports the refusal itself when it admits the message
@@ -2669,7 +2731,12 @@ class Runner:
         if self.journal.attempted(label):
             raise Refusal(f"{label} was attempted without a result; reconcile read-only")
         self.guards()
-        boc_b64 = base64.b64encode(boc_encode(msg)).decode()
+        if raw is not None:
+            if cell_hash_b64(boc_decode(raw)) != cell_hash_b64(msg):
+                raise Refusal(f"{label}: the saved bytes are not the checked message")
+            boc_b64 = base64.b64encode(raw).decode()
+        else:
+            boc_b64 = base64.b64encode(boc_encode(msg)).decode()
         before = {
             "head": self.rpc.head(),
             "observe_lt": self.rpc.last_lt(account),
@@ -2683,6 +2750,8 @@ class Runner:
             "message_boc_sha256": hashlib.sha256(base64.b64decode(boc_b64)).hexdigest(),
             "before": before,
         }
+        if licence is not None:
+            record["licence"] = licence
         self.journal.attempt(label, record)
         answer = self.rpc.send_boc(boc_b64)
         record["rpc_answer"] = answer
@@ -2809,6 +2878,188 @@ class Runner:
                 "refusal can be produced for this account without a new signing path",
             },
             "pass": final_ok,
+        }
+
+    def agreed_agent_state(self, account: str) -> dict:
+        """The agent account state, required identical on every source."""
+        states = {url: self.agent_account_state(account, url) for url in self.rpc.all_sources}
+        first = next(iter(states.values()))
+        for url, state in states.items():
+            if (state["seqno"], state["controller_epoch"]) != (
+                first["seqno"],
+                first["controller_epoch"],
+            ):
+                raise Refusal(f"sources disagree on the agent account state ({url})")
+        return first
+
+    def expiry_probe_path(self) -> Path:
+        """Where the CLI saves the signed SC-03e request: an owner-private export directory
+        inside the private dir (the file is a valid spend authorization until it expires)."""
+        exports = self.private / "exports"
+        exports.mkdir(mode=0o700, exist_ok=True)
+        if stat.S_IMODE(exports.stat().st_mode) & 0o077:
+            raise Refusal("private export directory is not owner-private")
+        return exports / "sc03e-expiry.boc"
+
+    def check_prepared(
+        self, answer, action_id: str, account: str, state: dict, valid_until: int
+    ) -> dict:
+        """The CLI's task-send-prepare answer must name exactly the request asked for, signed
+        for the account's current sequence."""
+        if not isinstance(answer, dict):
+            raise Refusal("task-send-prepare returned no JSON object")
+        expected = {
+            "schema": "tosctl.agent-account.task-send-prepare.v1",
+            # An exported request is held as possibly broadcast in custody (tos #424).
+            "state": "broadcasting",
+            "action_id": action_id,
+            "seqno": state["seqno"],
+            "controller_epoch": state["controller_epoch"],
+            "valid_until": valid_until,
+        }
+        for key, value in expected.items():
+            if answer.get(key) != value:
+                raise Refusal(f"task-send-prepare answer {key}={answer.get(key)!r}, not {value!r}")
+        if not same_addr(answer.get("account"), account):
+            raise Refusal("task-send-prepare signed for another account")
+        digest = str(answer.get("exact_signed_boc_digest") or "")
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            raise Refusal("task-send-prepare answer has no exact signed BOC digest")
+        return answer
+
+    def wait_chain_past(self, deadline: int, account: str) -> dict:
+        """Wait until, on every source, the shard block covering `account` is EXPIRY_MARGIN_S
+        past `deadline` (the clock admission uses), and return those times."""
+        target = deadline + EXPIRY_MARGIN_S
+
+        def times() -> dict:
+            return {url: self.rpc.account_shard_utime(account, url) for url in self.rpc.all_sources}
+
+        if not self.wait(
+            lambda: all(t > target for t in times().values()), max(0.0, target - now()) + 300
+        ):
+            raise Refusal(f"shard time did not pass {target} on every source")
+        observed = times()
+        if not all(t > target for t in observed.values()):
+            raise Refusal(f"shard time fell back below {target} on a source")
+        return observed
+
+    def read_expiry_probe(self, path: Path, prepared: dict, account: str) -> tuple[bytes, Cell]:
+        """The saved request, bound to the CLI's printed digest and decoded back to the
+        account, operation, sequence and deadline the answer named."""
+        raw = path.read_bytes()
+        if "sha256:" + hashlib.sha256(raw).hexdigest() != prepared["exact_signed_boc_digest"]:
+            raise Refusal("saved request does not match the digest task-send-prepare printed")
+        msg = boc_decode(raw)
+        parts = external_message_parts(msg)
+        if not same_addr(parts["destination"], account):
+            raise Refusal("saved request is not addressed to the agent account")
+        header = agent_external_header(parts["body"])
+        if (
+            header["op"] != AGENT_TASK_SEND_OP
+            or header["seqno"] != prepared["seqno"]
+            or header["controller_epoch"] != prepared["controller_epoch"]
+            or header["valid_until"] != prepared["valid_until"]
+        ):
+            raise Refusal(f"saved request header {header} differs from the prepared request")
+        return raw, msg
+
+    def case_sc03e(self, w: dict) -> dict:
+        """Expiry refusal on the SC-03 agent account (exit 1706) with a request that is still
+        current in every other respect.
+
+        Expiry is judged against the time of the shard block that covers the account (the
+        admission clock), on every source, not against the masterchain head.
+
+        The CLI signs one controller task-send for the account's current sequence with a
+        deadline EXPIRY_LEAD_S ahead and saves it without broadcasting (`task-send-prepare
+        --signed-boc-out`). Once every source's shard block covering the account is past the deadline and the
+        sequence is unchanged, those exact bytes are broadcast once: the node must refuse them
+        at admission with 1706 and the account must stay unchanged on every source.
+
+        The prepared custody record keeps this sequence reserved (no absence resolver for a
+        plain task-send), so this is the last controller action of the SC-03 agent wallet.
+        """
+        self.component_result("sc03x")
+        base = self.component_result("sc03")
+        account = norm_addr(base["account"])
+        agent_wallet = norm_addr(base["agent_wallet"])
+        state0 = self.agreed_agent_state(account)
+        action_id = hashlib.sha256(f"sc03e-expiry-{self.args.date}".encode()).hexdigest()
+        previous = self.journal.result("sc03e-prepare")
+        if previous and isinstance(previous.get("answer"), dict):
+            valid_until = int(previous["answer"]["valid_until"])
+        else:
+            valid_until = int(now()) + EXPIRY_LEAD_S
+        path = self.expiry_probe_path()
+        answer = self.local(
+            "sc03e-prepare",
+            "agent",
+            "account",
+            "task-send-prepare",
+            "--wallet",
+            "sc03-agent",
+            "--target",
+            agent_wallet,
+            "--value",
+            "0.001",
+            "--valid-until",
+            str(valid_until),
+            "--action-id",
+            action_id,
+            "--signed-boc-out",
+            str(path),
+            "--yes",
+            want_json=True,
+        )
+        control = self.journal.result("sc03e-expired")
+        if control is None:
+            prepared = self.check_prepared(answer, action_id, account, state0, valid_until)
+        else:
+            # Resumed after the broadcast: the account has the state the broadcast left.
+            prepared = answer
+        if control is not None:
+            # Done: report the times recorded in the broadcast's own marker; nothing is re-sent.
+            chain_times = (control.get("licence") or {}).get("shard_utime")
+        else:
+            # Not yet broadcast (or interrupted before the marker): re-judge from scratch.
+            chain_times = self.wait_chain_past(valid_until, account)
+        state1 = self.agreed_agent_state(account)
+        if (state1["seqno"], state1["controller_epoch"]) != (
+            prepared["seqno"],
+            prepared["controller_epoch"],
+        ):
+            raise Refusal("the prepared sequence moved before expiry; not an expiry control")
+        raw, msg = self.read_expiry_probe(path, prepared, account)
+        control = self.refusal_broadcast(
+            "sc03e-expired",
+            msg,
+            account,
+            AGENT_EXPIRED,
+            raw=raw,
+            licence={"deadline": valid_until, "shard_utime": chain_times},
+        )
+        state2 = self.agreed_agent_state(account)
+        return {
+            "account": account,
+            "action_id": action_id,
+            "prepared": {
+                k: prepared.get(k)
+                for k in ("seqno", "controller_epoch", "valid_until", "exact_signed_boc_digest")
+            },
+            "shard_time_at_broadcast": chain_times,
+            "message_hash": cell_hash_b64(msg),
+            "control": {
+                "verdict": control["verdict"],
+                "expect_exit": control["expect_exit"],
+                "node_answer": (control.get("rpc_answer") or {}).get("error"),
+                "arrivals": control.get("arrivals"),
+            },
+            "state_before": state1,
+            "state_after": state2,
+            "custody_note": "the prepared record stays Signed; sc03-agent takes no further "
+            "controller action",
+            "pass": control["verdict"] == "refused-at-admission" and state2 == state1,
         }
 
     def case_sc05x(self, w: dict) -> dict:
@@ -3454,8 +3705,28 @@ class PlanRunner(Runner):
         )
         return {"label": label, "verdict": "refused-as-intended"}
 
-    def refusal_broadcast(self, label, msg, account, expect_exit):
+    def refusal_broadcast(self, label, msg, account, expect_exit, raw=None, licence=None):
         return {"label": label, "verdict": "refused-at-admission", "expect_exit": expect_exit}
+
+    def agreed_agent_state(self, account):
+        return {"seqno": 3, "controller_epoch": 1, "spent_today": 0}
+
+    def expiry_probe_path(self):
+        return Path("/plan/exports/sc03e-expiry.boc")
+
+    def check_prepared(self, answer, action_id, account, state, valid_until):
+        return {
+            "seqno": state["seqno"],
+            "controller_epoch": state["controller_epoch"],
+            "valid_until": valid_until,
+            "exact_signed_boc_digest": "sha256:" + "00" * 32,
+        }
+
+    def wait_chain_past(self, deadline, account):
+        return {}
+
+    def read_expiry_probe(self, path, prepared, account):
+        return b"", boc_decode(base64.b64decode(SAMPLE_AGENT_REQUEST_BOC))
 
     def sc03_original_message(self, account):
         msg = boc_decode(base64.b64decode(SAMPLE_AGENT_REQUEST_BOC))
