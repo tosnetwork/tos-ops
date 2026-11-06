@@ -3072,7 +3072,7 @@ class Runner:
             },
             "state_before": state1,
             "state_after": state2,
-            "custody_note": "the prepared record stays Signed; sc03-agent takes no further "
+            "custody_note": "the exported record is held as Broadcasting; sc03-agent takes no further "
             "controller action",
             "pass": control["verdict"] == "refused-at-admission" and state2 == state1,
         }

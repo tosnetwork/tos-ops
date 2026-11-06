@@ -2834,6 +2834,9 @@ class Sc03eExpiry(RunnerCase):
         self.assertEqual(oct(saved.parent.stat().st_mode & 0o777), "0o700")
         self.assertTrue(str(saved).startswith(str(self.private)))
         self.assertEqual(result["prepared"]["seqno"], 4)
+        # An exported request is held as Broadcasting in custody (tos #424), never "Signed".
+        self.assertIn("Broadcasting", result["custody_note"])
+        self.assertNotIn("Signed", result["custody_note"])
 
     def test_a_first_prepare_refused_at_argument_parsing_is_retried_under_a_new_label(self):
         self.runner.journal.attempt("sc03e-prepare", {"kind": "local"})
