@@ -2910,7 +2910,8 @@ class Runner:
             raise Refusal("task-send-prepare returned no JSON object")
         expected = {
             "schema": "tosctl.agent-account.task-send-prepare.v1",
-            "state": "signed",
+            # An exported request is held as possibly broadcast in custody (tos #424).
+            "state": "broadcasting",
             "action_id": action_id,
             "seqno": state["seqno"],
             "controller_epoch": state["controller_epoch"],

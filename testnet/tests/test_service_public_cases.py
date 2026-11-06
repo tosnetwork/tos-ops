@@ -2787,7 +2787,7 @@ class Sc03eExpiry(RunnerCase):
             out.write_bytes(raw)
             answer = {
                 "schema": "tosctl.agent-account.task-send-prepare.v1",
-                "state": "signed",
+                "state": "broadcasting",
                 "action_id": argv[argv.index("--action-id") + 1],
                 "account": SAMPLE_ACCOUNT,
                 "seqno": self.state["seqno"],
@@ -3021,7 +3021,7 @@ class Sc03eExpiry(RunnerCase):
             Path(argv[argv.index("--signed-boc-out") + 1]).write_bytes(raw)
             return {
                 "schema": "tosctl.agent-account.task-send-prepare.v1",
-                "state": "signed",
+                "state": "broadcasting",
                 "action_id": argv[argv.index("--action-id") + 1],
                 "account": SAMPLE_ACCOUNT,
                 "seqno": 4,
