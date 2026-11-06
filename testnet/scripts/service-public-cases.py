@@ -532,6 +532,11 @@ class Rpc:
         return [self.primary, *self.confirms]
 
     def call(self, method: str, url: str | None = None, **params):
+        return self.call_with(method, params, url)
+
+    def call_with(self, method: str, params: dict, url: str | None = None):
+        """JSON-RPC call with an explicit parameter object (needed when a parameter is itself
+        named `method`, as in runGetMethod)."""
         url = url or self.primary
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
         req = urllib.request.Request(
@@ -580,7 +585,9 @@ class Rpc:
         return {"error": {k: err.get(k) for k in ("code", "message", "data")}}
 
     def run_get_method(self, address: str, method: str, url: str | None = None) -> list:
-        res = self.call("runGetMethod", url, address=address, method=method, stack=[])
+        res = self.call_with(
+            "runGetMethod", {"address": address, "method": method, "stack": []}, url
+        )
         if res.get("exit_code") != 0:
             raise Refusal(f"{method} on {address}: exit {res.get('exit_code')}")
         return list(res.get("stack") or [])

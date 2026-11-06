@@ -1440,6 +1440,88 @@ class BocCodec(unittest.TestCase):
             spc.external_message_parts(inline)
 
 
+class LiveRpcReads(unittest.TestCase):
+    """The new JSON-RPC reads build the exact request the node expects (no fakes here)."""
+
+    def setUp(self):
+        self.rpc = spc.Rpc(PRIMARY, [CONFIRM])
+        self.requests = []
+
+    def serve(self, result):
+        outer = self
+
+        class Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return json.dumps({"jsonrpc": "2.0", "id": 1, "result": result}).encode()
+
+        def urlopen(req, timeout=0):
+            outer.requests.append((req.full_url, json.loads(req.data)))
+            return Resp()
+
+        return mock.patch.object(spc.urllib.request, "urlopen", urlopen)
+
+    def test_run_get_method_names_the_contract_method_in_the_params(self):
+        with self.serve({"exit_code": 0, "stack": [["num", "0x3"]]}):
+            stack = self.rpc.run_get_method(CONTRACT, "get_agent_account_data", CONFIRM)
+        self.assertEqual(stack, [["num", "0x3"]])
+        url, body = self.requests[0]
+        self.assertEqual(url, CONFIRM)
+        self.assertEqual(body["method"], "runGetMethod")
+        self.assertEqual(
+            body["params"], {"address": CONTRACT, "method": "get_agent_account_data", "stack": []}
+        )
+
+    def test_run_get_method_refuses_a_nonzero_exit(self):
+        with self.serve({"exit_code": 11, "stack": []}):
+            with self.assertRaises(spc.Refusal):
+                self.rpc.run_get_method(CONTRACT, "get_agent_account_data")
+
+    def test_transaction_by_hash_requires_exactly_the_row_in_the_latest_page(self):
+        rows = [tx(5, "T1"), tx(4, "T0")]
+        with self.serve(rows):
+            self.assertEqual(
+                self.rpc.transaction_by_hash(CONTRACT, "T0")["transaction_id"]["lt"], "4"
+            )
+        self.assertEqual(self.requests[0][1]["params"], {"address": CONTRACT, "limit": 10})
+        with self.serve(rows):
+            with self.assertRaises(spc.Refusal):
+                self.rpc.transaction_by_hash(CONTRACT, "T9")
+
+    def test_send_boc_returns_the_node_refusal_instead_of_raising(self):
+        outer = self
+
+        class Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "error": {"code": -32603, "message": "exitcode=1705"},
+                    }
+                ).encode()
+
+        def urlopen(req, timeout=0):
+            outer.requests.append(json.loads(req.data))
+            return Resp()
+
+        with mock.patch.object(spc.urllib.request, "urlopen", urlopen):
+            answer = self.rpc.send_boc("AAAA")
+        self.assertEqual(answer["error"]["message"], "exitcode=1705")
+        self.assertEqual(self.requests[0]["params"], {"boc": "AAAA"})
+
+
 class RefusalBroadcast(RunnerCase):
     """A message the account refuses at admission: the node's own exit code, no arrival, no
     state movement, recorded once."""
