@@ -274,6 +274,11 @@ class Cell:
         self.refs = list(refs)
 
 
+BOC_MAGIC = bytes.fromhex("b5ee9c72")
+MAX_CELL_DEPTH = 1024
+MAX_BOC_CELLS = 255
+
+
 def _cell_bits(data: bytes, d2: int) -> str:
     bits = "".join(f"{b:08b}" for b in data)
     if d2 % 2 == 1:
@@ -281,7 +286,22 @@ def _cell_bits(data: bytes, d2: int) -> str:
         if "1" not in bits:
             raise Refusal("cell padding without a completion tag")
         bits = bits[: bits.rindex("1")]
+    if _d2(bits) != d2:
+        raise Refusal("cell completion tag does not match its length descriptor")
     return bits
+
+
+def _d2(bits: str) -> int:
+    return (len(bits) + 7) // 8 + len(bits) // 8
+
+
+def _crc32c(data: bytes) -> int:
+    crc = 0xFFFFFFFF
+    for b in data:
+        crc ^= b
+        for _ in range(8):
+            crc = (crc >> 1) ^ (0x82F63B78 if crc & 1 else 0)
+    return crc ^ 0xFFFFFFFF
 
 
 def _cell_data(bits: str) -> bytes:
@@ -291,33 +311,44 @@ def _cell_data(bits: str) -> bytes:
 
 
 def _descriptors(c: Cell) -> bytes:
-    return bytes([len(c.refs), (len(c.bits) + 7) // 8 + len(c.bits) // 8])
+    return bytes([len(c.refs), _d2(c.bits)])
 
 
 def boc_decode(raw: bytes) -> Cell:
-    """The single root of a serialized bag of ordinary cells (index and CRC tolerated)."""
+    """The single root of a serialized bag of ordinary cells. Fails closed: every header field,
+    cell descriptor and completion tag must be exactly what a tree of ordinary level-0 cells
+    serializes to; indexed bags and cache bits are refused; a CRC, when present, must verify."""
     try:
-        if raw[:4] != bytes.fromhex("b5ee9c72"):
+        if raw[:4] != BOC_MAGIC:
             raise Refusal("not a BOC")
         flags = raw[4]
         size, off = flags & 7, raw[5]
         has_index, has_crc = bool(flags & 0x80), bool(flags & 0x40)
+        if flags & 0x38:
+            raise Refusal("BOC header uses cache bits or reserved flags")
+        if has_index:
+            raise Refusal("indexed BOC not supported")
+        if not 1 <= size <= 4 or not 1 <= off <= 8:
+            raise Refusal("BOC header sizes out of range")
         p = 6
         count = int.from_bytes(raw[p : p + size], "big")
         roots = int.from_bytes(raw[p + size : p + 2 * size], "big")
-        p += 3 * size + off  # cells, roots, absent, total cell size
-        if roots != 1:
-            raise Refusal(f"BOC with {roots} roots")
+        absent = int.from_bytes(raw[p + 2 * size : p + 3 * size], "big")
+        total = int.from_bytes(raw[p + 3 * size : p + 3 * size + off], "big")
+        p += 3 * size + off
+        if roots != 1 or absent != 0 or count == 0:
+            raise Refusal(f"BOC with {roots} roots, {absent} absent cells, {count} cells")
         root_idx = int.from_bytes(raw[p : p + size], "big")
         if root_idx >= count:
             raise Refusal("BOC root index out of range")
-        p += size + (count * off if has_index else 0)
+        p += size
+        cells_start = p
         raw_cells = []
         for i in range(count):
             d1, d2 = raw[p], raw[p + 1]
-            if d1 & 8:
-                raise Refusal("exotic cell")
-            refs = d1 & 7
+            if d1 >= 8:
+                raise Refusal("not an ordinary level-0 cell without stored hashes")
+            refs = d1
             ln = (d2 + 1) // 2
             data = raw[p + 2 : p + 2 + ln]
             if len(data) != ln:
@@ -330,7 +361,11 @@ def boc_decode(raw: bytes) -> Cell:
                 raise Refusal("BOC reference order")
             p += refs * size
             raw_cells.append((_cell_bits(data, d2), ref_idx))
+        if p - cells_start != total:
+            raise Refusal("BOC cell data size does not match its header")
         if has_crc:
+            if raw[p : p + 4] != _crc32c(raw[:p]).to_bytes(4, "little") or len(raw) < p + 4:
+                raise Refusal("BOC CRC mismatch")
             p += 4
         if p != len(raw):
             raise Refusal("BOC has trailing bytes")
@@ -343,21 +378,31 @@ def boc_decode(raw: bytes) -> Cell:
     return cells[root_idx]
 
 
+def _tree(root: Cell) -> list[Cell]:
+    """Cells of a tree, parents before children, found iteratively; a shared cell, a cycle, an
+    excess depth or an excess cell count is refused before its descendants are expanded."""
+    order: list[Cell] = []
+    seen: set[int] = set()
+    stack = [(root, 0)]
+    while stack:
+        c, depth = stack.pop()
+        if id(c) in seen:
+            raise Refusal("shared cells are not supported")
+        if depth > MAX_CELL_DEPTH:
+            raise Refusal("cell tree too deep")
+        seen.add(id(c))
+        order.append(c)
+        if len(order) > MAX_BOC_CELLS:
+            raise Refusal("BOC too large for this encoder")
+        for r in reversed(c.refs):
+            stack.append((r, depth + 1))
+    return order
+
+
 def boc_encode(root: Cell) -> bytes:
     """Serialize a tree of ordinary cells (no index, no CRC); children follow their parent."""
-    order: list[Cell] = []
-
-    def visit(c: Cell) -> None:
-        order.append(c)
-        for r in c.refs:
-            visit(r)
-
-    visit(root)
-    if len(order) > 255:
-        raise Refusal("BOC too large for this encoder")
+    order = _tree(root)
     index = {id(c): i for i, c in enumerate(order)}
-    if len(index) != len(order):
-        raise Refusal("shared cells are not supported")
     body = b"".join(
         _descriptors(c) + _cell_data(c.bits) + b"".join(bytes([index[id(r)]]) for r in c.refs)
         for c in order
@@ -372,16 +417,31 @@ def boc_encode(root: Cell) -> bytes:
     )
 
 
+def _depths_and_hashes(root: Cell) -> tuple[dict[int, int], dict[int, bytes]]:
+    depth: dict[int, int] = {}
+    hashes: dict[int, bytes] = {}
+    for c in reversed(_tree(root)):
+        rep = _descriptors(c) + _cell_data(c.bits)
+        rep += b"".join(depth[id(r)].to_bytes(2, "big") for r in c.refs)
+        rep += b"".join(hashes[id(r)] for r in c.refs)
+        depth[id(c)] = 0 if not c.refs else 1 + max(depth[id(r)] for r in c.refs)
+        hashes[id(c)] = hashlib.sha256(rep).digest()
+    return depth, hashes
+
+
 def cell_depth(c: Cell) -> int:
-    return 0 if not c.refs else 1 + max(cell_depth(r) for r in c.refs)
+    return _depths_and_hashes(c)[0][id(c)]
 
 
 def cell_hash(c: Cell) -> bytes:
     """Representation hash of an ordinary level-0 cell, as the chain reports it."""
-    rep = _descriptors(c) + _cell_data(c.bits)
-    rep += b"".join(cell_depth(r).to_bytes(2, "big") for r in c.refs)
-    rep += b"".join(cell_hash(r) for r in c.refs)
-    return hashlib.sha256(rep).digest()
+    return _depths_and_hashes(c)[1][id(c)]
+
+
+def admission_exit_code(message: str) -> int | None:
+    """The exit code the node names when it rejects an external message at admission."""
+    m = re.search(r"\bexitcode=(-?\d+)\b", message)
+    return int(m.group(1)) if m else None
 
 
 def cell_hash_b64(c: Cell) -> str:
@@ -998,6 +1058,18 @@ class Runner:
             r
             for r in self.rpc.transactions_after(observe, since_lt, url)
             if (r.get("in_msg") or {}).get("kind") == "external"
+        ]
+
+    def messages_to(
+        self, payer: str, since_lt: int, observe: str, url: str | None = None
+    ) -> list[tuple[dict, str | None]]:
+        """Every outbound message of `payer` to `observe` after `since_lt`, one entry per message
+        (two messages inside one transaction are two entries), as (transaction, message hash)."""
+        return [
+            (r, m.get("hash"))
+            for r in self.rpc.transactions_after(payer, since_lt, url)
+            for m in r.get("out_msgs", [])
+            if same_addr(m.get("destination"), observe)
         ]
 
     def sends_to(self, payer: str, since_lt: int, observe: str | None) -> list[dict]:
@@ -2608,7 +2680,10 @@ class Runner:
         answer = self.rpc.send_boc(boc_b64)
         record["rpc_answer"] = answer
         message = str((answer.get("error") or {}).get("message") or "")
-        record["admission_refused_with_expected_exit"] = f"exitcode={expect_exit}" in message
+        record["admission_exit_code"] = admission_exit_code(message)
+        record["admission_refused_with_expected_exit"] = (
+            record["admission_exit_code"] == expect_exit
+        )
 
         def arrived() -> bool:
             return bool(self.external_arrivals(account, before["observe_lt"]))
@@ -2666,6 +2741,13 @@ class Runner:
                 "sc03x-wrong-signer", with_flipped_signature_bit(msg), account, AGENT_BAD_SIGNATURE
             ),
         ]
+        # The rotation is judged against the state recorded before it was first attempted, so a
+        # resumed run (the live state already carries the new epoch) reaches the same verdict.
+        pre = self.journal.result("sc03x-rotation-pre-state")
+        pre_state = pre["state"] if pre else state0
+        if pre is None:
+            self.journal.attempt("sc03x-rotation-pre-state", {"kind": "local"})
+            self.journal.done("sc03x-rotation-pre-state", {"exit_code": 0, "state": state0})
         self.local("sc03x-rotate-local", "agent", "wallet", "rotate-controller", "-n", "sc03-agent")
         rotation = self.step(
             "sc03x-rotate-controller",
@@ -2683,7 +2765,7 @@ class Runner:
             observe=account,
         )
         state1 = self.agent_account_state(account)
-        rotated = state1["controller_epoch"] == state0["controller_epoch"] + 1
+        rotated = state1["controller_epoch"] == pre_state["controller_epoch"] + 1
         if not rotated:
             raise Refusal("controller epoch did not advance after the rotation")
         controls.append(
@@ -2874,7 +2956,6 @@ class Runner:
             )
         )
         drill = "sc08x-resolve-verifier"
-        drill_state = "not-exercised"
         attempt = self.journal.attempt_record(drill)
         if attempt and not self.journal.result(drill):
             if attempt.get("kind") != "drill-after-send":
@@ -2882,7 +2963,6 @@ class Runner:
                     f"{drill}: marker without result is not the after-send drill; by hand"
                 )
             self.reconcile_attempt(drill)
-            drill_state = "reconciled-after-forward"
         resolve = self.step(
             drill,
             send + ["--operation", "resolve", "--from", "sc-verifier", "--payout", "0.4"],
@@ -2895,12 +2975,25 @@ class Runner:
             str(final.get(k)) == bindings[k]
             for k in ("result_hash", "evidence_hash", "dispute_hash")
         )
-        final_ok = final.get("status") == "settled" and bound and resolve["verdict"] == "settled"
+        # The lost-reply coverage is read from the durable resolve record, never from this run's
+        # control flow, so a rerun that replays the record reports the same.
+        recovered = (
+            resolve.get("reconciled_from") == "attempt-without-result"
+            and resolve.get("re_sent") is False
+        )
+        drill_state = "reconciled-after-forward" if recovered else "not-exercised"
+        final_ok = (
+            final.get("status") == "settled"
+            and bound
+            and resolve["verdict"] == "settled"
+            and recovered
+        )
         return {
             "address": address,
             "final_state": final,
             "bindings": bindings,
             "bindings_on_chain": bound,
+            "lost_reply_recovered_after_forward": recovered,
             "components": {
                 k: norm_addr(v.get("address") or v.get("account")) for k, v in parts.items()
             },
@@ -3181,41 +3274,56 @@ class Runner:
         before = attempt.get("before") or {}
         if not payer or not observe or "payer_lt" not in before:
             raise Refusal(f"{label}: marker lacks payer/observe/baseline; by hand")
+        # The message is located on EVERY source, and every source must name the same message
+        # and the same contract transaction, before anything is recorded.
+        sources = self.rpc.all_sources
+        observe_lt = int(before.get("observe_lt") or 0)
+        located: dict[str, int] = {}
+        txs: dict[str, dict] = {}
         if attempt.get("external"):
-            arrivals = self.external_arrivals(observe, int(before.get("observe_lt") or 0))
-            if len(arrivals) != 1:
-                raise Refusal(
-                    f"{label}: {len(arrivals)} external messages reached {observe}; by hand"
-                )
-            tx, payer_tx, out_hash = (
-                arrivals[0],
-                None,
-                (arrivals[0].get("in_msg") or {}).get("hash"),
-            )
+            payer_tx = None
+            in_hashes: dict[str, str | None] = {}
+            for url in sources:
+                arrivals = self.external_arrivals(observe, observe_lt, url)
+                located[url] = len(arrivals)
+                if len(arrivals) != 1:
+                    continue
+                txs[url] = arrivals[0]
+                in_hashes[url] = (arrivals[0].get("in_msg") or {}).get("hash")
+            if any(n != 1 for n in located.values()):
+                raise Refusal(f"{label}: external arrivals per source {located}; by hand")
+            if len(set(in_hashes.values())) != 1:
+                raise Refusal(f"{label}: sources disagree on the inbound message; by hand")
+            out_hash = in_hashes[self.rpc.primary]
         else:
-            sends = self.sends_to(payer, int(before["payer_lt"]), observe)
-            if len(sends) != 1:
-                raise Refusal(f"{label}: payer sent {len(sends)} messages to {observe}; by hand")
-            payer_tx = sends[0]
-            out_hash = [
-                m["hash"] for m in payer_tx["out_msgs"] if same_addr(m.get("destination"), observe)
-            ][0]
-            rows = self.rpc.transactions_after(observe, int(before.get("observe_lt") or 0))
-            hit = [r for r in rows if (r.get("in_msg") or {}).get("hash") == out_hash]
-            if len(hit) != 1:
-                raise Refusal(f"{label}: {len(hit)} contract transactions carry the message")
-            tx = hit[0]
-        confirmations = {
-            url: any(
-                r["transaction_id"]["hash"] == tx["transaction_id"]["hash"]
-                for r in self.rpc.transactions_after(
-                    observe, int(before.get("observe_lt") or 0), url
-                )
-            )
-            for url in self.rpc.confirms
-        }
-        if not all(confirmations.values()):
-            raise Refusal(f"{label}: transaction not seen on every confirmation source")
+            messages = {
+                url: self.messages_to(payer, int(before["payer_lt"]), observe, url)
+                for url in sources
+            }
+            located = {url: len(m) for url, m in messages.items()}
+            if any(n != 1 for n in located.values()):
+                raise Refusal(f"{label}: payer messages to {observe} per source {located}; by hand")
+            hashes = {url: m[0][1] for url, m in messages.items()}
+            if len(set(hashes.values())) != 1 or hashes[self.rpc.primary] is None:
+                raise Refusal(f"{label}: sources disagree on the payer's message; by hand")
+            out_hash = hashes[self.rpc.primary]
+            payer_tx = messages[self.rpc.primary][0][0]
+            for url in sources:
+                hit = [
+                    r
+                    for r in self.rpc.transactions_after(observe, observe_lt, url)
+                    if (r.get("in_msg") or {}).get("hash") == out_hash
+                ]
+                if len(hit) != 1:
+                    raise Refusal(
+                        f"{label}: {len(hit)} contract transactions carry the message on {url}"
+                    )
+                txs[url] = hit[0]
+        tx_hashes = {url: t["transaction_id"]["hash"] for url, t in txs.items()}
+        if len(set(tx_hashes.values())) != 1:
+            raise Refusal(f"{label}: sources disagree on the contract transaction; by hand")
+        tx = txs[self.rpc.primary]
+        confirmations = {url: True for url in self.rpc.confirms}
         compute = tx.get("compute") or {}
         after_balance = self.rpc.balance(observe)
         record = {k: v for k, v in attempt.items() if k != "kind"}
@@ -3236,6 +3344,7 @@ class Runner:
                     for m in tx.get("out_msgs", [])
                 ],
                 "confirmed_on": confirmations,
+                "located_per_source": located,
                 "after": {"observe_balance": after_balance},
             }
         )

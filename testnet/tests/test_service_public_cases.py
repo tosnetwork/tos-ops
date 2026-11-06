@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -1350,6 +1351,85 @@ class BocCodec(unittest.TestCase):
             with self.assertRaises(spc.Refusal, msg=bad[:12].hex()):
                 spc.boc_decode(bad)
 
+    def test_invalid_bags_the_node_would_reject_are_refused_not_normalized(self):
+        raw = base64.b64decode(spc.SAMPLE_AGENT_REQUEST_BOC)
+        empty_cell = bytes.fromhex("b5ee9c72") + bytes([1, 1, 1, 1, 0, 2, 0]) + bytes([0, 0])
+        self.assertEqual(spc.boc_decode(empty_cell).bits, "")
+        shapes = {
+            "overlong completion tag": empty_cell[:9]
+            + b"\x03"
+            + empty_cell[10:-2]
+            + bytes([0, 1, 0x80]),
+            "tag outside the last byte": empty_cell[:9]
+            + b"\x04"
+            + empty_cell[10:-2]
+            + bytes([0, 3, 0x80, 0]),
+            "level descriptor": empty_cell[:-2] + bytes([0x20, 0]),
+            "stored hashes descriptor": empty_cell[:-2] + bytes([0x10, 0]),
+            "cache bits flag": empty_cell[:4] + bytes([0x21]) + empty_cell[5:],
+            "reserved flag": empty_cell[:4] + bytes([0x09]) + empty_cell[5:],
+            "indexed bag": empty_cell[:4]
+            + bytes([0x81])
+            + empty_cell[5:10]
+            + b"\x02"
+            + empty_cell[10:],
+            "absent cells": empty_cell[:8] + b"\x01" + empty_cell[9:],
+            "total size too small": empty_cell[:9] + b"\x01" + empty_cell[10:],
+            "offset size zero": empty_cell[:5] + b"\x00" + empty_cell[6:],
+            "bad crc": raw[:4] + bytes([raw[4] | 0x40]) + raw[5:] + b"\x00\x00\x00\x00",
+        }
+        for name, bad in shapes.items():
+            with self.assertRaises(spc.Refusal, msg=name):
+                spc.boc_decode(bad)
+
+    def test_a_bag_with_a_correct_crc_decodes_to_the_chain_hash(self):
+        raw = base64.b64decode(spc.SAMPLE_AGENT_REQUEST_BOC)
+        body = raw[:4] + bytes([raw[4] | 0x40]) + raw[5:]
+        # independent table-driven crc32c reference
+        table = []
+        for n in range(256):
+            c = n
+            for _ in range(8):
+                c = (c >> 1) ^ 0x82F63B78 if c & 1 else c >> 1
+            table.append(c)
+        crc = 0xFFFFFFFF
+        for b in body:
+            crc = table[(crc ^ b) & 0xFF] ^ (crc >> 8)
+        crc ^= 0xFFFFFFFF
+        with_crc = body + crc.to_bytes(4, "little")
+        self.assertEqual(spc.cell_hash_b64(spc.boc_decode(with_crc)), spc.SAMPLE_AGENT_REQUEST_HASH)
+        with self.assertRaises(spc.Refusal):
+            spc.boc_decode(with_crc[:-1] + bytes([with_crc[-1] ^ 1]))
+
+    def test_shared_cells_cycles_and_oversize_trees_are_refused_before_expansion(self):
+        leaf = spc.Cell("", [])
+        dag = leaf
+        for _ in range(40):
+            dag = spc.Cell("1", [dag, dag])
+        started = time.monotonic()
+        for op in (spc.cell_hash, spc.cell_depth, spc.boc_encode):
+            with self.assertRaises(spc.Refusal):
+                op(dag)
+        self.assertLess(time.monotonic() - started, 2.0)
+        loop = spc.Cell("1", [])
+        loop.refs.append(loop)
+        with self.assertRaises(spc.Refusal):
+            spc.cell_hash(loop)
+        small_shared = spc.Cell("1", [leaf, leaf])  # three cells: refused for sharing, not size
+        for op in (spc.cell_hash, spc.boc_encode):
+            with self.assertRaises(spc.Refusal) as cm:
+                op(small_shared)
+            self.assertIn("shared", str(cm.exception))
+        chain = leaf
+        for _ in range(200):
+            chain = spc.Cell("0", [chain])
+        self.assertEqual(spc.cell_depth(chain), 200)
+        self.assertEqual(spc.boc_decode(spc.boc_encode(chain)).refs[0].bits, "0")
+        for _ in range(60):
+            chain = spc.Cell("0", [chain])
+        with self.assertRaises(spc.Refusal):
+            spc.boc_encode(chain)
+
     def test_internal_or_inline_body_messages_are_not_external_requests(self):
         msg = SAMPLE_MSG()
         internal = spc.Cell("0" + msg.bits[1:], msg.refs)
@@ -1395,6 +1475,18 @@ class RefusalBroadcast(RunnerCase):
         self.assertEqual(len(self.sent), 1)
         self.assertEqual(base64.b64decode(self.sent[0]), spc.boc_encode(self.msg))
         self.assertEqual(self.runner.journal.result("r")["verdict"], "refused-at-admission")
+
+    def test_an_exit_code_that_merely_starts_with_the_expected_digits_fails(self):
+        self.answer = {
+            "error": {"code": -32603, "message": "sendBoc failed: exitcode=17050, steps=1"}
+        }
+        with self.assertRaises(spc.Refusal):
+            self.broadcast()
+        rec = self.runner.journal.result("r")
+        self.assertEqual(rec["admission_exit_code"], 17050)
+        self.assertEqual(rec["verdict"], "refusal-control-failed")
+        self.assertIsNone(spc.admission_exit_code("rejected, no code"))
+        self.assertEqual(spc.admission_exit_code("x exitcode=-13 y"), -13)
 
     def test_a_different_exit_code_fails_the_control(self):
         with self.assertRaises(spc.Refusal):
@@ -1507,6 +1599,41 @@ class Sc03xGates(RunnerCase):
             self.runner.case_sc03x(WALLETS)
         self.assertIn("epoch did not advance", str(cm.exception))
         self.assertEqual(self.broadcasts, ["sc03x-replay", "sc03x-wrong-signer"])
+
+    def test_a_future_controller_epoch_in_the_request_is_never_broadcast(self):
+        self.state["seqno"] = 3
+        self.state["controller_epoch"] = 0  # the request names epoch 1
+        with self.assertRaises(spc.Refusal) as cm:
+            self.runner.case_sc03x(WALLETS)
+        self.assertIn("still current", str(cm.exception))
+        self.assertEqual(self.broadcasts, [])
+
+    def test_the_pre_rotation_state_is_recorded_before_the_rotation(self):
+        with self.assertRaises(spc.Refusal):
+            self.runner.case_sc03x(WALLETS)
+        pre = self.runner.journal.result("sc03x-rotation-pre-state")
+        self.assertEqual(pre["state"], {"seqno": 3, "controller_epoch": 1, "spent_today": 0})
+
+    def test_a_resumed_run_after_the_rotation_reaches_the_same_verdict(self):
+        self.runner.journal.attempt("sc03x-rotation-pre-state", {"kind": "local"})
+        self.runner.journal.done(
+            "sc03x-rotation-pre-state",
+            {"exit_code": 0, "state": {"seqno": 3, "controller_epoch": 1, "spent_today": 0}},
+        )
+        self.state["controller_epoch"] = 2  # the live account already carries the rotation
+        out = self.runner.case_sc03x(WALLETS)
+        self.assertTrue(out["pass"])
+        self.assertEqual(len(self.broadcasts), 3)
+
+    def test_a_resumed_run_whose_rotation_never_landed_refuses(self):
+        self.runner.journal.attempt("sc03x-rotation-pre-state", {"kind": "local"})
+        self.runner.journal.done(
+            "sc03x-rotation-pre-state",
+            {"exit_code": 0, "state": {"seqno": 3, "controller_epoch": 1, "spent_today": 0}},
+        )
+        with self.assertRaises(spc.Refusal) as cm:
+            self.runner.case_sc03x(WALLETS)
+        self.assertIn("epoch did not advance", str(cm.exception))
 
     def test_full_journey_passes_with_three_admission_refusals(self):
         reads = []
@@ -1645,8 +1772,100 @@ class AfterSendDrill(RunnerCase):
         with mock.patch.object(spc.Runner, "preflight", return_value={}):
             with self.assertRaises(spc.Refusal) as cm:
                 self.runner.reconcile_attempt("s")
-        self.assertIn("2 messages", str(cm.exception))
+        self.assertIn("per source", str(cm.exception))
+        self.assertIn(": 2", str(cm.exception))
         self.assertIsNone(self.runner.journal.result("s"))
+
+    def test_a_second_message_visible_only_on_the_confirmation_source_stays_by_hand(self):
+        with mock.patch.dict(os.environ, {"SC_DRILL_CRASH_AFTER_SEND": "s"}):
+            self.cli.script["s"] = (0, "{}", settle_effect())
+            with self.assertRaises(SystemExit):
+                self.step()
+        self.rpc.add(PAYER, tx(300, "P2", out=((CONTRACT, "M2"),)), sources=(CONFIRM,))
+        self.rpc.add(CONTRACT, tx(400, "C2", in_hash="M2"), sources=(CONFIRM,))
+        with mock.patch.object(spc.Runner, "preflight", return_value={}):
+            with self.assertRaises(spc.Refusal) as cm:
+                self.runner.reconcile_attempt("s")
+        self.assertIn(CONFIRM + "': 2", str(cm.exception))
+        self.assertIsNone(self.runner.journal.result("s"))
+
+    def test_two_messages_inside_one_payer_transaction_stay_by_hand(self):
+        with mock.patch.dict(os.environ, {"SC_DRILL_CRASH_AFTER_SEND": "s"}):
+
+            def effect(rpc):
+                rpc.add(PAYER, tx(100, "P1", out=((CONTRACT, "M1"), (CONTRACT, "M2"))))
+                rpc.add(CONTRACT, tx(200, "C1", in_hash="M1"))
+
+            self.cli.script["s"] = (0, "{}", effect)
+            with self.assertRaises(SystemExit):
+                self.step()
+        with mock.patch.object(spc.Runner, "preflight", return_value={}):
+            with self.assertRaises(spc.Refusal):
+                self.runner.reconcile_attempt("s")
+        self.assertIsNone(self.runner.journal.result("s"))
+
+    def test_sources_that_disagree_on_the_message_or_the_transaction_stay_by_hand(self):
+        with mock.patch.dict(os.environ, {"SC_DRILL_CRASH_AFTER_SEND": "s"}):
+
+            def effect(rpc):
+                rpc.add(PAYER, tx(100, "P1", out=((CONTRACT, "M1"),)), sources=(PRIMARY,))
+                rpc.add(PAYER, tx(100, "P1", out=((CONTRACT, "M9"),)), sources=(CONFIRM,))
+                rpc.add(CONTRACT, tx(200, "C1", in_hash="M1"), sources=(PRIMARY,))
+                rpc.add(CONTRACT, tx(200, "C1", in_hash="M9"), sources=(CONFIRM,))
+
+            self.cli.script["s"] = (0, "{}", effect)
+            with self.assertRaises(SystemExit):
+                self.step()
+        with mock.patch.object(spc.Runner, "preflight", return_value={}):
+            with self.assertRaises(spc.Refusal) as cm:
+                self.runner.reconcile_attempt("s")
+            self.assertIn("disagree on the payer's message", str(cm.exception))
+            # same message, different contract transaction on the confirmation source
+            self.rpc.rows[CONFIRM][PAYER] = [tx(100, "P1", out=((CONTRACT, "M1"),))]
+            self.rpc.rows[CONFIRM][CONTRACT] = [tx(200, "C9", in_hash="M1")]
+            with self.assertRaises(spc.Refusal) as cm:
+                self.runner.reconcile_attempt("s")
+            self.assertIn("disagree on the contract transaction", str(cm.exception))
+        self.assertIsNone(self.runner.journal.result("s"))
+
+    def external_marker(self):
+        self.runner.journal.attempt(
+            "x",
+            {
+                "kind": "drill-after-send",
+                "payer": PAYER,
+                "observe": CONTRACT,
+                "external": True,
+                "argv": ["agent", "x"],
+                "before": {"payer_lt": 0, "observe_lt": 0, "observe_balance": 0},
+            },
+        )
+
+    def test_external_arrival_is_reconciled_only_when_every_source_names_one_transaction(self):
+        self.external_marker()
+        self.rpc.add(CONTRACT, tx(200, "C1", in_hash="E1", kind="external"))
+        with mock.patch.object(spc.Runner, "preflight", return_value={}):
+            rec = self.runner.reconcile_attempt("x")
+        self.assertEqual(rec["verdict"], "settled")
+        self.assertEqual(rec["in_msg_hash"], "E1")
+        self.assertEqual(rec["located_per_source"], {PRIMARY: 1, CONFIRM: 1})
+
+    def test_external_arrival_with_a_different_transaction_on_a_source_stays_by_hand(self):
+        self.external_marker()
+        self.rpc.add(CONTRACT, tx(200, "C1", in_hash="E1", kind="external"), sources=(PRIMARY,))
+        self.rpc.add(CONTRACT, tx(200, "C2", in_hash="E1", kind="external"), sources=(CONFIRM,))
+        with mock.patch.object(spc.Runner, "preflight", return_value={}):
+            with self.assertRaises(spc.Refusal) as cm:
+                self.runner.reconcile_attempt("x")
+        self.assertIn("disagree on the contract transaction", str(cm.exception))
+        self.rpc.rows[CONFIRM][CONTRACT] = [
+            tx(200, "C1", in_hash="E1", kind="external"),
+            tx(210, "C3", in_hash="E3", kind="external"),
+        ]
+        with mock.patch.object(spc.Runner, "preflight", return_value={}):
+            with self.assertRaises(spc.Refusal):
+                self.runner.reconcile_attempt("x")
+        self.assertIsNone(self.runner.journal.result("x"))
 
     def test_two_messages_or_a_missing_confirmation_stay_by_hand(self):
         with mock.patch.dict(os.environ, {"SC_DRILL_CRASH_AFTER_SEND": "s"}):
@@ -1746,15 +1965,28 @@ class Sc08xJourney(RunnerCase):
         self.assertFalse(out["bindings_on_chain"])
         self.assertFalse(out["pass"])
 
-    def test_passes_when_the_chain_shows_the_bound_hashes(self):
+    def test_bound_hashes_without_the_lost_reply_evidence_do_not_pass(self):
         self.run_case()
         self.sent.clear()
         out = self.runner.case_sc08x(WALLETS)
         self.assertTrue(out["bindings_on_chain"])
-        self.assertTrue(out["pass"])
         self.assertEqual(out["lost_reply_drill"], "not-exercised")
+        self.assertFalse(out["lost_reply_recovered_after_forward"])
+        self.assertFalse(out["pass"])
 
-    def test_after_send_marker_is_reconciled_and_never_re_sent(self):
+    def test_a_rerun_reads_the_lost_reply_evidence_from_the_durable_record(self):
+        self.drill_marker_and_fake_reconcile()
+        first = self.run_case()
+        self.assertFalse(first["pass"])  # the state did not carry the hashes yet
+        second = self.runner.case_sc08x(WALLETS)
+        self.assertTrue(second["pass"])
+        self.assertEqual(second["lost_reply_drill"], "reconciled-after-forward")
+        self.assertTrue(second["lost_reply_recovered_after_forward"])
+        third = self.runner.case_sc08x(WALLETS)
+        self.assertEqual(third["lost_reply_drill"], "reconciled-after-forward")
+        self.assertTrue(third["pass"])
+
+    def drill_marker_and_fake_reconcile(self):
         reconciled = []
 
         def reconcile_attempt(label):
@@ -1773,6 +2005,10 @@ class Sc08xJourney(RunnerCase):
         self.runner.journal.attempt(
             "sc08x-resolve-verifier", {"kind": "drill-after-send", "before": {"payer_lt": 0}}
         )
+        return reconciled
+
+    def test_after_send_marker_is_reconciled_and_never_re_sent(self):
+        reconciled = self.drill_marker_and_fake_reconcile()
         out = self.run_case()
         self.assertEqual(reconciled, ["sc08x-resolve-verifier"])
         self.assertEqual(out["lost_reply_drill"], "reconciled-after-forward")
