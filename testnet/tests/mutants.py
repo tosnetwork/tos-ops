@@ -330,8 +330,14 @@ M = [
     (
         "CH23 handover collect boundary disagreement ignored",
         HO,
-        "if len(centers) != 1:\n        raise HandoverError",
-        "if False:\n        raise HandoverError",
+        "if len(centers) != 1:\n                raise HandoverError",
+        "if False:\n                raise HandoverError",
+    ),
+    (
+        "CH30 handover collect boundary lookup on a lagging head accepted",
+        HO,
+        "if centers and lowest >= max(int(c[2]) for c in centers) + HEAD_MARGIN:",
+        "if centers:",
     ),
     ("CH24 handover collect does not wait", HO, "while now() < args.boundary + 1:", "while False:"),
     ("CH25 handover certificate controls unchecked", HO, "if accepted != expect:", "if False:"),
