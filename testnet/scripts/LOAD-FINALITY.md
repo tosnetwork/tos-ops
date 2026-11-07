@@ -295,3 +295,37 @@ retains the existing refusal path and need not emit a timing event. Finality,
 funding, native proof-age and p95/p99 gates are unchanged. Timings help distinguish
 local offer/admission delays from HTTP/ingress delays, but cannot by themselves
 separate remote queueing from consensus or establish a network latency cause.
+
+## Read-only reconciliation of a closed qualified run
+
+`load_fence_reconcile.py` checks one closed run against public closed-run evidence
+before a new run may launch. It reads, and never changes, the populations: offered,
+accepted, executed/unconfirmed, pending, native-finalized, not offered, funding
+reservations, every operation journal, the query-id counter, the carrier archive
+names, and the unfinished-run marker. It never resets, replays, re-signs or resends,
+and never writes the marker.
+
+- **Allowlist.** Inputs are opened read-only through directory fds, with O_NOFOLLOW
+  at every level and the uid checked on each one. Keys, signed messages, carrier
+  contents, native captures and dry-run directories are refused by name and again
+  by an audit hook. The carrier archive is listed for names and sizes only.
+- **Locks.** No lock is taken. Locks are observed in `/proc/locks` before and after
+  two complete reads, which must be identical. The result says "free as observed";
+  a launch still takes the producer's own lock.
+- **Inline signed messages.** Operation journals hold each signed message inline.
+  `project_line()` nulls the top-level `boc` string in the read buffer before any
+  decoding. A line it cannot tokenize is wiped and never decoded. Every buffer is
+  wiped before it is released. Journals are compared by stat identity plus a hash
+  of the projected metadata, never by a raw hash.
+- **Error reporting.** Errors name a logical input and a byte offset only. Core dumps
+  are disabled before the first open.
+- **Counter.** Ids whose low ten bits are 1023 do not exist, so they are structural
+  gaps. Any other gap, or any id allocated after the last logged one, stays UNKNOWN;
+  relayer seqno reads cannot clear it.
+- **Eligibility.** Launch eligibility needs a closed marker, a result that is safe
+  to start, every population RECONCILED and nothing UNKNOWN.
+- **Output.** One new file (O_EXCL) of counts, ids, typed hashes, public addresses
+  and verdict words, which must pass a secret scan before it is written.
+- **Tests.** `tests/test_load_fence_reconcile.py` builds its fixtures with the
+  producer's own writers and plants canaries in every key, carrier and signed
+  field. `tests/load_fence_reconcile_mutants.py` checks that each guard is load-bearing.
