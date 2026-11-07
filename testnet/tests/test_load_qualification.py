@@ -732,3 +732,73 @@ def test_qualified_incomplete_run_returns_failure_and_closes(monkeypatch, bad):
     with pytest.raises(lib.TestnetError, match="declared execution window"):
         module.run_load(SimpleNamespace(duration=10), None, 2)
     assert closed == [True]
+
+
+@pytest.mark.parametrize("send_error", [False, True])
+def test_broadcast_timing_preserves_one_send_and_records_after_call(tmp_path, send_error):
+    obj = driver()
+    q = audit(tmp_path)
+    obj.qualification = q
+    calls = []
+
+    def send(payload):
+        # Diagnostic fsync must never delay dispatch before the HTTP call.
+        existing = (q.run / "events.jsonl").read_text()
+        assert '"broadcast_timing"' not in existing
+        calls.append(payload)
+        if send_error:
+            raise OSError("connection uncertain")
+
+    error = obj.send(
+        (SimpleNamespace(address="public-relayer"), [0], carrier(tmp_path)),
+        SimpleNamespace(send_boc=send),
+    )
+    assert len(calls) == 1
+    assert bool(error) == send_error
+    events = [json.loads(line) for line in (q.run / "events.jsonl").read_text().splitlines()]
+    timing = next(event for event in events if event["event"] == "broadcast_timing")
+    assert timing["query_ids"] == [0] and timing["relayer"] == "public-relayer"
+    assert timing["outcome"] == ("raised" if send_error else "returned")
+    times = [
+        timing[key]
+        for key in (
+            "offer_call_started_monotonic_seconds",
+            "offer_call_returned_monotonic_seconds",
+            "send_call_started_monotonic_seconds",
+            "send_call_finished_monotonic_seconds",
+            "monotonic_seconds",
+        )
+    ]
+    assert times == sorted(times)
+    assert set(timing) == {
+        "event",
+        "time_unix",
+        "monotonic_seconds",
+        "query_ids",
+        "relayer",
+        "outcome",
+        "offer_call_started_monotonic_seconds",
+        "offer_call_returned_monotonic_seconds",
+        "send_call_started_monotonic_seconds",
+        "send_call_finished_monotonic_seconds",
+    }
+    assert obj.stop == send_error
+    assert not q.finish()["safe_to_start_new_run"]
+
+
+def test_broadcast_timing_journal_failure_stops_without_second_send(tmp_path, monkeypatch):
+    obj = driver()
+    q = audit(tmp_path)
+    obj.qualification = q
+    original = q.event
+
+    def event(kind, **fields):
+        if kind == "broadcast_timing":
+            raise OSError("timing journal unavailable")
+        return original(kind, **fields)
+
+    monkeypatch.setattr(q, "event", event)
+    sent = []
+    error = obj.send((None, [0], carrier(tmp_path)), SimpleNamespace(send_boc=sent.append))
+    assert "timing journal" in error and obj.stop and len(sent) == 1
+    assert q.halted and not q.finish()["safe_to_start_new_run"]

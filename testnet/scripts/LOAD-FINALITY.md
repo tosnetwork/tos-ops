@@ -277,3 +277,21 @@ lookup change: the same error remains upstream857b8a57a178e6ae0fe7fa86e7d81c5233
 liteserver.cpp1763 / TOSf584021:1731, and upstream issue1105 is open. This TOS-only
 collector path has no upstream counterpart. Original failed-stage and unresolved
 RPC bookkeeping remain failed until separate original-run reconciliation.
+
+### Submission timing diagnostics
+
+Qualified sends append one public `broadcast_timing` event after the original
+single `sendBoc` call finishes or raises. It binds the query IDs and public relayer
+address to monotonic timestamps around the durable offer call, the following
+admission check and the HTTP call. The native `offered` timestamp remains the
+original latency origin. The timing event adds no journal write before dispatch;
+its own write time is excluded from the measured HTTP duration. `returned` means
+only that the call returned; it is neither relayer acceptance nor native execution.
+
+No endpoint URL, payload, private carrier, signature or exception body is copied
+into this event. Failure to write it stops admission and retains the original
+unresolved-query fence; it never repeats the send. An exception before dispatch
+retains the existing refusal path and need not emit a timing event. Finality,
+funding, native proof-age and p95/p99 gates are unchanged. Timings help distinguish
+local offer/admission delays from HTTP/ingress delays, but cannot by themselves
+separate remote queueing from consensus or establish a network latency cause.
