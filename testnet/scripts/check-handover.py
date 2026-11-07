@@ -15,9 +15,12 @@ collect is read-only. It refuses any method outside a read-only allow-list,
 starts requests to one node at least --interval seconds apart (never less than
 0.6 s; with --lock-dir the spacing also holds across processes that share the
 directory) and appends every request and the hash of its answer to
-DIR/journal.jsonl. It waits until the wall clock passes the boundary and every
-node's head is 5 blocks past the range, finds the block at the boundary time on
-every node (they must agree), and reads for each of the 2*span+1 blocks around
+DIR/journal.jsonl. It waits until the wall clock passes the boundary, finds the
+block at the boundary time on every node once every node's head is 5 blocks past
+it (a node that has not received the blocks after the boundary yet answers with
+an older block: that is lag and is retried, not a disagreement; nodes whose
+heads are past the margin must agree), waits until every head is 5 blocks past
+the range, and reads for each of the 2*span+1 blocks around
 it, from every node: the finality certificate, lookupBlock, the header and the
 shard tops; then ConfigParam 34 at every set-source key block the headers and
 certificates name, and ConfigParam 32/34 at the end of the range. When a node
@@ -298,6 +301,57 @@ def zero_state(config: dict[str, Any]) -> tuple:
     return shared.full_id(shared.normalize_id(zero))
 
 
+def lowest_head(heads: dict[str, Any], zero: tuple) -> int:
+    """The lowest masterchain head seqno among the nodes' getMasterchainInfo
+    answers, or -1 when an answer is missing or malformed. A node whose zero
+    state is not the global config's is refused."""
+    try:
+        info = {k: result_of(e, f"{k} getMasterchainInfo") for k, e in heads.items()}
+        for k, r in info.items():
+            if full_id(r["init"]) != zero:
+                raise HandoverError(f"{k} has another zero state than the global config")
+        return min(int(r["last"]["seqno"]) for r in info.values())
+    except (Reject, KeyError, TypeError, ValueError):
+        return -1
+
+
+def boundary_block(
+    nodes: list[Node], boundary: int, zero: tuple, clock, sleep, deadline: float
+) -> tuple[dict[str, Any], int]:
+    """lookupBlock at the boundary time on every node, repeated until every
+    node's head is HEAD_MARGIN blocks past the block the lookups name.
+
+    A node that has not yet received the blocks after the boundary answers the
+    time lookup with its own, older head or with an error. That is lag, not a
+    disagreement: the lookup is repeated until --max-wait. Only nodes whose heads
+    are all past the margin and still name different blocks are refused."""
+    while True:
+        lookups = {
+            n.name: n.call("lookupBlock", workchain=-1, shard=SHARD, unixtime=boundary)
+            for n in nodes
+        }
+        lowest = lowest_head({n.name: n.call("getMasterchainInfo") for n in nodes}, zero)
+        unavailable: Reject | None = None
+        try:
+            centers = {full_id(result_of(e, f"{k} lookupBlock")) for k, e in lookups.items()}
+        except Reject as exc:
+            centers, unavailable = set(), exc
+        if centers and lowest >= max(int(c[2]) for c in centers) + HEAD_MARGIN:
+            if len(centers) != 1:
+                raise HandoverError("the nodes disagree on the block at the boundary time")
+            return lookups, int(next(iter(centers))[2])
+        if clock() > deadline:
+            if unavailable is not None:
+                raise HandoverError(
+                    f"the block at the boundary time is unavailable: {unavailable}"
+                ) from unavailable
+            raise HandoverError(
+                "the nodes' heads did not pass the block at the boundary time by "
+                f"{HEAD_MARGIN} blocks within --max-wait"
+            )
+        sleep(5.0)
+
+
 def collect(
     args: argparse.Namespace,
     transport=post,
@@ -340,31 +394,14 @@ def collect(
         sleep(min(20.0, args.boundary + 1 - now()))
     started = utc(now())
 
-    lookups = {
-        n.name: n.call("lookupBlock", workchain=-1, shard=SHARD, unixtime=args.boundary)
-        for n in nodes
-    }
-    try:
-        centers = {full_id(result_of(e, f"{k} lookupBlock")) for k, e in lookups.items()}
-    except Reject as exc:
-        raise HandoverError(f"the block at the boundary time is unavailable: {exc}") from exc
-    if len(centers) != 1:
-        raise HandoverError("the nodes disagree on the block at the boundary time")
-    center = int(next(iter(centers))[2])
+    lookups, center = boundary_block(nodes, args.boundary, zero, clock, sleep, deadline)
     lo, hi = center - args.span, center + args.span
     if lo < 1:
         raise HandoverError("the range reaches below block 1")
 
     while True:
         heads = {n.name: n.call("getMasterchainInfo") for n in nodes}
-        try:
-            info = {k: result_of(e, f"{k} getMasterchainInfo") for k, e in heads.items()}
-            for k, r in info.items():
-                if full_id(r["init"]) != zero:
-                    raise HandoverError(f"{k} has another zero state than the global config")
-            lowest = min(int(r["last"]["seqno"]) for r in info.values())
-        except (Reject, KeyError, TypeError, ValueError):
-            lowest = -1
+        lowest = lowest_head(heads, zero)
         if lowest >= hi + HEAD_MARGIN:
             break
         if clock() > deadline:
