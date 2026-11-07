@@ -271,7 +271,10 @@ TOS_ROOT=$TOS_ROOT "$TOS_ROOT/.venv/bin/python" testnet/scripts/check-handover.p
 node at least 0.6 s apart (`--interval`; `--lock-dir` shares the spacing with
 other processes) and appends every request with the hash of its answer to
 `journal.jsonl`. It may be started before the boundary: it waits for the
-boundary and for every head to pass the range, up to `--max-wait` seconds. For
+boundary, looks the boundary block up only once every head is five blocks past
+it (a node that still lacks the blocks after the boundary answers with an older
+block; that is retried as lag, not refused as a disagreement), then waits for
+every head to pass the range, all within `--max-wait` seconds. For
 the `--span` blocks on each side of the block at the boundary time it records
 each node's certificate, lookup, header and shard tops, ConfigParam 34 at every
 set-source key block, and ConfigParam 32/34 at the range end, in
