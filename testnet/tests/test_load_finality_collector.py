@@ -601,3 +601,66 @@ def test_fallback_rows_still_require_native_boc_chain(configured, wrong_history)
         assert len(calls) == 2
     finally:
         c.close()
+
+
+@pytest.mark.parametrize(
+    "running,filename,accepted",
+    [
+        (True, "native-state.json.tmp", True),
+        (False, "native-state.json.tmp", False),
+        (True, "account.tl", False),
+    ],
+)
+def test_atomic_native_state_rename_during_enumeration(
+    tmp_path, monkeypatch, running, filename, accepted
+):
+    directory = tmp_path / "capture"
+    directory.mkdir()
+    temporary = directory / filename
+    temporary.write_bytes(b"new")
+    old = Path.lstat
+    renamed = []
+
+    def lstat(path, *args, **kwargs):
+        if path == temporary and not renamed:
+            temporary.rename(directory / "native-state.json")
+            renamed.append(True)
+        return old(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", lstat)
+    if accepted:
+        collector.capture_size(directory, native_running=running)
+    else:
+        with pytest.raises(FileNotFoundError):
+            collector.capture_size(directory, native_running=running)
+    assert renamed
+    assert collector.capture_size(directory) == 3
+
+
+@pytest.mark.parametrize("native", [False, True])
+def test_only_running_native_scan_tolerates_state_rename(configured, tmp_path, monkeypatch, native):
+    args, _ = configured
+    c = collector.NativeCollector(**args)
+    directory = tmp_path / "running"
+    directory.mkdir()
+    calls = []
+    real = collector.capture_size
+
+    def scan(path, *, native_running=False):
+        calls.append(native_running)
+        return real(path, native_running=native_running)
+
+    monkeypatch.setattr(collector, "capture_size", scan)
+    try:
+        c._run(
+            ["/bin/sleep", "0.12"],
+            directory / "out",
+            directory / "err",
+            time.monotonic() + 5,
+            directory,
+            native=native,
+        )
+        assert calls[-1] is False and len(calls) >= 2
+        assert all(v is native for v in calls[:-1])
+    finally:
+        c.close()
