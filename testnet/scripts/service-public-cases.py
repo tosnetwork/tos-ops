@@ -651,6 +651,63 @@ def decode_wallet_envelope(msg: Cell) -> dict:
     return out
 
 
+MAX_EXTERNAL_MESSAGE_BYTES = 65535
+PREPARED_SEND_VERSION = "tosctl.wallet-prepared-send.v1"
+
+
+def bind_prepared_send(
+    envelope: dict,
+    built: dict,
+    *,
+    payer: str,
+    value_nanotos: int,
+    bounce: bool,
+    global_id: int,
+    seqno: int,
+) -> tuple[bytes, Cell, dict]:
+    """Bind a `wallet send --build-only` envelope to the registry message it must carry.
+
+    The exact signed bytes are decoded (never trusted from the envelope's own summary fields)
+    and every part is compared: the paying wallet, network, wallet seqno, the internal message's
+    destination, value and bounce flag, and the body and StateInit hashes of the CLI's
+    `register-agent`/`action` output. The external message must fit MAX_EXTERNAL_MESSAGE_BYTES.
+    Returns the raw bytes, the decoded message and the decoded envelope; refuses on any mismatch.
+    """
+    if envelope.get("version") != PREPARED_SEND_VERSION:
+        raise Refusal(f"unexpected prepared-send version {envelope.get('version')!r}")
+    raw = base64.b64decode(str(envelope.get("message_boc_base64") or ""), validate=True)
+    if not raw or len(raw) > MAX_EXTERNAL_MESSAGE_BYTES:
+        raise Refusal(f"external message is {len(raw)} bytes; limit {MAX_EXTERNAL_MESSAGE_BYTES}")
+    msg = boc_decode(raw)
+    e = decode_wallet_envelope(msg)
+    body = boc_decode(base64.b64decode(str(built.get("body_boc") or ""), validate=True))
+    want_init = built.get("state_init_boc")
+    checks = {
+        "payer": same_addr(e["wallet"], payer) and same_addr(envelope.get("payer"), payer),
+        "global_id": e["global_id"] == global_id,
+        "seqno": e["seqno"] == seqno,
+        "destination": same_addr(e["destination"], built.get("destination"))
+        and same_addr(envelope.get("destination"), built.get("destination")),
+        "value": e["value_nanotos"] == value_nanotos == envelope.get("amount_nanotos"),
+        "bounce": e["bounce"] == bounce,
+        "body": dag_cell_hash(e["body"]) == dag_cell_hash(body),
+    }
+    if want_init:
+        init = boc_decode(base64.b64decode(str(want_init), validate=True))
+        checks["state_init"] = e["state_init"] is not None and dag_cell_hash(
+            e["state_init"]
+        ) == dag_cell_hash(init)
+        checks["address"] = same_addr(built.get("destination"), "0:" + dag_cell_hash(init).hex())
+    else:
+        checks["state_init"] = e["state_init"] is None
+    failed = sorted(k for k, ok in checks.items() if not ok)
+    if failed:
+        raise Refusal(
+            f"prepared wallet message does not carry the built registry message: {failed}"
+        )
+    return raw, msg, e
+
+
 def with_flipped_signature_bit(msg: Cell) -> Cell:
     """A copy of an external message whose first signature bit is inverted: same destination,
     same payload, a signature that cannot verify."""

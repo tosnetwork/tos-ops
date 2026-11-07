@@ -3544,3 +3544,69 @@ class Helpers(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+NR_FIXTURE = json.loads(
+    (Path(__file__).parent / "data" / "native-registry" / "c17d3fca5-payloads.json").read_text()
+)
+NR_PAYER = "0:d99220851c7e2b7c765d4a2961806bc0f38a9df0484ca8ce75b9d971a54b1301"
+
+
+class NativeRegistryEnvelopeBinding(unittest.TestCase):
+    """Real tosctl c17d3fca5 payloads: register-agent output and its wallet envelope bind."""
+
+    def bind(self, envelope=None, built=None, **kw):
+        args = dict(payer=NR_PAYER, value_nanotos=1, bounce=False, global_id=2, seqno=24)
+        args.update(kw)
+        return spc.bind_prepared_send(
+            envelope or NR_FIXTURE["envelope_a"], built or NR_FIXTURE["register_a"], **args
+        )
+
+    def test_the_real_registration_envelope_binds_every_part(self):
+        raw, msg, e = self.bind()
+        self.assertEqual(len(raw), 12685)
+        self.assertEqual(e["destination"], NR_FIXTURE["register_a"]["destination"])
+        init = spc.boc_decode(base64.b64decode(NR_FIXTURE["register_a"]["state_init_boc"]))
+        self.assertEqual(
+            spc.dag_cell_hash(init.refs[0]).hex(),
+            "d3bb66d0011a1f362dd0be8408ed688f4e740d096a0e2dc2a79fc0ffc628b28a",
+        )
+
+    def test_every_mismatch_is_refused(self):
+        other = NR_FIXTURE["register_b"]
+        cases = {
+            "payer": dict(payer="0:" + "11" * 32),
+            "global_id": dict(global_id=3),
+            "seqno": dict(seqno=25),
+            "value": dict(value_nanotos=300_000_000),
+            "bounce": dict(bounce=True),
+        }
+        for name, kw in cases.items():
+            with self.assertRaises(spc.Refusal, msg=name) as cm:
+                self.bind(**kw)
+            self.assertIn(name, str(cm.exception))
+        with self.assertRaises(spc.Refusal) as cm:
+            self.bind(built=other)
+        self.assertIn("destination", str(cm.exception))
+        swapped = {**NR_FIXTURE["register_a"], "body_boc": other["body_boc"]}
+        with self.assertRaises(spc.Refusal) as cm:
+            self.bind(built=swapped)
+        self.assertIn("body", str(cm.exception))
+        no_init = {k: v for k, v in NR_FIXTURE["register_a"].items() if k != "state_init_boc"}
+        with self.assertRaises(spc.Refusal) as cm:
+            self.bind(built=no_init)
+        self.assertIn("state_init", str(cm.exception))
+
+    def test_a_wrong_version_or_an_oversized_message_is_refused_before_decoding(self):
+        with self.assertRaises(spc.Refusal):
+            self.bind(envelope={**NR_FIXTURE["envelope_a"], "version": "other"})
+        big = base64.b64encode(b"\xb5\xee\x9c\x72" + b"\0" * 65536).decode()
+        with self.assertRaises(spc.Refusal) as cm:
+            self.bind(envelope={**NR_FIXTURE["envelope_a"], "message_boc_base64": big})
+        self.assertIn("limit", str(cm.exception))
+
+    def test_the_registry_state_init_dag_hashes_to_its_address(self):
+        for name in ("register_a", "register_b"):
+            built = NR_FIXTURE[name]
+            init = spc.boc_decode(base64.b64decode(built["state_init_boc"]))
+            self.assertEqual("0:" + spc.dag_cell_hash(init).hex(), built["destination"], name)
