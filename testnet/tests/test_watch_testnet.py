@@ -168,8 +168,10 @@ def test_strict_load_observation_reports_stale_future_and_queue_limits(tmp_path)
     assert any("metrics_stale=" in s for s in reasons)
     assert any("mempool_age=" in s for s in reasons)
     assert any("mempool_messages=" in s for s in reasons)
-    row = watch_testnet.row(1, "node-1", load_report(metrics_snapshot_timestamp=2))
+    # Dated more than MAX_FUTURE_SKEW_SECONDS ahead: still unobserved.
+    row = watch_testnet.row(1, "node-1", load_report(metrics_snapshot_timestamp=3.5))
     assert "node-1:unobserved=metrics_snapshot_age_s" in judge(row)
+    assert row["future_skew_ms"] is None
 
 
 def test_strict_load_observation_remembers_anomaly_after_recovery(tmp_path):

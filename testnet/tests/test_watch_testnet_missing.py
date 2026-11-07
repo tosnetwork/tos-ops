@@ -373,3 +373,23 @@ def test_missing_alert_after_must_be_finite_and_positive(tmp_path, value, capsys
         watch_testnet.watch = original
     assert exit_info.value.code == 2
     assert "thresholds must be finite and positive" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "offset,age,skew", [(0.005, 0.0, 5), (2.0, 0.0, 2000), (2.5, -2.5, None), (-3.0, 3.0, None)]
+)
+def test_a_slightly_future_metrics_snapshot_counts_as_age_zero(offset, age, skew):
+    now = 1_800_000_000.0
+    r = watch_testnet.row(now, "n", load_report(metrics_snapshot_timestamp=now + offset))
+    assert r["metrics_snapshot_age_s"] == pytest.approx(age) and r["future_skew_ms"] == skew
+
+
+def test_future_skew_is_written_to_the_series(tmp_path):
+    def schedule(rnd, address, clock):
+        offset = 0.005 if address == NODE2 and rnd == 1 else 0.0
+        return Answer(json.dumps(load_report(metrics_snapshot_timestamp=clock.t + offset)))
+
+    status, events, rows, _ = run_watch(tmp_path, 3, schedule)
+    assert [r["future_skew_ms"] for r in host_rows(rows, "node-2")] == ["-", "5", "-"]
+    assert host_rows(rows, "node-2")[1]["metrics_snapshot_age_s"] == "0.0"
+    assert status == 0 and not any(e.startswith("ANOMALY") for e in events)

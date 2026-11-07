@@ -288,6 +288,12 @@ while another is missing; BASELINE.json maps host to baseline as before but
 grows as hosts join, and MONITOR-COMPLETE.json and `--summarize` list
 `hosts_without_baseline`. An answer that cannot be decoded or read as an
 observation is missing data (`probe_output_invalid`) in both watches.
+A sample (extra watch) or metrics snapshot (watch-testnet.py) dated up to
+`MAX_FUTURE_SKEW_SECONDS` (2.0 s) after the coordinator's clock counts as age 0
+and records its offset as `future_skew_ms`; watch-testnet.py writes it as a new
+trailing TSV column, so start a new series. Beyond 2.0 s the extra watch
+refuses with "Host observation dated in the future" and watch-testnet.py keeps
+the negative age (reported as unobserved under `--require-load-metrics`).
 
 After each rotation, confirm the elected set with the same records file used
 at genesis:
