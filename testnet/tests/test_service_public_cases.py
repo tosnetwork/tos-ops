@@ -4235,6 +4235,18 @@ class NativeRegistryPayer(RunnerCase):
         self.assertIn("attempted before", str(cm.exception))
         self.assertEqual(calls, [])
 
+    def test_a_balance_below_the_cli_activation_minimum_writes_no_marker(self):
+        self.runner.preflight = lambda value_action=True: {}
+        self.runner.guards = lambda: {}
+        self.runner.nr_actors = lambda: {"wallet": PAYER}
+        self.info[CONFIRM] = {"state": "uninitialized", "balance": "75000000"}
+        self.rpc.balance = lambda address: 75_000_000
+        calls = []
+        self.cli.run = lambda *a, **k: calls.append(a) or (0, None)
+        self.assertEqual(self.runner.activate_registry()[spc.NR_ACTOR], "unfunded")
+        self.assertEqual(calls, [])
+        self.assertFalse(self.runner.journal.attempted(f"activate-{spc.NR_ACTOR}"))
+
     def test_a_known_active_payer_needs_no_activation_write(self):
         self.runner.preflight = lambda value_action=True: {}
         self.runner.nr_actors = lambda: {"wallet": PAYER}

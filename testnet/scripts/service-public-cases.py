@@ -451,6 +451,7 @@ MAX_DAG_CELLS = 4096
 NR_ABSENT = {"registered": False, "absent": True}
 NR_FEE_ALLOWANCE_NANOTOS = 10_000_000  # the payer's own transfer fee, on top of the value
 NR_PAYER_RESERVE_NANOTOS = 50_000_000  # kept in the payer after each send
+WALLET_ACTIVATE_MIN_NANOTOS = 100_000_000  # tosctl `wallet activate` MIN_BALANCE (0.1 TOS)
 
 
 def dag_cell_hash_b64(root: Cell) -> str:
@@ -3605,7 +3606,9 @@ class Runner:
         label = f"activate-{NR_ACTOR}"
         if self.journal.attempted(label):
             raise Refusal(f"{label} was attempted before; wallet states {states}; judge by hand")
-        if self.rpc.balance(address) < tos_to_nanotos("0.05"):
+        # The CLI activates only from WALLET_ACTIVATE_MIN_NANOTOS (tos c17d3fca5 wallet_cmd.rs
+        # MIN_BALANCE); below it the once-only marker would be spent on a skipped activation.
+        if self.rpc.balance(address) < WALLET_ACTIVATE_MIN_NANOTOS:
             return {NR_ACTOR: "unfunded", "states": states}
         self.guards()
         self.journal.attempt(label, {"kind": "wallet-activate", "address": address})
