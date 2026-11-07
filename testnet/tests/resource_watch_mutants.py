@@ -51,20 +51,20 @@ M = [
     (
         "E4 extra: alerts on every cycle",
         EXTRA,
-        "        if host not in self.alerted and monotonic - first >= self.alert_after:\n",
+        "        if host not in self.alerted and elapsed >= self.alert_after:\n",
         "        if True:\n",
     ),
     (
         "E5 extra: alerts every cycle after ten minutes",
         EXTRA,
-        "        if host not in self.alerted and monotonic - first >= self.alert_after:\n",
-        "        if monotonic - first >= self.alert_after:\n",
+        "        if host not in self.alerted and elapsed >= self.alert_after:\n",
+        "        if elapsed >= self.alert_after:\n",
     ),
     (
         "E6 extra: never alerts",
         EXTRA,
-        "            return first_unix, True\n",
-        "            return first_unix, False\n",
+        "            return first_unix, True, elapsed\n",
+        "            return first_unix, False, elapsed\n",
     ),
     (
         "E7 extra: alert never re-armed after recovery",
@@ -75,7 +75,7 @@ M = [
     (
         "E8 extra: partial cycle published as LATEST",
         EXTRA,
-        "            if missing:\n                append(\n",
+        "            if missing or violations:\n                append(\n",
         "            if False:\n                append(\n",
     ),
     (
@@ -87,14 +87,71 @@ M = [
     (
         "E10 extra: baseline not checked while a host is missing",
         EXTRA,
-        "            if baseline is not None:\n                for name in current:\n",
-        "            if baseline is not None and not missing:\n                for name in current:\n",
+        "                if baseline is not None:\n                    check(value, baseline[name])\n",
+        "                if baseline is not None and not missing:\n"
+        "                    check(value, baseline[name])\n",
     ),
     (
         "E11 extra: child output written as the reason",
         EXTRA,
         "        return None, SSH_FAILED if child.returncode == 255 else PROBE_FAILED\n",
         "        return None, str(child.stderr)\n",
+    ),
+    (
+        "V1 extra: inactive validator recorded as probe_failed missing data",
+        EXTRA,
+        "                    violations[name] = value\n                    continue\n",
+        "                    missing[name] = PROBE_FAILED\n                    continue\n",
+    ),
+    (
+        "V2 extra: outcome summary ignores the reason",
+        EXTRA,
+        '            if reason in VIOLATION_REASONS:\n                kind = "violation"\n',
+        '            if False:\n                kind = "violation"\n',
+    ),
+    (
+        "V3 extra: late observation classified before the integrity checks",
+        EXTRA,
+        "                # Every observation is checked, however late it is published.\n",
+        "                if age > MAX_AGE:\n"
+        "                    missing[name] = EXPIRED\n"
+        "                    continue\n",
+    ),
+    (
+        "V4 extra: reserves unchecked before the baseline",
+        EXTRA,
+        "                check_reserves(value)\n",
+        "                pass\n",
+    ),
+    (
+        "V5 extra: expired observation counted as fresh",
+        EXTRA,
+        "                if age > MAX_AGE:\n",
+        "                if False:\n",
+    ),
+    (
+        "V6 extra: inactive violation not written",
+        EXTRA,
+        '                        "reason": VALIDATOR_INACTIVE,\n',
+        '                        "reason": PROBE_FAILED,\n',
+    ),
+    (
+        "T1 extra: outage timed on wall time",
+        EXTRA,
+        "tracker.missing(name, cycle, stamp)",
+        "tracker.missing(name, stamp, stamp)",
+    ),
+    (
+        "T2 extra: alert duration from wall time",
+        EXTRA,
+        "missing_seconds=int(elapsed),",
+        "missing_seconds=int(stamp - since),",
+    ),
+    (
+        "T3 primary: outage timed on wall time",
+        PRIMARY,
+        "                alert = missing_alerts(r, round_clock)\n",
+        "                alert = missing_alerts(r, round_start)\n",
     ),
     (
         "P1 primary: a missing host ends the watch",

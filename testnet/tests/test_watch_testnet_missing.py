@@ -41,7 +41,7 @@ def scripted_run(clock, schedule, interval):
 
     def run(argv, **kwargs):
         address = next(a for a in argv if "44." in a).rpartition("@")[2]
-        rnd = int(round((clock.t - clock.start) / interval))
+        rnd = int(round(clock.mono / interval))
         answer = schedule(rnd, address)
         if isinstance(answer, BaseException):
             raise answer
@@ -50,21 +50,43 @@ def scripted_run(clock, schedule, interval):
     return run
 
 
+class SteppedClock:
+    """A steady monotonic clock and a wall clock that `step(round)` moves by seconds."""
+
+    def __init__(self, interval, step=lambda _round: 0.0):
+        self.start, self.mono, self.interval, self.step = 1_800_000_000.0, 0.0, interval, step
+
+    @property
+    def t(self):
+        return self.start + self.mono + self.step(int(round(self.mono / self.interval)))
+
+    def now(self):
+        return self.t
+
+    def monotonic(self):
+        return self.mono
+
+    def sleep(self, seconds):
+        self.mono += seconds
+
+
 def fresh_report(clock):
     return json.dumps(load_report(metrics_snapshot_timestamp=clock.t))
 
 
-def run_watch(tmp_path, rounds, schedule, interval=30.0, **changes):
+def run_watch(tmp_path, rounds, schedule, interval=30.0, step=lambda _round: 0.0, **changes):
     args = strict_args(tmp_path, rounds, interval=interval, **changes)
-    clock, events = Clock(), []
-    clock.start = clock.t
-
-    def sleep(seconds):
-        clock.t += seconds
-
+    clock, events = SteppedClock(interval, step), []
     run = scripted_run(clock, lambda r, a: schedule(r, a, clock), interval)
     probe = functools.partial(watch_testnet.probe_report, run=run, sleep=lambda _s: None)
-    status = watch_testnet.watch(args, probe=probe, now=clock.now, sleep=sleep, emit=events.append)
+    status = watch_testnet.watch(
+        args,
+        probe=probe,
+        now=clock.now,
+        sleep=clock.sleep,
+        emit=events.append,
+        monotonic=clock.monotonic,
+    )
     lines = args.out.read_text().splitlines()
     rows = [dict(zip(watch_testnet.COLUMNS, line.split("\t"))) for line in lines[1:]]
     assert lines[0].split("\t") == list(watch_testnet.COLUMNS)
@@ -137,6 +159,38 @@ def test_realerts_only_after_recovery_and_a_new_outage(tmp_path):
     assert watch_testnet.utc(1_800_000_000.0 + 30 * 21) in alerts[0]
     assert watch_testnet.utc(1_800_000_000.0 + 30 * 62) in alerts[1]
     assert len(host_rows(rows, "node-2")) == 72
+
+
+def test_outage_is_timed_on_the_monotonic_clock_across_wall_steps(tmp_path):
+    # node-2 is down from round 2. The wall clock steps 500 s forward for
+    # rounds 10..19 (a wall-time timer would alert at round 10) and then
+    # 2000 s back from round 20 (a wall-time timer would see a negative outage).
+    def step(rnd):
+        return 500.0 if 10 <= rnd < 20 else (-2000.0 if rnd >= 20 else 0.0)
+
+    _status, events, rows, _ = run_watch(
+        tmp_path, 45, outage_schedule(set(range(2, 41))), step=step
+    )
+    alerts = [e for e in events if e.startswith("ALERT")]
+    assert len(alerts) == 1
+    # Round 22 on the monotonic clock, stamped with that round's (stepped) UTC.
+    assert "node-2:missing_for=600s" in alerts[0]
+    assert watch_testnet.utc(1_800_000_000.0 + 660 - 2000) in alerts[0]
+    # The --duration horizon is still wall time (unchanged), so the backward
+    # step lengthens the run; every round still has a node-2 row.
+    assert len(host_rows(rows, "node-2")) == len(host_rows(rows, "node-1")) >= 45
+
+
+def test_a_backward_wall_step_does_not_delay_the_alert(tmp_path):
+    def step(rnd):
+        return -5000.0 if rnd >= 5 else 0.0
+
+    _status, events, _rows, _ = run_watch(
+        tmp_path, 30, outage_schedule(set(range(1, 30))), step=step
+    )
+    alerts = [e for e in events if e.startswith("ALERT")]
+    assert len(alerts) == 1 and "node-2:missing_for=600s" in alerts[0]
+    assert watch_testnet.utc(1_800_000_000.0 + 630 - 5000) in alerts[0]
 
 
 def test_a_host_that_never_answers_still_has_a_row_every_round(tmp_path):

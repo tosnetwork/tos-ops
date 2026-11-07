@@ -46,14 +46,19 @@ class Answer:
 
 
 class Clock:
-    """Advances only on the watch's own pause, so parallel probes see one instant."""
+    """Advances only on the watch's own pause, so parallel probes see one instant.
 
-    def __init__(self):
+    `t` is steady (the monotonic clock is t - START); the wall clock is t moved
+    by `step(cycle)` seconds.
+    """
+
+    def __init__(self, step=lambda _cycle: 0.0):
         self.t = START
         self.cycle = 0
+        self.step = step
 
     def now(self):
-        return self.t
+        return self.t + self.step(self.cycle)
 
     def monotonic(self):
         return self.t - START
@@ -74,7 +79,7 @@ def fake_run(clock, schedule, attempts):
         attempts[key] = attempt + 1
         answer = schedule(clock.cycle, name, attempt)
         if answer is None:
-            return Answer(json.dumps(observation(clock.t)))
+            return Answer(json.dumps(observation(clock.now())))
         if isinstance(answer, BaseException):
             raise answer
         return answer
@@ -82,8 +87,8 @@ def fake_run(clock, schedule, attempts):
     return run
 
 
-def run_watch(tmp_path, cycles, schedule, disk_free=lambda _p: 100 * GIB):
-    clock, events, attempts = Clock(), [], {}
+def run_watch(tmp_path, cycles, schedule, disk_free=lambda _p: 100 * GIB, step=lambda _cycle: 0.0):
+    clock, events, attempts = Clock(step), [], {}
     run = fake_run(clock, schedule, attempts)
 
     def probe_host(host):
@@ -264,7 +269,7 @@ def test_observation_delayed_past_publication_bound_is_missing_not_fatal(tmp_pat
     )
     rows = [json.loads(line) for line in (out / "series.jsonl").read_text().splitlines()]
     assert [(r["host"], r["reason"]) for r in statuses(rows, MISSING)] == [
-        ("node-1", "observation_expired")
+        ("node-1", "expired_at_publication")
     ]
 
 
@@ -308,7 +313,6 @@ def test_future_observation_at_publication_is_fatal(tmp_path):
         ({"boot_id": "b1"}, "changed: boot_id"),
         ({"unit_restarts": 1}, "changed: unit_restarts"),
         ({"host_oom_kill": 1}, "changed: host_oom_kill"),
-        ({"unit_active": "failed"}, "inactive"),
         ({"cgroup_memory_events": {"oom": 0, "oom_kill": 1}}, "inactive or cgroupOOMkill"),
         ({"cgroup_memory_events": {"oom": 1, "oom_kill": 0}}, "CgroupOOM event changed"),
         ({"cgroup_memory_events": {"oom_kill": 0}}, "CgroupOOM counters missing"),
@@ -380,5 +384,217 @@ def test_missing_tracker_alerts_once_per_outage():
     t = wer.MissingTracker(600)
     assert [t.missing("a", s, s)[1] for s in range(0, 1300, 60)].count(True) == 1
     t.observed("a")
-    assert t.missing("a", 2000, 2000) == (2000, False)
-    assert t.missing("a", 2600, 2600) == (2000, True)
+    assert t.missing("a", 2000, 2000) == (2000, False, 0)
+    assert t.missing("a", 2600, 9) == (2000, True, 600)
+
+
+# An observed inactive validator is a violation row, not missing data.
+
+VIOLATION = "VIOLATION_EXTRA_RESOURCE_OBSERVATION"
+
+
+def inactive_answer(clock_now, state="failed"):
+    return Answer(
+        json.dumps(
+            {
+                "utc_unix": clock_now,
+                "unit": "tos-testnet-validator.service",
+                "unit_active": state,
+                "main_pid": 0,
+                "unit_restarts": 0,
+            }
+        )
+    )
+
+
+def inactive_schedule(host, cycles, state="failed"):
+    def schedule(cycle, name, attempt):
+        if name == host and cycle in cycles:
+            return inactive_answer(START + 60 * cycle, state)
+        return None
+
+    return schedule
+
+
+def test_inactive_validator_is_a_violation_row_and_the_watch_continues(tmp_path):
+    out, rows, events = run_watch(tmp_path, 6, inactive_schedule("node-3", {2, 3}))
+    violations = statuses(rows, VIOLATION)
+    assert [(r["host"], r["reason"], r["checked_unix"]) for r in violations] == [
+        ("node-3", "validator_inactive", START + 120),
+        ("node-3", "validator_inactive", START + 180),
+    ]
+    assert set(violations[0]) == {
+        "status",
+        "host",
+        "checked_unix",
+        "checked_utc",
+        "reason",
+        "observed_unix",
+        "unit_active",
+    }
+    assert violations[0]["unit_active"] == "failed"
+    assert not statuses(rows, MISSING) and not statuses(rows, ALERT)
+    partial = statuses(rows, PARTIAL)
+    assert [p["violations"] for p in partial] == [["node-3"], ["node-3"]]
+    assert all("node-3" not in p["hosts"] for p in partial)
+    assert [e for e in events if e.startswith("VIOLATION")] == [
+        f"VIOLATION {wer.iso(START + 120)} node-3:validator_inactive"
+    ]
+    # The run reached its horizon; LATEST was never an incomplete cycle.
+    assert (out / "MONITOR-COMPLETE.json").exists()
+    assert json.loads((out / "LATEST.json").read_text())["checked_unix"] == START + 300
+    summary = wer.summarize(out / "series.jsonl")
+    assert summary["violation_rows"] == 2 and summary["criteria_violated"] is True
+    assert summary["missing_rows"] == 0 and summary["missing_data"] is False
+    assert summary["unrecognized_rows"] == 0
+
+
+def test_a_restart_after_inactivity_is_still_fatal(tmp_path):
+    def schedule(cycle, name, attempt):
+        if name == "node-2" and cycle == 2:
+            return inactive_answer(START + 120, "activating")
+        if name == "node-2" and cycle >= 3:
+            return Answer(json.dumps(observation(START + 60 * cycle, main_pid=5000)))
+        return None
+
+    with pytest.raises(RuntimeError, match="changed: main_pid"):
+        run_watch(tmp_path, 5, schedule)
+
+
+def test_an_unknown_unit_state_is_not_copied_into_the_row(tmp_path):
+    _out, rows, _ = run_watch(tmp_path, 2, inactive_schedule("node-1", {1}, SECRET))
+    (violation,) = statuses(rows, VIOLATION)
+    assert violation["unit_active"] == "unknown"
+    assert "SECRET" not in json.dumps(rows)
+
+
+def test_inactive_before_the_baseline_defers_it(tmp_path):
+    out, rows, _ = run_watch(tmp_path, 3, inactive_schedule("node-4", {0}))
+    assert rows[0]["status"] == VIOLATION
+    baseline = json.loads((out / "BASELINE.json").read_text())
+    assert {v["utc_unix"] for v in baseline.values()} == {START + 60}
+
+
+def test_summary_separates_violations_missing_and_unrecognized(tmp_path):
+    def schedule(cycle, name, attempt):
+        if name == "node-1" and cycle in (1, 2):
+            return inactive_answer(START + 60 * cycle)
+        if name == "node-2" and 1 <= cycle <= 12:
+            return Answer("", 255)
+        return None
+
+    out, rows, _ = run_watch(tmp_path, 14, schedule)
+    series = out / "series.jsonl"
+    summary = wer.summarize(series)
+    assert summary["violation_rows"] == 2
+    assert {v["reason"] for v in summary["violations"]} == {"validator_inactive"}
+    assert summary["missing"] == {"node-2": {"ssh_failed": 12}}
+    assert summary["missing_rows"] == 12 and summary["alerts"] == 1
+    assert summary["healthy_cycles"] == 2 and summary["partial_cycles"] == 12
+    assert summary["rows"] == len(rows) and summary["unrecognized_rows"] == 0
+    # A status that disagrees with its reason, an unknown reason, a non-object
+    # and an unterminated tail are never read as clean.
+    with series.open("a") as stream:
+        stream.write(json.dumps({"status": VIOLATION, "reason": "probe_failed"}) + "\n")
+        stream.write(json.dumps({"status": MISSING, "reason": "validator_inactive"}) + "\n")
+        stream.write(json.dumps({"status": MISSING, "reason": "something_else"}) + "\n")
+        stream.write("[1]\n")
+        stream.write('{"status": "VIOLATION_EXTRA')
+    again = wer.summarize(series)
+    assert again["unrecognized_rows"] == 4 and again["rows"] == len(rows) + 4
+    assert again["violation_rows"] == 2 and again["missing_rows"] == 12
+
+
+def test_summarize_cli_prints_the_summary(tmp_path, capsys):
+    out, _rows, _ = run_watch(tmp_path, 3, inactive_schedule("node-1", {1}))
+    wer.main(["--summarize", str(out / "series.jsonl")])
+    printed = json.loads(capsys.readouterr().out)
+    assert printed == wer.summarize(out / "series.jsonl")
+    assert printed["criteria_violated"] is True
+    with pytest.raises(SystemExit):
+        wer.main(["--summarize", str(out / "series.jsonl"), "--out", str(tmp_path / "x")])
+    with pytest.raises(SystemExit):
+        wer.main(["--out", str(tmp_path / "x")])
+
+
+# Late observations are checked before they are classified as missing.
+
+
+def late_probe(clock, late_host, late_cycle, **changes):
+    def probe_host(host):
+        if host.name == late_host and clock.cycle == late_cycle:
+            return host.name, observation(clock.now() - 61, **changes), ""
+        return host.name, observation(clock.now()), ""
+
+    return probe_host
+
+
+def run_late(tmp_path, probe_host, clock, cycles=3):
+    out = tmp_path / "extra"
+    wer.watch(
+        HOSTS,
+        out,
+        probe_host,
+        monotonic=clock.monotonic,
+        now=clock.now,
+        sleep=clock.sleep,
+        disk_free=lambda _p: 100 * GIB,
+        duration=wer.PAUSE * cycles - 1,
+        emit=lambda _l: None,
+    )
+    return [json.loads(line) for line in (out / "series.jsonl").read_text().splitlines()]
+
+
+LOW_DISK = {
+    "filesystems": {
+        p: {"free_bytes": 19 * GIB, "free_inodes": 10**6, "total_inodes": 2 * 10**6}
+        for p in ("/var/lib/tos", "/var/log/tos", "/tmp")
+    }
+}
+
+
+@pytest.mark.parametrize("late_cycle", [0, 1])
+def test_a_late_observation_below_the_disk_floor_is_fatal(tmp_path, late_cycle):
+    # Cycle 0 has no baseline yet; cycle 1 has one. Both must refuse.
+    clock = Clock()
+    with pytest.raises(RuntimeError, match="reserve exhausted"):
+        run_late(tmp_path, late_probe(clock, "node-2", late_cycle, **LOW_DISK), clock)
+
+
+def test_a_late_observation_with_a_changed_pid_is_fatal(tmp_path):
+    clock = Clock()
+    with pytest.raises(RuntimeError, match="changed: main_pid"):
+        run_late(tmp_path, late_probe(clock, "node-2", 1, main_pid=1), clock)
+
+
+def test_a_late_inactive_observation_is_a_violation(tmp_path):
+    clock = Clock()
+
+    def probe_host(host):
+        if host.name == "node-2" and clock.cycle == 1:
+            return host.name, json.loads(inactive_answer(clock.now() - 61).stdout), ""
+        return host.name, observation(clock.now()), ""
+
+    rows = run_late(tmp_path, probe_host, clock)
+    assert [(r["host"], r["reason"]) for r in statuses(rows, VIOLATION)] == [
+        ("node-2", "validator_inactive")
+    ]
+    assert not statuses(rows, MISSING)
+
+
+# The outage alert is timed on the monotonic clock.
+
+
+def test_extra_outage_is_timed_on_the_monotonic_clock_across_wall_steps(tmp_path):
+    # node-4 is down from cycle 2 (monotonic 120 s). The wall clock steps
+    # 400 s forward for cycles 5..9 and 3000 s back from cycle 10.
+    def step(cycle):
+        return 400.0 if 5 <= cycle < 10 else (-3000.0 if cycle >= 10 else 0.0)
+
+    out, rows, events = run_watch(tmp_path, 20, down("node-4", set(range(2, 20))), step=step)
+    (alert,) = statuses(rows, ALERT)
+    assert alert["missing_seconds"] == 600
+    assert alert["checked_unix"] == START + 720 - 3000
+    assert alert["missing_since_unix"] == START + 120
+    assert len(events) == 1 and "node-4:missing_for=600s" in events[0]
+    assert len(statuses(rows, MISSING, "node-4")) == 18

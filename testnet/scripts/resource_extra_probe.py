@@ -25,7 +25,20 @@ rows = subprocess.check_output(
     timeout=10,
 )
 props = dict(row.split("=", 1) for row in rows.splitlines())
-assert props["ActiveState"] == "active" and int(props["MainPID"]) > 0
+if props["ActiveState"] != "active" or int(props["MainPID"]) <= 0:
+    # An inactive validator is an observation the watcher records, not a failed read.
+    print(
+        json.dumps(
+            {
+                "utc_unix": time.time(),
+                "unit": unit,
+                "unit_active": props["ActiveState"],
+                "main_pid": int(props["MainPID"]),
+                "unit_restarts": int(props["NRestarts"]),
+            }
+        )
+    )
+    raise SystemExit(0)
 pid = props["MainPID"]
 cgroup = Path("/sys/fs/cgroup") / props["ControlGroup"].lstrip("/")
 assert cgroup.resolve().is_relative_to(Path("/sys/fs/cgroup"))

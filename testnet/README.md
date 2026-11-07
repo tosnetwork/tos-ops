@@ -274,7 +274,13 @@ writes a `MISSING_EXTRA_RESOURCE_OBSERVATION` row per host per cycle, a
 `PARTIAL_...` row for the observed hosts, never replaces LATEST.json for an
 incomplete cycle, and after 600 s writes one `ALERT_...` row, appends it to
 `ALERTS.jsonl` and prints `ALERT`. Neither changes a freshness or missing-data
-criterion; the alert only tells a person.
+criterion; the alert only tells a person, and outages are timed on the
+monotonic clock. An observation published more than 60 s late is checked like
+any other, then recorded as missing (`expired_at_publication`). An inactive
+validator is an observed violation (`VIOLATION_...` row, reason
+`validator_inactive`), not missing data; the watch keeps running.
+`watch_extra_resources.py --summarize series.jsonl` prints the violations apart
+from the missing data for the outcome review.
 
 After each rotation, confirm the elected set with the same records file used
 at genesis:

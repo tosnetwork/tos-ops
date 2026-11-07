@@ -31,7 +31,8 @@ for a person or a monitor to read:
   ALERT <utc> <host>:missing_for=<s>s reason=<code>
                                       with --require-load-metrics, once per
                                       outage after --missing-alert-after
-                                      seconds (default 600) without a sample
+                                      seconds (default 600, monotonic clock)
+                                      without a sample
 
 Anomalies: host unreachable; unit not active; unit restart count changed;
 head age above --max-head-age; head seqno unchanged for --stuck-samples
@@ -385,7 +386,11 @@ def select_hosts(inventory: list[preflight.Host], names: str | None) -> list[pre
 
 
 class MissingAlerts:
-    """One alert per outage, after `after` seconds without a sample from the host."""
+    """One alert per outage, after `after` seconds without a sample from the host.
+
+    `at` is a monotonic reading, so a wall-clock step cannot shorten or stretch
+    an outage; only the printed timestamps are UTC.
+    """
 
     def __init__(self, after: float):
         self.after = after
@@ -406,7 +411,12 @@ class MissingAlerts:
 
 
 def watch(
-    args: argparse.Namespace, probe=probe_report, now=time.time, sleep=time.sleep, emit=print
+    args: argparse.Namespace,
+    probe=probe_report,
+    now=time.time,
+    sleep=time.sleep,
+    emit=print,
+    monotonic=time.monotonic,
 ) -> int:
     hosts = select_hosts(preflight.load_inventory(args.inventory), args.hosts)
     if args.until_current and args.until_current not in {h.name for h in hosts}:
@@ -420,6 +430,7 @@ def watch(
     last_anomalies: list[str] = []
     while True:
         round_start = now()
+        round_clock = monotonic()
         rows = []
         for h in hosts:
             report, reason = probe(h, args.cpu_sample)
@@ -430,7 +441,7 @@ def watch(
         stamp = utc(round_start)
         if strict:
             for r in rows:
-                alert = missing_alerts(r, round_start)
+                alert = missing_alerts(r, round_clock)
                 if alert:
                     emit(f"ALERT {stamp} {alert}")
         if anomalies != last_anomalies:
