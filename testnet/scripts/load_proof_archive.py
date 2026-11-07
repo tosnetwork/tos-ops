@@ -1,6 +1,6 @@
 """Deduplicate public proof bytes; storage integrity is not native proof validation.
 
-Only explicit public TL responses enter this API. Never pass wallet keys, signed
+Only explicit public TL responses, transaction BOCs and replay metadata enter this API. Never pass wallet keys, signed
 carriers, private journals or an unfiltered directory. Callers retain full native
 verification and offered-query reconciliation as separate acceptance gates.
 """
@@ -147,6 +147,10 @@ class PublicProofArchive:
         if len(result) != row[1] or not result:
             raise ArchiveError("missing public proof part")
         return json.loads(row[0]), result
+
+    def next_capture(self):
+        """Next contiguous index via the primary key; no per-capture table scan."""
+        return self.db.execute("SELECT coalesce(max(number)+1,0) FROM captures").fetchone()[0]
 
     def stats(self):
         return {
