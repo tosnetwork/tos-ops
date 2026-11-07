@@ -305,7 +305,14 @@ class NativeCollector:
         query, response = path / f"rpc-{page}.request.json", path / f"rpc-{page}.json"
         write_file(query, json.dumps(request).encode())
         endpoints = [self.rpc] + ([self.confirm_rpc] if self.confirm_rpc else [])
-        for attempt, endpoint in enumerate(endpoints):
+        attempts = 4 * len(endpoints)
+        for attempt in range(attempts):
+            endpoint = endpoints[attempt % len(endpoints)]
+            round_number = attempt // len(endpoints)
+            if round_number and attempt % len(endpoints) == 0:
+                delay = 0.25 * (2 ** (round_number - 1))
+                require(deadline - time.monotonic() > delay, "capture deadline expired")
+                time.sleep(delay)
             remaining = deadline - time.monotonic()
             require(remaining > 0, "capture deadline expired")
             self._run(
@@ -334,13 +341,12 @@ class NativeCollector:
             )
             result = json.loads(response.read_bytes())
             # A native-proven head can lead a particular RPC shard client. Try
-            # the existing independent endpoint once, for internal RPC errors
-            # only. Neither an error nor fallback rows authenticate history;
+            # four finite rounds of the configured endpoints for internal RPC
+            # errors only, all inside the original capture deadline. Neither an error nor fallback rows authenticate history;
             # capture() still checks every BOC back to the prior native head.
             error = result.get("error") if isinstance(result, dict) else None
             if (
-                attempt == 0
-                and len(endpoints) == 2
+                attempt + 1 < attempts
                 and isinstance(error, dict)
                 and type(error.get("code")) is int
                 and error["code"] == -32603
@@ -348,11 +354,18 @@ class NativeCollector:
             ):
                 failed = path / "rpc-failover"
                 failed.mkdir(exist_ok=True)
-                response.rename(failed / f"page-{page}.json")
-                (path / f"rpc-{page}.stderr").rename(failed / f"page-{page}.stderr")
+                label = f"page-{page}" if attempt == 0 else f"page-{page}-attempt-{attempt}"
+                response.rename(failed / (label + ".json"))
+                (path / f"rpc-{page}.stderr").rename(failed / (label + ".stderr"))
                 write_file(
-                    failed / f"page-{page}.sources.json",
-                    json.dumps({"primary": self.rpc, "fallback": self.confirm_rpc}).encode(),
+                    failed / (label + ".sources.json"),
+                    json.dumps(
+                        {
+                            "attempt": attempt,
+                            "endpoint": endpoint,
+                            "next_endpoint": endpoints[(attempt + 1) % len(endpoints)],
+                        }
+                    ).encode(),
                 )
                 continue
             require(
