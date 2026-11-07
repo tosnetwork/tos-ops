@@ -109,6 +109,18 @@ AGENT_BAD_SIGNATURE = 1704
 AGENT_BAD_SEQNO = 1705
 AGENT_STALE_CONTROLLER = 1710
 AGENT_EXPIRED = 1706
+# Native Registry (tos c17d3fca5, crypto/smartcont/native-registry-code.fc).
+NR_BAD_PREDECESSOR = 2204
+NR_TOMBSTONED = 2206
+NR_BAD_SIGNATURE = 2208
+NR_LABEL = "tos:global-id:2"  # owner-frozen identity domain (queue report section 7.1)
+NR_GLOBAL_CONFIG_SHA256 = "28a764e73f4f0f69e34dfdde6748d67b78afa242b211282f81d25721d860e039"
+NR_CODE_HASH = "d3bb66d0011a1f362dd0be8408ed688f4e740d096a0e2dc2a79fc0ffc628b28a"
+NR_ACTOR = "sc-registry"
+NR_CONTROLLERS = ("nr-a1", "nr-a2", "nr-b1")
+NR_VALUE_NANOTOS = 300_000_000  # per registry message (section 7.3)
+NR_CAP_NANOTOS = 5_000_000_000  # hard cap for the whole registry batch (section 7.3)
+NR_GLOBAL_ID = 2
 AGENT_TASK_SEND_OP = "0x41475003"
 # SC-03e: a prepared request expires this far ahead; the chain must be this far past it.
 EXPIRY_LEAD_S = 90
@@ -708,6 +720,84 @@ def bind_prepared_send(
     return raw, msg, e
 
 
+def boc_encode_dag(root: Cell) -> bytes:
+    """Serialize a cell DAG (shared subtrees stored once), parents before children, no index and
+    no CRC. Used only for a registry body the runner mutates on purpose (a signature-bit probe);
+    every other message is sent as the exact bytes it was built with."""
+    hashes: dict[int, bytes] = {}
+
+    def h(c: Cell) -> bytes:
+        if id(c) not in hashes:
+            hashes[id(c)] = dag_cell_hash(c)
+        return hashes[id(c)]
+
+    unique: dict[bytes, Cell] = {}
+    order: list[bytes] = []
+    visiting: set[bytes] = set()
+    stack: list[tuple[Cell, bool]] = [(root, False)]
+    while stack:
+        c, done = stack.pop()
+        key = h(c)
+        if done:
+            visiting.discard(key)
+            if key not in unique:
+                unique[key] = c
+                order.append(key)
+            continue
+        if key in unique or key in visiting:
+            continue
+        visiting.add(key)
+        stack.append((c, True))
+        for r in c.refs:
+            stack.append((r, False))
+        if len(visiting) + len(unique) > MAX_DAG_CELLS:
+            raise Refusal("cell DAG too large to encode")
+    order.reverse()  # post-order reversed: every parent precedes its children
+    index = {key: i for i, key in enumerate(order)}
+    size = max(1, (len(order).bit_length() + 7) // 8)
+    body = b"".join(
+        _descriptors(unique[k])
+        + _cell_data(unique[k].bits)
+        + b"".join(index[h(r)].to_bytes(size, "big") for r in unique[k].refs)
+        for k in order
+    )
+    off = max(1, (len(body).bit_length() + 7) // 8)
+    return (
+        BOC_MAGIC
+        + bytes([size, off])
+        + len(order).to_bytes(size, "big")
+        + (1).to_bytes(size, "big")
+        + (0).to_bytes(size, "big")
+        + len(body).to_bytes(off, "big")
+        + index[h(root)].to_bytes(size, "big")
+        + body
+    )
+
+
+def with_flipped_registry_signature(body: Cell) -> Cell:
+    """A copy of a Native Registry submission body whose first authority signature has its first
+    data bit inverted. The structure is checked on the way down (signature set count, key id,
+    the 2,420-byte ML-DSA-44 length) so only signature data, never a length or a key id, is
+    altered."""
+    if len(body.refs) < 2:
+        raise Refusal("registry body has no signature set")
+    sigset = body.refs[1]
+    if len(sigset.bits) != 8 or int(sigset.bits, 2) < 1 or not sigset.refs:
+        raise Refusal("registry body has an empty signature set")
+    entry = sigset.refs[0]
+    if len(entry.bits) != 256 or not entry.refs:
+        raise Refusal("signature entry is not a key id followed by its signature")
+    length = entry.refs[0]
+    if len(length.bits) != 32 or int(length.bits, 2) != 2420 or not length.refs:
+        raise Refusal("signature is not a 2,420-byte ML-DSA-44 signature")
+    data = length.refs[0]
+    flipped = Cell(("1" if data.bits[0] == "0" else "0") + data.bits[1:], data.refs)
+    new_length = Cell(length.bits, [flipped, *length.refs[1:]])
+    new_entry = Cell(entry.bits, [new_length, *entry.refs[1:]])
+    new_sigset = Cell(sigset.bits, [new_entry, *sigset.refs[1:]])
+    return Cell(body.bits, [body.refs[0], new_sigset, *body.refs[2:]])
+
+
 def with_flipped_signature_bit(msg: Cell) -> Cell:
     """A copy of an external message whose first signature bit is inverted: same destination,
     same payload, a signature that cannot verify."""
@@ -965,7 +1055,14 @@ class Cli:
         private = str(self.private)
         return [a.replace(private, "<private>") if private in a else a for a in args]
 
-    def run(self, label: str, *args: str, want_json: bool = False, format_flag: bool = True):
+    def run(
+        self,
+        label: str,
+        *args: str,
+        want_json: bool = False,
+        format_flag: bool = True,
+        config: Path | None = None,
+    ):
         """Run tosctl once. Raw output stays private; the sanitized record is journaled.
 
         `want_json` parses stdout as JSON; `format_flag=False` does so without appending the
@@ -973,7 +1070,7 @@ class Cli:
 
         Returns (exit code or None on timeout, stdout text or parsed JSON)."""
         self.receipts.mkdir(mode=0o700, exist_ok=True)
-        argv = [str(self.path), *args, "-c", str(self.config)]
+        argv = [str(self.path), *args, "-c", str(config or self.config)]
         if want_json and format_flag:
             argv += ["--format", "json"]
         self.calls += 1
@@ -1107,23 +1204,59 @@ class Runner:
         return record
 
     # ----- non-value CLI steps -----------------------------------------------------------------
-    def local(self, label: str, *argv: str, want_json: bool = False, format_flag: bool = True):
-        """A once-only CLI step that moves no value (profile, key or wallet bookkeeping)."""
+    def local(
+        self,
+        label: str,
+        *argv: str,
+        want_json: bool = False,
+        format_flag: bool = True,
+        private_answer: bool = False,
+    ):
+        """A once-only CLI step that moves no value (profile, key or wallet bookkeeping).
+
+        `private_answer` keeps the parsed answer in the private dir (0600) and only its sha256
+        in the public journal: for a signed wallet message that must not be published before it
+        is spent or expired."""
         previous = self.journal.result(label)
         if previous:
             if previous.get("exit_code") == 0:
+                if previous.get("answer_private"):
+                    return self.private_answer_read(label, previous["answer_sha256"])
                 return previous.get("answer")
             raise Refusal(f"step {label!r} already failed with exit {previous.get('exit_code')}")
         if self.journal.attempted(label):
             raise Refusal(f"step {label!r} was attempted without a result; reconcile by hand")
         self.journal.attempt(label, {"kind": "local", "argv": self.cli.redact(argv)})
         rc, answer = self.cli.run(label, *argv, want_json=want_json, format_flag=format_flag)
-        self.journal.done(
-            label, {"exit_code": rc, "answer": answer if want_json and rc == 0 else None}
-        )
+        if private_answer and want_json and rc == 0:
+            digest = self.private_answer_write(label, answer)
+            self.journal.done(
+                label, {"exit_code": rc, "answer_private": True, "answer_sha256": digest}
+            )
+        else:
+            self.journal.done(
+                label, {"exit_code": rc, "answer": answer if want_json and rc == 0 else None}
+            )
         if rc != 0:
             raise Refusal(f"{label}: exit {rc}")
         return answer if want_json else None
+
+    def private_answer_write(self, label: str, answer) -> str:
+        directory = self.private / "answers"
+        directory.mkdir(mode=0o700, exist_ok=True)
+        data = json.dumps(answer, sort_keys=True).encode()
+        fd = os.open(directory / f"{label}.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        return hashlib.sha256(data).hexdigest()
+
+    def private_answer_read(self, label: str, digest: str):
+        data = (self.private / "answers" / f"{label}.json").read_bytes()
+        if hashlib.sha256(data).hexdigest() != digest:
+            raise Refusal(f"{label}: private answer does not match its journaled digest")
+        return json.loads(data)
 
     def quorum_configs(self) -> list[str]:
         """Two single-endpoint copies of the CLI config, one per confirmation source, for the
@@ -1647,6 +1780,7 @@ class Runner:
         "sc05x",
         "sc08x",
         "sc03e",
+        "scnr",
     )
 
     def case_fn(self, name: str):
@@ -3290,6 +3424,634 @@ class Runner:
             "pass": control["verdict"] == "refused-at-admission" and state2 == state1,
         }
 
+    # ----- Native Registry (SC-01 Agent identity, SC-02 Capability) --------------------------
+    def nr_require_deploy_gate(self) -> Path:
+        """The registry batch runs only with an explicit opt-in and the frozen domain's config:
+        merging this code grants no execution authority (the owner's deployment ruling does)."""
+        if not getattr(self.args, "allow_registry_deploy", False):
+            raise Refusal("registry cases need --allow-registry-deploy (owner deployment ruling)")
+        path = Path(str(getattr(self.args, "registry_global_config", "") or ""))
+        if not path.is_file():
+            raise Refusal("registry cases need --registry-global-config <testnet global config>")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != NR_GLOBAL_CONFIG_SHA256:
+            raise Refusal("registry global config is not the published testnet config")
+        return path
+
+    def nr_actors(self) -> dict:
+        path = self.evidence / "registry-actors.json"
+        if not path.exists():
+            raise Refusal("registry-actors.json missing; run setup-registry first")
+        return json.loads(path.read_text())
+
+    def setup_registry(self) -> dict:
+        """Create the registry payer wallet and the ML-DSA-44 controllers through the CLI's own
+        custody (vault secrets native-registry-<name>); record only public keys and key ids, and
+        write the two Agent policies from them. No value moves; funding is a separate step."""
+        self.preflight(value_action=False)
+        self.local(
+            f"setup-wallet-{NR_ACTOR}", "wallet", "create", "-n", NR_ACTOR, "-v", "V3R2", "-w", "0"
+        )
+        rc, rows = self.cli.run(
+            f"setup-registry-ls-{self.cli.calls}", "wallet", "ls", want_json=True
+        )
+        if rc != 0 or not isinstance(rows, list):
+            raise Refusal("wallet ls failed")
+        wallet = [
+            norm_addr(r["address"])
+            for r in rows
+            if isinstance(r, dict) and r.get("name") == NR_ACTOR and r.get("address")
+        ]
+        if len(wallet) != 1:
+            raise Refusal(f"{NR_ACTOR} has no unique address")
+        controllers = {}
+        for name in NR_CONTROLLERS:
+            self.local(
+                f"setup-controller-{name}",
+                "agent",
+                "native-registry",
+                "new-controller",
+                "--name",
+                name,
+                want_json=True,
+            )
+            pub = self.local(
+                f"setup-controller-pub-{name}",
+                "agent",
+                "native-registry",
+                "controller",
+                "--name",
+                name,
+                want_json=True,
+            )
+            if not isinstance(pub, dict) or pub.get("suite") != "ML-DSA-44":
+                raise Refusal(f"controller {name}: unexpected answer")
+            controllers[name] = {"key_id": pub["key_id"], "public_key": pub["public_key"]}
+        policies = {
+            "a": {
+                "threshold": 1,
+                "recovery_threshold": 1,
+                "recovery_timelock": 86400,
+                "controllers": [
+                    {"public_key": controllers[n]["public_key"], "weight": 1, "purposes": 15}
+                    for n in ("nr-a1", "nr-a2")
+                ],
+            },
+            "b": {
+                "threshold": 1,
+                "recovery_threshold": 1,
+                "recovery_timelock": 86400,
+                "controllers": [
+                    {"public_key": controllers["nr-b1"]["public_key"], "weight": 1, "purposes": 15}
+                ],
+            },
+        }
+        for name, policy in policies.items():
+            target = self.evidence / f"registry-policy-{name}.json"
+            if not target.exists():
+                target.write_text(json.dumps(policy, indent=2, sort_keys=True) + "\n")
+        actors = {"wallet": wallet[0], "controllers": controllers, "created_utc": utc(now())}
+        path = self.evidence / "registry-actors.json"
+        if not path.exists():
+            path.write_text(json.dumps(actors, indent=2, sort_keys=True) + "\n")
+        return json.loads(path.read_text())
+
+    def nr_nonce(self, purpose: str) -> str:
+        """A 32-byte hex nonce bound to this run's date and the step's purpose: the same step
+        always builds the same object, so a rerun cannot mint a second one."""
+        return hashlib.sha256(f"nr-{self.args.date}-{purpose}".encode()).hexdigest()
+
+    def nr_build(self, label: str, *argv: str) -> dict:
+        """One once-only CLI build of a signed registry message (never sent by the CLI)."""
+        gc = self.nr_require_deploy_gate()
+        built = self.local(
+            label,
+            "agent",
+            "native-registry",
+            *argv,
+            "--global-config",
+            str(gc),
+            "--network-label",
+            NR_LABEL,
+            want_json=True,
+        )
+        if not isinstance(built, dict) or not built.get("body_boc") or not built.get("destination"):
+            raise Refusal(f"{label}: unexpected build answer")
+        return built
+
+    def nr_show(self, address: str) -> dict:
+        """The decoded registry object at `address` on every source (chain_time excluded); all
+        sources must agree. None for a source that has no object yet."""
+        gc = self.nr_require_deploy_gate()
+        configs = [None, *[Path(p) for p in self.quorum_configs()]]
+        views = []
+        for i, config in enumerate(configs):
+            rc, view = self.cli.run(
+                f"nr-show-{self.cli.calls}",
+                "agent",
+                "native-registry",
+                "show",
+                "--global-config",
+                str(gc),
+                "--network-label",
+                NR_LABEL,
+                "--address",
+                address,
+                want_json=True,
+                config=config,
+            )
+            if rc == 0 and isinstance(view, dict):
+                view = {k: v for k, v in view.items() if k != "chain_time"}
+            else:
+                view = None
+            views.append(view)
+        if any(v != views[0] for v in views):
+            raise Refusal(f"sources disagree on the registry object at {address}")
+        return views[0]
+
+    def wallet_seqno(self, address: str) -> int:
+        seqnos = set()
+        for url in self.rpc.all_sources:
+            stack = self.rpc.run_get_method(address, "seqno", url)
+            seqnos.add(int(stack[0][1]))
+        if len(seqnos) != 1:
+            raise Refusal(f"sources disagree on the wallet seqno of {address}: {seqnos}")
+        return seqnos.pop()
+
+    def registry_send(
+        self,
+        label: str,
+        built: dict,
+        *,
+        bounce: bool,
+        expect_exit: int = 0,
+        body_boc: str | None = None,
+    ) -> dict:
+        """Send one built registry message from the registry payer, once.
+
+        The CLI builds and signs the registry message; `wallet send --build-only` signs the exact
+        wallet message (kept private until spent); bind_prepared_send decodes it and checks every
+        part against the build; the attempt marker is written before the single sendBoc. A
+        success needs the payer transaction for that external message, the first receiver's
+        transaction for the payer's message, and the final target holding last_action ==
+        action_hash with the CLI's predicted generation and sequence on every source. A refusal
+        needs the first receiver's transaction aborted with exactly `expect_exit`, the final
+        target unchanged on every source and, when bounceable, the refund bound by message hash.
+        `body_boc` replaces the build's body (a replay or a mutated signature); the destination
+        and StateInit stay the build's."""
+        done = self.journal.result(label)
+        if done is not None:
+            if done.get("verdict") not in ("settled", "refused-as-intended"):
+                raise Refusal(f"{label} ended {done.get('verdict')!r}; never re-sent")
+            done.setdefault("label", label)
+            return done
+        if self.journal.attempted(label):
+            raise Refusal(f"{label} was attempted without a result; reconcile read-only")
+        self.guards()
+        actors = self.nr_actors()
+        payer = actors["wallet"]
+        carried = {**built, "body_boc": body_boc or built["body_boc"]}
+        if body_boc is not None:
+            carried.pop("state_init_boc", None)
+        destination = norm_addr(carried["destination"])
+        final = norm_addr(carried.get("final_target") or destination)
+        before = {
+            "head": self.rpc.head(),
+            "payer_lt": self.rpc.last_lt(payer),
+            "destination_lt": self.rpc.last_lt(destination),
+            "final_lt": self.rpc.last_lt(final),
+            "final_state": self.nr_show(final),
+        }
+        seqno = self.wallet_seqno(payer)
+        argv = [
+            "wallet",
+            "send",
+            "--from",
+            NR_ACTOR,
+            "--to",
+            destination,
+            "--amount-nanotos",
+            str(NR_VALUE_NANOTOS),
+            "--body-boc",
+            carried["body_boc"],
+        ]
+        if carried.get("state_init_boc"):
+            argv += ["--state-init-boc", carried["state_init_boc"]]
+        if bounce:
+            argv.append("--bounce")
+        argv += ["--build-only", "--yes"]
+        envelope = self.local(
+            f"{label}-envelope", *argv, want_json=True, format_flag=False, private_answer=True
+        )
+        if self.wallet_seqno(payer) != seqno:
+            raise Refusal(f"{label}: payer seqno moved while building; by hand")
+        raw, msg, decoded = bind_prepared_send(
+            envelope,
+            carried,
+            payer=payer,
+            value_nanotos=NR_VALUE_NANOTOS,
+            bounce=bounce,
+            global_id=NR_GLOBAL_ID,
+            seqno=seqno,
+        )
+        external_hash = cell_hash_b64(msg)
+        record: dict = {
+            "kind": "registry-send",
+            "payer": payer,
+            "observe": destination,
+            "final_target": final,
+            "external": False,
+            "external_hash": external_hash,
+            "message_boc_sha256": hashlib.sha256(raw).hexdigest(),
+            "wallet_seqno": seqno,
+            "bounce": bounce,
+            "expect_exit": expect_exit,
+            "action_hash": built.get("action_hash"),
+            "generation": built.get("generation"),
+            "sequence": built.get("sequence"),
+            "valid_until": decoded.get("valid_until"),
+            "before": before,
+        }
+        self.journal.attempt(label, record)
+        record["rpc_answer"] = self.rpc.send_boc(base64.b64encode(raw).decode())
+        found: dict = {}
+
+        def settled() -> bool:
+            rows = self.rpc.transactions_after(payer, before["payer_lt"])
+            hit = [r for r in rows if (r.get("in_msg") or {}).get("hash") == external_hash]
+            if len(hit) != 1:
+                return False
+            outs = [
+                m
+                for m in hit[0].get("out_msgs", [])
+                if same_addr(m.get("destination"), destination)
+            ]
+            if len(outs) != 1:
+                found["error"] = f"payer transaction carries {len(outs)} messages to {destination}"
+                return True
+            first = [
+                r
+                for r in self.rpc.transactions_after(destination, before["destination_lt"])
+                if (r.get("in_msg") or {}).get("hash") == outs[0]["hash"]
+            ]
+            if len(first) != 1:
+                return False
+            found["payer_tx"], found["tx"] = hit[0], first[0]
+            return True
+
+        if not self.wait(settled) or "error" in found:
+            record["verdict"] = (
+                "multiple-sends-observed" if "error" in found else "unknown-not-observed"
+            )
+            record["error"] = found.get("error")
+            self.journal.done(label, record)
+            raise Refusal(f"{label}: {record['verdict']}; reconcile read-only, no resend")
+        return self._registry_finish(label, record, found["payer_tx"], found["tx"], built)
+
+    def _registry_finish(
+        self, label: str, record: dict, payer_tx: dict, tx: dict, built: dict
+    ) -> dict:
+        """Judge one registry send from its observed transactions (shared by the live send and
+        its read-only reconciliation) and write the result."""
+        before = record["before"]
+        payer, destination, final = record["payer"], record["observe"], record["final_target"]
+        bounce, expect_exit = record["bounce"], record["expect_exit"]
+        found: dict = {"payer_tx": payer_tx, "tx": tx}
+        compute = tx.get("compute") or {}
+        record.update(
+            {
+                "payer_tx": found["payer_tx"]["transaction_id"],
+                "tx": tx["transaction_id"],
+                "compute": compute,
+                "aborted": tx.get("aborted"),
+                "out_msgs": [
+                    {k: m.get(k) for k in ("destination", "value", "bounced", "hash")}
+                    for m in tx.get("out_msgs", [])
+                ],
+            }
+        )
+        for url in self.rpc.confirms:
+            seen = any(
+                r["transaction_id"]["hash"] == tx["transaction_id"]["hash"]
+                for r in self.rpc.transactions_after(destination, before["destination_lt"], url)
+            )
+            if not seen:
+                record["verdict"] = "not-confirmed-on-all-sources"
+                self.journal.done(label, record)
+                raise Refusal(f"{label}: transaction not seen on {url}")
+        if expect_exit == 0:
+            ok_first = tx.get("aborted") is not True and compute.get("exit_code") in (0, 1)
+
+            def landed() -> bool:
+                view = self.nr_show(final)
+                found["after"] = view
+                return (
+                    bool(view)
+                    and view.get("last_action") == built.get("action_hash")
+                    and (view.get("generation"), view.get("sequence"))
+                    == (built.get("generation"), built.get("sequence"))
+                )
+
+            ok_final = self.wait(landed)
+            record["after"] = {"final_state": found.get("after")}
+            record["verdict"] = "settled" if ok_first and ok_final else "unexpected-abort"
+        else:
+            aborted = tx.get("aborted") is True and compute.get("exit_code") == expect_exit
+            after_state = self.nr_show(final)
+            unchanged = after_state == before["final_state"]
+            refund_ok = True
+            if bounce:
+                bounces = [
+                    m for m in tx.get("out_msgs", []) if same_addr(m.get("destination"), payer)
+                ]
+                refund_ok = False
+                if len(bounces) == 1:
+                    back = [
+                        r
+                        for r in self.rpc.transactions_after(payer, before["payer_lt"])
+                        if (r.get("in_msg") or {}).get("hash") == bounces[0]["hash"]
+                    ]
+                    refund_ok = len(back) == 1
+                    record["refund_tx"] = back[0]["transaction_id"] if back else None
+            record["after"] = {"final_state": after_state}
+            record["refund_bound"] = refund_ok
+            ok = aborted and unchanged and refund_ok
+            record["verdict"] = "refused-as-intended" if ok else "refusal-control-failed"
+        self.journal.done(label, record)
+        self.journal.log(kind="registry-send", label=label, verdict=record["verdict"])
+        record["label"] = label
+        if record["verdict"] not in ("settled", "refused-as-intended"):
+            raise Refusal(f"{label}: {record['verdict']} ({compute}, aborted={tx.get('aborted')})")
+        return record
+
+    def registry_reconcile(self, label: str) -> dict:
+        """Read-only recovery of a registry send whose reply was lost. Nothing is sent. On every
+        source exactly one payer transaction must carry the journaled external message hash, with
+        exactly one message to the first receiver and exactly one first-receiver transaction for
+        it, and every source must name the same transactions; the verdict then follows the live
+        rules. A message that no source carries after the wallet deadline is recorded as
+        expired-unsent: it can no longer apply, and the label is never re-sent."""
+        self.preflight(value_action=False)
+        record = self.journal.attempt_record(label)
+        done = self.journal.result(label)
+        if record is None or record.get("kind") != "registry-send":
+            raise Refusal(f"{label} has no registry-send attempt marker")
+        if done is not None and done.get("verdict") != "unknown-not-observed":
+            raise Refusal(f"{label} already ended {done.get('verdict')!r}")
+        before = record["before"]
+        payer, destination = record["payer"], record["observe"]
+        picks: dict = {}
+        for url in self.rpc.all_sources:
+            hits = [
+                r
+                for r in self.rpc.transactions_after(payer, before["payer_lt"], url)
+                if (r.get("in_msg") or {}).get("hash") == record["external_hash"]
+            ]
+            if not hits:
+                picks[url] = None
+                continue
+            if len(hits) != 1:
+                raise Refusal(f"{label}: {len(hits)} payer transactions carry it on {url}")
+            outs = [
+                m
+                for m in hits[0].get("out_msgs", [])
+                if same_addr(m.get("destination"), destination)
+            ]
+            if len(outs) != 1:
+                raise Refusal(f"{label}: {len(outs)} messages to {destination} on {url}; by hand")
+            first = [
+                r
+                for r in self.rpc.transactions_after(destination, before["destination_lt"], url)
+                if (r.get("in_msg") or {}).get("hash") == outs[0]["hash"]
+            ]
+            if len(first) != 1:
+                raise Refusal(f"{label}: first receiver transaction not unique on {url}; by hand")
+            picks[url] = (hits[0], first[0])
+        if all(v is None for v in picks.values()):
+            deadline = int(record.get("valid_until") or 0)
+            if deadline and now() > deadline:
+                result = {**record, "verdict": "expired-unsent", "reconciled_from": "attempt"}
+                self.journal.done(label, result)
+                return result
+            raise Refusal(f"{label}: no source carries the message yet; wait for its deadline")
+        if any(v is None for v in picks.values()):
+            raise Refusal(f"{label}: sources disagree on whether the message applied; by hand")
+        ids = {
+            (v[0]["transaction_id"]["hash"], v[1]["transaction_id"]["hash"]) for v in picks.values()
+        }
+        if len(ids) != 1:
+            raise Refusal(f"{label}: sources name different transactions; by hand")
+        payer_tx, tx = picks[self.rpc.primary]
+        built = {
+            "action_hash": record.get("action_hash"),
+            "generation": record.get("generation"),
+            "sequence": record.get("sequence"),
+        }
+        record = {**record, "reconciled_from": "attempt", "re_sent": False}
+        return self._registry_finish(label, record, payer_tx, tx, built)
+
+    def nr_flip_body(self, body_boc: str) -> str:
+        """The base64 body with its first authority signature's first data bit inverted."""
+        cell = with_flipped_registry_signature(boc_decode(base64.b64decode(body_boc)))
+        return base64.b64encode(boc_encode_dag(cell)).decode()
+
+    def case_scnr(self, w: dict) -> dict:
+        """Public SC-01 (Agent identity) and SC-02 (Capability) on the ML-DSA-44 Native Registry,
+        in one executable order so Agent A is revoked only after the Capability lifecycle:
+
+        register A, register B, delegate on A (SC-01); register a Capability under A, add a
+        version, transfer it to B with B's counter-signature, revoke it (SC-02); then three
+        refusals around A's revocation: A's registration body replayed after A advanced (2204),
+        a fresh A action with one signature bit flipped (2208), revoke A, and A's delegate body
+        after the tombstone (2206). Eleven messages at 0.3 TOS, bounceable when the first
+        receiver is an existing Agent."""
+        self.nr_require_deploy_gate()
+        policy_a = str(self.evidence / "registry-policy-a.json")
+        policy_b = str(self.evidence / "registry-policy-b.json")
+        steps: dict = {}
+        reg_a = self.nr_build(
+            "scnr-build-register-a",
+            "register-agent",
+            "--policy",
+            policy_a,
+            "--nonce",
+            self.nr_nonce("agent-a"),
+            "--signer",
+            "nr-a1",
+            "--signer",
+            "nr-a2",
+        )
+        steps["register-a"] = self.registry_send("scnr-register-a", reg_a, bounce=False)
+        agent_a = norm_addr(reg_a["destination"])
+        reg_b = self.nr_build(
+            "scnr-build-register-b",
+            "register-agent",
+            "--policy",
+            policy_b,
+            "--nonce",
+            self.nr_nonce("agent-b"),
+            "--signer",
+            "nr-b1",
+        )
+        steps["register-b"] = self.registry_send("scnr-register-b", reg_b, bounce=False)
+        agent_b = norm_addr(reg_b["destination"])
+        delegate = self.nr_build(
+            "scnr-build-delegate-a",
+            "action",
+            "--kind",
+            "delegate",
+            "--agent",
+            agent_a,
+            "--nonce",
+            self.nr_nonce("delegate-a"),
+            "--delegation",
+            self.nr_nonce("delegation-1"),
+            "--signer",
+            "nr-a1",
+        )
+        steps["delegate-a"] = self.registry_send("scnr-delegate-a", delegate, bounce=True)
+        cap = self.nr_build(
+            "scnr-build-register-cap",
+            "action",
+            "--kind",
+            "register-capability",
+            "--agent",
+            agent_a,
+            "--nonce",
+            self.nr_nonce("register-cap"),
+            "--object-nonce",
+            self.nr_nonce("cap-object"),
+            "--version",
+            "v1",
+            "--manifest",
+            self.nr_nonce("manifest-v1"),
+            "--signer",
+            "nr-a1",
+        )
+        steps["register-cap"] = self.registry_send("scnr-register-cap", cap, bounce=True)
+        capability = norm_addr(cap["final_target"])
+        add = self.nr_build(
+            "scnr-build-add-version",
+            "action",
+            "--kind",
+            "add-version",
+            "--agent",
+            agent_a,
+            "--capability",
+            capability,
+            "--nonce",
+            self.nr_nonce("add-version"),
+            "--version",
+            "v2",
+            "--manifest",
+            self.nr_nonce("manifest-v2"),
+            "--signer",
+            "nr-a1",
+        )
+        steps["add-version"] = self.registry_send("scnr-add-version", add, bounce=True)
+        transfer = self.nr_build(
+            "scnr-build-transfer-cap",
+            "action",
+            "--kind",
+            "transfer-capability",
+            "--agent",
+            agent_a,
+            "--capability",
+            capability,
+            "--new-owner",
+            agent_b,
+            "--nonce",
+            self.nr_nonce("transfer-cap"),
+            "--signer",
+            "nr-a1",
+            "--counter-signer",
+            "nr-b1",
+        )
+        steps["transfer-cap"] = self.registry_send("scnr-transfer-cap", transfer, bounce=True)
+        revoke_cap = self.nr_build(
+            "scnr-build-revoke-cap",
+            "action",
+            "--kind",
+            "revoke-capability",
+            "--agent",
+            agent_b,
+            "--capability",
+            capability,
+            "--nonce",
+            self.nr_nonce("revoke-cap"),
+            "--signer",
+            "nr-b1",
+        )
+        steps["revoke-cap"] = self.registry_send("scnr-revoke-cap", revoke_cap, bounce=True)
+        # Refusals on A while it is still live: its own registration body (predecessor 0 against
+        # a registered object) and a current action whose first signature bit is flipped.
+        steps["refuse-stale"] = self.registry_send(
+            "scnr-refuse-stale",
+            {**reg_a, "final_target": agent_a},
+            bounce=True,
+            expect_exit=NR_BAD_PREDECESSOR,
+            body_boc=reg_a["body_boc"],
+        )
+        fresh = self.nr_build(
+            "scnr-build-signature-probe",
+            "action",
+            "--kind",
+            "delegate",
+            "--agent",
+            agent_a,
+            "--nonce",
+            self.nr_nonce("signature-probe"),
+            "--delegation",
+            self.nr_nonce("delegation-2"),
+            "--signer",
+            "nr-a1",
+        )
+        flipped = self.nr_flip_body(fresh["body_boc"])
+        steps["refuse-signature"] = self.registry_send(
+            "scnr-refuse-signature",
+            fresh,
+            bounce=True,
+            expect_exit=NR_BAD_SIGNATURE,
+            body_boc=flipped,
+        )
+        revoke_a = self.nr_build(
+            "scnr-build-revoke-a",
+            "action",
+            "--kind",
+            "revoke-agent",
+            "--agent",
+            agent_a,
+            "--nonce",
+            self.nr_nonce("revoke-a"),
+            "--signer",
+            "nr-a1",
+        )
+        steps["revoke-a"] = self.registry_send("scnr-revoke-a", revoke_a, bounce=True)
+        steps["refuse-tombstone"] = self.registry_send(
+            "scnr-refuse-tombstone",
+            {**delegate, "final_target": agent_a},
+            bounce=True,
+            expect_exit=NR_TOMBSTONED,
+            body_boc=delegate["body_boc"],
+        )
+        final = {
+            "agent_a": self.nr_show(agent_a),
+            "agent_b": self.nr_show(agent_b),
+            "capability": self.nr_show(capability),
+        }
+        ok = all(v["verdict"] in ("settled", "refused-as-intended") for v in steps.values())
+        ok = ok and bool(final["agent_a"]) and final["agent_a"].get("tombstone") is True
+        return {
+            "domain": {"label": NR_LABEL, "code_hash": NR_CODE_HASH},
+            "agents": {"a": agent_a, "b": agent_b},
+            "capability": capability,
+            "steps": {
+                k: {"verdict": v["verdict"], "tx": v.get("tx"), "expect_exit": v.get("expect_exit")}
+                for k, v in steps.items()
+            },
+            "final": final,
+            "pass": ok,
+        }
+
     def case_sc05x(self, w: dict) -> dict:
         """Duplicate settlement of the already settled SC-05 task must be refused with no second
         payout: the escrow accepts settle only in `result_submitted`."""
@@ -3762,6 +4524,8 @@ class Runner:
         attempt = self.journal.attempt_record(label)
         if attempt is None:
             raise Refusal(f"{label} has no attempt marker")
+        if attempt.get("kind") == "registry-send":
+            return self.registry_reconcile(label)
         if self.journal.result(label) is not None:
             raise Refusal(f"{label} already has a result")
         payer, observe = attempt.get("payer"), attempt.get("observe")
@@ -3933,6 +4697,53 @@ class PlanRunner(Runner):
     def sc03e_prepare_label(self):
         return "sc03e-prepare"
 
+    def nr_require_deploy_gate(self):
+        return Path("/plan/testnet-global.config.json")
+
+    def nr_build(self, label, *argv):
+        self.local(
+            label,
+            "agent",
+            "native-registry",
+            *argv,
+            "--global-config",
+            "/plan/testnet-global.config.json",
+            "--network-label",
+            NR_LABEL,
+            want_json=True,
+        )
+        fake = self.fake
+        return {
+            "destination": fake,
+            "final_target": fake,
+            "body_boc": "plan",
+            "action_hash": "00" * 32,
+            "generation": 1,
+            "sequence": 1,
+        }
+
+    def registry_send(self, label, built, *, bounce, expect_exit=0, body_boc=None):
+        self.recorded.append(
+            {
+                "label": label,
+                "argv": ["wallet", "send", "--build-only"],
+                "value": True,
+                "payer": NR_ACTOR,
+                "expect_exit": expect_exit,
+            }
+        )
+        return {
+            "label": label,
+            "verdict": "settled" if expect_exit == 0 else "refused-as-intended",
+            "expect_exit": expect_exit,
+        }
+
+    def nr_show(self, address):
+        return {"tombstone": True}
+
+    def nr_flip_body(self, body_boc):
+        return body_boc
+
     def duplicate_control(self, label, argv, payer, account, target, external=False):
         self.recorded.append(
             {"label": label, "argv": list(argv), "value": True, "payer": payer, "expect_exit": -1}
@@ -4066,6 +4877,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="JSON of the pinned CLI's accepted flags per command; required for `case`",
     )
     p.add_argument("--skip-thermal", action="store_true")
+    p.add_argument(
+        "--registry-global-config",
+        default=None,
+        help="testnet global config for the Native Registry domain (sha256 pinned)",
+    )
+    p.add_argument(
+        "--allow-registry-deploy",
+        action="store_true",
+        help="explicit opt-in for the registry case (needs the owner's deployment ruling)",
+    )
     p.add_argument("--date", default=time.strftime("%Y%m%d", time.gmtime()))
     sub = p.add_subparsers(dest="command", required=True)
     sub.add_parser("preflight")
@@ -4085,6 +4906,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--to", required=True)
     r.add_argument("--round", type=int, default=1, help="return round; 2+ after further funding")
     sub.add_parser("status")
+    sub.add_parser("setup-registry")
     rc = sub.add_parser("reconcile")
     rc.add_argument("label")
     rc.add_argument(
@@ -4121,6 +4943,8 @@ def main(argv: list[str] | None = None) -> int:
             out = runner.case(args.name)
         elif args.command == "return-funds":
             out = runner.return_funds(args.to, args.round)
+        elif args.command == "setup-registry":
+            out = runner.setup_registry()
         elif args.command == "reconcile":
             out = runner.reconcile(args.label, external=args.external, sender=args.sender)
         else:
