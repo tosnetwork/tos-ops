@@ -5,6 +5,7 @@ proves the guard can refuse, not merely that it stayed quiet. The case plans are
 against the flags the pinned CLI itself prints (tests/data/service-public-cases-cli-flags.json).
 """
 
+import ast
 import base64
 import hashlib
 import importlib.util
@@ -5132,9 +5133,19 @@ class SaRefusals(SaCase):
     def test_the_legacy_flag_set_is_the_literal_pre_env_buyer_only(self):
         legacy = "a48874562feccdeedc3c5907b6e34e22432c9b2c4968572b8e2d07bc47718ea4"
         self.assertEqual(spc.SA_BUYER_VAULT_FLAG_SHA256, frozenset({legacy}))
-        # A re-pin must not drag the flag set along with it.
-        with mock.patch.object(spc, "SA_BUYER_SHA256", "cd" * 32):
-            self.assertNotIn(spc.SA_BUYER_SHA256, spc.SA_BUYER_VAULT_FLAG_SHA256)
+        # A re-pin must not drag the flag set along with it: the assignment holds only string
+        # literals, never a reference to the moving pin.
+        source = Path(spc.__file__).read_text()
+        tree = ast.parse(source)
+        values = [
+            n.value
+            for n in tree.body
+            if isinstance(n, ast.Assign)
+            and any(getattr(t, "id", None) == "SA_BUYER_VAULT_FLAG_SHA256" for t in n.targets)
+        ]
+        self.assertEqual(len(values), 1)
+        names = {n.id for n in ast.walk(values[0]) if isinstance(n, ast.Name)}
+        self.assertEqual(names, {"frozenset"})
 
     def test_the_checked_legacy_buyer_gets_the_flag_and_no_env(self):
         self.answers["call"] = (0, json.dumps({"phase": "admitted"}), "")
