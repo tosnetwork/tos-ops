@@ -51,6 +51,7 @@ testnet/
 │   ├── check-handover.py         collect | verify: every block around a set handover is finalized by its chain-selected set
 │   ├── check-host-disk.py        one host's disk, consensus/, unit, memory, head and CPU; refuses below a floor
 │   ├── watch-testnet.py          coordinator: sample every validator on a schedule, keep a TSV, report anomalies
+│   ├── watch_extra_resources.py  coordinator: pinned PID/boot/OOM/reserve guard on node-1..4 (resource_extra_probe.py)
 │   ├── alert-relay.py            coordinator | peer: watch anomalies and heartbeats to Telegram; silence | unsilence
 │   ├── build-node-binaries.sh    compile the role's binaries on the host itself
 │   ├── setup-time.sh             first on every host: ntpsec over IPv4, proven to follow a server
@@ -262,6 +263,31 @@ This read-only series does not bind genesis, native finality, host placement,
 binary identity, offered/accepted load rates, or complete sampling continuity
 across process restarts. Retain those separately in the execution manifest and
 evaluate all timestamps and gaps before claiming a 72-hour load result.
+
+A host or probe that cannot be read never ends either watch. watch-testnet.py
+writes a row with `reachable` False and a fixed `missing_reason` code (the
+trailing column; a series written before it is refused, so start a new file),
+and with `--require-load-metrics` still latches the anomaly at once. After
+`--missing-alert-after` seconds (600) without a sample it prints one
+`ALERT <utc> <host>:missing_for=...` line per outage. watch_extra_resources.py
+writes a `MISSING_EXTRA_RESOURCE_OBSERVATION` row per host per cycle, a
+`PARTIAL_...` row for the observed hosts, never replaces LATEST.json for an
+incomplete cycle, and after 600 s writes one `ALERT_...` row, appends it to
+`ALERTS.jsonl` and prints `ALERT`. Neither changes a freshness or missing-data
+criterion; the alert only tells a person, and outages are timed on the
+monotonic clock. An observation published more than 60 s late is checked like
+any other, then recorded as missing (`expired_at_publication`). An inactive
+validator is an observed violation (`VIOLATION_...` row, reason
+`validator_inactive`), not missing data; the watch keeps running.
+`watch_extra_resources.py --summarize series.jsonl` prints the violations apart
+from the missing data for the outcome review; a series without
+MONITOR-COMPLETE.json (still running, or ended on an integrity refusal) is
+reported `complete: false` and `criteria_violated: true`. Each host has its own
+baseline from its first fresh sample, so a restart or OOM on one host is caught
+while another is missing; BASELINE.json maps host to baseline as before but
+grows as hosts join, and MONITOR-COMPLETE.json and `--summarize` list
+`hosts_without_baseline`. An answer that cannot be decoded or read as an
+observation is missing data (`probe_output_invalid`) in both watches.
 
 After each rotation, confirm the elected set with the same records file used
 at genesis:

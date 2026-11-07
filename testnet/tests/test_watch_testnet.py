@@ -89,10 +89,16 @@ def run(tmp_path, rounds, **overrides):
         if index["hosts_seen"] % hosts == 0:
             index["round"] += 1
         index["hosts_seen"] += 1
-        return rounds[min(index["round"], len(rounds) - 1)].get(host.name)
+        report = rounds[min(index["round"], len(rounds) - 1)].get(host.name)
+        return report, None if report is not None else watch_testnet.SSH_FAILED
 
     status = watch_testnet.watch(
-        a, probe=probe, now=clock.now, sleep=clock.sleep, emit=events.append
+        a,
+        probe=probe,
+        now=clock.now,
+        sleep=clock.sleep,
+        emit=events.append,
+        monotonic=lambda: clock.t - 1_800_000_000.0,
     )
     return status, events, a.out.read_text().splitlines()
 
