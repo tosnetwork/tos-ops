@@ -62,6 +62,7 @@ QUERY_LIMIT = 1 << 23
 MAX_SMALL_BYTES = 1 << 24
 MAX_EVENTS_BYTES = 1 << 31
 MAX_SAMPLE = 64
+MAX_LINE_BYTES = 1 << 18
 JOURNAL_STATES = ("planned", "signed", "broadcast", "settled", "failed")  # testnet_ops.py:113
 OPEN_STATES = ("planned", "signed", "broadcast")
 READ_ONLY_RPC = frozenset({"getAddressInformation", "runGetMethod", "getMasterchainInfo"})
@@ -210,12 +211,28 @@ def _skip_ws(buf: bytearray, i: int, end: int) -> int:
     return i
 
 
+HEX_DIGITS = frozenset(b"0123456789abcdefABCDEF")
+
+
 def _string_end(buf: bytearray, i: int, end: int) -> int:
-    """Index after the JSON string starting at buf[i] == '"', or -1."""
+    """Index after the JSON string starting at buf[i] == '"', or -1.
+
+    Escapes are validated without decoding: \\" \\\\ \\/ \\b \\f \\n \\r \\t, or \\u and exactly
+    four hex digits; any other escape or a control byte refuses the string."""
     i += 1
     while i < end:
         c = buf[i]
         if c == 0x5C:
+            if i + 1 >= end:
+                return -1
+            e = buf[i + 1]
+            if e == 0x75:
+                if i + 6 > end or not all(buf[k] in HEX_DIGITS for k in range(i + 2, i + 6)):
+                    return -1
+                i += 6
+                continue
+            if e not in b'"\\/bfnrt':
+                return -1
             i += 2
             continue
         if c == 0x22:
@@ -465,14 +482,7 @@ class Reader:
 
     def read(self, parent: int, name: str, input_id: str, limit: int) -> bytearray:
         """The file's bytes in one new buffer (the only copy here)."""
-        if denied(name, 0):
-            raise Refused(input_id, 0, "denied_name")
-        try:
-            fd = os.open(name, self.FILE, dir_fd=parent)
-        except FileNotFoundError:
-            raise Refused(input_id, 0, "missing") from None
-        except OSError:
-            raise Refused(input_id, 0, "unreadable") from None
+        fd = self._open_file(parent, name, input_id)
         try:
             info = os.fstat(fd)
             _check(info, False, input_id)
@@ -504,6 +514,78 @@ class Reader:
             self._note(input_id)
             return buf
         finally:
+            os.close(fd)
+
+    def _open_file(self, parent: int, name: str, input_id: str) -> int:
+        """An allowlisted regular file under `parent`, read-only, O_NOFOLLOW."""
+        if denied(name, 0):
+            raise Refused(input_id, 0, "denied_name")
+        try:
+            fd = os.open(name, self.FILE, dir_fd=parent)
+        except FileNotFoundError:
+            raise Refused(input_id, 0, "missing") from None
+        except OSError:
+            raise Refused(input_id, 0, "unreadable") from None
+        return fd
+
+    def _line_buffer(self) -> bytearray:
+        """The one fixed buffer a journal line is read into."""
+        return bytearray(MAX_LINE_BYTES)
+
+    def stream_lines(self, parent: int, name: str, input_id: str):
+        """(offset, projected dict | Refused) for each line of a journal, read one
+        bounded line at a time into a fixed buffer.
+
+        Bytes read past a newline belong to the next line and are wiped before
+        the line is projected, so at decode time the buffer holds only this
+        line, with its boc already nulled. The buffer is wiped after each line.
+        A line longer than the bound, a torn last line or a file that changes
+        while it is read refuses the rest of the file."""
+        fd = self._open_file(parent, name, input_id)
+        buf = self._line_buffer()
+        try:
+            info = os.fstat(fd)
+            _check(info, False, input_id)
+            self.idents[input_id] = identity_of(info)
+            self._note(input_id)
+            position = 0
+            while True:
+                fill, newline, failed = 0, -1, None
+                while newline < 0 and failed is None:
+                    if fill >= len(buf):
+                        failed = "line_too_long"
+                        break
+                    try:
+                        with memoryview(buf) as view:
+                            count = os.preadv(fd, [view[fill : fill + 65536]], position + fill)
+                    except OSError:
+                        failed = "unreadable"
+                        break
+                    if count == 0:
+                        failed = "torn_last_line" if fill else "end"
+                        break
+                    found = buf.find(b"\n", fill, fill + count)
+                    if found >= 0:
+                        _wipe(buf, found + 1, fill + count)  # the next line's bytes
+                        newline = found
+                    fill += count
+                if failed is not None:
+                    wipe_buffer(buf)
+                    if failed != "end":
+                        yield position, Refused(input_id, position, failed)
+                    break
+                if newline > 0:
+                    try:
+                        yield position, project_line(buf, 0, newline, input_id)
+                    except Refused as exc:
+                        yield position, exc
+                buf[0:fill] = bytes(fill)
+                position += newline + 1
+            if identity_of(os.fstat(fd)) != self.idents[input_id] or position != info.st_size:
+                if failed == "end":
+                    yield position, Refused(input_id, position, "changed_while_read")
+        finally:
+            wipe_buffer(buf)
             os.close(fd)
 
     def document(self, parent, name, input_id, raw_hash=False, limit=MAX_SMALL_BYTES) -> dict:
@@ -667,6 +749,7 @@ def collect(args, reader: Reader) -> dict:
         ("closed_audit", args.closed_audit, "public:closed-audit"),
         ("reservations", args.reservations, "public:reservations"),
         ("owner_matches", args.owner_matches, "public:owner-matches"),
+        ("expected_wallets", args.expected_wallets, "public:expected-wallets"),
     ):
         try:
             facts[key] = public_document(reader, path, input_id)
@@ -765,6 +848,7 @@ def collect_prior(reader: Reader, st: int, name: str, tag: str) -> list[int]:
     buf = reader.read(rd, "events.jsonl", f"{tag}:events", MAX_EVENTS_BYTES)
     ids = []
     try:
+        reader.digests[f"{tag}:events"] = hashlib.sha256(buf).hexdigest()  # no signed bytes
         for _offset, item in lines_of(buf, f"{tag}:events"):
             if isinstance(item, Refused):
                 raise item
@@ -795,15 +879,9 @@ def collect_journals(reader: Reader, ceremony: str) -> dict:
     for index, name in enumerate(n for n in names if not n.startswith("baseline-")):
         input_id = f"ops:journal[{index}]"
         record = {"index": index, "unknown": False}
+        merged, first_utc = {}, None
         try:
-            buf = reader.read(od, name, input_id, MAX_SMALL_BYTES)
-        except Refused as exc:
-            _refusal(reader, exc)
-            records.append(dict(record, unknown=True))
-            continue
-        try:
-            merged, first_utc = {}, None
-            for offset, item in lines_of(buf, input_id):
+            for offset, item in reader.stream_lines(od, name, input_id):
                 if isinstance(item, Refused):
                     _refusal(reader, item)
                     record["unknown"] = True
@@ -822,8 +900,10 @@ def collect_journals(reader: Reader, ceremony: str) -> dict:
                 if not kept["evidence"].get("wallet_tx"):
                     kept.pop("evidence")
                 merged.update(kept)
-        finally:
-            wipe_buffer(buf)
+        except Refused as exc:
+            _refusal(reader, exc)
+            records.append(dict(record, unknown=True))
+            continue
         if not merged:
             record["unknown"] = True
         record.update(merged)
@@ -1040,7 +1120,71 @@ def evaluate_funding(events, result, facts) -> tuple[dict, list]:
     return pop, reservations
 
 
-def evaluate_journals(facts, reservations, window, wallets, owner) -> dict:
+def expected_wallet_set(facts, args) -> dict | None:
+    """The public expected wallets, normalised; None when the file is malformed."""
+    doc = facts.get("expected_wallets")
+    if not isinstance(doc, dict):
+        return None
+    relayers, operators = doc.get("relayers"), doc.get("operators")
+    if not isinstance(relayers, list) or not isinstance(operators, list):
+        return None
+    out = {
+        "highload": normalize_address(doc.get("highload")),
+        "funding_owner": normalize_address(doc.get("funding_owner")),
+        "relayers": [normalize_address(a) for a in relayers],
+        "operators": [normalize_address(a) for a in operators],
+    }
+    flat = [out["highload"], out["funding_owner"], *out["relayers"], *out["operators"]]
+    if None in flat or len(set(flat)) != len(flat):
+        return None
+    return out
+
+
+def evaluate_wallets(facts, expected, args) -> dict:
+    """The complete wallet set: state address files and public funding matches
+    against the public expected set and the declared counts."""
+    if expected is None:
+        return _pop(UNKNOWN, missing_relayers=0, extra_relayers=0, mismatched_relayers=0)
+    state = facts.get("relayers") or {}
+    want = dict(enumerate(expected["relayers"]))
+    missing = [i for i in want if i not in state]
+    extra = [i for i in state if i not in want]
+    mismatched = [i for i in want if i in state and state[i] != want[i]]
+    matches = facts.get("owner_matches") or {}
+    by_label = matches.get("addresses_by_label")
+    covered, label_bad = set(), 0
+    if isinstance(by_label, dict):
+        for label, address in by_label.items():
+            m = re.match(r"^load-(?:relayer|refill)-([0-9]{1,4})$", str(label))
+            index = int(m.group(1)) if m else None
+            if index is None or want.get(index) != normalize_address(address):
+                label_bad += 1
+            else:
+                covered.add(index)
+    ok = (
+        not missing
+        and not extra
+        and not mismatched
+        and isinstance(by_label, dict)
+        and not label_bad
+        and covered == set(want)
+        and len(expected["relayers"]) == args.expected_relayer_count
+        and len(expected["operators"]) == args.expected_operator_count
+        and facts.get("highload") == expected["highload"]
+        and expected["funding_owner"] == args.funding_owner_address
+    )
+    return _pop(
+        RECONCILED if ok else UNRECONCILED,
+        relayers=len(want),
+        operators=len(expected["operators"]),
+        missing_relayers=len(missing),
+        extra_relayers=len(extra),
+        mismatched_relayers=len(mismatched),
+        unmatched_funding_labels=label_bad,
+    )
+
+
+def evaluate_journals(facts, reservations, window, wallets, owner, relayers=()) -> dict:
     records = facts.get("journals")
     names = ("open_operations", "funding_journal", "owner_pre_run_rows", "owner_during_run")
     if records is None:
@@ -1058,9 +1202,17 @@ def evaluate_journals(facts, reservations, window, wallets, owner) -> dict:
             r["wallet"] = canonical
     odd_open = [r for r in good if r.get("wallet_unparsed") and r.get("state") in OPEN_STATES]
     open_ops = [r for r in good if r.get("wallet") in wallets and r.get("state") in OPEN_STATES]
+    outside = [
+        r
+        for r in good
+        if not r.get("wallet_unparsed")
+        and r.get("wallet") not in wallets
+        and r.get("state") in OPEN_STATES
+    ]
     pops["open_operations"] = _pop(
-        UNKNOWN if unknown or odd_open else (UNRECONCILED if open_ops else RECONCILED),
+        UNKNOWN if unknown or odd_open or outside else (UNRECONCILED if open_ops else RECONCILED),
         open=len(open_ops),
+        open_outside_expected_wallets=len(outside),
         open_with_unparsed_wallet=len(odd_open),
         unparsed_wallets=odd_wallets,
         unparsed_journals=len(unknown),
@@ -1071,7 +1223,11 @@ def evaluate_journals(facts, reservations, window, wallets, owner) -> dict:
     match_tx = {}
     for row in rows:
         if isinstance(row, dict) and isinstance(row.get("transaction"), str):
-            match_tx[row["transaction"]] = (row.get("label"), row.get("amount_nanotos"))
+            match_tx[row["transaction"]] = (
+                row.get("label"),
+                row.get("amount_nanotos"),
+                normalize_address(row.get("to")),
+            )
     owner_records = [r for r in good if r.get("wallet") == owner]
     for r in owner_records:
         r["_t"] = utc_seconds(r.get("first_utc"))
@@ -1095,12 +1251,20 @@ def evaluate_journals(facts, reservations, window, wallets, owner) -> dict:
         )
         chosen = candidates[0] if candidates else None
         tx = (chosen or {}).get("evidence", {}).get("wallet_tx")
+        index = re.match(r"^load-(?:relayer|refill)-([0-9]{1,4})$", str(label))
+        target = (
+            relayers[int(index.group(1))] if index and int(index.group(1)) < len(relayers) else None
+        )
+        destination = normalize_address((chosen or {}).get("destination"))
         if (
             chosen is None
             or chosen.get("state") != "settled"
             or tx not in match_tx
             or tx in used_tx
-            or match_tx[tx] != (label, amount)
+            or match_tx[tx] != (label, amount, destination)
+            or chosen.get("kind") != "owner-fund"
+            or destination is None
+            or destination != target
         ):
             unmatched += 1
             continue
@@ -1368,13 +1532,24 @@ def evaluate(facts: dict, args, chain: dict) -> dict:
     except (IndexError, ValueError):
         start = None
     window = (math.floor(start) if start else None, math.ceil(max(times)) if times else 0)
-    wallets = {args.funding_owner_address, *args.operator_wallet}
-    if facts.get("highload"):
-        wallets.add(facts["highload"])
-    wallets.update((facts.get("relayers") or {}).values())
+    expected = expected_wallet_set(facts, args)
+    pops["wallets"] = evaluate_wallets(facts, expected, args)
+    wallets = set()
+    if expected is not None:
+        wallets = {
+            expected["highload"],
+            expected["funding_owner"],
+            *expected["relayers"],
+            *expected["operators"],
+        }
     pops.update(
         evaluate_journals(
-            facts, extra.get("reservations", []), window, wallets, args.funding_owner_address
+            facts,
+            extra.get("reservations", []),
+            window,
+            wallets,
+            args.funding_owner_address,
+            expected["relayers"] if expected else (),
         )
     )
     pops["query_ids"] = evaluate_query_ids(facts, extra, args)
@@ -1455,6 +1630,7 @@ ERROR_CODES = frozenset(
         "line_not_tokenizable",
         "line_not_json",
         "line_not_object",
+        "line_too_long",
         "torn_last_line",
         "not_owned_or_wrong_type",
         "root_unavailable",
@@ -1532,10 +1708,9 @@ def run(args, rpc=None, proc_locks_path: str = "/proc/locks") -> tuple[int, dict
     disable_core_dumps()
     install_guard()
     owner = normalize_address(args.funding_owner_address)
-    operators = [normalize_address(w) for w in args.operator_wallet]
-    if owner is None or None in operators:
+    if owner is None or args.expected_relayer_count < 1 or args.expected_operator_count < 1:
         raise Refused("public:arguments", 0, "bad_address")
-    args.funding_owner_address, args.operator_wallet = owner, operators
+    args.funding_owner_address = owner
     for root in (args.state, args.ceremony):
         if inside(os.path.dirname(os.path.abspath(args.out)), root):
             raise Refused("public:out", 0, "denied_name")
@@ -1543,6 +1718,7 @@ def run(args, rpc=None, proc_locks_path: str = "/proc/locks") -> tuple[int, dict
             ("public:closed-audit", args.closed_audit),
             ("public:reservations", args.reservations),
             ("public:owner-matches", args.owner_matches),
+            ("public:expected-wallets", args.expected_wallets),
         ):
             if inside(path, root):
                 raise Refused(input_id, 0, "denied_name")
@@ -1624,7 +1800,9 @@ def parse(argv):
     p.add_argument("--reservations", required=True)
     p.add_argument("--owner-matches", required=True)
     p.add_argument("--funding-owner-address", required=True)
-    p.add_argument("--operator-wallet", action="append", default=[])
+    p.add_argument("--expected-wallets", required=True)
+    p.add_argument("--expected-relayer-count", type=int, required=True)
+    p.add_argument("--expected-operator-count", type=int, required=True)
     p.add_argument("--global-id", type=int, required=True)
     p.add_argument("--genesis-root", required=True)
     p.add_argument("--genesis-file", required=True)
@@ -1637,10 +1815,10 @@ def parse(argv):
     if not args.chain_reads or len(set(args.source)) < 2:
         p.error("--chain-reads with two distinct --source endpoints is required")
     args.funding_owner_address = normalize_address(args.funding_owner_address)
-    wallets = [normalize_address(w) for w in args.operator_wallet]
-    if args.funding_owner_address is None or None in wallets:
+    if args.funding_owner_address is None:
         p.error("addresses must be raw wc:hex64")
-    args.operator_wallet = wallets
+    if args.expected_relayer_count < 1 or args.expected_operator_count < 1:
+        p.error("expected relayer and operator counts must be positive")
     return args
 
 

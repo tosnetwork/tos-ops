@@ -315,9 +315,18 @@ and never writes the marker.
 - **Locks.** No lock is taken. Locks are observed in `/proc/locks` before and after
   two complete reads, which must be identical. The result says "free as observed";
   a launch still takes the producer's own lock.
+- **Wallet set.** `--expected-wallets` is a public file naming the highload
+  wallet, the funding owner, the relayers in index order and the operators.
+  `--expected-relayer-count` and `--expected-operator-count` declare how many there
+  must be. The state's `.addr` files and the public funding labels must match that
+  set exactly. An open operation on any wallet outside the set is UNKNOWN. Each
+  funding record must be an `owner-fund` to its label's relayer, with the amount,
+  destination and transaction of its public match.
 - **Inline signed messages.** Operation journals hold each signed message inline.
-  `project_line()` nulls the top-level `boc` string in the read buffer before any
-  decoding. A line it cannot tokenize is wiped and never decoded. Every buffer is
+  Journals are read one bounded line at a time into a fixed buffer; bytes read
+  past the newline are wiped before the line is projected. `project_line()`
+  validates every string's escapes and nulls the top-level `boc` string in that
+  buffer before any decoding. A line it cannot tokenize is wiped and never decoded. Every buffer is
   wiped before it is released. Journals are compared by stat identity plus a hash
   of the projected metadata, never by a raw hash.
 - **Error reporting.** Errors name a logical input and a byte offset only. Core dumps

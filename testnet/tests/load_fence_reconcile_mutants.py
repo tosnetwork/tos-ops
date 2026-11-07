@@ -212,9 +212,76 @@ M = [
         "    writable = False\n",
     ),
     (
-        "R37 address arguments not validated",
-        "    if owner is None or None in operators:\n",
+        "R37 address and count arguments not validated",
+        "    if owner is None or args.expected_relayer_count < 1 or args.expected_operator_count < 1:\n",
         "    if False:\n",
+    ),
+    (
+        "W1 missing relayer file ignored",
+        "        not missing\n        and not extra\n",
+        "        not extra\n",
+    ),
+    (
+        "W2 operator count ignored",
+        '        and len(expected["operators"]) == args.expected_operator_count\n',
+        "",
+    ),
+    (
+        "W3 open operations outside the expected wallets ignored",
+        "UNKNOWN if unknown or odd_open or outside else",
+        "UNKNOWN if unknown or odd_open else",
+    ),
+    (
+        "W4 wallet set not checked",
+        '    pops["wallets"] = evaluate_wallets(facts, expected, args)\n',
+        '    pops["wallets"] = _pop(RECONCILED)\n',
+    ),
+    (
+        "W5 funding destination not bound to the label's relayer",
+        "            or destination != target\n",
+        "",
+    ),
+    (
+        "W6 public match destination ignored",
+        "            or match_tx[tx] != (label, amount, destination)\n",
+        "            or match_tx[tx][:2] != (label, amount)\n",
+    ),
+    (
+        "W7 funding operation kind ignored",
+        '            or chosen.get("kind") != "owner-fund"\n',
+        "",
+    ),
+    (
+        "W8 earlier events digest dropped",
+        '        reader.digests[f"{tag}:events"] = hashlib.sha256(buf).hexdigest()  # no signed bytes\n',
+        "",
+    ),
+    (
+        "W9 journal buffered whole",
+        "            for offset, item in reader.stream_lines(od, name, input_id):\n",
+        "            for offset, item in lines_of(\n"
+        "                reader.read(od, name, input_id, MAX_SMALL_BYTES), input_id\n"
+        "            ):\n",
+    ),
+    (
+        "W10 next line's bytes kept in the line buffer",
+        "                        _wipe(buf, found + 1, fill + count)  # the next line's bytes\n",
+        "                        pass\n",
+    ),
+    (
+        "W11 line bound not enforced",
+        "                    if fill >= len(buf):\n",
+        "                    if False:\n",
+    ),
+    (
+        "W12 invalid simple escapes accepted",
+        "            if e not in b'\"\\\\/bfnrt':\n",
+        "            if False:\n",
+    ),
+    (
+        "W13 invalid unicode escapes accepted",
+        "                if i + 6 > end or not all(buf[k] in HEX_DIGITS for k in range(i + 2, i + 6)):\n",
+        "                if False:\n",
     ),
     # The non-author review's guard-removal set, kept here so every guard has a red control.
     ("X1 executed==offered dropped", "        and x == o\n", ""),

@@ -28,6 +28,7 @@ CANARY = "CANARYc4n4ryZQXJ"
 IDENTITY = {"global_id": 2, "genesis_root": "aa" * 32, "genesis_file": "bb" * 32}
 OWNER = "0:" + "0f" * 32
 OPERATOR = "0:" + "0e" * 32
+OPERATOR2 = "0:" + "0d" * 32
 PRE_RUN_TX = "77" * 32
 
 
@@ -155,7 +156,7 @@ class Producer:
             self.native.pending += 1
         return ids
 
-    def fund(self, label, amount, destination, *, settle=True, fail=False):
+    def fund(self, label, amount, destination, *, settle=True, fail=False, kind="owner-fund"):
         self.q.reserve_funding(amount, label)
         op_id = f"load-{label}-{time.strftime('%Y%m%dt%H%M%S', time.gmtime())}-{amount}"
         tx = self.fx.journal_op(
@@ -163,7 +164,7 @@ class Producer:
             OWNER,
             destination,
             amount,
-            {"label": label, "purpose": "load"},
+            {"label": label, "purpose": "load", "kind": kind},
             settle=settle,
         )
         if fail:
@@ -216,7 +217,8 @@ class Fixture:
         self.journal.append(op_id, dict(params, state="planned"))
         if state == "planned":
             return None
-        boc = base64.b64encode(f"signed-message-{CANARY}".encode() * 4).decode()
+        # A literal canary inside the signed value, so any copy of it is detectable.
+        boc = CANARY + base64.b64encode(f"signed-message-{op_id}".encode() * 4).decode()
         self.counter += 1
         self.journal.append(
             op_id,
@@ -291,6 +293,9 @@ class Fixture:
             },
         }
         matches = {
+            "addresses_by_label": overrides.get(
+                "addresses_by_label", {m["label"]: m["to"] for m in self.matches}
+            ),
             "count": len(self.matches),
             "total_nanotos": sum(m["amount_nanotos"] for m in self.matches),
             "matches": self.matches,
@@ -300,6 +305,18 @@ class Fixture:
             ("closed-audit.json", audit),
             ("reservations.json", reservations),
             ("owner-matches.json", matches),
+            (
+                "expected-wallets.json",
+                overrides.get(
+                    "expected_wallets",
+                    {
+                        "highload": self.highload,
+                        "funding_owner": OWNER,
+                        "relayers": self.relayers,
+                        "operators": [OPERATOR, OPERATOR2],
+                    },
+                ),
+            ),
         ):
             path = self.public / name
             if path.exists():
@@ -327,7 +344,12 @@ def build(tmp_path, **opts):
     if opts.get("gap_between_runs"):
         fx.drv.take_query_ids(2)
     target = Producer(fx)
-    target.fund("load-relayer-0", AMOUNTS[0], fx.relayers[0])
+    target.fund(
+        "load-relayer-0",
+        AMOUNTS[0],
+        fx.relayers[1] if opts.get("wrong_destination") else fx.relayers[0],
+        kind=opts.get("funding_kind", "owner-fund"),
+    )
     target.fund("load-relayer-1", AMOUNTS[1], fx.relayers[1])
     target.batch(0, 20)
     if opts.get("mid_run_gap"):
@@ -381,7 +403,9 @@ def args_for(fx, out, **kw):
         reservations=str(fx.public / "reservations.json"),
         owner_matches=str(fx.public / "owner-matches.json"),
         funding_owner_address=OWNER,
-        operator_wallet=[OPERATOR],
+        expected_wallets=str(fx.public / "expected-wallets.json"),
+        expected_relayer_count=kw.get("expected_relayer_count", 2),
+        expected_operator_count=kw.get("expected_operator_count", 2),
         global_id=2,
         genesis_root=IDENTITY["genesis_root"],
         genesis_file=IDENTITY["genesis_file"],
@@ -720,9 +744,13 @@ def test_parse_requires_chain_reads_and_raw_addresses(tmp_path):
     with pytest.raises(SystemExit):
         lfr.parse([*base[: base.index("--source")], "--source", "http://a/jsonRPC"])
     bad = list(base)
-    bad[bad.index("--operator-wallet") + 1] = "EQ" + "A" * 46
+    bad[bad.index("--funding-owner-address") + 1] = "EQ" + "A" * 46
     with pytest.raises(SystemExit):
         lfr.parse(bad)
+    zero = list(base)
+    zero[zero.index("--expected-operator-count") + 1] = "0"
+    with pytest.raises(SystemExit):
+        lfr.parse(zero)
     upper = list(base)
     upper[upper.index("--funding-owner-address") + 1] = OWNER.upper()
     assert lfr.parse(upper).funding_owner_address == OWNER
@@ -1269,7 +1297,7 @@ def test_open_operation_with_an_unparsed_wallet_is_unknown(tmp_path):
 def test_run_refuses_malformed_address_arguments(tmp_path):
     fx = build(tmp_path)
     args = args_for(fx, tmp_path / "public" / "out.json")
-    args.operator_wallet = ["0:" + "ab" * 31]
+    args.funding_owner_address = "0:" + "ab" * 31
     with pytest.raises(lfr.Refused) as caught:
         lfr.run(args, rpc=chain_for(fx)[0])
     assert caught.value.code == "bad_address"
@@ -1362,3 +1390,200 @@ def test_partial_read_and_probe_buffers_are_wiped(tmp_path, monkeypatch):
     reader.close()
     assert caught.value.code == "changed_while_read"
     assert len(seen) >= 2 and all(not any(b) for b in seen)
+
+
+# ---------------------------------------------------------------- wallet set and attribution
+
+
+def test_missing_relayer_file_with_an_open_operation_blocks(tmp_path):
+    fx = build(tmp_path)
+    fx.journal_op("fund-op-relayer-1", fx.relayers[1], OPERATOR, 3, {}, state="planned")
+    (fx.state / "relayer-1.addr").unlink()
+    code, doc = reconcile(fx, tmp_path)
+    assert doc["populations"]["wallets"]["missing_relayers"] == 1
+    assert doc["populations"]["wallets"]["verdict"] == lfr.UNRECONCILED
+    assert doc["populations"]["open_operations"]["open"] == 1
+    assert not doc["launch_eligible"]
+
+
+def test_extra_or_mismatched_relayer_file_is_unreconciled(tmp_path):
+    fx = build(tmp_path)
+    (fx.state / "relayer-2.addr").write_bytes(address_bytes(0xA2))
+    code, doc = reconcile(fx, tmp_path)
+    assert doc["populations"]["wallets"]["extra_relayers"] == 1
+    assert doc["populations"]["wallets"]["verdict"] == lfr.UNRECONCILED
+    (fx.state / "relayer-2.addr").unlink()
+    (fx.state / "relayer-1.addr").write_bytes(address_bytes(0xA3))
+    code, doc = reconcile(fx, tmp_path, name="out2.json")
+    assert doc["populations"]["wallets"]["mismatched_relayers"] == 1
+    assert doc["populations"]["wallets"]["verdict"] == lfr.UNRECONCILED
+
+
+def test_omitted_operator_is_unreconciled(tmp_path):
+    fx = build(tmp_path)
+    fx.public_files(
+        fx.result,
+        pre_run_tx=PRE_TX[0],
+        expected_wallets={
+            "highload": fx.highload,
+            "funding_owner": OWNER,
+            "relayers": fx.relayers,
+            "operators": [OPERATOR],
+        },
+    )
+    code, doc = reconcile(fx, tmp_path)
+    assert doc["populations"]["wallets"]["operators"] == 1
+    assert doc["populations"]["wallets"]["verdict"] == lfr.UNRECONCILED
+    assert not doc["launch_eligible"]
+
+
+def test_open_operation_outside_the_expected_wallets_is_unknown(tmp_path):
+    fx = build(tmp_path)
+    fx.journal_op("fund-op-operator-2", OPERATOR2, OWNER, 3, {}, state="planned")
+    fx.public_files(
+        fx.result,
+        pre_run_tx=PRE_TX[0],
+        expected_wallets={
+            "highload": fx.highload,
+            "funding_owner": OWNER,
+            "relayers": fx.relayers,
+            "operators": [OPERATOR],
+        },
+    )
+    code, doc = reconcile(fx, tmp_path, expected_operator_count=1)
+    assert doc["populations"]["wallets"]["verdict"] == lfr.RECONCILED
+    assert doc["populations"]["open_operations"]["open_outside_expected_wallets"] == 1
+    assert doc["populations"]["open_operations"]["verdict"] == lfr.UNKNOWN
+    assert not doc["launch_eligible"]
+
+
+def test_relayer_count_and_funding_labels_bind_to_public_evidence(tmp_path):
+    fx = build(tmp_path)
+    code, doc = reconcile(fx, tmp_path, expected_relayer_count=4)
+    assert doc["populations"]["wallets"]["verdict"] == lfr.UNRECONCILED
+    fx.public_files(
+        fx.result,
+        pre_run_tx=PRE_TX[0],
+        addresses_by_label={"load-relayer-0": fx.relayers[0], "load-relayer-1": fx.relayers[0]},
+    )
+    code, doc = reconcile(fx, tmp_path, name="out2.json")
+    assert doc["populations"]["wallets"]["unmatched_funding_labels"] == 1
+    assert doc["populations"]["wallets"]["verdict"] == lfr.UNRECONCILED
+
+
+def test_malformed_expected_wallets_file_is_unknown(tmp_path):
+    fx = build(tmp_path)
+    fx.public_files(
+        fx.result,
+        pre_run_tx=PRE_TX[0],
+        expected_wallets={
+            "highload": fx.highload,
+            "funding_owner": OWNER,
+            "relayers": [fx.relayers[0], fx.relayers[0]],
+            "operators": [OPERATOR, OPERATOR2],
+        },
+    )
+    code, doc = reconcile(fx, tmp_path)
+    assert doc["populations"]["wallets"]["verdict"] == lfr.UNKNOWN
+    assert doc["populations"]["funding_journal"]["verdict"] == lfr.UNRECONCILED
+    assert not doc["launch_eligible"]
+
+
+def test_funding_to_the_wrong_relayer_is_unreconciled(tmp_path):
+    fx = build(tmp_path, wrong_destination=True)
+    code, doc = reconcile(fx, tmp_path)
+    assert doc["populations"]["funding_journal"]["unmatched"] == 1
+    assert doc["populations"]["funding_journal"]["verdict"] == lfr.UNRECONCILED
+
+
+def test_public_match_destination_must_equal_the_journal_destination(tmp_path):
+    fx = build(tmp_path)
+    fx.matches[0]["to"] = OPERATOR
+    fx.public_files(
+        fx.result,
+        pre_run_tx=PRE_TX[0],
+        addresses_by_label={"load-relayer-0": fx.relayers[0], "load-relayer-1": fx.relayers[1]},
+    )
+    code, doc = reconcile(fx, tmp_path)
+    assert doc["populations"]["wallets"]["verdict"] == lfr.RECONCILED
+    assert doc["populations"]["funding_journal"]["verdict"] == lfr.UNRECONCILED
+
+
+def test_funding_of_another_operation_kind_is_unreconciled(tmp_path):
+    fx = build(tmp_path, funding_kind="top-up")
+    code, doc = reconcile(fx, tmp_path)
+    assert doc["populations"]["funding_journal"]["verdict"] == lfr.UNRECONCILED
+
+
+def test_same_size_prior_events_change_between_reads_is_unstable(tmp_path, monkeypatch):
+    fx = build(tmp_path)
+    prior = sorted(p for p in fx.state.glob("qualification-*") if p.is_dir())[0]
+    events = prior / "events.jsonl"
+    digest = hashlib.sha256(b"req990").hexdigest().encode()
+    flipped = digest[:-1] + (b"0" if digest[-1:] != b"0" else b"1")
+    between_reads(monkeypatch, lambda n: n == 1 and same_size_edit(events, digest, flipped))
+    code, doc = run_plain(fx, tmp_path)
+    assert doc["verdict"] == lfr.UNKNOWN_UNSTABLE
+
+
+# ---------------------------------------------------------------- bounded journal lines
+
+
+def test_journal_lines_are_decoded_with_only_their_own_bytes_live(tmp_path, monkeypatch):
+    fx = build(tmp_path)
+    live, decoded = [], []
+    real_line, real_read = lfr.Reader._line_buffer, lfr.Reader.read
+    real_loads = json.loads
+
+    def line_buffer(self):
+        buf = real_line(self)
+        live.append(buf)
+        return buf
+
+    def read(self, *a, **k):
+        buf = real_read(self, *a, **k)
+        live.append(buf)
+        return buf
+
+    def loads(text, *a, **k):
+        raw = bytes(text) if not isinstance(text, str) else text.encode()
+        decoded.append(raw)
+        assert CANARY.encode() not in raw
+        # No live buffer holds a signed value at decode time: not this line's
+        # (nulled), and no other line's (never read ahead or kept).
+        assert all(CANARY.encode() not in bytes(b) for b in live)
+        return real_loads(text, *a, **k)
+
+    monkeypatch.setattr(lfr.Reader, "_line_buffer", line_buffer)
+    monkeypatch.setattr(lfr.Reader, "read", read)
+    monkeypatch.setattr(json, "loads", loads)
+    code, doc = reconcile(fx, tmp_path)
+    monkeypatch.undo()
+    assert code == 0 and live and any(b'"state"' in d for d in decoded)
+    assert all(not any(b) for b in live)
+
+
+def test_overlong_journal_line_is_unknown_without_content(tmp_path, monkeypatch):
+    fx = build(tmp_path)
+    monkeypatch.setattr(lfr, "MAX_LINE_BYTES", 300)
+    code, doc = reconcile(fx, tmp_path)
+    assert any(e["code"] == "line_too_long" for e in doc["errors"])
+    assert doc["populations"]["open_operations"]["verdict"] == lfr.UNKNOWN
+    assert CANARY not in json.dumps(doc)
+
+
+@pytest.mark.parametrize("escape", [b"\\q", b"\\uZZZZ", b"\\u12", b"\\x41", b"\\\x01", b"\x1f"])
+def test_invalid_escape_inside_boc_is_refused_and_wiped(escape):
+    raw = b'{"boc": "' + CANARY.encode() + escape + b'tail", "state": "signed"}'
+    buf = bytearray(raw)
+    with pytest.raises(lfr.Refused) as caught:
+        lfr.project_line(buf, 0, len(buf), "ops:journal[0]")
+    assert caught.value.code == "line_not_tokenizable"
+    assert CANARY.encode() not in buf
+
+
+def test_valid_escapes_inside_boc_are_nulled():
+    raw = b'{"boc": "' + CANARY.encode() + b'\\"\\\\\\/\\b\\f\\n\\r\\t\\u00e9", "state": "signed"}'
+    buf = bytearray(raw)
+    assert lfr.project_line(buf, 0, len(buf), "ops:journal[0]") == {"state": "signed"}
+    assert CANARY.encode() not in buf
