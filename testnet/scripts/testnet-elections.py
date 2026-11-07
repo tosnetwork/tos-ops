@@ -883,6 +883,7 @@ def owner_transfer(
     expect=None,
     bounce: bool = True,
     init: Path | None = None,
+    admission_guard=None,
 ) -> dict:
     """A transfer from the pool owner, signed here with its offline key: bounceable
     to a pool, non-bounce (with a StateInit for a deployment) for owner-fund."""
@@ -895,6 +896,8 @@ def owner_transfer(
     init_hash = lib.parse_boc(Path(init).read_bytes()).hash().hex() if init else None
 
     def sign(seqno: int) -> bytes:
+        if admission_guard is not None:
+            admission_guard()
         boc = sign_wallet_v3(
             args,
             global_id,
@@ -915,6 +918,8 @@ def owner_transfer(
         sent = lib.private_dir(ceremony / "sent")
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
         lib.write_new(sent / f"{stamp}-owner-{name}-seq{seqno}-{op_id}.boc", boc, 0o600)
+        if admission_guard is not None:
+            admission_guard()
 
     params = {
         "kind": kind,
@@ -2341,8 +2346,41 @@ class LoadDriver:
         self.endpoints = [
             (Chain(url, chain.rpc), SendWindow()) for url in (args.send_rpc or [chain.url])
         ]
-        self.saved = self.load_state()
         self.previous: list[dict[str, str]] = []
+        self.qualification = None
+        self.load_lock_fd = None
+        if getattr(args, "qualify_load", False):
+            from load_qualification import Qualification
+
+            self.qualification = Qualification(
+                self.state,
+                parse_tos(args.funding_ceiling, "--funding-ceiling"),
+                parse_tos(args.fee_stop, "--fee-stop"),
+                identity={
+                    "global_id": global_id,
+                    "genesis_root": args.expected_genesis_root,
+                    "genesis_file": args.expected_genesis_file,
+                },
+            )
+        else:
+            from load_qualification import ordinary_state_lock
+
+            self.load_lock_fd = ordinary_state_lock(self.state)
+        try:
+            self.saved = self.load_state()
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self):
+        if getattr(self, "native_observer", None) is not None:
+            self.native_observer.finish()
+            self.native_observer = None
+        if self.qualification and not self.qualification.closed:
+            self.qualification.abort()
+        if self.load_lock_fd is not None:
+            os.close(self.load_lock_fd)
+            self.load_lock_fd = None
 
     # -- files
 
@@ -2354,6 +2392,11 @@ class LoadDriver:
 
     def save_state(self) -> None:
         path = self.state / STATE_FILE
+        if getattr(self, "qualification", None):
+            from load_qualification import atomic_json
+
+            atomic_json(path, self.saved)
+            return
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.saved, indent=2) + "\n")
         os.chmod(tmp, 0o600)
@@ -2426,6 +2469,7 @@ class LoadDriver:
         for index in range(relayers):
             relayer_base = f"relayer-{index}"
             if not (self.state / f"{relayer_base}.addr").is_file():
+                self.check_native_admission()
                 result = subprocess.run(
                     [
                         self.args.fift,
@@ -2475,7 +2519,27 @@ class LoadDriver:
 
         def prerequisites() -> None:
             owner_keeps(self.operations, owner, nanotos)
+            if getattr(self, "qualification", None):
+                if self.stop or self.qualification.halted:
+                    raise lib.TestnetError("qualified admission stopped")
+                floor = parse_tos(self.args.owner_floor, "--owner-floor")
+                if self.operations.balance(owner) - nanotos - ops.FEE_ALLOWANCE_NANOTOS < floor:
+                    raise lib.TestnetError("qualified owner reserve would be crossed")
+                self.qualification.native_healthy()
 
+        if getattr(self, "qualification", None):
+            self.qualification.reserve_funding(nanotos, label)
+        try:
+            self._fund_from_owner_reserved(to, nanotos, label, init, name, prerequisites)
+            if getattr(self, "qualification", None):
+                self.qualification.funding_settled()
+        except BaseException:
+            if getattr(self, "qualification", None):
+                self.qualification.uncertain_funding()
+                self.stop = True
+            raise
+
+    def _fund_from_owner_reserved(self, to, nanotos, label, init, name, prerequisites):
         owner_transfer(
             self.args,
             self.operations,
@@ -2491,6 +2555,11 @@ class LoadDriver:
             {"label": label, "purpose": "load"},
             bounce=False,
             init=init,
+            admission_guard=(
+                self.check_native_admission
+                if getattr(self, "qualification", None) and self.qualification.native is not None
+                else None
+            ),
         )
 
     def deploy(self, wallet: str, relayers: list[Relayer]) -> None:
@@ -2514,7 +2583,9 @@ class LoadDriver:
                 state = self.chain.account(relayer.address)[0]
             if state != "active":
                 print(f"activate relayer {relayer.index}", flush=True)
-                self.chain.send_boc((self.state / f"{relayer.base}-query.boc").read_bytes())
+                payload = (self.state / f"{relayer.base}-query.boc").read_bytes()
+                self.check_native_admission()
+                self.chain.send_boc(payload)
                 self.chain.wait_active(relayer.address)
         for relayer in relayers:
             relayer.seqno = self.chain.seqno(relayer.address)
@@ -2535,6 +2606,8 @@ class LoadDriver:
         self, work: Path, wallet: str, recipients: list[str], plan: list[tuple[Relayer, int]]
     ) -> list[tuple[Relayer, list[int], Path]]:
         """Build, sign and wrap: for each (relayer, batches) one external message."""
+        if getattr(self, "qualification", None):
+            self.qualification.native_healthy()
         total = sum(n for _, n in plan)
         ids = self.take_query_ids(total)
         created = int(time.time()) - CREATED_AT_SLACK
@@ -2554,10 +2627,13 @@ class LoadDriver:
         )
         if set(hashes) != set(ids):
             raise lib.TestnetError("fift did not build every request")
+        self.request_hashes = hashes
         context = HIGHLOAD_CONTEXT.hex()
         key = str(self.state / "highload.key")
 
         def sign(query_id: int) -> None:
+            if getattr(self, "qualification", None):
+                self.qualification.native_healthy()
             out = lib.run(
                 [self.args.key_tool, "sign", key, hashes[query_id], context], timeout=30
             ).stdout.strip()
@@ -2615,11 +2691,21 @@ class LoadDriver:
         pay for every batch (value for compute, import and forwarding fees)."""
         amount = parse_tos(self.args.relayer_amount, "--relayer-amount")
         while not done.wait(5):
+            if getattr(self, "qualification", None) and (self.stop or self.qualification.halted):
+                return
             for relayer in relayers:
-                if done.is_set():
+                if done.is_set() or (
+                    getattr(self, "qualification", None)
+                    and (self.stop or self.qualification.halted)
+                ):
                     return
                 try:
                     balance = self.chain.account(relayer.address)[1]
+                    if done.is_set() or (
+                        getattr(self, "qualification", None)
+                        and (self.stop or self.qualification.halted)
+                    ):
+                        return
                     if balance < amount // 3:
                         self.fund_from_owner(
                             relayer.address,
@@ -2635,6 +2721,18 @@ class LoadDriver:
     def check_safety(self, wallet: str, relayers: list[Relayer]) -> str | None:
         if self.refill_error:
             return self.refill_error
+        if getattr(self, "qualification", None) and hasattr(self, "qualification_start_balances"):
+            try:
+                self.check_qualified_genesis()
+            except (lib.TestnetError, OSError, KeyError, ValueError) as exc:
+                return str(exc)
+            spent = (
+                sum(self.qualification_start_balances.values())
+                + self.topped_up
+                - sum(self.balances(wallet, relayers).values())
+            )
+            if self.qualification.observe_fees(spent):
+                return "qualified observed fee stop reached (in-flight costs may still settle)"
         for url in [self.chain.url] + list(self.args.watch_rpc or []):
             try:
                 age = head_age(Chain(url, self.chain.rpc))
@@ -2674,8 +2772,11 @@ class LoadDriver:
         return int(result["stack"][0][1], 0)
 
     def processed(self, wallet: str, query_id: int) -> bool:
+        return self.processed_on(self.chain.url, wallet, query_id)
+
+    def processed_on(self, url: str, wallet: str, query_id: int) -> bool:
         result = self.chain.rpc(
-            self.chain.url,
+            url,
             "runGetMethod",
             address=wallet,
             method="processed?",
@@ -2753,9 +2854,13 @@ class LoadDriver:
         if not 1 <= relayer_count <= 64:
             raise lib.TestnetError("--relayers must be 1..64")
         self.previous = previous_wallets(self.args)
+        if getattr(self, "qualification", None):
+            self.check_qualified_genesis()
         if self.args.dry_run:
             self.dry_run()
             return {}
+        if getattr(self.args, "native_finality", False):
+            self.start_native_from_existing_wallet()
         wallet, relayers = self.ensure_keys(relayer_count)
         self.deploy(wallet, relayers)
         recipients = [r.address for r in relayers]
@@ -2771,6 +2876,7 @@ class LoadDriver:
         if reason:
             raise lib.TestnetError(f"not starting: {reason}")
         start_balances = self.balances(wallet, relayers)
+        self.qualification_start_balances = start_balances
         print(
             f"load: {rate:.2f} batches/s of {self.actions} transfers "
             f"(~{rate * batch_gas(self.actions):,.0f} gas/s"
@@ -2781,6 +2887,7 @@ class LoadDriver:
         work = Path(tempfile.mkdtemp(prefix="load-", dir=self.state))
         self.links(work)
         started = time.time()
+        started_monotonic = time.monotonic()
         stop_reason = "duration reached"
         old_handler = signal.signal(signal.SIGINT, self.on_sigint)
         refill_done = threading.Event()
@@ -2796,8 +2903,16 @@ class LoadDriver:
         log_prev = dict(self.counts)
         try:
             while not self.stop:
+                if self.qualification and self.qualification.halted:
+                    self.stop = True
+                    break
                 now = time.monotonic()
-                if time.time() - started >= self.args.duration:
+                elapsed = (
+                    time.monotonic() - started_monotonic
+                    if getattr(self, "qualification", None)
+                    else time.time() - started
+                )
+                if elapsed >= self.args.duration:
                     break
                 tokens = min(tokens + rate * (now - last), rate * 2 + SUBMISSIONS_PER_EXTERNAL)
                 last = now
@@ -2867,8 +2982,11 @@ class LoadDriver:
                         flush=True,
                     )
                 time.sleep(0.05)
+            offering_seconds_monotonic = time.monotonic() - started_monotonic
             if self.stop:
                 stop_reason = "interrupted"
+            if getattr(self, "qualification", None):
+                self.qualification.halt("end_of_offering")
             # Let what is in flight land or expire, then check the last ones.
             deadline = time.time() + EXTERNAL_TTL + 10
             while any(r.inflight for r in relayers) and time.time() < deadline:
@@ -2883,10 +3001,14 @@ class LoadDriver:
                 self.counts["unconfirmed"] += len(item[1])
         finally:
             signal.signal(signal.SIGINT, old_handler)
-            pool.shutdown(wait=True)
-            refill_done.set()
-            refiller.join(timeout=120)
-            shutil.rmtree(work, ignore_errors=True)
+            if getattr(self, "qualification", None):
+                self.stop = True
+                self.qualification.halt("exception_or_final_cleanup")
+            try:
+                self.stop_refiller(refiller, refill_done)
+            finally:
+                pool.shutdown(wait=True)
+                shutil.rmtree(work, ignore_errors=True)
         ended = time.time()
         end_balances = self.balances(wallet, relayers)
         spent = sum(start_balances.values()) + self.topped_up - sum(end_balances.values())
@@ -2921,6 +3043,12 @@ class LoadDriver:
             "fees_spent_tos": round(spent / NANO, 6),
         }
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(started))
+        if getattr(self, "qualification", None):
+            if getattr(self, "native_observer", None) is not None:
+                self.native_observer.finish()
+                self.native_observer = None
+            summary["qualification"] = self.qualification.finish()
+            summary["offering_seconds_monotonic"] = offering_seconds_monotonic
         lib.write_new_json(self.state / f"summary-{stamp}.json", summary, 0o600)
         print(json.dumps(summary, indent=2))
         return summary
@@ -2944,6 +3072,8 @@ class LoadDriver:
     def on_sigint(self, _signum, _frame) -> None:
         print("load: interrupted, stopping after the messages in flight", flush=True)
         self.stop = True
+        if getattr(self, "qualification", None):
+            self.qualification.halt("signal_stop")
 
     def try_seqno(self, relayer: Relayer) -> int | None:
         """The relayer's seqno, read where it was sent: the reads spread over the
@@ -2955,14 +3085,40 @@ class LoadDriver:
 
     def send(self, external: tuple[Relayer, list[int], Path], route: Chain) -> str | None:
         try:
-            route.send_boc(external[2].read_bytes())
+            if getattr(self, "qualification", None):
+                self.check_send_genesis(route)
+                if getattr(self.qualification, "native", None) is not None:
+                    payload = self.qualification.offer(
+                        external[1],
+                        external[2],
+                        {q: self.request_hashes[q] for q in external[1]},
+                    )
+                else:
+                    payload = self.qualification.offer(external[1], external[2])
+            else:
+                payload = external[2].read_bytes()
+            self.check_native_admission()
+            route.send_boc(payload)
         except (lib.TestnetError, OSError, ValueError) as exc:
+            if getattr(self, "qualification", None):
+                self.stop = True
+                self.qualification.halt("send_uncertainty_or_refusal")
             return str(exc)
         return None
+
+    def check_native_admission(self):
+        qualification = getattr(self, "qualification", None)
+        if qualification is not None and qualification.native is not None:
+            qualification.native_healthy()
+            if self.stop or qualification.halted:
+                raise lib.TestnetError("qualified native admission stopped")
 
     def fail(self, relayer: Relayer, batches: int, error: str) -> None:
         self.counts["batches_failed"] += batches
         self.counts["externals_failed"] += 1
+        if getattr(self, "qualification", None):
+            self.stop = True
+            self.qualification.halt("send_or_expiry_failure")
         if "rate limit" in error:
             # The node's admission window, not this relayer: not a retry.
             self.counts["externals_throttled"] += 1
@@ -2983,8 +3139,13 @@ class LoadDriver:
             relayer.inflight = None
             relayer.retries = 0
             self.counts["batches_accepted"] += len(flight["ids"])
+            if getattr(self, "qualification", None):
+                self.qualification.accept(flight["ids"])
             accepted = time.time()
-            checks.append((accepted + 3, flight["ids"], accepted + EXECUTION_GRACE))
+            # Qualified latency measures actual observations, without an artificial
+            # post-acceptance hold. Pending queries retain the bounded retry grace.
+            first_check = accepted if getattr(self, "qualification", None) else accepted + 3
+            checks.append((first_check, flight["ids"], accepted + EXECUTION_GRACE))
         elif time.time() > flight["expires"]:
             relayer.inflight = None
             if seqno is not None:
@@ -2996,6 +3157,9 @@ class LoadDriver:
         A full shard carries inbound messages over to later blocks, so a batch not yet
         executed is checked again until EXECUTION_GRACE after its acceptance."""
         now = time.time()
+        if getattr(self, "qualification", None):
+            self.verify_qualified(wallet, checks, now)
+            return
         for item in [c for c in checks if c[0] <= now]:
             checks.remove(item)
             try:
@@ -3011,8 +3175,171 @@ class LoadDriver:
             else:
                 checks.append((now + 3, item[1], item[2]))
 
+    def check_qualified_genesis(self):
+        from load_qualification import check_genesis
+
+        for url in {
+            self.chain.url,
+            self.args.confirm_rpc,
+            *(self.args.watch_rpc or []),
+            *(self.args.send_rpc or []),
+        }:
+            check_genesis(
+                self.chain.rpc(url, "getMasterchainInfo"),
+                self.args.expected_genesis_root,
+                self.args.expected_genesis_file,
+            )
+
+    def check_send_genesis(self, route):
+        from load_qualification import check_genesis
+
+        check_genesis(
+            route.rpc(route.url, "getMasterchainInfo"),
+            self.args.expected_genesis_root,
+            self.args.expected_genesis_file,
+        )
+
+    def stop_refiller(self, refiller, done):
+        if getattr(self, "qualification", None):
+            self.stop = True
+            self.qualification.halt("refiller_cleanup")
+        done.set()
+        refiller.join(timeout=120)
+        if getattr(self, "qualification", None) and refiller.is_alive():
+            self.qualification.uncertain_funding()
+            raise lib.TestnetError("funding thread still active; original run remains unfinished")
+
+    def verify_qualified(self, wallet, checks, now):
+        for item in [c for c in checks if c[0] <= now]:
+            checks.remove(item)
+            remaining = []
+            for query in item[1]:
+                try:
+                    if self.qualification.native is not None:
+                        done = self.qualification.native.finalized(query)
+                    else:
+                        done = self.processed(wallet, query)
+                        if done:
+                            done = self.processed_on(self.args.confirm_rpc, wallet, query)
+                except (lib.TestnetError, OSError):
+                    done = None
+                if done:
+                    self.counts["verified"] += 1
+                    self.qualification.terminal(query, True)
+                elif now < item[2]:
+                    remaining.append(query)
+                else:
+                    self.counts["unconfirmed"] += 1
+                    self.qualification.terminal(query, False)
+                    self.stop = True
+            if remaining:
+                checks.append((now + 3, remaining, item[2]))
+
+    def start_native_observer(self, wallet):
+        from load_finality_collector import NativeCollector
+        from load_native_observer import NativeObserver
+
+        def record(kind, **fields):
+            with self.qualification.guard:
+                self.qualification.event(kind, **fields)
+
+        collector = NativeCollector(
+            verifier=self.args.native_verifier,
+            verifier_sha256=self.args.native_verifier_sha256,
+            anchor=self.args.native_anchor,
+            anchor_sha256=self.args.native_anchor_sha256,
+            liteserver=self.args.native_liteserver,
+            rpc=self.args.rpc,
+            directory=self.qualification.run / "native-captures",
+            wallet=wallet,
+            code_hash=self.args.native_wallet_code_hash,
+            global_id=self.global_id,
+            global_version=16,
+            subwallet_id=HIGHLOAD_SUBWALLET,
+            max_captures=min(1000000, int((self.args.duration + 600) / 2) + 100),
+        )
+        self.native_observer = NativeObserver(collector, record, self.qualification.halt)
+        self.native_observer.bootstrap()
+        self.qualification.attach_native(self.native_observer)
+        self.native_observer.start()
+
+    def start_native_from_existing_wallet(self):
+        # Native mode verifies a deployed wallet before any relayer activation
+        # carrier can be signed. New highload setup belongs to preparation.
+        for name in ("highload.key", "highload.addr"):
+            if not (self.state / name).is_file():
+                raise lib.TestnetError("native mode requires an existing deployed highload wallet")
+        self.start_native_observer(address_from_file(self.state / "highload.addr"))
+
+
+def run_load(args, chain, global_id, operations=None):
+    driver = LoadDriver(args, chain, global_id, operations)
+    try:
+        result = driver.run()
+        if driver.qualification:
+            evidence = result.get("qualification", {})
+            valid = (
+                result.get("stop_reason") == "duration reached"
+                and evidence.get("all_queries_observed_executed") is True
+                and evidence.get("safe_to_start_new_run") is True
+                and result.get("offering_seconds_monotonic", 0) >= args.duration
+                and all(
+                    result.get(name, 0) == 0
+                    for name in ("batches_failed", "refused", "unconfirmed")
+                )
+            )
+            if getattr(args, "native_finality", False):
+                native = evidence.get("native_finality", {})
+                valid = valid and native.get("latency_criteria_pass") is True
+            if not valid:
+                raise lib.TestnetError(
+                    "qualified run did not meet its declared execution window; inspect retained evidence"
+                )
+        return result
+    finally:
+        driver.close()
+
 
 def check_load_args(args: argparse.Namespace) -> None:
+    native_fields = (
+        "native_verifier",
+        "native_verifier_sha256",
+        "native_anchor",
+        "native_anchor_sha256",
+        "native_liteserver",
+        "native_wallet_code_hash",
+    )
+    if getattr(args, "native_finality", False):
+        if (
+            not getattr(args, "qualify_load", False)
+            or args.transfers != "skip"
+            or args.actions_per_batch != 254
+        ):
+            raise lib.TestnetError(
+                "native finality requires qualified skip profile with 254 actions"
+            )
+        if not all(getattr(args, field, None) for field in native_fields):
+            raise lib.TestnetError(
+                "native finality requires explicit helper, anchor and wallet pins"
+            )
+        for field in ("native_verifier_sha256", "native_anchor_sha256", "native_wallet_code_hash"):
+            if not re.fullmatch(r"[0-9a-f]{64}", getattr(args, field)):
+                raise lib.TestnetError("invalid native SHA256/code pin")
+    elif any(getattr(args, field, None) for field in native_fields):
+        raise lib.TestnetError("native options require --native-finality")
+    if getattr(args, "qualify_load", False):
+        if not getattr(args, "confirm_rpc", None) or args.confirm_rpc == args.rpc:
+            raise lib.TestnetError("qualified load requires a distinct confirmation RPC")
+        for field in ("expected_genesis_root", "expected_genesis_file"):
+            if not re.fullmatch(r"[0-9a-f]{64}", getattr(args, field, "") or ""):
+                raise lib.TestnetError(
+                    "qualified load requires explicit full genesis root and file hashes"
+                )
+        if args.dry_run:
+            raise lib.TestnetError("qualified dry-run signs: use separate unsigned preparation")
+        for field in ("funding_ceiling", "fee_stop"):
+            if not getattr(args, field, None) or parse_tos(getattr(args, field), field) <= 0:
+                raise lib.TestnetError("qualified load requires positive funding and fee ceilings")
     if not args.dry_run and not (args.target_gas_per_block or args.batches_per_second):
         raise lib.TestnetError("give --target-gas-per-block or --batches-per-second")
     if not args.dry_run and not args.funding_owner:
@@ -3027,6 +3354,12 @@ def check_load_args(args: argparse.Namespace) -> None:
         raise lib.TestnetError("--wallet-timeout must be 1..4194303 s")
     if args.transfer_nanotos < 0:
         raise lib.TestnetError("--transfer-nanotos cannot be negative")
+    relayer_target = parse_tos(getattr(args, "relayer_amount", "50"), "--relayer-amount")
+    relayer_floor = parse_tos(getattr(args, "relayer_floor", "2"), "--relayer-floor")
+    if relayer_target // 3 <= relayer_floor:
+        raise lib.TestnetError(
+            "relayer refill threshold (--relayer-amount / 3) must exceed --relayer-floor"
+        )
     batch_gas(args.actions_per_batch)
 
 
@@ -3149,6 +3482,20 @@ def main(argv: list[str] | None = None) -> int:
     p_load.add_argument("--watch-rpc", action="append")
     p_load.add_argument("--send-rpc", action="append")
     p_load.add_argument("--dry-run", action="store_true")
+    p_load.add_argument("--qualify-load", action="store_true")
+    p_load.add_argument("--native-finality", action="store_true")
+    p_load.add_argument("--native-verifier")
+    p_load.add_argument("--native-verifier-sha256")
+    p_load.add_argument("--native-anchor")
+    p_load.add_argument("--native-anchor-sha256")
+    p_load.add_argument("--native-liteserver")
+    p_load.add_argument("--native-wallet-code-hash")
+    p_load.add_argument("--expected-genesis-root")
+    p_load.add_argument("--expected-genesis-file")
+    p_load.add_argument("--funding-ceiling", help="hard cumulative owner funding limit in TOS")
+    p_load.add_argument(
+        "--fee-stop", help="observed net fee stop in TOS; excludes still-in-flight costs"
+    )
     args = parser.parse_args(argv)
     try:
         profile = lib.load_profile(args.profile)
@@ -3160,7 +3507,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "load" and args.dry_run:
             check_load_args(args)
             os.umask(0o077)
-            LoadDriver(args, chain, global_id).run()
+            run_load(args, chain, global_id)
         else:
             operations = operations_for(args, global_id)
             if args.command == "fund":
@@ -3168,7 +3515,7 @@ def main(argv: list[str] | None = None) -> int:
             elif args.command == "load":
                 check_load_args(args)
                 os.umask(0o077)
-                LoadDriver(args, chain, global_id, operations).run()
+                run_load(args, chain, global_id, operations)
             elif args.command == "withdraw":
                 withdraw(args, operations, global_id)
             elif args.command == "change-validator":

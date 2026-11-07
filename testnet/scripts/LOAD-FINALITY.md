@@ -132,8 +132,40 @@ new admission in the caller; this module never retries signatures or payments.
 Thirty-second age/deadline settings are available for explicitly separate
 post-run diagnostics and must not be substituted for a 10-second SLO run.
 
-A continuous worker, durable offered-digest event wiring, and the actual sender
-and funding gates are still required. Sample the window's monotonic time while
+The opt-in `load --qualify-load --native-finality` path now runs a continuous
+worker, journals signed request digests before broadcast, and checks observer
+health before new build/sign/send and funding reservations. It requires an
+already deployed wallet, the skip/254-action profile, explicit verifier and
+anchor paths plus SHA256 pins, a lite-server config and the expected wallet code
+hash (`--native-verifier`, `--native-verifier-sha256`, `--native-anchor`,
+`--native-anchor-sha256`, `--native-liteserver`, `--native-wallet-code-hash`).
+The wallet's global version must be 16. Native mode requires existing
+`highload.key` and `highload.addr`; it establishes its native baseline before
+relayer preparation, and checks admission before Fift may sign a new relayer
+activation carrier. It does not create a new highload wallet. Cold bootstrap is unscored and permits
+30 seconds; admission starts only after a strict 10-second-age/8-second-deadline
+capture. Each worker capture uses those strict settings. A worker failure
+permanently stops admission; authenticated receipts may still drain read-only
+where the window permits it. The worker joins before the durable journal closes.
+If thread startup itself fails, the owned verifier is closed, the original
+startup error is preserved, and the failed observer cannot be started again.
+An unfinished native pending set preserves the original run fence, even when
+the application journal never completed its offered event.
+
+Admission is checked again after the offered event is fsynced and immediately
+before broadcast, including relayer activation. Funding also rechecks after
+wallet-lock waits and balance RPCs, at the actual owner signature call, and after
+the signed message export before broadcast. Failure after signing retains the
+original signed operation and unknown-funding fence; it never signs a replacement.
+
+`verification_mode` distinguishes native signed-request completion from legacy
+two-RPC processed checks. RPC seqno acceptance remains a separate metric; the
+native histogram measures offered digests through verified, persisted capture
+completion. Native mode avoids serial per-query processed RPC calls. This
+integration has deterministic tests but no new paid live qualification result;
+it does not establish improved throughput or authorize a 72-hour pass.
+
+Sample the window's monotonic time while
 holding its serialization lock, after capture persistence; do not submit an
 older precomputed timestamp after a concurrent offer has advanced that clock.
 The caller must enforce collector age <= window age and retain failure status
