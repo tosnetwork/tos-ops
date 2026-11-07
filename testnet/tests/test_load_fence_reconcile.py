@@ -21,6 +21,7 @@ import pytest
 import testnet_lib as lib
 import testnet_ops as ops
 from conftest import SCRIPTS
+from load_finality_window import AdmissionClosed
 from load_qualification import Qualification, atomic_json
 
 CANARY = "CANARYc4n4ryZQXJ"
@@ -41,6 +42,16 @@ def _te():
 
 TE = _te()
 
+# The 62 R2 funding reservations total 329.255545444 TOS; three amounts with that sum.
+AMOUNTS = (4_088_828_819, 4_359_939_132, 320_806_777_493)
+assert sum(AMOUNTS) == 329_255_545_444
+
+
+@pytest.fixture(autouse=True)
+def system_tmp(monkeypatch):
+    """pytest's base directory lives under the system-owned, sticky /tmp."""
+    monkeypatch.setattr(lfr, "SYSTEM_PREFIXES", lfr.SYSTEM_PREFIXES | {"/tmp"})
+
 
 class FakeNative:
     """The observer interface Qualification uses (attach_native, offer, summary)."""
@@ -48,11 +59,14 @@ class FakeNative:
     def __init__(self):
         self.offered = self.finalized = 0
         self.pending = 0
+        self.closed = False
 
     def assert_healthy(self):
         pass
 
     def offer(self, hashes):
+        if self.closed:
+            raise AdmissionClosed("test-boot", time.monotonic(), time.monotonic())
         self.offered += len(hashes)
         return {"boot_id": "test-boot", "monotonic_seconds": time.monotonic()}
 
@@ -94,7 +108,9 @@ class Producer:
         else:
             self.drv = fx.drv = driver(fx.state, self.q, start)
 
-    def batch(self, relayer, count, *, terminal=True, archive_only=False):
+    def batch(
+        self, relayer, count, *, terminal=True, archive_only=False, not_offered=False, skip=False
+    ):
         ids = self.drv.take_query_ids(count)
         seqno = self.fx.seqnos.get(relayer, 0)
         carrier = self.fx.tmp / f"ext-{relayer}-{seqno}-{ids[0]}.boc"
@@ -112,6 +128,13 @@ class Producer:
             self.q.event = original
             carrier.unlink()
             return ids
+        if not_offered:
+            self.native.closed = True
+            with pytest.raises(AdmissionClosed):
+                self.q.offer(ids, carrier, hashes)
+            self.native.closed = False
+            carrier.unlink()
+            return ids
         self.q.offer(ids, carrier, hashes)
         carrier.unlink()
         self.fx.seqnos[relayer] = seqno + 1
@@ -124,7 +147,7 @@ class Producer:
                 "native_checkpoint",
                 checkpoint_seqno=len(ids),
                 capture="capture",
-                query_ids=ids,
+                query_ids=ids[:-1] if skip else ids,
                 summary=self.native.summary(),
             )
         else:
@@ -301,15 +324,37 @@ def build(tmp_path, **opts):
     fx.plant_secrets()
     if opts.get("old_open_op"):
         fx.journal_op("fund-op-stuck", OWNER, OPERATOR, 10**9, {}, state="planned")
+    if opts.get("gap_between_runs"):
+        fx.drv.take_query_ids(2)
     target = Producer(fx)
-    target.fund("load-relayer-0", 4_000_000_000, fx.relayers[0])
-    target.fund("load-relayer-1", 4_100_000_000, fx.relayers[1])
+    target.fund("load-relayer-0", AMOUNTS[0], fx.relayers[0])
+    target.fund("load-relayer-1", AMOUNTS[1], fx.relayers[1])
     target.batch(0, 20)
-    target.batch(1, 20)
+    if opts.get("mid_run_gap"):
+        fx.drv.take_query_ids(3)
+    target.batch(1, 20, skip=opts.get("native_skip", False))
     if opts.get("not_offered_orphan"):
         target.batch(0, 3, archive_only=True)
-    target.fund("load-refill-0", 1_500_000_000, fx.relayers[0], settle=not opts.get("inflight"))
+    if opts.get("not_offered"):
+        target.batch(0, 3, not_offered=True)
+    if opts.get("stray_load"):
+        fx.journal_op(
+            "load-load-refill-9-stray",
+            OWNER,
+            fx.relayers[0],
+            5,
+            {"label": "load-refill-9", "purpose": "load"},
+        )
+    if opts.get("open_op_wallet"):
+        fx.journal_op(
+            "fund-op-mixed-case", opts["open_op_wallet"], OPERATOR, 7, {}, state="planned"
+        )
+    target.fund("load-refill-0", AMOUNTS[2], fx.relayers[0], settle=not opts.get("inflight"))
     target.batch(1, 10, terminal=not opts.get("pending"))
+    if opts.get("extra_accepted"):
+        target.q.event("accepted", query_id=5000, offered_latency_seconds=0.1)
+    if opts.get("empty_offer"):
+        target.q.event("offered", query_ids=[], carrier_bytes=1, signed_request_hashes={})
     if opts.get("funding_unknown"):
         target.fund("load-refill-1", 1_000, fx.relayers[1], settle=False, fail=True)
     if opts.get("allocate_after"):
@@ -346,12 +391,28 @@ def args_for(fx, out, **kw):
     )
 
 
+def argv_for(args):
+    argv = []
+    for key, value in vars(args).items():
+        flag = "--" + key.replace("_", "-")
+        if isinstance(value, bool):
+            argv += [flag] if value else []
+        elif isinstance(value, list):
+            for item in value:
+                argv += [flag, item]
+        else:
+            argv += [flag, str(value)]
+    return argv
+
+
 def chain_for(fx, overrides=None):
     calls = []
     seqno = {fx.relayers[i]: n for i, n in fx.seqnos.items()}
 
     def rpc(url, method, /, **params):
         calls.append(method)
+        if method == "getMasterchainInfo":
+            return {"last": {"seqno": 1_460_923}}
         if method == "getAddressInformation":
             return {"state": "active", "balance": "1"}
         if method == "runGetMethod":
@@ -415,7 +476,16 @@ def test_closed_run_reconciles_and_is_launch_eligible(tmp_path):
     code, doc = reconcile(fx, tmp_path)
     assert code == 0, verdicts(doc)
     assert doc["verdict"] == lfr.ELIGIBLE and doc["launch_eligible"] is True
-    assert set(verdicts(doc).values()) <= {lfr.RECONCILED, lfr.OBSERVED}
+    assert set(verdicts(doc).values()) == {lfr.RECONCILED}
+    chain = doc["chain_observation"]
+    assert chain["observation_only"] is True
+    assert chain["sources"] == [
+        {"index": 0, "masterchain_seqno": 1_460_923},
+        {"index": 1, "masterchain_seqno": 1_460_923},
+    ]
+    assert chain["sources_agree"] is True and chain["outbox_consistent"] is True
+    assert [r["matches_outbox"] for r in chain["relayers"]] == [True, True]
+    assert doc["populations"]["funding"]["total_nanotos"] == 329_255_545_444
     ids = doc["populations"]["query_ids"]
     # 1000..1050 offered, 1023 does not exist (testnet-elections.py:2060-2068).
     assert (ids["min"], ids["max"], ids["gaps_structural_1023"], ids["gaps_other"]) == (
@@ -562,7 +632,8 @@ def test_allocated_unlogged_ids_stay_unknown_with_matching_seqnos(tmp_path):
     ]
     assert ids["verdict"] == lfr.UNKNOWN
     # Relayer seqnos agree with the archive, which does not clear them.
-    assert doc["populations"]["chain_relayer_seqno"]["verdict"] == lfr.OBSERVED
+    assert doc["chain_observation"]["outbox_consistent"] is True
+    assert doc["chain_observation"]["sources_agree"] is True
     assert doc["verdict"] == lfr.UNKNOWN and not doc["launch_eligible"]
 
 
@@ -613,20 +684,48 @@ def test_unexplained_pre_run_owner_row_is_unreconciled(tmp_path):
     assert doc["populations"]["owner_pre_run_rows"]["verdict"] == lfr.UNRECONCILED
 
 
-def test_missing_chain_reads_or_disagreeing_sources_are_unknown(tmp_path):
+def test_chain_reads_are_observation_only(tmp_path):
     fx = build(tmp_path)
-    code, doc = reconcile(fx, tmp_path, chain_reads=False)
-    assert doc["populations"]["chain_relayer_seqno"]["verdict"] == lfr.UNKNOWN
-    assert not doc["launch_eligible"]
+    # One source disagrees: reported, no verdict changes.
     rpc, calls = chain_for(fx, {("http://b/jsonRPC", fx.relayers[0]): 99})
+    code, doc = reconcile(fx, tmp_path, rpc=rpc, name="out1.json")
+    chain = doc["chain_observation"]
+    assert chain["sources_agree"] is False and chain["relayers"][0]["sources_agree"] is False
+    assert chain["relayers"][0]["observed"] == [2, 99]
+    assert doc["verdict"] == lfr.ELIGIBLE and code == 0
+    # Both sources agree on a seqno the archive does not explain: reported only.
+    rpc, calls = chain_for(
+        fx, {("http://a/jsonRPC", fx.relayers[0]): 99, ("http://b/jsonRPC", fx.relayers[0]): 99}
+    )
     code, doc = reconcile(fx, tmp_path, rpc=rpc, name="out2.json")
-    assert doc["populations"]["chain_relayer_seqno"]["verdict"] == lfr.UNKNOWN
+    chain = doc["chain_observation"]
+    assert chain["sources_agree"] is True and chain["outbox_consistent"] is False
+    assert chain["relayers"][0]["matches_outbox"] is False
+    assert doc["verdict"] == lfr.ELIGIBLE
+    # An unavailable source: reported as null.
     rpc, calls = chain_for(fx, {("http://a/jsonRPC", fx.relayers[1]): None})
     code, doc = reconcile(fx, tmp_path, rpc=rpc, name="out3.json")
-    assert doc["populations"]["chain_relayer_seqno"]["verdict"] == lfr.UNKNOWN
-    assert set(calls) <= lfr.READ_ONLY_RPC
-    code, doc = reconcile(fx, tmp_path, name="out4.json", source=["http://a/jsonRPC"] * 2)
-    assert doc["populations"]["chain_relayer_seqno"]["verdict"] == lfr.UNKNOWN
+    assert doc["chain_observation"]["relayers"][1]["observed"] == [None, 3]
+    assert doc["chain_observation"]["sources_agree"] is False
+    assert doc["verdict"] == lfr.ELIGIBLE
+    assert set(calls) <= lfr.READ_ONLY_RPC and "sendBoc" not in calls
+
+
+def test_parse_requires_chain_reads_and_raw_addresses(tmp_path):
+    fx = build(tmp_path)
+    base = argv_for(args_for(fx, tmp_path / "public" / "x.json"))
+    assert lfr.parse(base).funding_owner_address == OWNER
+    with pytest.raises(SystemExit):
+        lfr.parse([a for a in base if a != "--chain-reads"])
+    with pytest.raises(SystemExit):
+        lfr.parse([*base[: base.index("--source")], "--source", "http://a/jsonRPC"])
+    bad = list(base)
+    bad[bad.index("--operator-wallet") + 1] = "EQ" + "A" * 46
+    with pytest.raises(SystemExit):
+        lfr.parse(bad)
+    upper = list(base)
+    upper[upper.index("--funding-owner-address") + 1] = OWNER.upper()
+    assert lfr.parse(upper).funding_owner_address == OWNER
 
 
 def test_unreadable_proc_locks_is_unstable(tmp_path):
@@ -797,17 +896,7 @@ def test_errors_and_excepthook_carry_no_content(tmp_path, monkeypatch, capsys):
         raise ValueError(CANARY)
 
     monkeypatch.setattr(lfr, "run", lambda args: explode(args, None))
-    argv = []
-    for key, value in vars(args_for(fx, tmp_path / "public" / "x.json")).items():
-        flag = "--" + key.replace("_", "-")
-        if isinstance(value, bool):
-            argv += [flag] if value else []
-        elif isinstance(value, list):
-            for item in value:
-                argv += [flag, item]
-        else:
-            argv += [flag, str(value)]
-    assert lfr.main(argv) == 4
+    assert lfr.main(argv_for(args_for(fx, tmp_path / "public" / "x.json"))) == 4
     printed = capsys.readouterr().err
     assert CANARY not in printed and printed.strip() == "load_fence_reconcile: ValueError"
     assert resource.getrlimit(resource.RLIMIT_CORE) == (0, 0)
@@ -908,3 +997,368 @@ def test_secret_scan_hit_writes_nothing(tmp_path, monkeypatch):
     out = tmp_path / "public" / "out.json"
     code, doc = lfr.run(args_for(fx, out), rpc=chain_for(fx)[0])
     assert (code, doc) == (2, None) and not out.exists()
+
+
+# ---------------------------------------------------------------- one red control per guard
+
+
+def same_size_edit(path, old, new):
+    """Change bytes in place, same length, with the old mtime: only a content
+    digest can see it."""
+    assert len(old) == len(new)
+    info = path.stat()
+    data = path.read_bytes()
+    assert data.count(old) >= 1
+    path.write_bytes(data.replace(old, new, 1))
+    os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns))
+
+
+def between_reads(monkeypatch, action):
+    original, calls = lfr.collect, []
+
+    def collect(args, reader):
+        facts = original(args, reader)
+        calls.append(1)
+        # The test, not the helper, changes the tree: outside the guard.
+        lfr.GUARD["active"] = False
+        try:
+            action(len(calls))
+        finally:
+            lfr.GUARD["active"] = True
+        return facts
+
+    monkeypatch.setattr(lfr, "collect", collect)
+
+
+def run_plain(fx, tmp_path, name="out.json", rpc=None, **kw):
+    out = tmp_path / "public" / name
+    return lfr.run(args_for(fx, out, **kw), rpc=rpc or chain_for(fx)[0])
+
+
+def test_pending_run_also_fails_executed_and_closed_unsafe_fence(tmp_path):
+    fx = build(tmp_path, pending=True)
+    code, doc = reconcile(fx, tmp_path)
+    assert doc["populations"]["executed_unconfirmed"]["verdict"] == lfr.UNRECONCILED
+    assert doc["populations"]["fence"]["verdict"] == lfr.RECONCILED  # open over unsafe
+    atomic_json(
+        fx.state / "qualification-active.json", {"run": fx.result["run_directory"], "closed": True}
+    )
+    code, doc = reconcile(fx, tmp_path, name="out2.json")
+    assert doc["populations"]["fence"]["verdict"] == lfr.UNRECONCILED
+
+
+def test_native_capture_missing_one_offered_id_is_unreconciled(tmp_path):
+    fx = build(tmp_path, native_skip=True)
+    code, doc = reconcile(fx, tmp_path)
+    assert doc["populations"]["native_finalized"]["missing"] == 1
+    assert doc["populations"]["native_finalized"]["verdict"] == lfr.UNRECONCILED
+    assert doc["verdict"] == lfr.UNRECONCILED
+
+
+def test_public_reservation_pairs_must_match(tmp_path):
+    fx = build(tmp_path)
+    path = fx.public / "reservations.json"
+    rows = json.loads(path.read_text())
+    rows[0]["amount_nanotos"], rows[1]["amount_nanotos"] = (
+        rows[1]["amount_nanotos"],
+        rows[0]["amount_nanotos"],
+    )
+    path.write_text(json.dumps(rows))
+    code, doc = reconcile(fx, tmp_path)
+    assert doc["populations"]["funding"]["verdict"] == lfr.UNRECONCILED
+    assert doc["verdict"] == lfr.UNRECONCILED
+
+
+def test_owner_match_total_must_equal_the_reserved_total(tmp_path):
+    fx = build(tmp_path)
+    path = fx.public / "owner-matches.json"
+    matches = json.loads(path.read_text())
+    assert matches["total_nanotos"] == 329_255_545_444
+    matches["total_nanotos"] += 1
+    path.write_text(json.dumps(matches))
+    code, doc = reconcile(fx, tmp_path)
+    assert doc["populations"]["funding"]["verdict"] == lfr.UNRECONCILED
+
+
+def test_ids_allocated_mid_run_but_never_offered_stay_unknown(tmp_path):
+    fx = build(tmp_path, mid_run_gap=True)
+    code, doc = reconcile(fx, tmp_path)
+    ids = doc["populations"]["query_ids"]
+    assert ids["gaps_other"] == 3 and ids["gaps_other_sample"] == [1020, 1021, 1022]
+    assert ids["verdict"] == lfr.UNKNOWN
+    assert doc["populations"]["outbox"]["verdict"] == lfr.RECONCILED
+    assert doc["verdict"] == lfr.UNKNOWN and not doc["launch_eligible"]
+
+
+def test_ids_burned_between_runs_leave_the_start_unknown(tmp_path):
+    fx = build(tmp_path, gap_between_runs=True)
+    code, doc = reconcile(fx, tmp_path, min_query_id=1002)
+    ids = doc["populations"]["query_ids"]
+    assert (ids["reconstructed_start"], ids["min"]) == (1000, 1002)
+    assert ids["start_verdict"] == lfr.UNKNOWN and ids["verdict"] == lfr.UNKNOWN
+    assert not doc["launch_eligible"]
+
+
+def test_offers_below_the_declared_minimum_are_unreconciled(tmp_path):
+    fx = build(tmp_path)
+    code, doc = reconcile(fx, tmp_path, min_query_id=1001)
+    assert doc["populations"]["query_ids"]["start_verdict"] == lfr.UNRECONCILED
+    assert doc["verdict"] == lfr.UNRECONCILED
+
+
+def test_a_reader_error_alone_blocks_eligibility(tmp_path):
+    fx = build(tmp_path)
+    (fx.state / "relayer-5.addr").write_bytes(b"short")
+    code, doc = reconcile(fx, tmp_path)
+    assert set(verdicts(doc).values()) == {lfr.RECONCILED}
+    assert doc["errors"][0]["code"] == "not_an_address_file"
+    assert doc["verdict"] == lfr.UNKNOWN and not doc["launch_eligible"]
+
+
+def test_same_size_events_change_between_reads_is_unstable(tmp_path, monkeypatch):
+    fx = build(tmp_path)
+    events = fx.state / fx.result["run_directory"] / "events.jsonl"
+    digest = hashlib.sha256(b"req1000").hexdigest().encode()
+    flipped = digest[:-1] + (b"0" if digest[-1:] != b"0" else b"1")
+    between_reads(monkeypatch, lambda n: n == 1 and same_size_edit(events, digest, flipped))
+    code, doc = run_plain(fx, tmp_path)
+    assert doc["verdict"] == lfr.UNKNOWN_UNSTABLE and not doc["stable"]
+
+
+def test_same_size_journal_change_between_reads_is_unstable(tmp_path, monkeypatch):
+    fx = build(tmp_path)
+    journal = next(iter(sorted((fx.ceremony / "operations").glob("load-load-relayer-0-*"))))
+    old = f'"value": {AMOUNTS[0]}'.encode()
+    new = f'"value": {AMOUNTS[0] - 1}'.encode()
+    between_reads(monkeypatch, lambda n: n == 1 and same_size_edit(journal, old, new))
+    code, doc = run_plain(fx, tmp_path)
+    assert doc["verdict"] == lfr.UNKNOWN_UNSTABLE
+
+
+def test_same_size_identity_change_between_reads_is_unstable(tmp_path, monkeypatch):
+    fx = build(tmp_path)
+    identity = fx.state / "qualification-identity.json"
+    between_reads(monkeypatch, lambda n: n == 1 and same_size_edit(identity, b'"aaaa', b'"aaab'))
+    code, doc = run_plain(fx, tmp_path)
+    assert doc["verdict"] == lfr.UNKNOWN_UNSTABLE
+
+
+def test_archive_change_between_reads_is_unstable(tmp_path, monkeypatch):
+    fx = build(tmp_path, not_offered_orphan=True)
+    outbox = fx.state / fx.result["run_directory"] / "private-outbox"
+    orphan = [p for p in outbox.iterdir() if p.name.startswith("ext-0-2-")]
+    assert len(orphan) == 1
+    between_reads(monkeypatch, lambda n: n == 1 and orphan[0].unlink())
+    code, doc = run_plain(fx, tmp_path)
+    assert doc["verdict"] == lfr.UNKNOWN_UNSTABLE
+
+
+def test_summary_hash_must_match_the_closed_audit(tmp_path):
+    fx = build(tmp_path, public={"summary_sha": "00" * 32})
+    code, doc = reconcile(fx, tmp_path)
+    assert doc["populations"]["identity"]["verdict"] == lfr.UNRECONCILED
+
+
+def test_stray_load_funding_during_the_run_is_unreconciled(tmp_path):
+    fx = build(tmp_path, stray_load=True)
+    code, doc = reconcile(fx, tmp_path)
+    assert doc["populations"]["owner_during_run"]["load_unmatched"] == 1
+    assert doc["populations"]["owner_during_run"]["verdict"] == lfr.UNRECONCILED
+    assert doc["populations"]["funding_journal"]["verdict"] == lfr.RECONCILED
+    assert doc["verdict"] == lfr.UNRECONCILED
+
+
+def test_reservation_without_a_matching_owner_transaction_is_unreconciled(tmp_path):
+    fx = build(tmp_path)
+    fx.matches[0]["transaction"] = "55" * 32
+    fx.public_files(fx.result, pre_run_tx=PRE_TX[0])
+    code, doc = reconcile(fx, tmp_path)
+    assert doc["populations"]["funding"]["verdict"] == lfr.RECONCILED
+    assert doc["populations"]["funding_journal"]["unmatched"] == 1
+    assert doc["populations"]["funding_journal"]["verdict"] == lfr.UNRECONCILED
+
+
+def test_not_offered_ids_are_unreconciled(tmp_path):
+    fx = build(tmp_path, not_offered=True)
+    code, doc = reconcile(fx, tmp_path)
+    assert doc["populations"]["not_offered"]["count"] == 3
+    assert doc["populations"]["not_offered"]["verdict"] == lfr.UNRECONCILED
+    assert doc["populations"]["outbox"]["verdict"] == lfr.RECONCILED
+    assert doc["verdict"] == lfr.UNRECONCILED
+
+
+def test_accepted_outside_the_offers_is_unreconciled(tmp_path):
+    fx = build(tmp_path, extra_accepted=True)
+    code, doc = reconcile(fx, tmp_path)
+    assert doc["populations"]["accepted"]["verdict"] == lfr.UNRECONCILED
+    assert doc["verdict"] == lfr.UNRECONCILED
+
+
+def test_offered_event_without_ids_is_unreconciled_not_a_crash(tmp_path):
+    fx = build(tmp_path, empty_offer=True)
+    code, doc = reconcile(fx, tmp_path)
+    assert doc["populations"]["offered"]["malformed_events"] == 1
+    assert doc["populations"]["offered"]["verdict"] == lfr.UNRECONCILED
+
+
+def test_lock_taken_between_the_reads_is_producer_live(tmp_path, monkeypatch):
+    fx = build(tmp_path)
+    held = []
+
+    def take(n):
+        if n == 2:
+            fd = os.open(fx.state / "qualification.lock", os.O_RDWR)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            held.append(fd)
+
+    between_reads(monkeypatch, take)
+    try:
+        code, doc = run_plain(fx, tmp_path)
+    finally:
+        for fd in held:
+            os.close(fd)
+    assert doc["verdict"] == lfr.UNKNOWN_PRODUCER_LIVE
+
+
+def test_archive_size_mismatch_is_unreconciled(tmp_path):
+    fx = build(tmp_path)
+    outbox = fx.state / fx.result["run_directory"] / "private-outbox"
+    archive = sorted(outbox.iterdir())[0]
+    with archive.open("ab") as out:
+        out.write(b"x")
+    code, doc = reconcile(fx, tmp_path)
+    assert doc["populations"]["outbox"]["size_mismatches"] == 1
+    assert doc["populations"]["outbox"]["verdict"] == lfr.UNRECONCILED
+
+
+def test_inputs_owned_by_another_uid_are_refused(tmp_path, monkeypatch):
+    fx = build(tmp_path)
+    real = os.geteuid()
+    monkeypatch.setattr(lfr.os, "geteuid", lambda: real + 1)
+    code, doc = run_plain(fx, tmp_path)
+    monkeypatch.undo()
+    assert {"input": "state:root", "code": "not_owned_or_wrong_type"}.items() <= doc["errors"][
+        0
+    ].items()
+    assert not doc["launch_eligible"]
+
+
+def test_journal_line_with_an_unknown_state_is_unknown(tmp_path):
+    fx = build(tmp_path)
+    journal = next(iter(sorted((fx.ceremony / "operations").glob("load-*.jsonl"))))
+    ops.append_line(journal, {"state": "resubmitted"})
+    code, doc = reconcile(fx, tmp_path)
+    assert doc["populations"]["open_operations"]["verdict"] == lfr.UNKNOWN
+    assert any(e["code"] == "state" for e in doc["errors"])
+
+
+def test_open_operation_in_another_address_case_is_found(tmp_path):
+    fx = build(tmp_path, open_op_wallet=OWNER.upper().replace("0X", "0x"))
+    code, doc = reconcile(fx, tmp_path)
+    assert doc["populations"]["open_operations"]["open"] == 1
+    assert doc["populations"]["open_operations"]["verdict"] == lfr.UNRECONCILED
+
+
+def test_open_operation_with_an_unparsed_wallet_is_unknown(tmp_path):
+    fx = build(tmp_path, open_op_wallet="EQ" + "A" * 46)
+    code, doc = reconcile(fx, tmp_path)
+    assert doc["populations"]["open_operations"]["open_with_unparsed_wallet"] == 1
+    assert doc["populations"]["open_operations"]["verdict"] == lfr.UNKNOWN
+
+
+def test_run_refuses_malformed_address_arguments(tmp_path):
+    fx = build(tmp_path)
+    args = args_for(fx, tmp_path / "public" / "out.json")
+    args.operator_wallet = ["0:" + "ab" * 31]
+    with pytest.raises(lfr.Refused) as caught:
+        lfr.run(args, rpc=chain_for(fx)[0])
+    assert caught.value.code == "bad_address"
+
+
+def test_parent_directory_symlink_is_refused(tmp_path):
+    fx = build(tmp_path)
+    (tmp_path / "alias").symlink_to(tmp_path)
+    args = args_for(fx, tmp_path / "public" / "out.json")
+    args.state = str(tmp_path / "alias" / "state")
+    code, doc = lfr.run(args, rpc=chain_for(fx)[0])
+    assert {"input": "state:root", "code": "root_unavailable"}.items() <= doc["errors"][0].items()
+    assert not doc["launch_eligible"]
+
+
+def test_public_parent_symlink_is_refused(tmp_path):
+    fx = build(tmp_path)
+    (tmp_path / "alias").symlink_to(tmp_path / "public")
+    args = args_for(fx, tmp_path / "public" / "out.json")
+    args.reservations = str(tmp_path / "alias" / "reservations.json")
+    code, doc = lfr.run(args, rpc=chain_for(fx)[0])
+    assert any(
+        e["input"] == "public:reservations-dir" and e["code"] == "root_unavailable"
+        for e in doc["errors"]
+    )
+
+
+def test_system_prefix_rules():
+    def info(mode, uid):
+        return os.stat_result((mode, 1, 1, 1, uid, 0, 0, 0, 0, 0))
+
+    lfr._check_system(info(0o040755, 0), "x")
+    lfr._check_system(info(0o041777, 0), "x")
+    for bad in (info(0o040777, 0), info(0o040775, 0), info(0o040755, 4242), info(0o100755, 0)):
+        with pytest.raises(lfr.Refused):
+            lfr._check_system(bad, "x")
+
+
+def test_root_that_is_only_a_system_prefix_is_refused(tmp_path):
+    reader = lfr.Reader()
+    with pytest.raises(lfr.Refused):
+        reader.root("/tmp", "state:root")
+    reader.close()
+
+
+def test_public_inputs_inside_the_state_or_ceremony_are_refused(tmp_path):
+    fx = build(tmp_path)
+    for target in (
+        fx.state / "qualification-active.json",
+        next(iter((fx.ceremony / "operations").glob("load-*.jsonl"))),
+    ):
+        args = args_for(fx, tmp_path / "public" / "out.json")
+        args.reservations = str(target)
+        with pytest.raises(lfr.Refused) as caught:
+            lfr.run(args, rpc=chain_for(fx)[0])
+        assert caught.value.input_id == "public:reservations"
+
+
+def test_partial_read_and_probe_buffers_are_wiped(tmp_path, monkeypatch):
+    fx = build(tmp_path)
+    seen = []
+    real = os.readv
+
+    def failing(fd, buffers):
+        target = buffers[0].obj if isinstance(buffers[0], memoryview) else buffers[0]
+        seen.append(target)
+        buffers[0][0:6] = b"CANARY"
+        raise OSError("read failed")
+
+    monkeypatch.setattr(lfr.os, "readv", failing)
+    reader = lfr.Reader()
+    fd = reader.root(str(fx.state), "state:root")
+    with pytest.raises(lfr.Refused) as caught:
+        reader.read(fd, "qualification-active.json", "state:qualification-active", 1 << 20)
+    assert caught.value.code == "unreadable"
+    assert seen and all(b"CANARY" not in bytes(b) for b in seen)
+
+    def growing(fd, buffers):
+        target = buffers[0].obj if isinstance(buffers[0], memoryview) else buffers[0]
+        seen.append(target)
+        if len(buffers[0]) == 1 and isinstance(buffers[0], bytearray):
+            buffers[0][0:1] = b"C"
+            return 1
+        return real(fd, buffers)
+
+    seen.clear()
+    monkeypatch.setattr(lfr.os, "readv", growing)
+    with pytest.raises(lfr.Refused) as caught:
+        reader.read(fd, "qualification-active.json", "state:qualification-active", 1 << 20)
+    reader.close()
+    assert caught.value.code == "changed_while_read"
+    assert len(seen) >= 2 and all(not any(b) for b in seen)

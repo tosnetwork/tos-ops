@@ -15,8 +15,9 @@ clears, re-signs or resends anything, and it never writes the fence marker.
 
 Boundaries, each enforced in code and by an audit hook:
 
-* Only allowlisted names are opened, read-only, through directory fds with
-  O_NOFOLLOW at every level; every component must be owned by this uid.
+* Only allowlisted names are opened, read-only. Each root is walked from / with
+  O_NOFOLLOW|O_DIRECTORY at every level; only the leading system prefixes may be
+  root-owned, and every component below them must be owned by this uid.
   Keys (highload.key, *.pk, ceremony secret/), signed messages (*.boc,
   ceremony sent/, carrier archives), native captures and dry-run directories
   are never opened. The carrier archive directory is listed for names and
@@ -29,6 +30,8 @@ Boundaries, each enforced in code and by an audit hook:
   tokenize is wiped and not decoded, and every buffer is wiped before release.
   Journals are never hashed raw; only events.jsonl, the summary and result.json
   (which hold no signed bytes) are.
+* Chain reads (required, two sources) are observation only: relayer seqnos and
+  each source's masterchain seqno are reported, and never change a verdict.
 * Errors carry a logical input id and a byte offset, never content. Core dumps
   are disabled before the first open.
 
@@ -61,7 +64,7 @@ MAX_EVENTS_BYTES = 1 << 31
 MAX_SAMPLE = 64
 JOURNAL_STATES = ("planned", "signed", "broadcast", "settled", "failed")  # testnet_ops.py:113
 OPEN_STATES = ("planned", "signed", "broadcast")
-READ_ONLY_RPC = frozenset({"getAddressInformation", "runGetMethod"})
+READ_ONLY_RPC = frozenset({"getAddressInformation", "runGetMethod", "getMasterchainInfo"})
 
 RECONCILED, UNRECONCILED, UNKNOWN = "RECONCILED", "UNRECONCILED", "UNKNOWN"
 OBSERVED = "OBSERVED"
@@ -117,6 +120,7 @@ OUTBOX_NAME = re.compile(r"^ext-([0-9]{1,4})-([0-9]{1,10})-([0-9]{1,7})\.boc$")
 JOURNAL_NAME = re.compile(r"^([a-z0-9][a-z0-9._-]{0,80})\.jsonl$")  # testnet_ops.py:52, 838
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 ADDRESS = re.compile(r"^-?[0-9]{1,3}:[0-9a-f]{64}$")
+RAW_ADDRESS = re.compile(r"^(-?[0-9]{1,3}):([0-9a-fA-F]{64})$")
 LABEL = re.compile(r"^load-[a-z]+(?:-[a-z]+)*(?:-[0-9]{1,4})?$")
 LOGICAL_ID = re.compile(r"^(?:state|run|prior\[[0-9]+\]|ops|public|proc):[a-z0-9_.\[\]-]{1,64}$")
 
@@ -126,6 +130,14 @@ DENIED_PARTS = frozenset({"secret", "sent", "native-captures"})
 DENIED_NAMES = frozenset({"highload.key", "highload.pub", "gid.fif", "qualification.lock", ".lock"})
 DENIED_SUFFIXES = (".pk", ".key", ".boc", ".tmp", ".bin", ".fif")
 DIRECTORY_ONLY = frozenset({"private-outbox", "operations"})
+
+
+def normalize_address(text) -> str | None:
+    """The canonical raw form `wc:hex64` (lower-case hex), or None for any other form."""
+    m = RAW_ADDRESS.match(text) if isinstance(text, str) else None
+    if not m or not -128 <= int(m.group(1)) <= 127:
+        return None
+    return f"{int(m.group(1))}:{m.group(2).lower()}"
 
 
 def denied(path: str, flags: int) -> bool:
@@ -344,6 +356,32 @@ def identity_of(info: os.stat_result) -> list:
     return [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns]
 
 
+# Leading path components that may be system-owned. Everything below the first
+# component outside this set must be owned by this uid (_check).
+SYSTEM_PREFIXES = frozenset({"/", "/home", "/tos"})
+
+
+def _overflow_uid() -> int:
+    """The uid an unmapped owner shows as inside a user namespace."""
+    try:
+        with open("/proc/sys/kernel/overflowuid", "rb") as source:
+            return int(source.read(16).strip())
+    except (OSError, ValueError):
+        return -1
+
+
+SYSTEM_OWNERS = frozenset({0, _overflow_uid()})
+
+
+def _check_system(info: os.stat_result, input_id: str) -> None:
+    """A system prefix directory: root-owned (or this uid), never writable by
+    group or others unless sticky."""
+    writable = info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX
+    owner_ok = info.st_uid in SYSTEM_OWNERS or info.st_uid == os.getuid()
+    if not stat.S_ISDIR(info.st_mode) or not owner_ok or writable:
+        raise Refused(input_id, 0, "not_owned_or_wrong_type")
+
+
 class Reader:
     """Every input opened through a directory fd, read-only, O_NOFOLLOW."""
 
@@ -367,12 +405,40 @@ class Reader:
             self.opened.append(input_id)
 
     def root(self, path: str, input_id: str) -> int:
+        """Walk from / one component at a time, O_NOFOLLOW|O_DIRECTORY at every
+        level: system prefixes by rule, everything below owned by this uid."""
+        path = os.path.abspath(path)
+        parts = [p for p in path.split("/") if p]
+        if any(p in (".", "..") for p in parts):
+            raise Refused(input_id, 0, "root_unavailable")
         try:
-            fd = os.open(path, self.DIR)
+            fd = os.open("/", self.DIR)
         except OSError:
             raise Refused(input_id, 0, "root_unavailable") from None
+        walked, system = "/", True
+        try:
+            _check_system(os.fstat(fd), input_id)
+            for part in parts:
+                try:
+                    child = os.open(part, self.DIR, dir_fd=fd)
+                except OSError:
+                    raise Refused(input_id, 0, "root_unavailable") from None
+                os.close(fd)
+                fd = child
+                walked = os.path.join(walked, part)
+                system = system and walked in SYSTEM_PREFIXES
+                if system:
+                    _check_system(os.fstat(fd), input_id)
+                else:
+                    _check(os.fstat(fd), True, input_id)
+            if system:
+                raise Refused(input_id, 0, "not_owned_or_wrong_type")
+        except BaseException:
+            os.close(fd)
+            raise
         self.fds.append(fd)
-        _check(os.fstat(fd), True, input_id)
+        info = os.fstat(fd)
+        self.idents[input_id] = [info.st_dev, info.st_ino]
         self._note(input_id)
         return fd
 
@@ -413,14 +479,25 @@ class Reader:
             if info.st_size > limit:
                 raise Refused(input_id, 0, "too_large")
             buf = bytearray(info.st_size)
+            probe = bytearray(1)
             got = 0
-            with memoryview(buf) as view:
-                while got < info.st_size:
-                    count = os.readv(fd, [view[got:]])
-                    if count == 0:
-                        break
-                    got += count
-            if got != info.st_size or os.read(fd, 1):
+            try:
+                with memoryview(buf) as view:
+                    while got < info.st_size:
+                        count = os.readv(fd, [view[got:]])
+                        if count == 0:
+                            break
+                        got += count
+                grew = os.readv(fd, [probe])
+            except OSError:
+                wipe_buffer(buf)
+                raise Refused(input_id, got, "unreadable") from None
+            except BaseException:
+                wipe_buffer(buf)
+                raise
+            finally:
+                wipe_buffer(probe)
+            if got != info.st_size or grew:
                 wipe_buffer(buf)
                 raise Refused(input_id, got, "changed_while_read")
             self.idents[input_id] = identity_of(info)
@@ -430,11 +507,17 @@ class Reader:
             os.close(fd)
 
     def document(self, parent, name, input_id, raw_hash=False, limit=MAX_SMALL_BYTES) -> dict:
+        """One JSON document through project_line. Its sha256 is taken over the raw
+        bytes only for events, summary and result (raw_hash); every other document
+        is hashed after projection, so a nulled member is never hashed."""
         buf = self.read(parent, name, input_id, limit)
         try:
             if raw_hash:
                 self.digests[input_id] = hashlib.sha256(buf).hexdigest()
-            return project_line(buf, 0, len(buf), input_id)
+            doc = project_line(buf, 0, len(buf), input_id)
+            if not raw_hash:
+                self.digests[input_id] = hashlib.sha256(buf).hexdigest()
+            return doc
         finally:
             wipe_buffer(buf)
 
@@ -443,6 +526,7 @@ class Reader:
         try:
             if len(buf) != 36:  # testnet-elections.py:2140-2145
                 raise Refused(input_id, 0, "not_an_address_file")
+            self.digests[input_id] = hashlib.sha256(buf).hexdigest()
             return f"{int.from_bytes(buf[32:], 'big', signed=True)}:{buf[:32].hex()}"
         finally:
             wipe_buffer(buf)
@@ -515,6 +599,7 @@ def collect(args, reader: Reader) -> dict:
     facts: dict = {"run": args.run}
     st = reader.root(args.state, "state:root")
     names = reader.listing(st)
+    reader.idents["state:listing"] = names
     for key, name, input_id in (
         ("marker", "qualification-active.json", "state:qualification-active"),
         ("identity", "qualification-identity.json", "state:qualification-identity"),
@@ -591,17 +676,17 @@ def collect(args, reader: Reader) -> dict:
 
 
 def public_document(reader: Reader, path: str, input_id: str):
+    """A public evidence file (refused inside the state or ceremony tree by run()).
+    It holds no signed bytes; it is decoded from the one read buffer and wiped."""
     parent, name = os.path.split(os.path.abspath(path))
     fd = reader.root(parent, input_id + "-dir")
     buf = reader.read(fd, name, input_id, MAX_SMALL_BYTES)
     try:
         reader.digests[input_id] = hashlib.sha256(buf).hexdigest()
-        if buf.lstrip()[:1] == b"[":
-            # A public list document is wrapped so the same boundary decodes it.
-            return project_line(bytearray(b'{"list":') + buf + b"}", 0, len(buf) + 9, input_id)[
-                "list"
-            ]
-        return project_line(buf, 0, len(buf), input_id)
+        try:
+            return json.loads(buf)
+        except ValueError:
+            raise Refused(input_id, 0, "line_not_json") from None
     finally:
         wipe_buffer(buf)
 
@@ -646,6 +731,7 @@ def collect_run(reader: Reader, st: int, run: str) -> dict:
                 continue
             entries.append((int(m.group(1)), int(m.group(2)), int(m.group(3)), info.st_size))
         out["outbox"], out["outbox_odd"] = entries, odd
+        reader.idents["run:outbox-entries"] = [[*e] for e in sorted(entries)] + [[odd]]
     except Refused as exc:
         _refusal(reader, exc)
     return out
@@ -703,7 +789,9 @@ def collect_journals(reader: Reader, ceremony: str) -> dict:
     lock = out["operations_lock"]
     reader.idents["ops:lock"] = identity_of(lock)[:2] if lock else None
     records, projection = [], []
-    names = [n for n in reader.listing(od) if JOURNAL_NAME.match(n) and not n.startswith(".")]
+    listed = reader.listing(od)
+    reader.idents["ops:listing-names"] = listed
+    names = [n for n in listed if JOURNAL_NAME.match(n) and not n.startswith(".")]
     for index, name in enumerate(n for n in names if not n.startswith("baseline-")):
         input_id = f"ops:journal[{index}]"
         record = {"index": index, "unknown": False}
@@ -799,6 +887,9 @@ def evaluate_events(facts: dict, args) -> tuple[dict, dict]:
             ids = _ids(e)
             if ids is None:
                 bad += 1
+                continue
+            if not ids and kind in ("offered", "not_offered"):
+                bad += 1  # an offer of nothing is malformed, not a crash
                 continue
             if kind == "offered":
                 offered.extend(ids)
@@ -957,10 +1048,21 @@ def evaluate_journals(facts, reservations, window, wallets, owner) -> dict:
     unknown = [r for r in records if r.get("unknown")]
     good = [r for r in records if not r.get("unknown")]
     pops = {}
+    odd_wallets = 0
+    for r in good:
+        canonical = normalize_address(r.get("wallet"))
+        if canonical is None:
+            odd_wallets += 1
+            r["wallet_unparsed"] = True
+        else:
+            r["wallet"] = canonical
+    odd_open = [r for r in good if r.get("wallet_unparsed") and r.get("state") in OPEN_STATES]
     open_ops = [r for r in good if r.get("wallet") in wallets and r.get("state") in OPEN_STATES]
     pops["open_operations"] = _pop(
-        UNKNOWN if unknown else (UNRECONCILED if open_ops else RECONCILED),
+        UNKNOWN if unknown or odd_open else (UNRECONCILED if open_ops else RECONCILED),
         open=len(open_ops),
+        open_with_unparsed_wallet=len(odd_open),
+        unparsed_wallets=odd_wallets,
         unparsed_journals=len(unknown),
         journals=len(records),
     )
@@ -1147,12 +1249,20 @@ def relayer_max_seqno(facts) -> dict:
 
 
 def chain_observation(facts, sources, rpc) -> dict:
-    """Read-only relayer seqno on every source; observation only."""
+    """Read-only relayer seqnos and each source's masterchain seqno at read time.
+
+    Observation only: nothing here clears, decides or downgrades a verdict, and
+    an allocated-but-unlogged id stays UNKNOWN whatever the reads show."""
     relayers = facts.get("relayers") or {}
     sources = list(dict.fromkeys(sources))
-    if len(sources) < 2 or not relayers:
-        return _pop(UNKNOWN, sources=len(sources), relayers=[])
     expected = relayer_max_seqno(facts)
+    heads = []
+    for index, source in enumerate(sources):
+        try:
+            head = read_masterchain_seqno(rpc, source)
+        except Exception:
+            head = None
+        heads.append({"index": index, "masterchain_seqno": head})
     rows, agree, consistent = [], True, True
     for index in sorted(relayers):
         seen = []
@@ -1161,25 +1271,41 @@ def chain_observation(facts, sources, rpc) -> dict:
                 seen.append(read_seqno(rpc, source, relayers[index]))
             except Exception:
                 seen.append(None)
+        row_agree = bool(seen) and None not in seen and len(set(seen)) == 1
         if None in seen or len(set(seen)) != 1:
             agree = False
         want = expected[index] + 1 if index in expected else None
-        if want is not None and seen and seen[0] is not None and seen[0] != want:
-            consistent = False
+        matches = None
+        if want is not None and row_agree:
+            matches = seen[0] == want
+            if not matches:
+                consistent = False
         rows.append(
             {
                 "index": index,
                 "outbox_max_seqno_plus_one": want,
                 "observed": [s if type(s) is int else None for s in seen],
+                "sources_agree": row_agree,
+                "matches_outbox": matches,
             }
         )
-    if not agree:
-        verdict = UNKNOWN
-    elif not consistent:
-        verdict = UNRECONCILED
-    else:
-        verdict = OBSERVED
-    return _pop(verdict, sources=len(sources), relayers=rows)
+    return {
+        "observation_only": True,
+        "sources": heads,
+        "relayers": rows,
+        "sources_agree": agree and bool(rows) and len(sources) >= 2,
+        "outbox_consistent": consistent,
+    }
+
+
+def read_masterchain_seqno(rpc, url: str) -> int:
+    if "getMasterchainInfo" not in READ_ONLY_RPC:
+        raise PermissionError("not a read-only method")
+    info = rpc(url, "getMasterchainInfo")
+    seqno = info["last"]["seqno"] if isinstance(info, dict) else None
+    if type(seqno) is not int:
+        raise ValueError
+    return seqno
 
 
 def read_seqno(rpc, url: str, address: str) -> int:
@@ -1253,7 +1379,6 @@ def evaluate(facts: dict, args, chain: dict) -> dict:
     )
     pops["query_ids"] = evaluate_query_ids(facts, extra, args)
     pops["outbox"] = evaluate_outbox(facts, extra)
-    pops["chain_relayer_seqno"] = chain
 
     closed = marker.get("closed") is True
     safe = result.get("safe_to_start_new_run") is True
@@ -1284,6 +1409,7 @@ def evaluate(facts: dict, args, chain: dict) -> dict:
         },
         "closed": closed,
         "safe": safe,
+        "chain_observation": chain,
     }
 
 
@@ -1341,6 +1467,7 @@ ERROR_CODES = frozenset(
         "not_an_address_file",
         "state",
         "no_offers",
+        "bad_address",
     }
 )
 SECRET_PATTERNS = (
@@ -1404,9 +1531,21 @@ def run(args, rpc=None, proc_locks_path: str = "/proc/locks") -> tuple[int, dict
     """Two complete reads, lock observations around them, one output document."""
     disable_core_dumps()
     install_guard()
+    owner = normalize_address(args.funding_owner_address)
+    operators = [normalize_address(w) for w in args.operator_wallet]
+    if owner is None or None in operators:
+        raise Refused("public:arguments", 0, "bad_address")
+    args.funding_owner_address, args.operator_wallet = owner, operators
     for root in (args.state, args.ceremony):
         if inside(os.path.dirname(os.path.abspath(args.out)), root):
             raise Refused("public:out", 0, "denied_name")
+        for input_id, path in (
+            ("public:closed-audit", args.closed_audit),
+            ("public:reservations", args.reservations),
+            ("public:owner-matches", args.owner_matches),
+        ):
+            if inside(path, root):
+                raise Refused(input_id, 0, "denied_name")
     if os.path.lexists(args.out):
         raise Refused("public:out", 0, "denied_name")
     sys.dont_write_bytecode = True
@@ -1446,10 +1585,7 @@ def run(args, rpc=None, proc_locks_path: str = "/proc/locks") -> tuple[int, dict
             locks[name] = (
                 LOCK_HELD if LOCK_HELD in words else (UNKNOWN if UNKNOWN in words else LOCK_FREE)
             )
-        if args.chain_reads:
-            chain = chain_observation(facts, args.source, rpc or lib.rpc)
-        else:
-            chain = _pop(UNKNOWN, sources=0, relayers=[])
+        chain = chain_observation(facts, args.source, rpc or lib.rpc)
         body = evaluate(facts, args, chain)
         verdict, eligible = overall(locks, stable, body, reader.errors)
         violations = GUARD["violations"]
@@ -1467,6 +1603,7 @@ def run(args, rpc=None, proc_locks_path: str = "/proc/locks") -> tuple[int, dict
         "populations": body["populations"],
         "hashes": body["hashes"],
         "addresses": body["addresses"],
+        "chain_observation": body["chain_observation"],
         "errors": [e for e in reader.errors if e["code"] in ERROR_CODES][:MAX_SAMPLE],
         "errors_total": len(reader.errors),
         "inputs_opened": reader.opened,
@@ -1497,6 +1634,13 @@ def parse(argv):
     args = p.parse_args(argv)
     if not RUN_NAME.match(args.run):
         p.error("--run must name a qualification-N directory")
+    if not args.chain_reads or len(set(args.source)) < 2:
+        p.error("--chain-reads with two distinct --source endpoints is required")
+    args.funding_owner_address = normalize_address(args.funding_owner_address)
+    wallets = [normalize_address(w) for w in args.operator_wallet]
+    if args.funding_owner_address is None or None in wallets:
+        p.error("addresses must be raw wc:hex64")
+    args.operator_wallet = wallets
     return args
 
 

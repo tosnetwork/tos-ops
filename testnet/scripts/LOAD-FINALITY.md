@@ -305,8 +305,11 @@ reservations, every operation journal, the query-id counter, the carrier archive
 names, and the unfinished-run marker. It never resets, replays, re-signs or resends,
 and never writes the marker.
 
-- **Allowlist.** Inputs are opened read-only through directory fds, with O_NOFOLLOW
-  at every level and the uid checked on each one. Keys, signed messages, carrier
+- **Allowlist.** Every root is walked from `/` one component at a time
+  (O_NOFOLLOW|O_DIRECTORY at each level). Only the leading system prefixes (`/`,
+  `/home`, `/tos`) may be root-owned, and they must not be writable by others;
+  every component below them must be owned by this uid. Public inputs are refused
+  inside the state or ceremony tree. Keys, signed messages, carrier
   contents, native captures and dry-run directories are refused by name and again
   by an audit hook. The carrier archive is listed for names and sizes only.
 - **Locks.** No lock is taken. Locks are observed in `/proc/locks` before and after
@@ -322,6 +325,10 @@ and never writes the marker.
 - **Counter.** Ids whose low ten bits are 1023 do not exist, so they are structural
   gaps. Any other gap, or any id allocated after the last logged one, stays UNKNOWN;
   relayer seqno reads cannot clear it.
+- **Chain reads.** `--chain-reads` with two distinct sources is required. It
+  records each source's masterchain seqno and each relayer's seqno, and reports
+  source agreement and agreement with the archive. It is observation only: it never
+  clears, decides or downgrades a verdict.
 - **Eligibility.** Launch eligibility needs a closed marker, a result that is safe
   to start, every population RECONCILED and nothing UNKNOWN.
 - **Output.** One new file (O_EXCL) of counts, ids, typed hashes, public addresses

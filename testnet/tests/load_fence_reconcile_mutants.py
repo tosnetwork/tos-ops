@@ -140,9 +140,9 @@ M = [
         "        verdict = RECONCILED\n",
     ),
     (
-        "R23 source disagreement ignored",
-        "        if None in seen or len(set(seen)) != 1:\n",
-        "        if None in seen:\n",
+        "R23 source disagreement report hidden",
+        '        "sources_agree": agree and bool(rows) and len(sources) >= 2,\n',
+        '        "sources_agree": True,\n',
     ),
     (
         "R24 escaped boc key accepted",
@@ -153,6 +153,139 @@ M = [
         "R25 second boc member accepted",
         "        if _skip_ws(buf, i, end) != end or len(spans) > 1:\n",
         "        if _skip_ws(buf, i, end) != end:\n",
+    ),
+    (
+        "R26 chain read clears allocated-unlogged ids",
+        '    pops["query_ids"] = evaluate_query_ids(facts, extra, args)\n',
+        '    pops["query_ids"] = evaluate_query_ids(facts, extra, args)\n'
+        '    if chain.get("outbox_consistent"):\n'
+        '        pops["query_ids"]["verdict"] = RECONCILED\n',
+    ),
+    (
+        "R27 parent symlinks followed in the root walk",
+        "                    child = os.open(part, self.DIR, dir_fd=fd)\n",
+        "                    child = os.open(part, self.DIR & ~os.O_NOFOLLOW, dir_fd=fd)\n",
+    ),
+    (
+        "R28 root walk skips the uid check below the prefix",
+        "                else:\n                    _check(os.fstat(fd), True, input_id)\n",
+        "                else:\n                    pass\n",
+    ),
+    (
+        "R29 journal wallets not normalised",
+        '            r["wallet"] = canonical\n',
+        "            pass\n",
+    ),
+    (
+        "R30 partial read buffer not wiped",
+        "            except OSError:\n                wipe_buffer(buf)\n",
+        "            except OSError:\n                pass\n",
+    ),
+    (
+        "R31 probe byte not wiped",
+        "                wipe_buffer(probe)\n",
+        "                pass\n",
+    ),
+    (
+        "R32 public input inside the state or ceremony accepted",
+        "            if inside(path, root):\n",
+        "            if False:\n",
+    ),
+    (
+        "R33 projected document digest dropped",
+        "            if not raw_hash:\n",
+        "            if False:\n",
+    ),
+    (
+        "R34 offered event without ids crashes",
+        '            if not ids and kind in ("offered", "not_offered"):\n',
+        "            if False:\n",
+    ),
+    (
+        "R35 archive metadata left out of the stability check",
+        '        reader.idents["run:outbox-entries"] = [[*e] for e in sorted(entries)] + [[odd]]\n',
+        "",
+    ),
+    (
+        "R36 writable system prefix accepted",
+        "    writable = info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX\n",
+        "    writable = False\n",
+    ),
+    (
+        "R37 address arguments not validated",
+        "    if owner is None or None in operators:\n",
+        "    if False:\n",
+    ),
+    # The non-author review's guard-removal set, kept here so every guard has a red control.
+    ("X1 executed==offered dropped", "        and x == o\n", ""),
+    (
+        "X2 native==offered dropped",
+        "        native == o\n        and isinstance(finality, dict)\n",
+        "        isinstance(finality, dict)\n",
+    ),
+    (
+        "X3 public reservations pairs dropped",
+        "        and public_pairs == [(lab, amt) for lab, amt, _ in reservations]\n",
+        "",
+    ),
+    ("X4 owner match total dropped", '        and matches.get("total_nanotos") == total\n', ""),
+    ("X5 other gaps ignored", "UNKNOWN if other else RECONCILED", "RECONCILED"),
+    (
+        "X6 start verdict forced",
+        '    out["start_verdict"] = start_verdict\n',
+        '    start_verdict = RECONCILED\n    out["start_verdict"] = start_verdict\n',
+    ),
+    (
+        "X7 errors ignored in overall",
+        "    if UNKNOWN in words or errors:\n",
+        "    if UNKNOWN in words:\n",
+    ),
+    ("X8 digests not compared", "            and first.digests == reader.digests\n", ""),
+    ("X9 summary hash dropped", '        and summary_hash == audit_id.get("summary_sha256")\n', ""),
+    ("X10 chain consistency dropped", "            consistent = False\n", "            pass\n"),
+    (
+        "X11 pre-run rows ignored",
+        "UNKNOWN if unknown else (UNRECONCILED if missing else RECONCILED)",
+        "RECONCILED",
+    ),
+    (
+        "X12 owner_during_run ignored",
+        "    verdict = UNRECONCILED if stray_load or bad_non_load or start is None else RECONCILED\n",
+        "    verdict = RECONCILED\n",
+    ),
+    (
+        "X13 funding_journal ignored",
+        "    verdict = RECONCILED if not unmatched and len(used) == len(reservations) else UNRECONCILED\n",
+        "    verdict = RECONCILED\n",
+    ),
+    ("X14 min_query_id ignored", "    if low < args.min_query_id:\n", "    if False:\n"),
+    (
+        "X15 not_offered ignored",
+        '    pops["not_offered"] = _pop(RECONCILED if ok else UNRECONCILED, count=len(n))\n',
+        '    pops["not_offered"] = _pop(RECONCILED, count=len(n))\n',
+    ),
+    (
+        "X16 accepted subset dropped",
+        '    ok = len(accepted) == len(a) and a <= o and result.get("accepted") == len(a)\n',
+        "    ok = True\n",
+    ),
+    (
+        "X17 closed-but-unsafe fence",
+        "        fence = UNRECONCILED  # a closed marker over an unsafe result (LQ:353-355)\n",
+        "        fence = RECONCILED\n",
+    ),
+    ("X18 second lock observation dropped", "for held in (held0, held1)}", "for held in (held0,)}"),
+    ("X19 outbox size mismatch ignored", "            mismatched += 1\n", "            pass\n"),
+    ("X20 owner check in _check dropped", " or info.st_uid != os.geteuid()", ""),
+    (
+        "X21 projection digest constant",
+        '    reader.digests["ops:projection"] = hashlib.sha256(canonical).hexdigest()\n',
+        '    reader.digests["ops:projection"] = "00" * 32\n',
+    ),
+    (
+        "X22 journal state check dropped",
+        '                if item.get("state") not in JOURNAL_STATES:  # testnet_ops.py:853\n',
+        "                if False:\n",
     ),
 ]
 
