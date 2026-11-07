@@ -638,3 +638,27 @@ one-GiB allocation is not a long-run retention plan. Run only one native child i
 this reader alongside the producer's native worker. No automatic resume or
 cache-trust shortcut is provided: a failed attempt keeps its partial evidence
 and cannot publish successful closed coverage.
+
+### Fixed-window load reports
+
+`testnet/scripts/load_window_audit.py` derives per-window offered rate and native
+completion latency from a closed run already covered by the streaming native
+replayer. Supply `--run`, `--summary`, `--replay-result`, an independently pinned
+`--replay-result-sha256`, a separate new `--output` directory and
+`--window-seconds`. Freeze the window size and criteria in the execution manifest
+before starting an acceptance run. Applying a newly chosen window to old data is
+a retrospective diagnostic, not prospective acceptance.
+
+The tool requires complete equal windows, counts every offered query in its
+original offering window, and includes its native completion even when that
+completion falls in a later window. Each window needs at least 90% of the
+summary's declared target rate, p95 upper bound at most 5 seconds and p99 at most
+10 seconds. Empty windows fail. A failing report is retained with exit status 1;
+input/provenance errors refuse publication. Whole-run percentiles can pass while
+an individual window fails.
+
+This report trusts the separately verified replay-result artifact: its exact
+journal and summary hashes bind the calculation. It does not independently rerun
+cryptography, authorize spending, close a financial fence, judge resource leaks,
+or establish a 72-hour or full-workload acceptance result. Disk-backed indexing
+retains the existing journal/query bounds and a 20 GiB free-space reserve.
