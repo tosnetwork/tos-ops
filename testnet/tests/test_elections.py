@@ -544,6 +544,37 @@ def test_a_load_send_is_never_retried(monkeypatch):
     assert calls == ["sendBoc"]
 
 
+@pytest.mark.parametrize("target", ["3", "6", "6.000000002"])
+def test_refill_threshold_must_precede_safety_stop(tmp_path, target):
+    args = load_args(
+        tmp_path,
+        dry_run=False,
+        batches_per_second=1.0,
+        target_gas_per_block=None,
+        duration=120,
+        max_retries=0,
+        relayer_amount=target,
+        relayer_floor="2",
+    )
+    with pytest.raises(lib.TestnetError, match="refill threshold.*must exceed"):
+        elections.check_load_args(args)
+
+
+@pytest.mark.parametrize("target", ["10", "6.000000003"])
+def test_refill_threshold_uses_exact_nanotos(tmp_path, target):
+    args = load_args(
+        tmp_path,
+        dry_run=False,
+        batches_per_second=1.0,
+        target_gas_per_block=None,
+        duration=120,
+        max_retries=0,
+        relayer_amount=target,
+        relayer_floor="2",
+    )
+    elections.check_load_args(args)
+
+
 def test_load_arguments_are_checked():
     good = load_args(__import__("pathlib").Path("/nonexistent"), dry_run=False)
     good.batches_per_second = 1.0

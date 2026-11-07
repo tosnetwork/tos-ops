@@ -236,6 +236,33 @@ of five or more net failures in one round, free space below 20 GiB) and a
   --duration 2400`; it prints `CURRENT ... after N s` once the shard client
   age falls below 60 s, or `NOT CURRENT` and exits 1.
 
+For load qualification, add `--require-load-metrics` and use a **new** TSV file.
+The probe now retains eligible and postponed external-message queue counts
+separately, oldest queued-message age, active JSON-RPC requests, exporter snapshot
+generation and snapshot age, alongside the existing CPU/RSS/disk/head series.
+Missing, negative or nonfinite exporter values stay unobserved, never zero.
+Strict mode requires every resource/queue field, treats even one unreachable
+sample as an anomaly, and returns 1 at the end if any anomaly occurred, including
+one that later recovered. Ordinary alert mode retains its existing debounce and
+exit behavior. A differing existing TSV header is refused before appending.
+The extra columns apply to both modes: rotate the output file (including an
+alert relay's configured series path) before upgrading an existing watcher.
+
+```bash
+testnet/scripts/watch-testnet.py --inventory hosts.json --out epoch/load-resources.tsv \
+    --interval 30 --cpu-sample 3 --duration 600 --require-load-metrics \
+    --max-metrics-age 120 --max-mempool-age 30 --max-mempool-messages 10000
+```
+
+These queue/freshness thresholds are configurable observation guards, not an
+accepted throughput or latency SLO. Set the trial's thresholds before the run.
+Host CPU is sampled over `--cpu-sample`; it is not per-process CPU. Queue counts
+cover the exporter's external mempool states, not every internal actor queue.
+This read-only series does not bind genesis, native finality, host placement,
+binary identity, offered/accepted load rates, or complete sampling continuity
+across process restarts. Retain those separately in the execution manifest and
+evaluate all timestamps and gaps before claiming a 72-hour load result.
+
 After each rotation, confirm the elected set with the same records file used
 at genesis:
 
@@ -271,7 +298,10 @@ TOS_ROOT=$TOS_ROOT "$TOS_ROOT/.venv/bin/python" testnet/scripts/check-handover.p
 node at least 0.6 s apart (`--interval`; `--lock-dir` shares the spacing with
 other processes) and appends every request with the hash of its answer to
 `journal.jsonl`. It may be started before the boundary: it waits for the
-boundary and for every head to pass the range, up to `--max-wait` seconds. For
+boundary, looks the boundary block up only once every head is five blocks past
+it (a node that still lacks the blocks after the boundary answers with an older
+block; that is retried as lag, not refused as a disagreement), then waits for
+every head to pass the range, all within `--max-wait` seconds. For
 the `--span` blocks on each side of the block at the boundary time it records
 each node's certificate, lookup, header and shard tops, ConfigParam 34 at every
 set-source key block, and ConfigParam 32/34 at the range end, in
@@ -487,3 +517,175 @@ genesis`, `testnet-elections.py pool`, `onboard` and `load`), beside `manifest
   follow this runbook on Ubuntu 24.04 x86_64 only unless a separate build is reviewed.
 - The alert peer sees the coordinator heartbeat, not chain state. Independent
   chain observation requires another approved endpoint/deployment.
+
+### Qualified load evidence
+
+`testnet-elections.py load --qualify-load` adds bounded, durable evidence to the
+existing load driver. Supply distinct `--rpc` and `--confirm-rpc`, the approved
+`--expected-genesis-root` and `--expected-genesis-file` (64 lowercase hex digits
+each), a positive `--funding-ceiling` and a positive `--fee-stop`, in TOS. All
+watched RPC sources must report that full genesis before keys/deployment and at
+periodic safety checks. This is RPC corroboration; the execution packet still
+needs its separate native genesis/configuration/source-funds proofs.
+
+The funding ceiling bounds the sum of new owner transfer amounts in **one run**,
+including initial deployment and refills. It does not include the owner's own
+transfer fees or previously funded assets. The fee-stop is an observed net-burn
+stop for load wallets, sampled at safety checks; it excludes deployment/owner
+fees, can be affected by other inflows, and does not bound costs still in flight.
+It is not an exact total-fee guarantee. Preserve the source owner's reserve and
+set a separately reviewed total allocation for all trials and retained balances.
+
+Every offered query gets private retained original carrier bytes and a durable
+public-metadata event. Execution is checked for **each query** on both RPC
+sources; the old last-query group proxy is not used in qualified mode. Latency is
+from RPC offer to wallet-sequence acceptance / observed processed status, not
+key generation, signing, native finality or full application latency.
+The first execution check is eligible immediately after sequence acceptance;
+qualified observations do not add the ordinary mode's three-second hold. Polling
+and RPC time still contribute to the observed latency; it is not chain finality.
+Histograms have fixed buckets, the seen-ID bitmap is 1 MiB and the live table is capped at
+8,192 queries. Retained carrier/disk growth is expected workload evidence, not
+in-memory retention. Never publish or hash private outbox carriers or keys.
+
+A send/funding uncertainty stops new work. The private unfinished-run marker
+refuses a new qualified run until the original result is reconciled; there is no
+automatic retry, re-sign or resume flag. Successful normal completion releases
+the process lock and closes the run marker only when no queries or unknown
+funding remain. The lock file is retained. These observations alone do not prove
+72 hours, node resource bounds, native settlement, three trials or capacity SLOs.
+
+Do not use `--dry-run` as an unsigned check: existing load dry-run creates keys
+and signs a batch. Qualified dry-run is refused. Build an unsigned execution
+packet and review the actual monitor, load profile and budgets before sending.
+
+All load modes share the same process lock. A state with qualification history
+cannot be reopened in ordinary/dry-run mode, even after a completed run; keep
+using qualification mode. Qualified identities are durably bound to the full
+genesis, and unbound legacy keys cannot be silently adopted. Query-counter data
+and its directory are synced before signing. All send endpoints participate in
+the pre-key/periodic genesis checks, and each actual send route is checked again
+before its carrier is admitted.
+
+Stopping closes admission to new carriers and funding reservations immediately;
+already-started operations still need their original result reconciled. A funding
+thread that outlives the bounded join leaves the run unfinished and fails the
+command. A run cannot publish a safe closed marker with funding still in flight.
+The offering window uses monotonic time; event monotonic timestamps also allow
+gap analysis. Setup/drain time and thermal pauses do not become evidence of
+sustained qualifying throughput by virtue of elapsed wall time alone.
+
+Exceptional cleanup halts admission before waiting for worker shutdown. Qualified
+carriers are capped at 1 MiB, archived once, and that exact immutable snapshot is
+sent; replacing the original pathname cannot change the transmitted bytes. A
+qualified CLI run returns failure unless its declared monotonic offering window
+completed, every offered query was observed executed, all funding was settled,
+and failed/refused/unconfirmed counts are zero. The retained summary still
+exposes the narrower RPC-observation and net-burn scopes above.
+
+The relayer refill trigger is one third of `--relayer-amount`. It must exceed
+`--relayer-floor`: for example, a 10 TOS target with a 2 TOS stop floor is
+accepted, while a 3 TOS target with that floor is refused before key creation or
+signing. This ordering check is necessary, not a funding-latency guarantee;
+leave headroom for the five-second refill check and transfer settlement.
+
+
+Native finality defaults to `--native-slo-population completion-prefix`: each
+completion prefix must satisfy the p95/p99 limits; a breach stops admission for
+that run. Opt-in `fixed-stage` changes this policy. It declares one monotonic
+interval before offers and rejects offers at or after the original deadline,
+including queued workers. Running percentiles remain visible but provisional.
+After sealing admission and bounded native drain/join, all originally offered
+requests must finalize and conservative bucket-upper p95/p99 must satisfy 5/10
+seconds. Empty, pending, shorter or failed populations cannot pass. Proof-age,
+query-age, integrity, funding and resource guards still stop admission immediately.
+Do not append samples, extend stages after outliers or relabel legacy failures.
+This is an explicit policy choice, not a quantile arithmetic correction.
+
+Fixed-stage journals record start/duration, seal and final evaluation events.
+Closed-run replay binds mode to the producer packet, baseline and summary, checks
+the original offer interval and finalization order, and recomputes the population
+histogram and successful final percentile bounds. Missing legacy mode fields mean
+completion-prefix. Replay coverage alone does not establish throughput, 72-hour
+acceptance or authority to clear an interrupted financial fence.
+
+
+The default `--native-cutoff-policy fail` preserves strict fixed-stage behavior: a
+preparation reaching admission after the original deadline fails the run. The
+explicit `not-offered` option requires fixed-stage native qualification. A valid
+preparation that reaches admission at or after the original cutoff is archived
+and recorded as `not_offered`, its allocated query IDs remain consumed, and it
+is never broadcast or put in flight. It is outside the offered population and
+sent/failed counters; throughput still uses every originally offered request
+over the full declared interval. Cancellation cannot remove an admitted request.
+Admission errors, stale proofs, journal failure and uncertain actual HTTP sends
+still fail the original run. An unrecorded cancellation prevents closing its
+financial fence. The replay binds this policy to immutable argv/baseline/summary,
+checks cancellation time, disjoint IDs/counts and rejects any native receipt
+hidden as not offered. No retry or signed-carrier replay is introduced. Existing
+failed campaigns retain their original policy and verdict. This is an explicit
+pre-admission disposition policy change; it does not extend the interval or
+relax the p95/p99, proof-age, query-age or funding guards.
+
+### Replay public proof captures while a load run is active
+
+`testnet/scripts/load_stream_replay.py` verifies retained public captures as the
+producer appends its event journal. Like the closed-run reader, it currently
+accepts qualified highload `skip` runs. It uses the same native full-anchor verifier,
+transaction-history decoder, signed-request digest matching and observation-clock
+checks as the closed-run reader. It acquires no live proofs and never opens
+private carriers, signs, broadcasts or changes the original qualification fence.
+
+Pass an absolute `--run` directory, a new separate `--output` directory and the
+same pinned anchor, schema, verifier, producer packet, wallet and network identity
+arguments accepted by `load_run_replay.py`. The original producer continues to
+own its journal and captures. Partial event lines wait for their newline; file
+replacement, truncation, prefix changes, unsafe summaries and unmatched captures
+prevent successful completion. The result candidate is flushed and fsynced
+before the original journal, summary, closed marker, captures and pinned inputs
+are rechecked immediately before exclusive atomic publication. Output paths
+must have canonical parents so an
+alias cannot place replay files inside the original run.
+
+Live `PROGRESS.json` always says `LIVE_COVERAGE_NOT_ACCEPTED`. A final `RESULT.json`
+requires the producer's own safely closed summary, the complete unchanged event
+journal, every original capture and matching final counters and histogram. An
+open marker for that run cannot be overridden by completed proofs. Coverage does
+not establish throughput, load acceptance or permission to close an interrupted
+financial fence. Require both a successful process exit and the final coverage
+status before accepting the output.
+
+The reader waits up to four days by default, refuses a horizon above seven days
+and stops after 300 seconds without journal or proof progress. These bounds are
+configurable with `--max-seconds` and `--idle-seconds`. It retains the existing
+one-million-capture and one-TiB maximum archive limits, defaults to a 128-GiB
+archive budget, and checks free disk space before each native replay. Set and
+review a suitable `--max-unique-bytes` budget before a long run; a short-stage
+one-GiB allocation is not a long-run retention plan. Run only one native child in
+this reader alongside the producer's native worker. No automatic resume or
+cache-trust shortcut is provided: a failed attempt keeps its partial evidence
+and cannot publish successful closed coverage.
+
+### Fixed-window load reports
+
+`testnet/scripts/load_window_audit.py` derives per-window offered rate and native
+completion latency from a closed run already covered by the streaming native
+replayer. Supply `--run`, `--summary`, `--replay-result`, an independently pinned
+`--replay-result-sha256`, a separate new `--output` directory and
+`--window-seconds`. Freeze the window size and criteria in the execution manifest
+before starting an acceptance run. Applying a newly chosen window to old data is
+a retrospective diagnostic, not prospective acceptance.
+
+The tool requires complete equal windows, counts every offered query in its
+original offering window, and includes its native completion even when that
+completion falls in a later window. Each window needs at least 90% of the
+summary's declared target rate, p95 upper bound at most 5 seconds and p99 at most
+10 seconds. Empty windows fail. A failing report is retained with exit status 1;
+input/provenance errors refuse publication. Whole-run percentiles can pass while
+an individual window fails.
+
+This report trusts the separately verified replay-result artifact: its exact
+journal and summary hashes bind the calculation. It does not independently rerun
+cryptography, authorize spending, close a financial fence, judge resource leaks,
+or establish a 72-hour or full-workload acceptance result. Disk-backed indexing
+retains the existing journal/query bounds and a 20 GiB free-space reserve.
