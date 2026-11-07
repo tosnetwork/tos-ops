@@ -47,6 +47,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -1079,14 +1080,53 @@ SA_DATA_STACK_LEN = 25
 
 
 def decode_service_data(stack: list) -> dict:
+    """get_service_data from a raw JSON-RPC stack. The node serializes the TVM stack top-first
+    (validator-engine/json-rpc-server-runresult.cpp writes stk->at(i) for i = 0.., and at(0) is
+    the top), so the last returned field comes first; it is reversed here, once, into FunC
+    return order before SA_DATA_SLOTS indexes it."""
     if len(stack) != SA_DATA_STACK_LEN:
         raise Refusal(f"get_service_data returned {len(stack)} entries, not {SA_DATA_STACK_LEN}")
-    out = {k: stack_int(stack[i]) for k, i in SA_DATA_SLOTS.items()}
+    ordered = list(reversed(stack))
+    if ordered[0][0] == "num" or ordered[1][0] != "num":
+        raise Refusal("get_service_data stack does not start with the owner address")
+    out = {k: stack_int(ordered[i]) for k, i in SA_DATA_SLOTS.items()}
     floor = SA_OPERATING_RESERVE_NANOTOS
     for k in ("locked_storage_fees", "pending_liability", "refundable_liability"):
         floor += out[k]
     out["floor"] = floor
     return out
+
+
+CREDENTIAL_RE = re.compile(rb"(?i)\b(master_key|token|password)=(?!<secret>)[^&\s\"'<>]+")
+
+
+def vault_secrets(url: str | None) -> list[str]:
+    """Every credential component of a vault URL, longest first: the URL itself, the userinfo
+    user and password, and each query and fragment value (decoded and as written). Values
+    shorter than 8 characters are not secrets worth masking (and would mangle output)."""
+    if not url:
+        return []
+    found = {url}
+    try:
+        parts = urllib.parse.urlsplit(url)
+        found.update(v for v in (parts.username, parts.password, parts.fragment) if v)
+        found.update(v for _, v in urllib.parse.parse_qsl(parts.query))
+        found.update(kv.partition("=")[2] for kv in parts.query.split("&"))
+    except ValueError:
+        pass
+    return sorted((v for v in found if v and len(v) >= 8), key=len, reverse=True)
+
+
+def mask_secrets(data: bytes, secrets_: list[str]) -> bytes:
+    """`data` with every listed secret and every `master_key=` / `token=` / `password=` value
+    replaced by `<secret>`; applied before anything is persisted or hashed."""
+    for value in secrets_:
+        data = data.replace(value.encode(), b"<secret>")
+    return CREDENTIAL_RE.sub(lambda m: m.group(1) + b"=<secret>", data)
+
+
+def holds_secret(data: bytes, secrets_: list[str]) -> bool:
+    return any(v.encode() in data for v in secrets_) or CREDENTIAL_RE.search(data) is not None
 
 
 def quiet_window_distance(ts: int, since: int, until: int) -> int:
@@ -1367,14 +1407,18 @@ class Cli:
         self.calls += 1
         started = utc(now())
         timed_out = False
+        env = self.env()
         try:
             proc = subprocess.run(
-                argv, env=self.env(), capture_output=True, timeout=CLI_TIMEOUT_S, check=False
+                argv, env=env, capture_output=True, timeout=CLI_TIMEOUT_S, check=False
             )
             rc, stdout, stderr = proc.returncode, proc.stdout, proc.stderr
         except subprocess.TimeoutExpired as exc:
             timed_out = True
             rc, stdout, stderr = None, exc.stdout or b"", exc.stderr or b""
+        # Credentials never reach a receipt or a digest, whatever the CLI prints.
+        masks = vault_secrets(env.get("VAULT_URL"))
+        stdout, stderr = mask_secrets(stdout, masks), mask_secrets(stderr, masks)
         (self.receipts / f"{label}.stdout").write_bytes(stdout)
         (self.receipts / f"{label}.stderr").write_bytes(stderr)
         self.journal.log(
@@ -4741,9 +4785,13 @@ class Runner:
             rc, out, err = proc.returncode, proc.stdout, proc.stderr
         except subprocess.TimeoutExpired as exc:
             rc, out, err = None, exc.stdout or b"", exc.stderr or b""
-        for value in (secret or {}).values():
-            out = out.replace(str(value).encode(), b"<secret>")
-            err = err.replace(str(value).encode(), b"<secret>")
+        masks = sorted(
+            {m for v in (secret or {}).values() for m in vault_secrets(str(v))}
+            | set(vault_secrets(self.cli.env().get("VAULT_URL"))),
+            key=len,
+            reverse=True,
+        )
+        out, err = mask_secrets(out, masks), mask_secrets(err, masks)
         (self.cli.receipts / f"{label}.stdout").write_bytes(out)
         (self.cli.receipts / f"{label}.stderr").write_bytes(err)
         self.journal.log(
@@ -4767,6 +4815,8 @@ class Runner:
             return None
 
     def sa_redact(self, text: str) -> str:
+        masks = vault_secrets(self.cli.env().get("VAULT_URL"))
+        text = mask_secrets(str(text).encode(), masks).decode("utf-8", "replace")
         return (
             str(text)
             .replace(str(self.private.resolve()), "<private>")
@@ -4820,10 +4870,19 @@ class Runner:
             )
         return point
 
-    def sa_history(self, address: str, since_lt: int, since_hash: str | None, url: str) -> list:
+    def sa_history(
+        self,
+        address: str,
+        since_lt: int,
+        since_hash: str | None,
+        url: str,
+        open_end: bool = False,
+    ) -> list:
         """Every transaction of `address` after (since_lt, since_hash) on one source, newest
         first, each parsed from its BOC and bound to its id, with predecessor continuity back to
-        exactly the baseline (the account's first transaction when since_lt is 0)."""
+        exactly the baseline (the account's first transaction when since_lt is 0). With
+        `open_end` the walk stops at the first transaction at or below since_lt instead (an
+        account outside the case, read back to a logical-time floor)."""
         point = self.sa_point(address, url)
         lt, h = point["last_lt"], point["last_hash"]
         account = norm_addr(address).split(":")[1]
@@ -4849,9 +4908,38 @@ class Runner:
                     raise Refusal(f"transaction {h} is not {address} at lt {lt}")
                 out.append({"row": row, "tx": tx})
                 lt, h = tx["prev_lt"], tx["prev_hash"]
-        if lt != since_lt or (since_lt and h != since_hash):
+        if not open_end and (lt != since_lt or (since_lt and h != since_hash)):
             raise Refusal(f"history of {address} on {url} does not reach its baseline")
         return out
+
+    def sa_source_costs(self, source: str, funding: dict, returns: dict, url: str) -> dict:
+        """SC-source costs outside S, hash-bound: for each funding message, the source
+        transaction that sent it (its total_fees once, plus the message's remaining fwd_fee);
+        for each return, the source transaction that received it (its total_fees). The source
+        is read back from its head to just below the earliest message's created_lt."""
+        created = [int(v) for v in [*funding.values(), *returns.values()]]
+        floor = max(0, min(created) - 512) if created else 0
+        sent, received, txs = {}, {}, {}
+        for item in self.sa_history(source, floor, None, url, open_end=True):
+            tx = item["tx"]
+            for om in tx["out_msgs"]:
+                if om["hash"] in funding:
+                    sent[om["hash"]] = {"tx": tx["hash"], "fwd_fee": om["fwd_fee"]}
+                    txs[tx["hash"]] = tx["total_fees"]
+            m = tx["in_msg"]
+            if m and m["hash"] in returns and m["kind"] == "internal":
+                if item["row"].get("aborted") is True:
+                    raise Refusal(f"the source's credit of return {m['hash']} aborted on {url}")
+                received[m["hash"]] = {"tx": tx["hash"], "total_fees": tx["total_fees"]}
+        funding_fees = sum(txs.values()) + sum(v["fwd_fee"] for v in sent.values())
+        return {
+            "funding_messages": sent,
+            "funding_transaction_fees": txs,
+            "return_credits": received,
+            "funding_fees_nanotos": funding_fees,
+            "return_receive_fees_nanotos": sum(v["total_fees"] for v in received.values()),
+            "missing": sorted(set(funding) - set(sent)) + sorted(set(returns) - set(received)),
+        }
 
     def sa_tx(self, address: str, tid: dict, url: str) -> dict:
         rows = self.rpc.transactions_page(address, int(tid["lt"]), tid["hash"], 1, url)
@@ -5679,6 +5767,7 @@ class Runner:
                             "from": m["source"],
                             "value": m["value"],
                             "fwd_fee": m["fwd_fee"],
+                            "created_lt": m["created_lt"],
                         }
                     for om in tx["out_msgs"]:
                         if om["kind"] == "internal":
@@ -5689,7 +5778,13 @@ class Runner:
                                     "from": name,
                                     **{
                                         k: om[k]
-                                        for k in ("destination", "value", "fwd_fee", "hash")
+                                        for k in (
+                                            "destination",
+                                            "value",
+                                            "fwd_fee",
+                                            "hash",
+                                            "created_lt",
+                                        )
                                     },
                                 }
                             )
@@ -5705,10 +5800,12 @@ class Runner:
                 sums["total_fees"] += f["fees"]
                 sums["fwd_fees"] += f["fwd"]
             in_flight, internal_ins = [], set()
+            funding_msgs, return_msgs = {}, {}
             for om in outs:
                 dest = norm_addr(om["destination"])
                 if dest == source:
                     sums["returned"] += om["value"]
+                    return_msgs[om["hash"]] = om["created_lt"]
                 elif dest in members:
                     if om["hash"] in ins:
                         internal_ins.add(om["hash"])
@@ -5723,6 +5820,7 @@ class Runner:
                 if same_addr(m["from"], source):
                     sums["funded"] += m["value"]
                     funding_fwd += m["fwd_fee"]
+                    funding_msgs[h] = m["created_lt"]
                 else:
                     foreign.append({"in": {"hash": h, **m}})
             delta = sum(v["closing"] - v["opening"] for v in flows.values())
@@ -5739,6 +5837,7 @@ class Runner:
                 "foreign": foreign,
                 "identity_holds": identity,
                 "funding_fwd_fees_outside_s": funding_fwd,
+                "outside_s": self.sa_source_costs(source, funding_msgs, return_msgs, url),
             }
         views = list(per_source.values())
         agree = all(
@@ -5748,8 +5847,16 @@ class Runner:
         ledger = self.sa_case_funded()
         returned_records = sum(int(r.get("returned_nanotos") or 0) for r in returns.values())
         source_view = {
-            url: (self.rpc.info(source, url) or {}).get("balance") for url in self.rpc.all_sources
+            url: int((self.rpc.info(source, url) or {}).get("balance") or 0)
+            for url in self.rpc.all_sources
         }
+        costs = first["outside_s"]
+        net_cost = (
+            first["funded"]
+            + costs["funding_fees_nanotos"]
+            - first["returned"]
+            + costs["return_receive_fees_nanotos"]
+        )
         exact = (
             agree
             and all(a["exact"] for a in first["accounts"].values())
@@ -5776,23 +5883,31 @@ class Runner:
             "exact": exact,
             "outside_s": {
                 "source": source,
+                **costs,
+                "complete": not costs["missing"],
+                "source_net_cost_nanotos": net_cost,
                 "source_balance_per_source": source_view,
-                "note": "SC-source transaction fees are outside S and are not part of the "
-                "identity; the source's remaining headroom is its balance above",
+                "remaining_headroom_nanotos": min(source_view.values()),
+                "note": "SC-source fees are outside S and not part of the S identity; net cost "
+                "= funded + funding fees - returned + return receive fees; headroom is the "
+                "lowest source balance across the sources",
             },
         }
 
     def sa_secret_scan(self) -> dict:
-        """No vault URL or master key in any evidence file."""
-        vault = self.cli.env().get("VAULT_URL") or ""
-        needles = [n for n in (vault, vault.partition("master_key=")[2]) if len(n) >= 16]
+        """No credential component of the vault URL, and no unmasked `master_key=` / `token=` /
+        `password=` value, in any evidence file or private CLI/tool receipt."""
+        needles = vault_secrets(self.cli.env().get("VAULT_URL"))
         hits, scanned = [], 0
-        for path in sorted(self.evidence.rglob("*")):
-            if path.is_file():
-                scanned += 1
-                data = path.read_bytes()
-                if any(n.encode() in data for n in needles) or b"master_key=" in data:
-                    hits.append(str(path.relative_to(self.evidence)))
+        roots = [("evidence", self.evidence), ("receipts", Path(self.cli.receipts))]
+        for name, root in roots:
+            if not root.exists():
+                continue
+            for path in sorted(root.rglob("*")):
+                if path.is_file():
+                    scanned += 1
+                    if holds_secret(path.read_bytes(), needles):
+                        hits.append(f"{name}/{path.relative_to(root)}")
         return {"clean": not hits, "scanned_files": scanned, "hits": hits}
 
     def sa_check_registry_state_init(self, built: dict) -> None:
@@ -5984,28 +6099,37 @@ class Runner:
         r1 = self.sa_r1(capability_id, actor)
         if not r1["refused_as_stated"]:
             raise Refusal("R1 was not refused as stated; no buyer value is sent (rerun repeats R1)")
-        # 7-8. Discover, quote, prepare, call; admitted and pending.
-        offer = self.sa_agreed(
-            lambda: self.sa_read(
-                "buyer",
-                "discover",
-                *self.sa_buyer_args("buyer"),
-                "--capability-id",
-                capability_id,
-                "--version",
-                SA_VERSION,
-            )[1],
-            lambda v: isinstance(v, dict),
-        )
-        if (
-            not same_addr(offer.get("actor"), actor)
-            or offer.get("attestor_key_id") != attestor_text
-        ):
-            raise Refusal(f"the discovered offer does not bind the actor and attestor: {offer}")
+        # 7-8. Discover, quote, prepare, call; admitted and pending. The current-offer checks
+        # hold only until the call is attempted: afterwards R2 may have moved the terms, and a
+        # restart replays the journaled offer, quote and prepare instead of re-judging them.
         quote_args = self.sa_quote_args(str(manifest["path"]), capability_id, agent_id, "quote-1")
-        quote = self.sa_tool_once("scsa-quote-1", "fixture", *quote_args)
-        if quote.get("terms_hash") != offer.get("terms_hash"):
-            raise Refusal("the quote terms_hash is not the discovered offer's")
+        if self.journal.attempted("scsa-call"):
+            offer = (self.sa_evidence_read("scsa-offer.json") or {}).get("offer")
+            if not isinstance(offer, dict):
+                raise Refusal("scsa-call was attempted without a recorded offer; by hand")
+            quote = self.sa_tool_once("scsa-quote-1", "fixture", *quote_args)
+        else:
+            offer = self.sa_agreed(
+                lambda: self.sa_read(
+                    "buyer",
+                    "discover",
+                    *self.sa_buyer_args("buyer"),
+                    "--capability-id",
+                    capability_id,
+                    "--version",
+                    SA_VERSION,
+                )[1],
+                lambda v: isinstance(v, dict),
+            )
+            if (
+                not same_addr(offer.get("actor"), actor)
+                or offer.get("attestor_key_id") != attestor_text
+            ):
+                raise Refusal(f"the discovered offer does not bind the actor and attestor: {offer}")
+            quote = self.sa_tool_once("scsa-quote-1", "fixture", *quote_args)
+            if quote.get("terms_hash") != offer.get("terms_hash"):
+                raise Refusal("the quote terms_hash is not the discovered offer's")
+            self.sa_evidence_write("scsa-offer.json", {"utc": utc(now()), "offer": offer})
         prepared = self.sa_tool_once(
             "scsa-prepare",
             "buyer",
@@ -6145,6 +6269,7 @@ class Runner:
             ),
             "case_funding_within_abort_line": self.sa_case_funded() <= SA_CASE_ABORT_NANOTOS,
             "reconciliation_exact": bool(recon["exact"]),
+            "source_costs_reported": bool((recon.get("outside_s") or {}).get("complete")),
             "secret_scan_clean": bool(scan["clean"]),
         }
         return {
@@ -6190,6 +6315,10 @@ class Runner:
             "after_withdraw": after,
             "returns": returns,
             "reconciliation": recon,
+            "source": {
+                k: (recon.get("outside_s") or {}).get(k)
+                for k in ("source_net_cost_nanotos", "remaining_headroom_nanotos", "complete")
+            },
             "secret_scan": scan,
             "criteria": criteria,
             "pass": all(criteria.values()),
@@ -7090,7 +7219,7 @@ class PlanRunner(Runner):
         return {"bound": True}
 
     def sa_reconcile(self, accounts, returns):
-        return {"exact": True, "set": accounts}
+        return {"exact": True, "set": accounts, "outside_s": {"complete": True}}
 
     def sa_secret_scan(self):
         return {"clean": True}
@@ -7119,9 +7248,10 @@ class _PlanRpc:
         return {"balance": str(10 * NANO), "state": "active"}
 
     def run_get_method(self, address, method, url=None):
-        stack = [["num", "0x0"]] * SA_DATA_STACK_LEN
+        stack = [["num", "0x0"]] * SA_DATA_STACK_LEN  # in return order, served top-first
+        stack[0] = ["slice", {"bytes": "plan"}]
         stack[SA_DATA_SLOTS["withdrawable_revenue"]] = ["num", hex(300_000_000)]
-        return stack
+        return list(reversed(stack))
 
     def state(self, address):
         return "active"
@@ -7264,6 +7394,14 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def mask_text(text: str, runner: Runner) -> str:
+    try:
+        masks = vault_secrets(runner.cli.env().get("VAULT_URL"))
+    except OSError:
+        masks = []
+    return mask_secrets(text.encode(), masks).decode("utf-8", "replace")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     runner = Runner(args)
@@ -7299,14 +7437,14 @@ def main(argv: list[str] | None = None) -> int:
         else:
             out = runner.status()
     except Refusal as exc:
-        reason = str(exc).replace(str(runner.private), "<private>")
+        reason = mask_text(str(exc).replace(str(runner.private), "<private>"), runner)
         runner.journal.log(kind="refusal", command=args.command, reason=reason)
         print(json.dumps({"refused": reason}, indent=2))
         return 3
     except SystemExit:
         raise
     except Exception as exc:  # noqa: BLE001 - journaled, then surfaced as a distinct exit code
-        error = repr(exc).replace(str(runner.private), "<private>")
+        error = mask_text(repr(exc).replace(str(runner.private), "<private>"), runner)
         runner.journal.log(kind="error", command=args.command, error=error)
         print(json.dumps({"error": error}, indent=2))
         return 2

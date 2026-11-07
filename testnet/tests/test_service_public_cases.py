@@ -4475,7 +4475,12 @@ class SaChain:
         return row
 
     def fund(self, to, value, fwd=1_234):
-        return self.record(to, int_msg(SA_SOURCE, to, value, fwd), [], 2_000)
+        """A funding message sent by a real SC-source transaction (fees 1,500) and credited."""
+        if not self.a(SA_SOURCE)["txs"]:
+            self.record(SA_SOURCE, int_msg("0:" + "77" * 32, SA_SOURCE, 10**15), [], 0)
+        out = int_msg(SA_SOURCE, to, value, fwd, lt=self.lt + 11)  # created_lt is unique
+        self.record(SA_SOURCE, None, [out], 1_500)
+        return self.record(to, out, [], 2_000)
 
     def wallet_send(self, wallet, dest, value, body=EMPTY, state_init=None, seqno=None, fwd=7_000):
         acc = self.a(wallet)
@@ -4562,7 +4567,7 @@ def service_stack(withdrawable=0, next_request_id=0, locked=0, pending=0):
         ("pending_liability", pending),
     ):
         stack[spc.SA_DATA_SLOTS[key]] = ["num", hex(value)]
-    return stack
+    return list(reversed(stack))  # the node serves the TVM stack top-first
 
 
 class SaCli:
@@ -5210,7 +5215,7 @@ class SaWithdrawAndConservation(SaCase):
             (spc.NR_ACTOR, SA_REGISTRY_ADDR),
         ):
             amount = self.chain.a(addr)["balance"] - 50_000_000 - 10_000
-            self.chain.wallet_send(addr, SA_SOURCE, amount)
+            self.chain.deliver(self.chain.wallet_send(addr, SA_SOURCE, amount), SA_SOURCE, fees=900)
             out[name] = {"returned_nanotos": amount}
         return out
 
@@ -5264,6 +5269,30 @@ class SaWithdrawAndConservation(SaCase):
             - recon["fwd_fees_nanotos"],
         )
         self.assertNotIn(spc.norm_addr(SA_SOURCE), recon["set"].values())
+        # Outside S: each funding transaction's fees plus its message's remaining fwd_fee, and
+        # each return credit's fees, all hash-bound; net cost and headroom follow from them.
+        source = recon["outside_s"]
+        self.assertTrue(source["complete"], source["missing"])
+        self.assertEqual(len(source["funding_messages"]), 3)
+        self.assertEqual(source["funding_fees_nanotos"], 3 * 1_500 + 3 * 1_234)
+        self.assertEqual(source["return_receive_fees_nanotos"], 3 * 900)
+        self.assertEqual(
+            source["source_net_cost_nanotos"],
+            3_400_000_000 + 3 * 1_500 + 3 * 1_234 - recon["returned_nanotos"] + 3 * 900,
+        )
+        self.assertEqual(source["remaining_headroom_nanotos"], self.chain.a(SA_SOURCE)["balance"])
+        self.assertTrue(recon["exact"])
+
+    def test_a_return_not_yet_credited_at_the_source_is_reported_missing(self):
+        w = self.withdraw()
+        self.runner.sa_payouts("scsa-withdraw-payouts", w, self.actor, SA_PROVIDER_ADDR)
+        amount = self.chain.a(SA_BUYER_ADDR)["balance"] - 50_000_000
+        self.chain.wallet_send(SA_BUYER_ADDR, SA_SOURCE, amount)
+        recon = self.runner.sa_reconcile(
+            self.accounts, {spc.SA_BUYER: {"returned_nanotos": amount}}
+        )
+        self.assertFalse(recon["outside_s"]["complete"])
+        self.assertEqual(len(recon["outside_s"]["missing"]), 1)
 
     def test_a_foreign_credit_or_a_ledger_mismatch_breaks_exactness(self):
         self.chain.record(SA_BUYER_ADDR, int_msg("0:" + "99" * 32, SA_BUYER_ADDR, 5), [], 0)
@@ -5359,6 +5388,10 @@ class SaCaseResult(SaCase):
     """The case verdict on fixtures: every criterion from its own receipt, never a constant."""
 
     def run_case(self, **override):
+        self.install(**override)
+        return self.runner.case_scsa(WALLETS)
+
+    def install(self, **override):
         r = self.runner
         sent, reads = [], []
         r.sa_require_gate = lambda: {"gate": True}
@@ -5425,10 +5458,12 @@ class SaCaseResult(SaCase):
         r.sa_payouts = lambda *a: {"bound": True}
         r.sa_data = lambda a: {"withdrawable_revenue": override.get("left", 0)}
         r.sa_return = lambda: {spc.SA_PROVIDER: {"returned_nanotos": 1}}
-        r.sa_reconcile = lambda acc, ret: {"exact": override.get("exact", True)}
+        r.sa_reconcile = lambda acc, ret: {
+            "exact": override.get("exact", True),
+            "outside_s": {"complete": True, "source_net_cost_nanotos": 1},
+        }
         r.sa_secret_scan = lambda: {"clean": True}
         self.sent = sent
-        return r.case_scsa(WALLETS)
 
     def test_happy_path_passes_with_every_criterion(self):
         result = self.run_case()
@@ -5486,3 +5521,146 @@ class SaReturnRestart(SaCase):
         with self.assertRaises(spc.Refusal):
             self.runner.sa_return()
         self.assertEqual(self.cli.ran, [])
+
+
+class SaCaseRestart(SaCase):
+    """Whole-case restarts after R2 moved the actor's terms: completed phases replay from the
+    journal; the current offer is judged only before the call is attempted."""
+
+    def install(self, **override):
+        SaCaseResult.install(self, **override)
+        r = self.runner
+        self.terms = "33" * 32
+        offer = {"actor": self.actor, "attestor_key_id": "mldsa44:" + "ee" * 32}
+        evidence = {}
+        r.sa_evidence_read = lambda name: evidence.get(name)
+        r.sa_evidence_write = lambda name, rec: evidence.__setitem__(name, rec)
+        r.sa_read = lambda which, *a: (
+            0,
+            {
+                **offer,
+                "terms_hash": self.terms,
+                "requests": [{"request_id": 4, "state": "responded"}],
+            },
+            "",
+        )
+
+        def call(label, h):
+            if not r.journal.attempted(label):
+                r.journal.attempt(label, {"kind": "buyer-call"})
+                self.sent.append(label)
+            return {"verdict": "admitted", "status": {"request_id": 4}}
+
+        def r2(*a):
+            self.terms = "99" * 32  # the price change moves the actor's terms
+            return {"refused_as_stated": True}
+
+        self.crash = None
+
+        def withdraw(a):
+            if self.crash == "withdraw":
+                self.crash = None
+                raise SystemExit("drill: lost during withdraw")
+            self.sent.append("scsa-withdraw")
+            return {"verdict": "applied"}
+
+        def returns():
+            if self.crash == "return":
+                self.crash = None
+                raise SystemExit("drill: lost during return")
+            return {spc.SA_PROVIDER: {"returned_nanotos": 1}}
+
+        r.sa_buyer_call, r.sa_r2, r.sa_withdraw, r.sa_return = call, r2, withdraw, returns
+
+    def restart_after(self, phase):
+        self.install()
+        self.crash = phase
+        with self.assertRaises(SystemExit):
+            self.runner.case_scsa(WALLETS)
+        self.assertEqual(self.terms, "99" * 32)
+        result = self.runner.case_scsa(WALLETS)
+        self.assertTrue(result["pass"], result["criteria"])
+        self.assertEqual(self.sent.count("scsa-call"), 1)
+
+    def test_a_restart_after_r2_reaches_withdraw_and_return(self):
+        self.restart_after("withdraw")
+
+    def test_a_restart_after_withdraw_reaches_return(self):
+        self.restart_after("return")
+        self.assertEqual(self.sent.count("scsa-withdraw"), 2)  # stub replays; real one rereads
+
+    def test_before_the_call_a_changed_offer_still_refuses(self):
+        self.install()
+        self.terms = "99" * 32
+        with self.assertRaises(spc.Refusal):
+            self.runner.case_scsa(WALLETS)
+        self.assertNotIn("scsa-call", self.sent)
+
+
+class SaStackOrder(unittest.TestCase):
+    def test_a_top_first_stack_with_distinct_slots_decodes_in_return_order(self):
+        # Built top-first by hand: JSON entry i is FunC return slot 24 - i (owner slice last).
+        served = []
+        for i in range(spc.SA_DATA_STACK_LEN):
+            slot = spc.SA_DATA_STACK_LEN - 1 - i
+            served.append(["slice", {"bytes": "owner"}] if slot == 0 else ["num", hex(1000 + slot)])
+        data = spc.decode_service_data(served)
+        for key, slot in spc.SA_DATA_SLOTS.items():
+            self.assertEqual(data[key], 1000 + slot, key)
+        self.assertEqual(data["withdrawable_revenue"], 1019)
+        self.assertEqual(data["floor"], 1_000_000_000 + 1020 + 1021 + 1022)
+
+    def test_a_stack_in_return_order_is_refused_not_misread(self):
+        stack = [["slice", {"bytes": "owner"}]] + [["num", hex(1000 + k)] for k in range(1, 25)]
+        with self.assertRaises(spc.Refusal):
+            spc.decode_service_data(stack)
+
+
+SYNTHETIC_KEY = "5e" * 32
+SYNTHETIC_VAULT = f"hashicorp://ops:tok3n-secret-xyz@vault.invalid/v1?master_key={SYNTHETIC_KEY}"
+
+
+class SaCredentialMasking(SaCase):
+    def test_every_credential_component_is_masked(self):
+        masks = spc.vault_secrets(SYNTHETIC_VAULT)
+        self.assertIn(SYNTHETIC_KEY, masks)
+        self.assertIn("tok3n-secret-xyz", masks)
+        for text in (
+            SYNTHETIC_VAULT,
+            f"error: key {SYNTHETIC_KEY} rejected",
+            "tok3n-secret-xyz",
+            "master_key=" + "9a" * 32,
+            "token=abcdefgh123",
+        ):
+            with self.subTest(text=text):
+                out = spc.mask_secrets(text.encode(), masks)
+                self.assertFalse(spc.holds_secret(out, masks), out)
+                self.assertIn(b"<secret>", out)
+
+    def test_the_cli_receipts_and_digests_never_see_a_key_fragment(self):
+        base = Path(self.tmp.name)
+        script = base / "fake-tosctl"
+        script.write_text(f"#!/bin/sh\necho 'probe {SYNTHETIC_KEY}' >&2\necho ok\n")
+        script.chmod(0o700)
+        (self.private / "vault.env").write_text(f"VAULT_URL={SYNTHETIC_VAULT}\n")
+        cli = spc.Cli(script, "x", self.private, self.runner.journal)
+        cli.run("probe", "agent", "x")
+        stderr = (self.private / "receipts" / "probe.stderr").read_bytes()
+        self.assertNotIn(SYNTHETIC_KEY.encode(), stderr)
+        self.assertIn(b"<secret>", stderr)
+        events = self.runner.journal.events.read_text()
+        self.assertNotIn(hashlib.sha256(f"probe {SYNTHETIC_KEY}\n".encode()).hexdigest(), events)
+
+    def test_the_scan_covers_receipts_and_goes_red_on_a_planted_fragment(self):
+        self.cli.env = lambda: {"VAULT_URL": SYNTHETIC_VAULT}
+        receipts = self.private / "receipts"
+        receipts.mkdir(exist_ok=True)
+        (receipts / "probe.stderr").write_text("masked <secret> only")
+        self.assertTrue(self.runner.sa_secret_scan()["clean"])
+        (receipts / "probe.stderr").write_text(f"leak {SYNTHETIC_KEY}")
+        scan = self.runner.sa_secret_scan()
+        self.assertFalse(scan["clean"])
+        self.assertEqual(scan["hits"], ["receipts/probe.stderr"])
+        (receipts / "probe.stderr").write_text("ok")
+        (self.evidence / "note.json").write_text("master_key=" + "9a" * 32)
+        self.assertFalse(self.runner.sa_secret_scan()["clean"])
