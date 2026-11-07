@@ -159,6 +159,10 @@ FLAG_FIXTURE = (
 SA_FLAG_FIXTURE = FLAG_FIXTURE.with_name("service-public-cases-cli-flags-014c88971.json")
 SA_CLI_SHA256 = "a19ef2e2596d2ec7de5aac7dac9157206d5992054bb6a0d7680b3070fcf81851"
 SA_BUYER_SHA256 = "a48874562feccdeedc3c5907b6e34e22432c9b2c4968572b8e2d07bc47718ea4"
+# Buyer builds that take the vault URL only as `call --vault-url` (before the protocol change
+# that reads it from VAULT_URL alone and refuses the flag). Every other pinned build gets the
+# vault URL through its environment, never on the command line.
+SA_BUYER_VAULT_FLAG_SHA256 = frozenset({SA_BUYER_SHA256})
 SA_FIXTURE_SHA256 = "0b832bff4d5c13c2c8dc1593b38b9a2af97bb3d3b384476e348d621fae4d4efd"
 SA_CODE_HASH = "tvm-cell-sha256:0594f9a5743440f9c5f63913ab790c0ea6f4fd5c627d9962d63e09428e42aa0c"
 SA_BOC_SHA256 = "sha256:21f1ea22576fce66ec3b218513adf037710b078ea12a8d84929eda970d62d5a8"
@@ -4774,7 +4778,12 @@ class Runner:
         ]
 
     def _tool_exec(
-        self, label: str, which: str, argv: list[str], secret: dict | None = None
+        self,
+        label: str,
+        which: str,
+        argv: list[str],
+        secret: dict | None = None,
+        env_secret: dict | None = None,
     ) -> tuple[int | None, str, str]:
         """Run the pinned buyer or fixture once. `argv` may carry placeholders that `secret`
         maps to values passed to the process only: the journal and the receipts name the
@@ -4786,6 +4795,7 @@ class Runner:
         real = [str((secret or {}).get(a, a)) for a in argv]
         self.cli.receipts.mkdir(mode=0o700, exist_ok=True)
         env = {k: v for k, v in os.environ.items() if k != "VAULT_URL"}
+        env.update({k: str(v) for k, v in (env_secret or {}).items()})
         started = utc(now())
         try:
             proc = subprocess.run(
@@ -4795,7 +4805,11 @@ class Runner:
         except subprocess.TimeoutExpired as exc:
             rc, out, err = None, exc.stdout or b"", exc.stderr or b""
         masks = sorted(
-            {m for v in (secret or {}).values() for m in vault_secrets(str(v))}
+            {
+                m
+                for v in [*(secret or {}).values(), *(env_secret or {}).values()]
+                for m in vault_secrets(str(v))
+            }
             | set(vault_secrets(self.cli.env().get("VAULT_URL"))),
             key=len,
             reverse=True,
@@ -5409,6 +5423,10 @@ class Runner:
                     "buyer_before": {url: self.sa_point(buyer, url, seqno=True) for url in sources},
                 },
             )
+            if self.args.service_buyer_sha256 in SA_BUYER_VAULT_FLAG_SHA256:
+                vault_flag, vault_env = ["--vault-url", "<vault-url>"], None
+            else:
+                vault_flag, vault_env = [], {"VAULT_URL": vault}
             rc, out, _ = self._tool_exec(
                 label,
                 "buyer",
@@ -5425,10 +5443,10 @@ class Runner:
                     str(self.cli.config.resolve()),
                     "--wallet",
                     SA_BUYER,
-                    "--vault-url",
-                    "<vault-url>",
+                    *vault_flag,
                 ],
                 secret={"<vault-url>": vault},
+                env_secret=vault_env,
             )
             answer = self._json_answer(out) or {}
             self.journal.log(

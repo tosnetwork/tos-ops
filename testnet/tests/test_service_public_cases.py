@@ -5000,6 +5000,7 @@ class SaRefusals(SaCase):
     def setUp(self):
         super().setUp()
         self.tool = []
+        self.tool_env = []
         self.answers = {}
         self.runner.sa_buyer_args = lambda state, code_hash=spc.SA_CODE_HASH: [
             "--state-dir",
@@ -5008,8 +5009,9 @@ class SaRefusals(SaCase):
             code_hash,
         ]
 
-        def exec_(label, which, argv, secret=None):
+        def exec_(label, which, argv, secret=None, env_secret=None):
             self.tool.append((label, which, list(argv)))
+            self.tool_env.append(dict(env_secret or {}))
             return (
                 self.answers[argv[0]]
                 if not callable(self.answers[argv[0]])
@@ -5106,6 +5108,29 @@ class SaRefusals(SaCase):
         self.assertNotIn("master_key", json.dumps(self.runner.journal.attempt_record("scsa-call")))
         self.runner.sa_buyer_call("scsa-call", "44" * 32)
         self.assertEqual(len([t for t in self.tool if t[2][0] == "call"]), 1)
+
+    def test_a_post_flag_buyer_gets_the_vault_url_from_its_environment_only(self):
+        self.answers["call"] = (0, json.dumps({"phase": "admitted"}), "")
+        self.answers["status"] = (
+            0,
+            json.dumps({"found": True, "state": "pending", "request_id": 4}),
+            "",
+        )
+        self.chain.fund(SA_BUYER_ADDR, 800_000_000)
+        self.runner.args.service_buyer_sha256 = "ab" * 32
+        self.runner.sa_buyer_call("scsa-call", "45" * 32)
+        calls = [i for i, t in enumerate(self.tool) if t[2][0] == "call"]
+        self.assertEqual(len(calls), 1)
+        argv, env = self.tool[calls[0]][2], self.tool_env[calls[0]]
+        self.assertNotIn("--vault-url", argv)
+        self.assertNotIn("<vault-url>", argv)
+        self.assertEqual(env.get("VAULT_URL"), self.runner.cli.env().get("VAULT_URL"))
+        self.assertTrue(env.get("VAULT_URL"))
+        self.assertNotIn("master_key", json.dumps(self.runner.journal.attempt_record("scsa-call")))
+
+    def test_the_pinned_legacy_buyer_still_gets_the_vault_flag(self):
+        self.assertIn(spc.SA_BUYER_SHA256, spc.SA_BUYER_VAULT_FLAG_SHA256)
+        self.assertEqual(len(spc.SA_BUYER_VAULT_FLAG_SHA256), 1)
 
     def test_a_call_marker_without_a_result_is_never_called_again(self):
         self.answers["status"] = (0, json.dumps({"found": False}), "")
@@ -5661,6 +5686,21 @@ class SaCredentialMasking(SaCase):
         self.assertTrue(self.runner.sa_secret_scan()["clean"])
         (receipts / "probe.stderr").write_text("auth failed for s@t")
         self.assertFalse(self.runner.sa_secret_scan()["clean"])
+
+    def test_a_vault_url_passed_through_the_environment_is_set_and_masked(self):
+        base = Path(self.tmp.name)
+        script = base / "fake-buyer"
+        script.write_text('#!/bin/sh\necho "env $VAULT_URL" >&2\necho "{}"\n')
+        script.chmod(0o700)
+        self.runner._sa_tools = {"buyer": {"path": str(script), "sha256": "x"}}
+        rc, _, err = self.runner._tool_exec(
+            "env-probe", "buyer", ["call"], env_secret={"VAULT_URL": SYNTHETIC_VAULT}
+        )
+        self.assertEqual(rc, 0)
+        stderr = (self.private / "receipts" / "env-probe.stderr").read_bytes()
+        self.assertIn(b"env <secret>", stderr)
+        self.assertNotIn(SYNTHETIC_KEY.encode(), stderr)
+        self.assertNotIn(b"tok3n-secret-xyz", stderr)
 
     def test_the_cli_receipts_and_digests_never_see_a_key_fragment(self):
         base = Path(self.tmp.name)
