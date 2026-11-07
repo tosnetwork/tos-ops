@@ -5637,6 +5637,31 @@ class SaCredentialMasking(SaCase):
                 self.assertFalse(spc.holds_secret(out, masks), out)
                 self.assertIn(b"<secret>", out)
 
+    def test_decoded_and_short_credentials_are_masked(self):
+        for url, echoed in (
+            ("hashicorp://ops:long%40password@vault.invalid/v1", "long@password"),
+            ("hashicorp://ops:long%40password@vault.invalid/v1", "long%40password"),
+            ("hashicorp://ops:s3cr3t@vault.invalid/v1", "s3cr3t"),
+            ("hashicorp://vault.invalid/v1?token=a%2Fb", "a/b"),
+        ):
+            with self.subTest(url=url, echoed=echoed):
+                masks = spc.vault_secrets(url)
+                data = f"diagnostic: {echoed} refused".encode()
+                self.assertTrue(spc.holds_secret(data, masks))
+                out = spc.mask_secrets(data, masks)
+                self.assertNotIn(echoed.encode(), out)
+                self.assertFalse(spc.holds_secret(out, masks), out)
+
+    def test_the_scan_goes_red_on_a_decoded_short_password_in_receipts(self):
+        url = "hashicorp://ops:s%40t@vault.invalid/v1"
+        self.cli.env = lambda: {"VAULT_URL": url}
+        receipts = self.private / "receipts"
+        receipts.mkdir(exist_ok=True)
+        (receipts / "probe.stderr").write_text("masked <secret> only")
+        self.assertTrue(self.runner.sa_secret_scan()["clean"])
+        (receipts / "probe.stderr").write_text("auth failed for s@t")
+        self.assertFalse(self.runner.sa_secret_scan()["clean"])
+
     def test_the_cli_receipts_and_digests_never_see_a_key_fragment(self):
         base = Path(self.tmp.name)
         script = base / "fake-tosctl"

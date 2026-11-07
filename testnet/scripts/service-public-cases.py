@@ -1102,19 +1102,28 @@ CREDENTIAL_RE = re.compile(rb"(?i)\b(master_key|token|password)=(?!<secret>)[^&\
 
 def vault_secrets(url: str | None) -> list[str]:
     """Every credential component of a vault URL, longest first: the URL itself, the userinfo
-    user and password, and each query and fragment value (decoded and as written). Values
-    shorter than 8 characters are not secrets worth masking (and would mangle output)."""
+    password, and each query and fragment value, each both as written and percent-decoded.
+    Credentials are masked whatever their length (a short password is still a password); only
+    the userinfo user name, which is an identifier rather than a secret, is skipped below 8
+    characters so that masking it cannot mangle unrelated output."""
     if not url:
         return []
-    found = {url}
+    found = {url, urllib.parse.unquote(url)}
     try:
         parts = urllib.parse.urlsplit(url)
-        found.update(v for v in (parts.username, parts.password, parts.fragment) if v)
-        found.update(v for _, v in urllib.parse.parse_qsl(parts.query))
-        found.update(kv.partition("=")[2] for kv in parts.query.split("&"))
+        credentials = [parts.password, parts.fragment]
+        credentials += [kv.partition("=")[2] for kv in parts.query.split("&")]
+        for value in credentials:
+            if value:
+                found.update((value, urllib.parse.unquote(value)))
+        found.update(v for _, v in urllib.parse.parse_qsl(parts.query) if v)
+        user = parts.username or ""
+        for value in (user, urllib.parse.unquote(user)):
+            if len(value) >= 8:
+                found.add(value)
     except ValueError:
         pass
-    return sorted((v for v in found if v and len(v) >= 8), key=len, reverse=True)
+    return sorted((v for v in found if v), key=len, reverse=True)
 
 
 def mask_secrets(data: bytes, secrets_: list[str]) -> bytes:
