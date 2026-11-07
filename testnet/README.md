@@ -236,6 +236,33 @@ of five or more net failures in one round, free space below 20 GiB) and a
   --duration 2400`; it prints `CURRENT ... after N s` once the shard client
   age falls below 60 s, or `NOT CURRENT` and exits 1.
 
+For load qualification, add `--require-load-metrics` and use a **new** TSV file.
+The probe now retains eligible and postponed external-message queue counts
+separately, oldest queued-message age, active JSON-RPC requests, exporter snapshot
+generation and snapshot age, alongside the existing CPU/RSS/disk/head series.
+Missing, negative or nonfinite exporter values stay unobserved, never zero.
+Strict mode requires every resource/queue field, treats even one unreachable
+sample as an anomaly, and returns 1 at the end if any anomaly occurred, including
+one that later recovered. Ordinary alert mode retains its existing debounce and
+exit behavior. A differing existing TSV header is refused before appending.
+The extra columns apply to both modes: rotate the output file (including an
+alert relay's configured series path) before upgrading an existing watcher.
+
+```bash
+testnet/scripts/watch-testnet.py --inventory hosts.json --out epoch/load-resources.tsv \
+    --interval 30 --cpu-sample 3 --duration 600 --require-load-metrics \
+    --max-metrics-age 120 --max-mempool-age 30 --max-mempool-messages 10000
+```
+
+These queue/freshness thresholds are configurable observation guards, not an
+accepted throughput or latency SLO. Set the trial's thresholds before the run.
+Host CPU is sampled over `--cpu-sample`; it is not per-process CPU. Queue counts
+cover the exporter's external mempool states, not every internal actor queue.
+This read-only series does not bind genesis, native finality, host placement,
+binary identity, offered/accepted load rates, or complete sampling continuity
+across process restarts. Retain those separately in the execution manifest and
+evaluate all timestamps and gaps before claiming a 72-hour load result.
+
 After each rotation, confirm the elected set with the same records file used
 at genesis:
 
