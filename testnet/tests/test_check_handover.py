@@ -434,12 +434,12 @@ def collect_args(tmp_path, fake, **extra):
     return argparse.Namespace(**values)
 
 
-def run_collect(tmp_path, fake, wall=None, **extra):
+def run_collect(tmp_path, fake, wall=None, transport=None, **extra):
     wall = wall or Clock(fake.c["boundary"] + 60.0)
     args = collect_args(tmp_path, fake, **extra)
     summary = ch.collect(
         args,
-        transport=fake,
+        transport=transport or fake,
         clock=wall,
         sleep=wall.sleep,
         now=wall,
@@ -520,6 +520,85 @@ def test_collect_refuses_disagreeing_boundary_blocks(tmp_path):
     fake.index[key]["result"]["seqno"] += 1
     with pytest.raises(ch.HandoverError, match="disagree on the block at the boundary"):
         run_collect(tmp_path, fake)
+
+
+def lagging_transport(fake, wall, node, until, behind=1, error=False):
+    """While wall() < until, `node` has not received the blocks after the boundary:
+    its head and its time lookup name a block `behind` seqnos before the others'
+    (or, with error=True, the time lookup fails outright)."""
+    boundary = fake.c["boundary_lookups"][node]["answer"]["result"]["seqno"]
+
+    def transport(url, method, params):
+        out = fake(url, method, params)
+        if fake.urls[url] != node or wall() >= until:
+            return out
+        out = copy.deepcopy(out)
+        if method == "lookupBlock" and "unixtime" in params:
+            if error:
+                out["answer"] = {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "error": {"code": -32004, "message": "block not found"},
+                }
+            else:
+                out["answer"]["result"]["seqno"] = boundary - behind
+        elif method == "getMasterchainInfo":
+            out["answer"]["result"]["last"]["seqno"] = boundary - behind
+        return out
+
+    return transport
+
+
+def time_lookups(fake, node):
+    return [c for c in fake.calls if c[0] == node and c[1] == "lookupBlock" and "unixtime" in c[2]]
+
+
+def test_collect_waits_for_a_head_that_lags_at_the_boundary(tmp_path):
+    fake = FakeNodes()
+    wall = Clock(fake.c["boundary"] + 1.0)
+    until = fake.c["boundary"] + 40.0
+    lagging = lagging_transport(fake, wall, "node-3", until)
+    args, summary = run_collect(tmp_path, fake, wall=wall, transport=lagging)
+    assert summary["center"] == 230378 and wall.t >= until
+    assert len(time_lookups(fake, "node-3")) > 1
+    collected = json.loads((args.out / "collection.json").read_text())
+    assert collected["boundary_lookups"]["node-3"]["answer"]["result"]["seqno"] == 230378
+    assert collected["heads"]["node-3"]["answer"]["result"]["last"]["seqno"] == 230598
+    report = run(collected)
+    assert report["result"] == "PASS", report["failures"]
+
+
+def test_collect_gives_up_on_a_head_that_never_passes_the_boundary(tmp_path):
+    fake = FakeNodes()
+    wall = Clock(fake.c["boundary"] + 1.0)
+    lagging = lagging_transport(fake, wall, "node-3", float("inf"))
+    with pytest.raises(ch.HandoverError, match="did not pass the block at the boundary"):
+        run_collect(tmp_path, fake, wall=wall, max_wait=60, transport=lagging)
+    assert not (tmp_path / "run" / "collection.json").exists()
+    assert wall.t > fake.c["boundary"] + 61
+
+
+def test_collect_gives_up_on_a_boundary_lookup_that_keeps_failing(tmp_path):
+    fake = FakeNodes()
+    wall = Clock(fake.c["boundary"] + 1.0)
+    failing = lagging_transport(fake, wall, "node-3", float("inf"), error=True)
+    with pytest.raises(ch.HandoverError, match="block at the boundary time is unavailable"):
+        run_collect(tmp_path, fake, wall=wall, max_wait=60, transport=failing)
+    assert not (tmp_path / "run" / "collection.json").exists()
+    # The failing lookup was retried, not refused on first sight, until --max-wait passed.
+    assert len(time_lookups(fake, "node-3")) > 1 and wall.t > fake.c["boundary"] + 61
+
+
+def test_collect_recovers_from_a_boundary_lookup_that_fails_at_first(tmp_path):
+    fake = FakeNodes()
+    wall = Clock(fake.c["boundary"] + 1.0)
+    until = fake.c["boundary"] + 20.0
+    failing = lagging_transport(fake, wall, "node-3", until, error=True)
+    args, summary = run_collect(tmp_path, fake, wall=wall, transport=failing)
+    assert summary["center"] == 230378 and len(time_lookups(fake, "node-3")) > 1
+    collected = json.loads((args.out / "collection.json").read_text())
+    assert "error" not in collected["boundary_lookups"]["node-3"]["answer"]
+    assert run(collected)["result"] == "PASS"
 
 
 def test_collect_refuses_another_zero_state(tmp_path):
