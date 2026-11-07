@@ -1,0 +1,751 @@
+{
+  "cli_sha256": "a19ef2e2596d2ec7de5aac7dac9157206d5992054bb6a0d7680b3070fcf81851",
+  "commands": {
+    "agent account deploy": {
+      "exit": 0,
+      "flags": [
+        "--amount",
+        "--config",
+        "--format",
+        "--from",
+        "--help",
+        "--new-generation",
+        "--wallet",
+        "--workchain",
+        "--yes"
+      ],
+      "possible_values": [
+        "table, json"
+      ]
+    },
+    "agent account rotate-controller": {
+      "exit": 0,
+      "flags": [
+        "--amount",
+        "--config",
+        "--format",
+        "--help",
+        "--wallet",
+        "--yes"
+      ],
+      "possible_values": [
+        "table, json"
+      ]
+    },
+    "agent account status": {
+      "exit": 0,
+      "flags": [
+        "--config",
+        "--config-fd",
+        "--config-format",
+        "--format",
+        "--help",
+        "--wallet",
+        "--workchain"
+      ],
+      "possible_values": [
+        "json, yaml, yml",
+        "table, json"
+      ]
+    },
+    "agent account task-send": {
+      "exit": 0,
+      "flags": [
+        "--action-id",
+        "--body-boc",
+        "--config",
+        "--help",
+        "--target",
+        "--valid-until",
+        "--value",
+        "--wallet",
+        "--yes"
+      ],
+      "possible_values": []
+    },
+    "agent account task-send-broadcast": {
+      "exit": 0,
+      "flags": [
+        "--action-id",
+        "--config",
+        "--help",
+        "--wallet",
+        "--yes"
+      ],
+      "possible_values": []
+    },
+    "agent account task-send-prepare": {
+      "exit": 0,
+      "flags": [
+        "--action-id",
+        "--body-boc",
+        "--config",
+        "--help",
+        "--signed-boc-out",
+        "--target",
+        "--valid-until",
+        "--value",
+        "--wallet",
+        "--yes"
+      ],
+      "possible_values": []
+    },
+    "agent account task-send-resolve": {
+      "exit": 0,
+      "flags": [
+        "--action-id",
+        "--config",
+        "--config-fd",
+        "--config-format",
+        "--help",
+        "--journal-directory",
+        "--max-transactions",
+        "--quorum-config",
+        "--wallet"
+      ],
+      "possible_values": [
+        "json, yaml, yml"
+      ]
+    },
+    "agent account update-policy": {
+      "exit": 0,
+      "flags": [
+        "--amount",
+        "--config",
+        "--format",
+        "--help",
+        "--wallet",
+        "--yes"
+      ],
+      "possible_values": [
+        "table, json"
+      ]
+    },
+    "agent attestation deploy": {
+      "exit": 0,
+      "flags": [
+        "--amount",
+        "--config",
+        "--format",
+        "--from",
+        "--help",
+        "--name",
+        "--owner",
+        "--public-key",
+        "--signer-vault-key",
+        "--subject-hash",
+        "--workchain",
+        "--yes"
+      ],
+      "possible_values": [
+        "table, json"
+      ]
+    },
+    "agent attestation send": {
+      "exit": 0,
+      "flags": [
+        "--address",
+        "--amount",
+        "--attested-hash",
+        "--config",
+        "--from",
+        "--help",
+        "--name",
+        "--new-public-key",
+        "--new-signer-vault-key",
+        "--operation",
+        "--query-id",
+        "--sequence",
+        "--signature",
+        "--signer-vault-key",
+        "--yes"
+      ],
+      "possible_values": [
+        "attest, rotate-key, revoke"
+      ]
+    },
+    "agent attestation show": {
+      "exit": 0,
+      "flags": [
+        "--address",
+        "--config",
+        "--format",
+        "--help",
+        "--name"
+      ],
+      "possible_values": [
+        "table, json"
+      ]
+    },
+    "agent dispute deploy": {
+      "exit": 0,
+      "flags": [
+        "--amount",
+        "--attestor-pubkey",
+        "--claimant",
+        "--claimant-evidence-hash",
+        "--config",
+        "--deadline",
+        "--format",
+        "--from",
+        "--help",
+        "--name",
+        "--respondent",
+        "--reviewer",
+        "--signer-vault-key",
+        "--subject-hash",
+        "--workchain",
+        "--yes"
+      ],
+      "possible_values": [
+        "table, json"
+      ]
+    },
+    "agent dispute send": {
+      "exit": 0,
+      "flags": [
+        "--address",
+        "--amount",
+        "--attestation-signature",
+        "--attestor-pubkey",
+        "--config",
+        "--from",
+        "--help",
+        "--name",
+        "--new-attestor-pubkey",
+        "--operation",
+        "--query-id",
+        "--respondent-evidence-hash",
+        "--ruling",
+        "--ruling-hash",
+        "--signer-vault-key",
+        "--split-bps",
+        "--yes"
+      ],
+      "possible_values": [
+        "claimant, respondent, split",
+        "submit-respondent-evidence, rule, rotate-attestor-key, revoke-attestor"
+      ]
+    },
+    "agent dispute show": {
+      "exit": 0,
+      "flags": [
+        "--address",
+        "--config",
+        "--format",
+        "--help",
+        "--name"
+      ],
+      "possible_values": [
+        "table, json"
+      ]
+    },
+    "agent native-registry action": {
+      "exit": 0,
+      "flags": [
+        "--agent",
+        "--capability",
+        "--config",
+        "--counter-signer",
+        "--delegation",
+        "--execute-after",
+        "--format",
+        "--global-config",
+        "--help",
+        "--kind",
+        "--manifest",
+        "--network-label",
+        "--new-owner",
+        "--nonce",
+        "--object-nonce",
+        "--policy",
+        "--signer",
+        "--version"
+      ],
+      "possible_values": [
+        "table, json",
+        "update-policy, delegate, initiate-recovery, complete-recovery, revoke-agent, register-capability, add-version, transfer-capability, revoke-capability"
+      ]
+    },
+    "agent native-registry controller": {
+      "exit": 0,
+      "flags": [
+        "--config",
+        "--format",
+        "--help",
+        "--name"
+      ],
+      "possible_values": [
+        "table, json"
+      ]
+    },
+    "agent native-registry domain": {
+      "exit": 0,
+      "flags": [
+        "--config",
+        "--format",
+        "--global-config",
+        "--help",
+        "--network-label"
+      ],
+      "possible_values": [
+        "table, json"
+      ]
+    },
+    "agent native-registry new-controller": {
+      "exit": 0,
+      "flags": [
+        "--config",
+        "--format",
+        "--help",
+        "--name"
+      ],
+      "possible_values": [
+        "table, json"
+      ]
+    },
+    "agent native-registry register-agent": {
+      "exit": 0,
+      "flags": [
+        "--config",
+        "--format",
+        "--global-config",
+        "--help",
+        "--network-label",
+        "--nonce",
+        "--policy",
+        "--signer",
+        "--workchain"
+      ],
+      "possible_values": [
+        "table, json"
+      ]
+    },
+    "agent native-registry show": {
+      "exit": 0,
+      "flags": [
+        "--address",
+        "--config",
+        "--format",
+        "--global-config",
+        "--help",
+        "--network-label"
+      ],
+      "possible_values": [
+        "table, json"
+      ]
+    },
+    "agent registry deploy": {
+      "exit": 0,
+      "flags": [
+        "--amount",
+        "--bond",
+        "--config",
+        "--format",
+        "--from",
+        "--help",
+        "--metadata-hash",
+        "--name",
+        "--owner",
+        "--pricing-hash",
+        "--registered-at",
+        "--task-categories-hash",
+        "--verification-method-hash",
+        "--verifier",
+        "--workchain",
+        "--yes"
+      ],
+      "possible_values": [
+        "table, json"
+      ]
+    },
+    "agent registry send": {
+      "exit": 0,
+      "flags": [
+        "--address",
+        "--amount",
+        "--config",
+        "--delta",
+        "--from",
+        "--help",
+        "--metadata-hash",
+        "--name",
+        "--operation",
+        "--pricing-hash",
+        "--query-id",
+        "--task-categories-hash",
+        "--verification-method-hash",
+        "--verifier",
+        "--withdraw-amount",
+        "--yes"
+      ],
+      "possible_values": [
+        "update-metadata, update-verifier, stake, withdraw-bond, update-reputation, deactivate, reactivate"
+      ]
+    },
+    "agent registry show": {
+      "exit": 0,
+      "flags": [
+        "--address",
+        "--config",
+        "--format",
+        "--help",
+        "--name"
+      ],
+      "possible_values": [
+        "table, json"
+      ]
+    },
+    "agent service build-state": {
+      "exit": 0,
+      "flags": [
+        "--attestor-pubkey",
+        "--authorized-caller",
+        "--cleanup-bounty",
+        "--config",
+        "--format",
+        "--help",
+        "--metadata-hash",
+        "--open-access",
+        "--owner",
+        "--price-per-call",
+        "--proof-scheme-hash",
+        "--rate-limit-per-day",
+        "--refund-claim-window",
+        "--response-sla",
+        "--storage-fee",
+        "--workchain"
+      ],
+      "possible_values": [
+        "table, json"
+      ]
+    },
+    "agent service deploy": {
+      "exit": 0,
+      "flags": [
+        "--amount",
+        "--attestor-controller",
+        "--attestor-pubkey",
+        "--authorized-caller",
+        "--cleanup-bounty",
+        "--config",
+        "--format",
+        "--from",
+        "--help",
+        "--metadata-hash",
+        "--name",
+        "--open-access",
+        "--owner",
+        "--price-per-call",
+        "--proof-scheme-hash",
+        "--rate-limit-per-day",
+        "--refund-claim-window",
+        "--response-sla",
+        "--storage-fee",
+        "--workchain",
+        "--yes"
+      ],
+      "possible_values": [
+        "table, json"
+      ]
+    },
+    "agent service send": {
+      "exit": 0,
+      "flags": [
+        "--active",
+        "--address",
+        "--amount",
+        "--attestation-signature",
+        "--attestor-controller",
+        "--authorized-caller",
+        "--cleanup-bounty",
+        "--config",
+        "--destination",
+        "--expected-terms-hash",
+        "--from",
+        "--help",
+        "--metadata-hash",
+        "--name",
+        "--new-attestor-pubkey",
+        "--open-access",
+        "--operation",
+        "--price-per-call",
+        "--proof-scheme-hash",
+        "--query-id",
+        "--rate-limit-per-day",
+        "--refund-claim-window",
+        "--request-hash",
+        "--request-id",
+        "--response-hash",
+        "--response-sla",
+        "--storage-fee",
+        "--withdraw-amount",
+        "--yes"
+      ],
+      "possible_values": [
+        "call, respond, expire, claim-refund, sweep-expired-request, update-policy, withdraw-revenue, rotate-attestor-key, revoke-attestor",
+        "true, false"
+      ]
+    },
+    "agent service show": {
+      "exit": 0,
+      "flags": [
+        "--address",
+        "--config",
+        "--format",
+        "--help",
+        "--name"
+      ],
+      "possible_values": [
+        "table, json"
+      ]
+    },
+    "agent task create": {
+      "exit": 0,
+      "flags": [
+        "--agent",
+        "--amount",
+        "--amount-nanotos",
+        "--attestor-pubkey",
+        "--budget",
+        "--budget-nanotos",
+        "--config",
+        "--controller-action-id",
+        "--creator",
+        "--deadline",
+        "--dispute-fallback-agent-bps",
+        "--format",
+        "--from",
+        "--help",
+        "--max-transactions",
+        "--name",
+        "--permission-hash",
+        "--permission-id",
+        "--policy-hash",
+        "--quorum-config",
+        "--review-period",
+        "--signer-vault-key",
+        "--valid-until",
+        "--verifier",
+        "--via-agent-account",
+        "--workchain",
+        "--yes"
+      ],
+      "possible_values": [
+        "table, json"
+      ]
+    },
+    "agent task send": {
+      "exit": 0,
+      "flags": [
+        "--address",
+        "--amount",
+        "--amount-nanotos",
+        "--attestation-signature",
+        "--attestor-pubkey",
+        "--config",
+        "--controller-action-id",
+        "--dispute-hash",
+        "--evidence-hash",
+        "--from",
+        "--help",
+        "--max-transactions",
+        "--name",
+        "--new-attestor-pubkey",
+        "--operation",
+        "--payout",
+        "--payout-nanotos",
+        "--query-id",
+        "--quorum-config",
+        "--result-hash",
+        "--signer-vault-key",
+        "--valid-until",
+        "--via-agent-account",
+        "--yes"
+      ],
+      "possible_values": []
+    },
+    "agent task show": {
+      "exit": 0,
+      "flags": [
+        "--address",
+        "--config",
+        "--format",
+        "--help",
+        "--name"
+      ],
+      "possible_values": [
+        "table, json"
+      ]
+    },
+    "agent wallet activate": {
+      "exit": 0,
+      "flags": [
+        "--config",
+        "--help",
+        "--name"
+      ],
+      "possible_values": []
+    },
+    "agent wallet create": {
+      "exit": 0,
+      "flags": [
+        "--approval-above",
+        "--capability",
+        "--config",
+        "--daily-limit",
+        "--default-task-timeout",
+        "--format",
+        "--help",
+        "--max-per-tx",
+        "--metadata-hash",
+        "--name",
+        "--service",
+        "--service-endpoint-hash",
+        "--subwallet-id",
+        "--task-category",
+        "--version",
+        "--workchain"
+      ],
+      "possible_values": [
+        "table, json"
+      ]
+    },
+    "agent wallet fund": {
+      "exit": 0,
+      "flags": [
+        "--amount",
+        "--config",
+        "--from",
+        "--help",
+        "--message",
+        "--name",
+        "--yes"
+      ],
+      "possible_values": []
+    },
+    "agent wallet rotate-controller": {
+      "exit": 0,
+      "flags": [
+        "--config",
+        "--format",
+        "--help",
+        "--key-name",
+        "--name"
+      ],
+      "possible_values": [
+        "table, json"
+      ]
+    },
+    "agent wallet show": {
+      "exit": 0,
+      "flags": [
+        "--config",
+        "--format",
+        "--help",
+        "--name"
+      ],
+      "possible_values": [
+        "table, json"
+      ]
+    },
+    "agent wallet update-policy": {
+      "exit": 0,
+      "flags": [
+        "--approval-above",
+        "--capability",
+        "--clear-approval-above",
+        "--clear-capabilities",
+        "--clear-metadata-hash",
+        "--clear-service-endpoint-hash",
+        "--clear-services",
+        "--clear-task-categories",
+        "--config",
+        "--daily-limit",
+        "--default-task-timeout",
+        "--format",
+        "--help",
+        "--max-per-tx",
+        "--metadata-hash",
+        "--name",
+        "--service",
+        "--service-endpoint-hash",
+        "--task-category"
+      ],
+      "possible_values": [
+        "table, json"
+      ]
+    },
+    "key add": {
+      "exit": 0,
+      "flags": [
+        "--algorithm",
+        "--config",
+        "--extractable",
+        "--help",
+        "--name"
+      ],
+      "possible_values": []
+    },
+    "wallet activate": {
+      "exit": 0,
+      "flags": [
+        "--all",
+        "--config",
+        "--help",
+        "--name"
+      ],
+      "possible_values": []
+    },
+    "wallet create": {
+      "exit": 0,
+      "flags": [
+        "--config",
+        "--help",
+        "--name",
+        "--subwallet-id",
+        "--version",
+        "--workchain"
+      ],
+      "possible_values": []
+    },
+    "wallet ls": {
+      "exit": 0,
+      "flags": [
+        "--config",
+        "--config-fd",
+        "--config-format",
+        "--format",
+        "--help",
+        "--offline"
+      ],
+      "possible_values": [
+        "json, yaml, yml",
+        "table, json"
+      ]
+    },
+    "wallet send": {
+      "exit": 0,
+      "flags": [
+        "--amount",
+        "--amount-nanotos",
+        "--body-boc",
+        "--bounce",
+        "--build-only",
+        "--config",
+        "--config-fd",
+        "--config-format",
+        "--from",
+        "--help",
+        "--message",
+        "--state-init-boc",
+        "--to",
+        "--via-proxy",
+        "--yes"
+      ],
+      "possible_values": [
+        "json, yaml, yml"
+      ]
+    }
+  }
+}
