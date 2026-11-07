@@ -203,3 +203,32 @@ offline replay: the existing verifier rejects a live-material bundle supplied
 as historical material. Independent historical replay currently needs a
 separately acquired historical request/material bundle at the exact target.
 Continuous retained-proof replay coverage therefore remains an acceptance gate.
+
+### Bounded history RPC failover
+
+The native collector receives the load command's existing `--confirm-rpc` as an
+optional history fallback. For each page it tries that distinct endpoint once
+only when the primary returns a JSON-RPC internal error (`-32603`, without a
+result). A shard client can temporarily lag an already native-proven head. Both
+reads use the exact same account/LT/hash cursor and the original capture deadline;
+there is no new age allowance, infinite retry, signing or admission bypass.
+Primary error bytes/stderr and both public endpoint URLs remain under the
+capture's `rpc-failover/`; the successful page retains its original canonical
+`rpc-N.json` filename for offline replay. Malformed pages, empty lists and other
+error codes still fail immediately. Two internal errors stop the capture.
+
+Fallback rows remain untrusted: the unchanged capture path checks each BOC hash,
+logical time, predecessor chain, transaction semantics and exact signed-request
+digests against the native account head. A fallback with the wrong chain is
+refused without promoting the collector head/state. Existing count/byte/file
+and persistence bounds apply to failed attempts too. Added files can cause the
+existing guard to refuse a pathological capture; its limits are not increased.
+
+Upstream comparison: the underlying transaction-block lookup error remains in
+upstream `validator/impl/liteserver.cpp:1763` at
+857b8a57a178e6ae0fe7fa86e7d81c5233de8560 and TOS
+`validator/impl/liteserver.cpp:1731` at
+f58402109959aac7af8c3d7e93ec66d7468cd9b4. Upstream issue1105 remains open;
+current source/search/release review did not identify a fix for this observation.
+Inherited lookup behavior is unchanged. This operations collector has no upstream
+counterpart; its previously single-endpoint acquisition is the scope of this fix.

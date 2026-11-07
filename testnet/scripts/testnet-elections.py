@@ -3254,6 +3254,7 @@ class LoadDriver:
             anchor_sha256=self.args.native_anchor_sha256,
             liteserver=self.args.native_liteserver,
             rpc=self.args.rpc,
+            confirm_rpc=self.args.confirm_rpc,
             directory=self.qualification.run / "native-captures",
             wallet=wallet,
             code_hash=self.args.native_wallet_code_hash,

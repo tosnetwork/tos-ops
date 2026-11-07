@@ -92,6 +92,7 @@ def test_factory_passes_same_cadence_to_worker_and_collector(tmp_path, monkeypat
         native_liteserver="lite",
         native_wallet_code_hash="33" * 32,
         rpc="rpc",
+        confirm_rpc="confirm-rpc",
     )
     obj.global_id = 2
     obj.qualification = SimpleNamespace(
@@ -102,6 +103,7 @@ def test_factory_passes_same_cadence_to_worker_and_collector(tmp_path, monkeypat
         attach_native=lambda _: order.append("attach"),
     )
     obj.start_native_observer("public-wallet")
+    assert received["collector"]["confirm_rpc"] == "confirm-rpc"
     assert received["collector"]["max_captures"] == 1540
     assert received["worker"]["interval"] == 0.5
     assert order == ["baseline", "attach", "start"]
