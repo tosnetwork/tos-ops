@@ -16,14 +16,22 @@ need nothing installed, and appends one TSV row per host to --out:
   consensus_sessions  free_gib  cpu_busy_pct  cpu_iowait_pct
   mempool_eligible  mempool_postponed  mempool_oldest_age_s
   jsonrpc_active_requests  metrics_snapshot_age_s  metrics_generation
+  missing_reason
 
-An unobserved value is written as `-`. On stdout it prints one line per event,
+An unobserved value is written as `-`. A host that cannot be read is still
+written, every round, as a row with reachable False, every value `-` and a
+fixed missing_reason code (MISSING_REASONS; never command output); the watch
+never stops because one host or probe failed. On stdout it prints one line per event,
 for a person or a monitor to read:
 
   ANOMALY <utc> <host>:<reason> ...   when the set of anomalies changes
   RECOVERED <utc> all clear           when it empties
   SUMMARY <utc> heights host=seqno .. every --summary-every seconds
   CURRENT <utc> <host> after <s> s    with --until-current, then exits
+  ALERT <utc> <host>:missing_for=<s>s reason=<code>
+                                      with --require-load-metrics, once per
+                                      outage after --missing-alert-after
+                                      seconds (default 600) without a sample
 
 Anomalies: host unreachable; unit not active; unit restart count changed;
 head age above --max-head-age; head seqno unchanged for --stuck-samples
@@ -38,7 +46,11 @@ watch started (start it right after the restart), or exits 1 after
 --require-load-metrics requires --cpu-sample > 0, reports every missing resource
 sample and stale/over-limit queues, and exits 1 if any anomaly occurred during
 the run. Without it, ordinary alert debounce and exit behavior are unchanged.
-Use a new TSV when its header differs; old files are never silently migrated.
+In that mode a host missing for --missing-alert-after seconds is alerted once;
+it is alerted again only after it was observed and then went missing again.
+Use a new TSV when its header differs; old files are never silently migrated
+(the trailing missing_reason column was added this way: a series written before
+it is refused, not extended).
 
 Exit status: 0 when --once or --duration ends (except strict anomalies),
 1 on a bad inventory or mismatched TSV header.
@@ -88,6 +100,44 @@ COLUMNS = (
     "jsonrpc_active_requests",
     "metrics_snapshot_age_s",
     "metrics_generation",
+    "missing_reason",
+)
+
+SSH_FAILED = "ssh_failed"
+PROBE_TIMEOUT = "probe_timeout"
+LAUNCH_FAILED = "probe_launch_failed"
+NO_OUTPUT = "probe_no_output"
+OUTPUT_INVALID = "probe_output_invalid"
+PROBE_REFUSED = "probe_refused"
+MISSING_REASONS = frozenset(
+    (SSH_FAILED, PROBE_TIMEOUT, LAUNCH_FAILED, NO_OUTPUT, OUTPUT_INVALID, PROBE_REFUSED)
+)
+NUMERIC_FIELDS = (
+    "unit_restarts",
+    "head_seqno",
+    "head_age_seconds",
+    "shard_client_age_seconds",
+    "net_failures_total",
+    "refusal_answers_total",
+    "rss_bytes",
+    "consensus_bytes",
+    "consensus_sessions",
+    "free_bytes",
+    "cpu_busy_pct",
+    "cpu_iowait_pct",
+    "mempool_eligible",
+    "mempool_postponed",
+    "mempool_oldest_age_seconds",
+    "jsonrpc_active_requests",
+    "metrics_snapshot_timestamp",
+    "metrics_generation",
+)
+# row() converts these with int(), which refuses an infinity or NaN.
+WHOLE_FIELDS = (
+    "head_age_seconds",
+    "shard_client_age_seconds",
+    "net_failures_total",
+    "refusal_answers_total",
 )
 
 LOAD_FIELDS = (
@@ -121,21 +171,52 @@ def probe(
     retry_after: float = 5.0,
     sleep=time.sleep,
 ) -> dict | None:
-    """One check-host-disk.py report from the host, or None when it cannot be read.
+    """One check-host-disk.py report from the host, or None when it cannot be read."""
+    return probe_report(host, cpu_sample, run, retry_after, sleep)[0]
+
+
+def probe_report(
+    host: preflight.Host,
+    cpu_sample: float,
+    run=subprocess.run,
+    retry_after: float = 5.0,
+    sleep=time.sleep,
+) -> tuple[dict | None, str | None]:
+    """(report, None), or (None, a MISSING_REASONS code) when it cannot be read.
 
     A failed read is tried once more after `retry_after` seconds: hosts on the
     public internet see constant SSH login scans, and sshd drops some new
     connections while many unauthenticated ones are pending (MaxStartups), which
     would otherwise show a healthy node as unreachable.
     """
-    report = probe_once(host, cpu_sample, run)
+    report, reason = probe_attempt(host, cpu_sample, run)
     if report is None and retry_after > 0:
         sleep(retry_after)
-        report = probe_once(host, cpu_sample, run)
-    return report
+        report, reason = probe_attempt(host, cpu_sample, run)
+    return report, reason
+
+
+def valid_report(report) -> bool:
+    """Whether row() and Judge can read every value without a type error."""
+    if not isinstance(report, dict):
+        return False
+    active = report.get("unit_active")
+    if active is not None and not isinstance(active, str):
+        return False
+    for key in NUMERIC_FIELDS:
+        value = report.get(key)
+        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))):
+            return False
+    return all(report.get(key) is None or math.isfinite(report[key]) for key in WHOLE_FIELDS)
 
 
 def probe_once(host: preflight.Host, cpu_sample: float, run=subprocess.run) -> dict | None:
+    return probe_attempt(host, cpu_sample, run)[0]
+
+
+def probe_attempt(
+    host: preflight.Host, cpu_sample: float, run=subprocess.run
+) -> tuple[dict | None, str | None]:
     argv = preflight.ssh_argv(host, accept_new=False) + [
         f"python3 - --min-free-gib 0 --cpu-sample {cpu_sample:g}"
     ]
@@ -148,18 +229,29 @@ def probe_once(host: preflight.Host, cpu_sample: float, run=subprocess.run) -> d
             timeout=60 + cpu_sample,
             check=False,
         )
-        report = json.loads(result.stdout.strip().splitlines()[-1])
-    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
-        return None
-    if "refused" in report:
-        return None
-    return report
+    except subprocess.TimeoutExpired:
+        return None, PROBE_TIMEOUT
+    except OSError:
+        return None, LAUNCH_FAILED
+    lines = (result.stdout or "").strip().splitlines()
+    if not lines:
+        return None, SSH_FAILED if getattr(result, "returncode", None) == 255 else NO_OUTPUT
+    try:
+        report = json.loads(lines[-1])
+    except ValueError:
+        return None, OUTPUT_INVALID
+    if isinstance(report, dict) and "refused" in report:
+        return None, PROBE_REFUSED
+    if not valid_report(report):
+        return None, OUTPUT_INVALID
+    return report, None
 
 
-def row(now: float, name: str, report: dict | None) -> dict:
+def row(now: float, name: str, report: dict | None, reason: str | None = None) -> dict:
     out = dict.fromkeys(COLUMNS)
     out["utc"], out["host"], out["reachable"] = utc(now), name, report is not None
     if report is None:
+        out["missing_reason"] = reason if reason in MISSING_REASONS else NO_OUTPUT
         return out
 
     def scaled(key: str, unit: int):
@@ -292,13 +384,36 @@ def select_hosts(inventory: list[preflight.Host], names: str | None) -> list[pre
     return [by_name[n] for n in wanted]
 
 
+class MissingAlerts:
+    """One alert per outage, after `after` seconds without a sample from the host."""
+
+    def __init__(self, after: float):
+        self.after = after
+        self.since: dict[str, float] = {}
+        self.alerted: set[str] = set()
+
+    def __call__(self, current: dict, at: float) -> str | None:
+        name = current["host"]
+        if current["reachable"]:
+            self.since.pop(name, None)
+            self.alerted.discard(name)
+            return None
+        first = self.since.setdefault(name, at)
+        if name in self.alerted or at - first < self.after:
+            return None
+        self.alerted.add(name)
+        return f"{name}:missing_for={int(at - first)}s reason={current['missing_reason']}"
+
+
 def watch(
-    args: argparse.Namespace, probe=probe, now=time.time, sleep=time.sleep, emit=print
+    args: argparse.Namespace, probe=probe_report, now=time.time, sleep=time.sleep, emit=print
 ) -> int:
     hosts = select_hosts(preflight.load_inventory(args.inventory), args.hosts)
     if args.until_current and args.until_current not in {h.name for h in hosts}:
         raise lib.TestnetError(f"--until-current {args.until_current} is not a watched host")
     judge = Judge(args)
+    strict = getattr(args, "require_load_metrics", False)
+    missing_alerts = MissingAlerts(getattr(args, "missing_alert_after", 600.0))
     observed_anomaly = False
     started = now()
     last_summary = None
@@ -307,12 +422,17 @@ def watch(
         round_start = now()
         rows = []
         for h in hosts:
-            report = probe(h, args.cpu_sample)
-            rows.append(row(now(), h.name, report))
+            report, reason = probe(h, args.cpu_sample)
+            rows.append(row(now(), h.name, report, reason))
         append_rows(args.out, rows)
         anomalies = [a for r in rows for a in judge(r)]
         observed_anomaly |= bool(anomalies)
         stamp = utc(round_start)
+        if strict:
+            for r in rows:
+                alert = missing_alerts(r, round_start)
+                if alert:
+                    emit(f"ALERT {stamp} {alert}")
         if anomalies != last_anomalies:
             if anomalies:
                 emit(f"ANOMALY {stamp} {' '.join(anomalies)}")
@@ -355,6 +475,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-metrics-age", type=float, default=120.0)
     parser.add_argument("--max-mempool-age", type=float, default=30.0)
     parser.add_argument("--max-mempool-messages", type=int, default=10000)
+    parser.add_argument("--missing-alert-after", type=float, default=600.0)
     stop = parser.add_mutually_exclusive_group()
     stop.add_argument("--duration", type=float)
     stop.add_argument("--once", action="store_true")
@@ -374,7 +495,12 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("load observation requires positive --cpu-sample and no --until-current")
     if any(
         not math.isfinite(v) or v <= 0
-        for v in (args.max_metrics_age, args.max_mempool_age, args.max_mempool_messages)
+        for v in (
+            args.max_metrics_age,
+            args.max_mempool_age,
+            args.max_mempool_messages,
+            args.missing_alert_after,
+        )
     ):
         parser.error("load observation thresholds must be finite and positive")
     if args.duration is not None and args.duration <= 0:
