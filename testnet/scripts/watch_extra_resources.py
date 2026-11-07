@@ -316,7 +316,9 @@ def watch(
             if baseline is None and not missing and not violations:
                 baseline = current
                 atomic(output / "BASELINE.json", current)
-            for name in observed:
+            # Only a fresh accepted or a violating observation ends an outage;
+            # one that expired at publication is still missing.
+            for name in set(current) | set(violations):
                 tracker.observed(name)
             for name in sorted(violations):
                 state = violations[name].get("unit_active")

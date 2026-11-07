@@ -154,6 +154,36 @@ M = [
         "                alert = missing_alerts(r, round_start)\n",
     ),
     (
+        "T4 extra: an expired observation resets the outage timer",
+        EXTRA,
+        "            for name in set(current) | set(violations):\n",
+        "            for name in observed:\n",
+    ),
+    (
+        "T5 primary: horizon on wall time",
+        PRIMARY,
+        "        if args.duration is not None and monotonic() - started >= args.duration:\n",
+        "        if args.duration is not None and now() - started >= args.duration:\n",
+    ),
+    (
+        "T6 primary: pacing on wall time",
+        PRIMARY,
+        "        sleep(max(0.0, args.interval - (monotonic() - round_clock)))\n",
+        "        sleep(max(0.0, args.interval - (now() - round_start)))\n",
+    ),
+    (
+        "T7 primary: horizon and pacing both on wall time",
+        PRIMARY,
+        "    started = monotonic()\n",
+        "    started = now()\n    monotonic = now  # noqa: F841\n",
+    ),
+    (
+        "T8 primary: summaries paced on wall time",
+        PRIMARY,
+        "        if last_summary is None or round_clock - last_summary >= args.summary_every:\n",
+        "        if last_summary is None or round_start - last_summary >= args.summary_every:\n",
+    ),
+    (
         "P1 primary: a missing host ends the watch",
         PRIMARY,
         "            report, reason = probe(h, args.cpu_sample)\n",

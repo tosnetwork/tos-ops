@@ -425,7 +425,9 @@ def watch(
     strict = getattr(args, "require_load_metrics", False)
     missing_alerts = MissingAlerts(getattr(args, "missing_alert_after", 600.0))
     observed_anomaly = False
-    started = now()
+    # Durations (horizon, pacing, summaries, catch-up time) use the monotonic
+    # clock; the wall clock only stamps rows and events.
+    started = monotonic()
     last_summary = None
     last_anomalies: list[str] = []
     while True:
@@ -450,27 +452,27 @@ def watch(
             else:
                 emit(f"RECOVERED {stamp} all clear")
             last_anomalies = anomalies
-        if last_summary is None or round_start - last_summary >= args.summary_every:
+        if last_summary is None or round_clock - last_summary >= args.summary_every:
             heights = " ".join(f"{r['host']}={r['head_seqno'] or '-'}" for r in rows)
             emit(f"SUMMARY {stamp} heights {heights}")
-            last_summary = round_start
+            last_summary = round_clock
         if args.until_current:
             target = next(r for r in rows if r["host"] == args.until_current)
             age = target["shard_client_age_s"]
             if age is not None and age < CURRENT_SHARD_AGE:
                 emit(
-                    f"CURRENT {stamp} {args.until_current} after {int(round_start - started)} s "
+                    f"CURRENT {stamp} {args.until_current} after {int(round_clock - started)} s "
                     f"(shard client age {age} s)"
                 )
                 return 0
         if args.once:
             return int(getattr(args, "require_load_metrics", False) and observed_anomaly)
-        if args.duration is not None and now() - started >= args.duration:
+        if args.duration is not None and monotonic() - started >= args.duration:
             if args.until_current:
                 emit(f"NOT CURRENT {stamp} {args.until_current} after {args.duration} s")
                 return 1
             return int(getattr(args, "require_load_metrics", False) and observed_anomaly)
-        sleep(max(0.0, args.interval - (now() - round_start)))
+        sleep(max(0.0, args.interval - (monotonic() - round_clock)))
 
 
 def main(argv: list[str] | None = None) -> int:

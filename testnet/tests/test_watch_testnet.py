@@ -93,7 +93,12 @@ def run(tmp_path, rounds, **overrides):
         return report, None if report is not None else watch_testnet.SSH_FAILED
 
     status = watch_testnet.watch(
-        a, probe=probe, now=clock.now, sleep=clock.sleep, emit=events.append
+        a,
+        probe=probe,
+        now=clock.now,
+        sleep=clock.sleep,
+        emit=events.append,
+        monotonic=lambda: clock.t - 1_800_000_000.0,
     )
     return status, events, a.out.read_text().splitlines()
 

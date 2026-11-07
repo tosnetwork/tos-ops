@@ -7,7 +7,7 @@ import subprocess
 
 import pytest
 from conftest import SCRIPTS
-from test_watch_testnet import Clock, inventory, load_report, make_args
+from test_watch_testnet import inventory, load_report, make_args
 
 spec = importlib.util.spec_from_file_location("watch_testnet", SCRIPTS / "watch-testnet.py")
 watch_testnet = importlib.util.module_from_spec(spec)
@@ -36,12 +36,17 @@ class Answer:
         self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
 
 
-def scripted_run(clock, schedule, interval):
-    """A fake SSH: schedule(round, host_address) -> Answer or an exception to raise."""
+def scripted_run(clock, schedule, interval, cost=0.0):
+    """A fake SSH: schedule(round, host_address) -> Answer or an exception to raise.
+
+    Each read takes `cost` monotonic seconds; a runaway watch fails the test.
+    """
 
     def run(argv, **kwargs):
         address = next(a for a in argv if "44." in a).rpartition("@")[2]
         rnd = int(round(clock.mono / interval))
+        clock.mono += cost
+        assert rnd < 1000, "the watch did not stop"
         answer = schedule(rnd, address)
         if isinstance(answer, BaseException):
             raise answer
@@ -51,14 +56,17 @@ def scripted_run(clock, schedule, interval):
 
 
 class SteppedClock:
-    """A steady monotonic clock and a wall clock that `step(round)` moves by seconds."""
+    """A steady monotonic clock and a wall clock that `step(round)` and
+    `jump(monotonic)` move by seconds."""
 
-    def __init__(self, interval, step=lambda _round: 0.0):
+    def __init__(self, interval, step=lambda _round: 0.0, jump=lambda _mono: 0.0):
         self.start, self.mono, self.interval, self.step = 1_800_000_000.0, 0.0, interval, step
+        self.jump, self.slept = jump, []
 
     @property
     def t(self):
-        return self.start + self.mono + self.step(int(round(self.mono / self.interval)))
+        rnd = int(round(self.mono / self.interval))
+        return self.start + self.mono + self.step(rnd) + self.jump(self.mono)
 
     def now(self):
         return self.t
@@ -67,6 +75,7 @@ class SteppedClock:
         return self.mono
 
     def sleep(self, seconds):
+        self.slept.append(seconds)
         self.mono += seconds
 
 
@@ -74,10 +83,21 @@ def fresh_report(clock):
     return json.dumps(load_report(metrics_snapshot_timestamp=clock.t))
 
 
-def run_watch(tmp_path, rounds, schedule, interval=30.0, step=lambda _round: 0.0, **changes):
+def run_watch(
+    tmp_path,
+    rounds,
+    schedule,
+    interval=30.0,
+    step=lambda _round: 0.0,
+    jump=lambda _mono: 0.0,
+    cost=0.0,
+    clock=None,
+    **changes,
+):
     args = strict_args(tmp_path, rounds, interval=interval, **changes)
-    clock, events = SteppedClock(interval, step), []
-    run = scripted_run(clock, lambda r, a: schedule(r, a, clock), interval)
+    clock = clock or SteppedClock(interval, step, jump)
+    events = []
+    run = scripted_run(clock, lambda r, a: schedule(r, a, clock), interval, cost)
     probe = functools.partial(watch_testnet.probe_report, run=run, sleep=lambda _s: None)
     status = watch_testnet.watch(
         args,
@@ -176,9 +196,24 @@ def test_outage_is_timed_on_the_monotonic_clock_across_wall_steps(tmp_path):
     # Round 22 on the monotonic clock, stamped with that round's (stepped) UTC.
     assert "node-2:missing_for=600s" in alerts[0]
     assert watch_testnet.utc(1_800_000_000.0 + 660 - 2000) in alerts[0]
-    # The --duration horizon is still wall time (unchanged), so the backward
-    # step lengthens the run; every round still has a node-2 row.
-    assert len(host_rows(rows, "node-2")) == len(host_rows(rows, "node-1")) >= 45
+    assert len(host_rows(rows, "node-2")) == len(host_rows(rows, "node-1")) == 45
+
+
+def healthy(rnd, address, clock):
+    return Answer(fresh_report(clock))
+
+
+@pytest.mark.parametrize("jump", [100_000.0, -100_000.0])
+def test_horizon_and_pacing_ignore_a_wall_jump_mid_round(tmp_path, jump):
+    # Each read takes 1 s (2 per round); the wall clock jumps after the first
+    # read of round 10. A forward jump must not end the run early, a backward
+    # one must not extend it, and the pause stays interval minus the round.
+    clock = SteppedClock(30.0, jump=lambda mono: jump if mono >= 301 else 0.0)
+    _status, events, rows, _ = run_watch(tmp_path, 20, healthy, cost=1.0, clock=clock)
+    assert len(host_rows(rows, "node-1")) == len(host_rows(rows, "node-2")) == 20
+    assert clock.slept == [28.0] * 19
+    # Summaries are paced on the monotonic clock too: one in a 570 s run.
+    assert len([e for e in events if e.startswith("SUMMARY")]) == 1
 
 
 def test_a_backward_wall_step_does_not_delay_the_alert(tmp_path):
@@ -258,20 +293,22 @@ def test_row_never_writes_an_unknown_reason():
 
 def test_ordinary_mode_has_no_missing_alert(tmp_path):
     args = make_args(tmp_path, interval=30.0, duration=30.0 * 39, inventory=inventory(tmp_path))
-    clock, events = Clock(), []
-    clock.start = clock.t
-
-    def sleep(seconds):
-        clock.t += seconds
+    clock, events = SteppedClock(30.0), []
 
     def probe(host, _cpu):
         if host.name == "node-2":
             return None, watch_testnet.SSH_FAILED
         return load_report(metrics_snapshot_timestamp=clock.t), None
 
-    assert (
-        watch_testnet.watch(args, probe=probe, now=clock.now, sleep=sleep, emit=events.append) == 0
+    status = watch_testnet.watch(
+        args,
+        probe=probe,
+        now=clock.now,
+        sleep=clock.sleep,
+        emit=events.append,
+        monotonic=clock.monotonic,
     )
+    assert status == 0
     assert not any(e.startswith("ALERT") for e in events)
     assert any("node-2:unreachable" in e for e in events)
 

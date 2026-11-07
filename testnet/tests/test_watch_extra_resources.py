@@ -598,3 +598,63 @@ def test_extra_outage_is_timed_on_the_monotonic_clock_across_wall_steps(tmp_path
     assert alert["missing_since_unix"] == START + 120
     assert len(events) == 1 and "node-4:missing_for=600s" in events[0]
     assert len(statuses(rows, MISSING, "node-4")) == 18
+
+
+# An observation that expired at publication is still missing data.
+
+
+def scripted_probe(clock, plan):
+    """plan(cycle, name) -> "fresh" | "late" | "down"."""
+
+    def probe_host(host):
+        kind = plan(clock.cycle, host.name)
+        if kind == "late":
+            return host.name, observation(clock.now() - 61), ""
+        if kind == "down":
+            return host.name, None, "ssh_failed"
+        return host.name, observation(clock.now()), ""
+
+    return probe_host
+
+
+def test_continuous_expiry_alerts_once_after_ten_monotonic_minutes(tmp_path):
+    clock = Clock()
+
+    def plan(cycle, name):
+        return "late" if name == "node-3" and cycle >= 2 else "fresh"
+
+    rows = run_late(tmp_path, scripted_probe(clock, plan), clock, cycles=20)
+    missing = statuses(rows, MISSING, "node-3")
+    assert len(missing) == 18
+    assert {r["reason"] for r in missing} == {"expired_at_publication"}
+    assert {r["missing_since_unix"] for r in missing} == {START + 120}
+    (alert,) = statuses(rows, ALERT)
+    assert alert["host"] == "node-3" and alert["missing_seconds"] == 600
+    assert alert["checked_unix"] == START + 720
+
+
+def test_the_outage_timer_runs_through_expiry_and_resets_on_a_fresh_sample(tmp_path):
+    # down at cycles 1..5, late at 6..11 (alert at cycle 11 = 600 s after
+    # cycle 1), fresh at 12, down again from 13: the second outage starts at 13.
+    clock = Clock()
+
+    def plan(cycle, name):
+        if name != "node-2":
+            return "fresh"
+        if 1 <= cycle <= 5:
+            return "down"
+        if 6 <= cycle <= 11:
+            return "late"
+        return "fresh" if cycle in (0, 12) else "down"
+
+    rows = run_late(tmp_path, scripted_probe(clock, plan), clock, cycles=30)
+    first = [r for r in statuses(rows, MISSING, "node-2") if r["checked_unix"] < START + 720]
+    assert {r["missing_since_unix"] for r in first} == {START + 60}
+    assert [r["reason"] for r in first] == ["ssh_failed"] * 5 + ["expired_at_publication"] * 6
+    alerts = statuses(rows, ALERT)
+    assert [(a["checked_unix"], a["missing_seconds"]) for a in alerts] == [
+        (START + 660, 600),
+        (START + 60 * 23, 600),
+    ]
+    later = [r for r in statuses(rows, MISSING, "node-2") if r["checked_unix"] >= START + 780]
+    assert {r["missing_since_unix"] for r in later} == {START + 780}
