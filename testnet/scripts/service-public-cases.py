@@ -153,6 +153,81 @@ FLAG_FIXTURE = (
     Path(__file__).resolve().parents[1] / "tests" / "data" / "service-public-cases-cli-flags.json"
 )
 
+# Public Gate D/E settlement case (scsa): pins from the approved plan (tos 014c88971,
+# tos-service-protocol 12a6cd3) and the Service Actor release manifest.
+SA_FLAG_FIXTURE = FLAG_FIXTURE.with_name("service-public-cases-cli-flags-014c88971.json")
+SA_CLI_SHA256 = "a19ef2e2596d2ec7de5aac7dac9157206d5992054bb6a0d7680b3070fcf81851"
+SA_BUYER_SHA256 = "a48874562feccdeedc3c5907b6e34e22432c9b2c4968572b8e2d07bc47718ea4"
+SA_FIXTURE_SHA256 = "0b832bff4d5c13c2c8dc1593b38b9a2af97bb3d3b384476e348d621fae4d4efd"
+SA_CODE_HASH = "tvm-cell-sha256:0594f9a5743440f9c5f63913ab790c0ea6f4fd5c627d9962d63e09428e42aa0c"
+SA_BOC_SHA256 = "sha256:21f1ea22576fce66ec3b218513adf037710b078ea12a8d84929eda970d62d5a8"
+SA_FOREIGN_CODE_HASH = "tvm-cell-sha256:" + hashlib.sha256(b"not the release").hexdigest()
+SA_RUN = "gde1"
+SA_PROVIDER = "sa-provider"
+SA_BUYER = "sa-buyer"
+SA_CONTROLLER = "sa-provider-controller"
+SA_ATTESTOR = "sa-attestor"
+SA_WALLETS = (SA_PROVIDER, SA_BUYER)
+# Plan v3 budget: what each case account is funded with from the SC source.
+SA_FUNDING_TOS = {SA_PROVIDER: "1.6", SA_BUYER: "0.8", "sc-registry": "1.0"}
+SA_FUND_OPS = {
+    SA_PROVIDER: f"sa-fund-provider-{SA_RUN}",
+    SA_BUYER: f"sa-fund-buyer-{SA_RUN}",
+    "sc-registry": f"sa-fund-registry-{SA_RUN}",
+}
+SA_CASE_ABORT_NANOTOS = 4_500_000_000  # the case stops above this much case funding
+SA_CASE_CAP_NANOTOS = 5_000_000_000  # recording case funding above this is refused
+# Service Actor wire constants (crypto/smartcont/service-actor-code.fc at tos 014c88971).
+SA_OPS = {
+    "call": 0x53564301,
+    "respond": 0x53564302,
+    "update-policy": 0x53564306,
+    "withdraw-revenue": 0x53564309,
+}
+SA_OPERATING_RESERVE_NANOTOS = 1_000_000_000  # MINIMUM_OPERATING_RESERVE
+SA_DEPLOY_NANOTOS = 1_200_000_000  # MINIMUM_OPERATING_RESERVE + the CLI's DEPLOY_FEE_MARGIN
+SA_ACTION_NANOTOS = 10_000_000  # the CLI's DEFAULT_NON_PAYOUT_VALUE (update-policy, respond)
+SA_PAYOUT_GAS_NANOTOS = 200_000_000  # PAYOUT_GAS_ALLOWANCE, the CLI default for withdraw
+SA_ADMISSION_GAS_NANOTOS = 200_000_000  # ADMISSION_GAS_ALLOWANCE
+SA_PRICE_TOS, SA_STORAGE_TOS, SA_BOUNTY_TOS = "0.1", "0.2", "0.1"
+SA_R2_PRICE_TOS = "0.11"
+SA_TEMP_LIMIT_C = 78.0  # the plan's thermal gate for every scsa value step
+SA_WINDOW_S = 3600
+SA_VERSION = "1.0.0"
+SA_MAX_PER_CALL_NANOTOS = 600_000_000
+SA_RESERVED_ZERO_HASH = "00" * 32
+SA_R2_ERROR = (
+    "tos-service-buyer: Service Actor admission step 8: "
+    "the Quote terms_hash is not the actor's current terms_hash"
+)
+SA_QUALIFIES_AS = (
+    "public settlement-path coverage; discovery catalog and quote transport are local "
+    "stand-ins; not a complete Gate D/E discovery/catalog pass"
+)
+SA_STAND_INS = {
+    "manifest_store": "local directory of canonical manifest CBOR files named by sha256 digest",
+    "quote_source": "service-actor-e2e-fixture quote: pkg/quoteprovider over finalized public "
+    "state, no gateway",
+}
+SA_NOT_COVERED = (
+    "call revalidation (a call prepared before a terms change) is out of scope; R2 is the "
+    "Prepare-admission control; the operating reserve stays in the actor (the release has no "
+    "close operation)"
+)
+# Actor and deploy sends: verdicts that end the label for good, and the one that settles it.
+SA_SEND_STOPS = ("stop-foreign-activity", "stop-target-aborted", "stop-binding-mismatch")
+MAX_HISTORY_PAGES = 64
+HISTORY_PAGE = 16
+
+
+def sa_r1_error(endpoints: int) -> str:
+    """The exact refusal of a discovery pinned to a foreign actor code hash when every endpoint
+    reports the deployed account's code as another contract (pkg/toschain quorumRead)."""
+    return (
+        f"tos-service-buyer: quorum not reached: 0 value groups and {endpoints} endpoint errors "
+        "(first: NATIVE_WRONG_CONTRACT: Native account code hash mismatch)"
+    )
+
 
 class Refusal(Exception):
     """A guard refused to continue; nothing was sent after it."""
@@ -331,10 +406,12 @@ def _descriptors(c: Cell) -> bytes:
     return bytes([len(c.refs), _d2(c.bits)])
 
 
-def boc_decode(raw: bytes) -> Cell:
+def boc_decode(raw: bytes, allow_index: bool = False) -> Cell:
     """The single root of a serialized bag of ordinary cells. Fails closed: every header field,
     cell descriptor and completion tag must be exactly what a tree of ordinary level-0 cells
-    serializes to; indexed bags and cache bits are refused; a CRC, when present, must verify."""
+    serializes to; indexed bags are refused unless `allow_index` (a node-serialized transaction
+    or code BOC; the index is skipped, never trusted), cache bits always; a CRC, when present,
+    must verify."""
     try:
         if raw[:4] != BOC_MAGIC:
             raise Refusal("not a BOC")
@@ -343,7 +420,7 @@ def boc_decode(raw: bytes) -> Cell:
         has_index, has_crc = bool(flags & 0x80), bool(flags & 0x40)
         if flags & 0x38:
             raise Refusal("BOC header uses cache bits or reserved flags")
-        if has_index:
+        if has_index and not allow_index:
             raise Refusal("indexed BOC not supported")
         if not 1 <= size <= 4 or not 1 <= off <= 8:
             raise Refusal("BOC header sizes out of range")
@@ -359,6 +436,8 @@ def boc_decode(raw: bytes) -> Cell:
         if root_idx >= count:
             raise Refusal("BOC root index out of range")
         p += size
+        if has_index:
+            p += count * off
         cells_start = p
         raw_cells = []
         for i in range(count):
@@ -818,6 +897,198 @@ def with_flipped_signature_bit(msg: Cell) -> Cell:
     return Cell(msg.bits, [Cell(flipped, body.refs)])
 
 
+def _hm_label(b: _Bits, m: int) -> str:
+    """One HmLabel of at most `m` bits, in any of its three encodings."""
+    if b.take(1) == "0":  # hml_short: unary length, then the bits
+        n = 0
+        while b.take(1) == "1":
+            n += 1
+        if n > m:
+            raise Refusal("hashmap label longer than its key")
+        return b.take(n)
+    width = m.bit_length()
+    if b.take(1) == "0":  # hml_long
+        n = b.uint(width)
+        if n > m:
+            raise Refusal("hashmap label longer than its key")
+        return b.take(n)
+    v = b.take(1)  # hml_same
+    n = b.uint(width)
+    if n > m:
+        raise Refusal("hashmap label longer than its key")
+    return v * n
+
+
+def hashmap_refs(root: Cell, n: int) -> list[tuple[int, Cell]]:
+    """(key, value cell) of every leaf of a `Hashmap n ^X`, in key order. Each leaf must hold
+    exactly one reference and no further bits."""
+    out: list[tuple[int, Cell]] = []
+    stack = [(root, n, "")]
+    while stack:
+        c, m, prefix = stack.pop()
+        if len(out) + len(stack) > MAX_DAG_CELLS:
+            raise Refusal("hashmap too large")
+        b = _Bits(c)
+        label = _hm_label(b, m)
+        rest, key = m - len(label), prefix + label
+        if rest == 0:
+            value = b.next_ref()
+            if not b.at_end():
+                raise Refusal("hashmap leaf carries more than one reference")
+            out.append((int(key, 2) if key else 0, value))
+            continue
+        left, right = b.next_ref(), b.next_ref()
+        if not b.at_end():
+            raise Refusal("hashmap fork carries trailing data")
+        stack.append((right, rest - 1, key + "1"))
+        stack.append((left, rest - 1, key + "0"))
+    return sorted(out, key=lambda kv: kv[0])
+
+
+def _ext_address(b: _Bits) -> str | None:
+    tag = b.take(2)
+    if tag == "00":
+        return None
+    if tag == "01":
+        return "ext:" + b.take(b.uint(9))
+    raise Refusal("not an external address")
+
+
+def parse_message(cell: Cell) -> dict:
+    """Every field of a `Message Any` the value-flow accounting needs: kind, addresses, value,
+    the remaining forwarding and IHR fees, flags, StateInit and body as cells, and the message
+    hash as the chain reports it. Extra currencies, anycast and variable addresses are refused."""
+    b = _Bits(cell)
+    out: dict = {
+        "hash": dag_cell_hash_b64(cell),
+        "cell": cell,
+        "value": 0,
+        "fwd_fee": 0,
+        "ihr_fee": 0,
+    }
+    if b.take(1) == "0":
+        out["kind"] = "internal"
+        out["ihr_disabled"] = b.take(1) == "1"
+        out["bounce"] = b.take(1) == "1"
+        out["bounced"] = b.take(1) == "1"
+        out["source"], out["destination"] = b.std_address(), b.std_address()
+        out["value"] = b.grams()
+        if b.take(1) != "0":
+            raise Refusal("extra currencies are not supported")
+        out["ihr_fee"], out["fwd_fee"] = b.grams(), b.grams()
+        out["created_lt"], out["created_at"] = b.uint(64), b.uint(32)
+    elif b.take(1) == "0":
+        out["kind"] = "external-in"
+        out["source"] = _ext_address(b)
+        out["destination"] = b.std_address()
+        out["import_fee"] = b.grams()
+    else:
+        out["kind"] = "external-out"
+        out["source"] = b.std_address()
+        out["destination"] = _ext_address(b)
+        out["created_lt"], out["created_at"] = b.uint(64), b.uint(32)
+    out["state_init"] = None
+    if b.take(1) == "1":
+        out["state_init"] = b.next_ref() if b.take(1) == "1" else _inline_state_init(b)
+    if b.take(1) == "1":
+        out["body"] = b.next_ref()
+        if not b.at_end():
+            raise Refusal("message has trailing data after its body reference")
+    else:
+        out["body"] = Cell(cell.bits[b.pos :], cell.refs[b.ref :])
+    return out
+
+
+def parse_transaction(data_b64: str, tx_hash: str | None = None) -> dict:
+    """The value-flow view of a serialized ordinary transaction (a getTransactions row's `data`):
+    account, lt, predecessor, in-message, out-messages and total_fees. When `tx_hash` is given,
+    the BOC must hash to it, so the parsed flows belong to exactly that transaction."""
+    try:
+        raw = base64.b64decode(str(data_b64 or ""), validate=True)
+    except (ValueError, TypeError) as exc:
+        raise Refusal("transaction data is not base64") from exc
+    root = boc_decode(raw, allow_index=True)
+    digest = dag_cell_hash_b64(root)
+    if tx_hash is not None and digest != tx_hash:
+        raise Refusal(f"transaction data hashes to {digest}, not {tx_hash}")
+    b = _Bits(root)
+    if b.take(4) != "0111":
+        raise Refusal("not a transaction")
+    out: dict = {"hash": digest, "account": f"{b.uint(256):064x}", "lt": b.uint(64)}
+    out["prev_hash"] = base64.b64encode(int(b.take(256), 2).to_bytes(32, "big")).decode()
+    out["prev_lt"], out["now"] = b.uint(64), b.uint(32)
+    out["outmsg_cnt"] = b.uint(15)
+    b.take(4)  # orig_status, end_status
+    io = _Bits(b.next_ref())
+    out["total_fees"] = b.grams()
+    if b.take(1) != "0":
+        raise Refusal("extra-currency fees are not supported")
+    out["in_msg"] = parse_message(io.next_ref()) if io.take(1) == "1" else None
+    outs = hashmap_refs(io.next_ref(), 15) if io.take(1) == "1" else []
+    if not io.at_end():
+        raise Refusal("transaction message section has trailing data")
+    if [k for k, _ in outs] != list(range(len(outs))) or len(outs) != out["outmsg_cnt"]:
+        raise Refusal("transaction out-message keys are not 0..outmsg_cnt-1")
+    out["out_msgs"] = [parse_message(c) for _, c in outs]
+    for m in [out["in_msg"], *out["out_msgs"]]:
+        if m and m["kind"] == "internal" and m["ihr_fee"] != 0:
+            raise Refusal("a message with a nonzero IHR fee is not supported")
+    return out
+
+
+def body_op_query(body: Cell) -> tuple[int, int] | None:
+    """(op, query_id) at the start of an internal message body, or None when it is shorter."""
+    if len(body.bits) < 96:
+        return None
+    return int(body.bits[:32], 2), int(body.bits[32:96], 2)
+
+
+def state_init_code(state_init: Cell) -> Cell:
+    """The code cell of a StateInit with code and data and no libraries or special flags."""
+    if state_init.bits != "00110" or len(state_init.refs) != 2:
+        raise Refusal("StateInit is not exactly code + data")
+    return state_init.refs[0]
+
+
+def stack_int(entry) -> int:
+    """An integer stack entry of runGetMethod (`["num", "0x.."]` or a decimal)."""
+    if not isinstance(entry, list | tuple) or len(entry) != 2 or entry[0] != "num":
+        raise Refusal(f"stack entry is not a number: {entry!r}")
+    try:
+        return int(str(entry[1]), 0)
+    except ValueError as exc:
+        raise Refusal(f"stack number unreadable: {entry!r}") from exc
+
+
+# get_service_data (service-actor-code.fc): the integer slots the runner reads, by position.
+SA_DATA_SLOTS = {
+    "active": 1,
+    "policy_version": 2,
+    "price_per_call": 3,
+    "storage_fee": 4,
+    "cleanup_bounty": 5,
+    "next_request_id": 16,
+    "pending_count": 17,
+    "live_count": 18,
+    "withdrawable_revenue": 19,
+    "locked_storage_fees": 20,
+    "pending_liability": 21,
+    "refundable_liability": 22,
+}
+SA_DATA_STACK_LEN = 25
+
+
+def decode_service_data(stack: list) -> dict:
+    if len(stack) != SA_DATA_STACK_LEN:
+        raise Refusal(f"get_service_data returned {len(stack)} entries, not {SA_DATA_STACK_LEN}")
+    out = {k: stack_int(stack[i]) for k, i in SA_DATA_SLOTS.items()}
+    floor = SA_OPERATING_RESERVE_NANOTOS
+    for k in ("locked_storage_fees", "pending_liability", "refundable_liability"):
+        floor += out[k]
+    out["floor"] = floor
+    return out
+
+
 def quiet_window_distance(ts: int, since: int, until: int) -> int:
     """Seconds between `ts` and the nearest validator-set boundary; 0 once `until` has passed."""
     if ts >= until or ts < since:
@@ -973,6 +1244,17 @@ class Rpc:
     def last_lt(self, address: str, url: str | None = None) -> int:
         tid = self.info(address, url).get("last_transaction_id") or {}
         return int(tid.get("lt") or 0)
+
+    def transactions_page(
+        self, address: str, lt: int, tx_hash: str, limit: int, url: str | None = None
+    ) -> list[dict]:
+        """The account's transactions starting exactly at (lt, hash), newest first."""
+        return list(
+            self.call(
+                "getTransactions", url, address=address, limit=limit, lt=str(lt), hash=tx_hash
+            )
+            or []
+        )
 
     def transactions_after(self, address: str, lt: int, url: str | None = None) -> list[dict]:
         rows = self.call("getTransactions", url, address=address, limit=10)
@@ -1139,7 +1421,11 @@ class Runner:
         return json.loads(self.actors_path.read_text())
 
     def actor_address(self, actor: str) -> str:
-        wallets = self.actors()["wallets"]
+        wallets = dict(self.actors()["wallets"])
+        if actor in SA_WALLETS and (self.evidence / "service-actor-actors.json").exists():
+            wallets[actor] = self.sa_actors()["wallets"][actor]
+        if actor == NR_ACTOR and (self.evidence / "registry-actors.json").exists():
+            wallets.setdefault(NR_ACTOR, norm_addr(self.nr_actors()["wallet"]))
         if actor not in wallets:
             raise Refusal(f"unknown actor {actor!r}; known: {sorted(wallets)}")
         return wallets[actor]
@@ -1183,8 +1469,9 @@ class Runner:
             return temps
         if not temps:
             raise Refusal("no package temperature readable; use --skip-thermal only off-host")
-        if max(temps) > TEMP_LIMIT_C:
-            raise Refusal(f"package temperature {max(temps)} C above {TEMP_LIMIT_C}")
+        limit = getattr(self, "temp_limit", TEMP_LIMIT_C)
+        if max(temps) > limit:
+            raise Refusal(f"package temperature {max(temps)} C above {limit}")
         return temps
 
     def guards(self) -> dict:
@@ -1397,6 +1684,15 @@ class Runner:
             for line in self.ledger_path.read_text().splitlines():
                 if json.loads(line)["operation_id"] == operation_id:
                     raise Refusal(f"operation {operation_id} already recorded")
+        if operation_id in SA_FUND_OPS.values() or actor in SA_WALLETS:
+            # Service Actor case funding: its own total and cap, on top of the global ceiling.
+            if SA_FUND_OPS.get(actor) != operation_id:
+                raise Refusal(f"{actor} is funded for scsa only as {SA_FUND_OPS.get(actor)}")
+            if self.sa_case_funded() + nanotos > SA_CASE_CAP_NANOTOS:
+                raise Refusal(
+                    f"recording {amount} TOS would take scsa case funding above the hard cap "
+                    f"{nanotos_text(SA_CASE_CAP_NANOTOS)} TOS"
+                )
         balances = {
             url: int(self.rpc.info(address, url)["balance"]) for url in self.rpc.all_sources
         }
@@ -1790,6 +2086,7 @@ class Runner:
         "sc08x",
         "sc03e",
         "scnr",
+        "scsa",
     )
 
     def case_fn(self, name: str):
@@ -1809,6 +2106,8 @@ class Runner:
         if flags.get("cli_sha256") != self.args.cli_sha256:
             raise Refusal("flag fixture was recorded from a different CLI binary")
         for item in planned:
+            if item.get("tool", "tosctl") != "tosctl":
+                continue  # the pinned buyer and fixture binaries are checked by sha256 instead
             argv = item["argv"]
             path = " ".join(argv[:3]) if argv[0] == "agent" else " ".join(argv[:2])
             known = flags["commands"].get(path)
@@ -1829,7 +2128,10 @@ class Runner:
         planned = self.plan(name)
         if not self.args.flag_fixture:
             raise Refusal("a case runs only against the pinned CLI flag fixture (--flag-fixture)")
-        self.check_flags(planned, pinned_flags(Path(self.args.flag_fixture)))
+        fixture = Path(self.args.flag_fixture)
+        if name == "scsa" and fixture == FLAG_FIXTURE:
+            fixture = SA_FLAG_FIXTURE  # recorded from the pinned tos 014c88971 CLI
+        self.check_flags(planned, pinned_flags(fixture))
         self.journal.log(kind="case-start", case=name, planned_steps=[p["label"] for p in planned])
         result = self.case_fn(name)(self.actors()["wallets"])
         (self.evidence / f"{name}-RESULT.json").write_text(
@@ -4178,6 +4480,1721 @@ class Runner:
             "pass": ok and codes_executed,
         }
 
+    # ----- public Gate D/E: Service Actor settlement (scsa) -------------------------------
+    def sa_actors(self) -> dict:
+        path = self.evidence / "service-actor-actors.json"
+        if not path.exists():
+            raise Refusal("service-actor-actors.json missing; run setup-service-actor first")
+        return json.loads(path.read_text())
+
+    def sa_address(self, name: str) -> str:
+        if name == NR_ACTOR:
+            return norm_addr(self.nr_actors()["wallet"])
+        return norm_addr(self.sa_actors()["wallets"][name])
+
+    def sa_nonce(self, purpose: str) -> str:
+        """A 32-byte hex value bound to this run and purpose: a rerun builds the same object."""
+        return hashlib.sha256(f"scsa-{SA_RUN}-{purpose}".encode()).hexdigest()
+
+    def sa_evidence_read(self, name: str) -> dict | None:
+        path = self.evidence / name
+        return json.loads(path.read_text()) if path.exists() else None
+
+    def sa_evidence_write(self, name: str, record: dict) -> None:
+        path = self.evidence / name
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+        os.replace(tmp, path)
+
+    def sa_case_funded(self) -> int:
+        """Case funding: only the ledger rows of the scsa operation ids. Historical totals and
+        the global ceiling are left exactly as they are."""
+        total = 0
+        if self.ledger_path.exists():
+            for line in self.ledger_path.read_text().splitlines():
+                row = json.loads(line)
+                if row.get("operation_id") in SA_FUND_OPS.values():
+                    total += int(row["amount_nanotos"])
+        return total
+
+    def sa_case_budget_ok(self) -> int:
+        funded = self.sa_case_funded()
+        if funded > SA_CASE_ABORT_NANOTOS:
+            raise Refusal(
+                f"scsa case funding {nanotos_text(funded)} TOS is above the abort line "
+                f"{nanotos_text(SA_CASE_ABORT_NANOTOS)} TOS; nothing further is sent"
+            )
+        return funded
+
+    def sa_check_tool(self, which: str) -> dict:
+        """The pinned buyer or fixture binary, checked like Cli.check_binary."""
+        path = Path(str(getattr(self.args, f"service_{which}", "") or ""))
+        expected = getattr(self.args, f"service_{which}_sha256", None)
+        pin = SA_BUYER_SHA256 if which == "buyer" else SA_FIXTURE_SHA256
+        if expected != pin:
+            raise Refusal(f"{which} sha256 {expected} is not the pinned {pin}")
+        if not path.is_absolute() or not path.is_file():
+            raise Refusal(f"scsa needs --service-{which} <absolute path of the pinned binary>")
+        actual = sha256_file(path)
+        if actual != expected:
+            raise Refusal(f"{which} sha256 {actual} != pinned {expected}")
+        return {"path": str(path), "sha256": actual}
+
+    def sa_release(self) -> dict:
+        """The Service Actor release manifest and its artifact (resolved next to it in the tos
+        tree): code hash, BOC sha256 and size must be the pinned release."""
+        path = Path(str(getattr(self.args, "service_actor_release", "") or ""))
+        if not path.is_file():
+            raise Refusal("scsa needs --service-actor-release <tos-service-actor-v1.release.json>")
+        try:
+            release = json.loads(path.read_text())
+        except json.JSONDecodeError as exc:
+            raise Refusal("service actor release manifest is not JSON") from exc
+        if (release.get("contract"), release.get("code_hash"), release.get("boc_sha256")) != (
+            "tos-service-actor-v1",
+            SA_CODE_HASH,
+            SA_BOC_SHA256,
+        ):
+            raise Refusal("service actor release manifest is not the pinned release")
+        artifact = path.resolve().parents[2] / str(release.get("artifact_base64") or "")
+        if not artifact.is_file():
+            raise Refusal(f"release artifact {artifact} missing next to the manifest")
+        try:
+            raw = base64.b64decode("".join(artifact.read_text().split()), validate=True)
+        except (ValueError, TypeError) as exc:
+            raise Refusal("release artifact is not base64") from exc
+        checks = {
+            "boc_sha256": "sha256:" + hashlib.sha256(raw).hexdigest() == SA_BOC_SHA256,
+            "boc_bytes": len(raw) == release.get("boc_bytes"),
+            "code_hash": "tvm-cell-sha256:" + dag_cell_hash(boc_decode(raw, allow_index=True)).hex()
+            == SA_CODE_HASH,
+        }
+        if not all(checks.values()):
+            raise Refusal(f"release artifact does not match its pins: {checks}")
+        return {"manifest": str(path), "artifact": str(artifact), **checks}
+
+    def sa_registry_code(self) -> Path:
+        path = Path(str(getattr(self.args, "registry_code_boc", "") or ""))
+        if not path.is_file():
+            raise Refusal("scsa needs --registry-code-boc <Native Registry code BOC, base64>")
+        try:
+            raw = base64.b64decode("".join(path.read_text().split()), validate=True)
+        except (ValueError, TypeError) as exc:
+            raise Refusal("registry code BOC is not base64") from exc
+        if dag_cell_hash(boc_decode(raw, allow_index=True)).hex() != NR_CODE_HASH:
+            raise Refusal("registry code BOC is not the pinned Native Registry release")
+        return path.resolve()
+
+    def sa_require_gate(self) -> dict:
+        """The case runs only with the explicit opt-in, the pinned CLI, buyer and fixture, the
+        pinned Service Actor release and the registry domain; nothing is called before this."""
+        if not getattr(self.args, "allow_service_actor_deploy", False):
+            raise Refusal("scsa needs --allow-service-actor-deploy (owner deployment ruling)")
+        if self.args.cli_sha256 != SA_CLI_SHA256:
+            raise Refusal(f"scsa runs only with the pinned CLI (sha256 {SA_CLI_SHA256})")
+        gc = self.nr_require_deploy_gate()
+        return {
+            "global_config": str(gc),
+            "release": self.sa_release(),
+            "registry_code_boc": str(self.sa_registry_code()),
+            "buyer": self.sa_check_tool("buyer"),
+            "fixture": self.sa_check_tool("fixture"),
+        }
+
+    def sa_cli_codes(self) -> dict:
+        """What the pinned CLI embeds, read offline before any value step. The registry code
+        hash comes from `agent native-registry domain` (with the genesis anchors it derives);
+        the CLI has no offline read of its Service Actor code, so the release artifact is
+        compared instead and the deployed account code is checked on every source."""
+        gc = self.nr_require_deploy_gate()
+        rc, view = self.cli.run(
+            f"sa-domain-{self.cli.calls}",
+            "agent",
+            "native-registry",
+            "domain",
+            "--global-config",
+            str(gc),
+            "--network-label",
+            NR_LABEL,
+            want_json=True,
+        )
+        if rc != 0 or not isinstance(view, dict):
+            raise Refusal("agent native-registry domain failed")
+        genesis = self.sa_genesis_hex()
+        checks = {
+            "registry_code_hash_matches": view.get("code_hash") == NR_CODE_HASH,
+            "genesis_root": view.get("genesis_root") == genesis["root"],
+            "genesis_file": view.get("genesis_file") == genesis["file"],
+            "network_label": view.get("network_label") == NR_LABEL,
+        }
+        if not all(checks.values()):
+            raise Refusal(f"the CLI's embedded registry domain is not the pinned one: {checks}")
+        return {
+            "registry_code_hash": "tvm-cell-sha256:" + NR_CODE_HASH,
+            "service_actor_code": "not exposed offline by the CLI; release artifact hash "
+            "compared, deployed account code checked on every source",
+            **checks,
+        }
+
+    def sa_genesis_hex(self) -> dict:
+        try:
+            return {
+                "root": base64.b64decode(self.args.genesis_root, validate=True).hex(),
+                "file": base64.b64decode(self.args.genesis_file, validate=True).hex(),
+            }
+        except (ValueError, TypeError) as exc:
+            raise Refusal("genesis anchors are not base64") from exc
+
+    def sa_network_domain(self) -> Path:
+        path = (self.evidence / "sa-network-domain.json").resolve()
+        g = self.sa_genesis_hex()
+        domain = {
+            "network_id": NR_LABEL,
+            "genesis_root_hash": "sha256:" + g["root"],
+            "genesis_file_hash": "sha256:" + g["file"],
+        }
+        if not path.exists():
+            path.write_text(json.dumps(domain, sort_keys=True))
+        if json.loads(path.read_text()) != domain:
+            raise Refusal("sa-network-domain.json differs from the pinned genesis")
+        return path
+
+    def sa_dir(self, *parts: str) -> Path:
+        path = self.private.joinpath(*parts).resolve()
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        return path
+
+    def sa_manifest_dir(self) -> Path:
+        path = (self.evidence / "sa-manifests").resolve()
+        path.mkdir(exist_ok=True)
+        return path
+
+    def sa_buyer_args(self, state: str, code_hash: str = SA_CODE_HASH) -> list[str]:
+        return [
+            "--network-domain",
+            str(self.sa_network_domain()),
+            "--rpc",
+            ",".join(self.rpc.all_sources),
+            "--registry-code-boc",
+            str(self.sa_registry_code()),
+            "--registry-code-hash",
+            "tvm-cell-sha256:" + NR_CODE_HASH,
+            "--actor-code-hash",
+            code_hash,
+            "--state-dir",
+            str(self.sa_dir("sa-buyer-state", state)),
+            "--manifest-dir",
+            str(self.sa_manifest_dir()),
+            "--buyer-wallet",
+            self.sa_address(SA_BUYER),
+            "--max-per-call-nanotos",
+            str(SA_MAX_PER_CALL_NANOTOS),
+            "--max-calls",
+            "1",
+        ]
+
+    def sa_quote_args(self, manifest: str, capability_id: str, agent_id: str, name: str) -> list:
+        return [
+            "quote",
+            "--network-domain",
+            str(self.sa_network_domain()),
+            "--rpc",
+            ",".join(self.rpc.all_sources),
+            "--registry-code-boc",
+            str(self.sa_registry_code()),
+            "--registry-code-hash",
+            "tvm-cell-sha256:" + NR_CODE_HASH,
+            "--code-hash",
+            SA_CODE_HASH,
+            "--state-dir",
+            str(self.sa_dir("sa-buyer-state", "provider-quote")),
+            "--manifest",
+            manifest,
+            "--capability-id",
+            capability_id,
+            "--provider-agent-id",
+            agent_id,
+            "--buyer-wallet",
+            self.sa_address(SA_BUYER),
+            "--out",
+            str(self.sa_dir("sa-quotes") / f"{name}.json"),
+        ]
+
+    def _tool_exec(
+        self, label: str, which: str, argv: list[str], secret: dict | None = None
+    ) -> tuple[int | None, str, str]:
+        """Run the pinned buyer or fixture once. `argv` may carry placeholders that `secret`
+        maps to values passed to the process only: the journal and the receipts name the
+        placeholder. Raw output stays in the private receipts; only digests are journaled."""
+        checked = self.__dict__.setdefault("_sa_tools", {})
+        if which not in checked:
+            checked[which] = self.sa_check_tool(which)
+        tool = checked[which]
+        real = [str((secret or {}).get(a, a)) for a in argv]
+        self.cli.receipts.mkdir(mode=0o700, exist_ok=True)
+        env = {k: v for k, v in os.environ.items() if k != "VAULT_URL"}
+        started = utc(now())
+        try:
+            proc = subprocess.run(
+                [tool["path"], *real], env=env, capture_output=True, timeout=CLI_TIMEOUT_S
+            )
+            rc, out, err = proc.returncode, proc.stdout, proc.stderr
+        except subprocess.TimeoutExpired as exc:
+            rc, out, err = None, exc.stdout or b"", exc.stderr or b""
+        for value in (secret or {}).values():
+            out = out.replace(str(value).encode(), b"<secret>")
+            err = err.replace(str(value).encode(), b"<secret>")
+        (self.cli.receipts / f"{label}.stdout").write_bytes(out)
+        (self.cli.receipts / f"{label}.stderr").write_bytes(err)
+        self.journal.log(
+            kind="tool",
+            tool=which,
+            label=label,
+            argv=self.cli.redact(tuple(argv)),
+            exit_code=rc,
+            started=started,
+            stdout_sha256=hashlib.sha256(out).hexdigest(),
+            stderr_sha256=hashlib.sha256(err).hexdigest(),
+        )
+        return rc, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
+
+    @staticmethod
+    def _json_answer(text: str):
+        start = text.find("{")
+        try:
+            return json.loads(text[start:]) if start >= 0 else None
+        except json.JSONDecodeError:
+            return None
+
+    def sa_redact(self, text: str) -> str:
+        return (
+            str(text)
+            .replace(str(self.private.resolve()), "<private>")
+            .replace(str(self.private), "<private>")
+        )
+
+    def sa_tool_once(self, label: str, which: str, *argv: str, allow_failure: bool = False):
+        """A once-only buyer or fixture step that moves no value (manifest, metadata, quote,
+        prepare). The parsed answer is journaled and replayed; a failure is final. With
+        `allow_failure` the record (exit code, answer, exact stderr) is returned instead of
+        raising, for a control that must fail."""
+        previous = self.journal.result(label)
+        if previous is None:
+            if self.journal.attempted(label):
+                raise Refusal(f"step {label!r} was attempted without a result; by hand")
+            self.journal.attempt(
+                label, {"kind": "tool", "tool": which, "argv": self.cli.redact(argv)}
+            )
+            rc, out, err = self._tool_exec(label, which, list(argv))
+            answer = self._json_answer(out) if rc == 0 else None
+            previous = {
+                "exit_code": rc,
+                "answer": answer,
+                "stderr": None if rc == 0 else self.sa_redact(err.strip())[-800:],
+            }
+            self.journal.done(label, previous)
+        if allow_failure:
+            return previous
+        if previous.get("exit_code") != 0 or not isinstance(previous.get("answer"), dict):
+            raise Refusal(f"{label}: exit {previous.get('exit_code')}; never re-run")
+        return previous["answer"]
+
+    def sa_read(self, which: str, *argv: str) -> tuple[int | None, dict | None, str]:
+        """A read-only buyer command (discover, status, requests); repeatable."""
+        rc, out, err = self._tool_exec(f"sa-read-{secrets.token_hex(4)}", which, list(argv))
+        return rc, (self._json_answer(out) if rc == 0 else None), self.sa_redact(err.strip())
+
+    # ----- chain reads ---------------------------------------------------------------------
+    def sa_point(self, address: str, url: str, seqno: bool = False) -> dict:
+        info = self.rpc.info(address, url) or {}
+        tid = info.get("last_transaction_id") or {}
+        point = {
+            "state": info.get("state"),
+            "balance": int(info.get("balance") or 0),
+            "last_lt": int(tid.get("lt") or 0),
+            "last_hash": tid.get("hash") if int(tid.get("lt") or 0) else None,
+        }
+        if seqno:
+            point["seqno"] = stack_int(
+                (self.rpc.run_get_method(address, "seqno", url) or [None])[0]
+            )
+        return point
+
+    def sa_history(self, address: str, since_lt: int, since_hash: str | None, url: str) -> list:
+        """Every transaction of `address` after (since_lt, since_hash) on one source, newest
+        first, each parsed from its BOC and bound to its id, with predecessor continuity back to
+        exactly the baseline (the account's first transaction when since_lt is 0)."""
+        point = self.sa_point(address, url)
+        lt, h = point["last_lt"], point["last_hash"]
+        account = norm_addr(address).split(":")[1]
+        out: list[dict] = []
+        pages = 0
+        while lt > since_lt:
+            pages += 1
+            if pages > MAX_HISTORY_PAGES:
+                raise Refusal(
+                    f"history of {address} on {url} longer than {MAX_HISTORY_PAGES} pages"
+                )
+            rows = self.rpc.transactions_page(address, lt, h, HISTORY_PAGE, url)
+            if not rows:
+                raise Refusal(f"history of {address} on {url} has no page at lt {lt}")
+            for row in rows:
+                if lt <= since_lt:
+                    break
+                rid = row.get("transaction_id") or {}
+                if int(rid.get("lt") or -1) != lt or rid.get("hash") != h:
+                    raise Refusal(f"history of {address} on {url} breaks at lt {lt}")
+                tx = parse_transaction(row.get("data"), h)
+                if tx["lt"] != lt or tx["account"] != account:
+                    raise Refusal(f"transaction {h} is not {address} at lt {lt}")
+                out.append({"row": row, "tx": tx})
+                lt, h = tx["prev_lt"], tx["prev_hash"]
+        if lt != since_lt or (since_lt and h != since_hash):
+            raise Refusal(f"history of {address} on {url} does not reach its baseline")
+        return out
+
+    def sa_tx(self, address: str, tid: dict, url: str) -> dict:
+        rows = self.rpc.transactions_page(address, int(tid["lt"]), tid["hash"], 1, url)
+        if not rows or (rows[0].get("transaction_id") or {}).get("hash") != tid["hash"]:
+            raise Refusal(f"transaction {tid} of {address} is not served by {url}")
+        return {"row": rows[0], "tx": parse_transaction(rows[0].get("data"), tid["hash"])}
+
+    def sa_code_everywhere(self, address: str) -> dict:
+        out = {}
+        for url in self.rpc.all_sources:
+            info = self.rpc.info(address, url) or {}
+            code = info.get("code")
+            if info.get("state") != "active" or not code:
+                out[url] = None
+                continue
+            raw = base64.b64decode(str(code), validate=True)
+            out[url] = "tvm-cell-sha256:" + dag_cell_hash(boc_decode(raw, allow_index=True)).hex()
+        return out
+
+    def sa_data(self, address: str) -> dict:
+        """get_service_data decoded on every source, with the account balance; every source
+        must report the same values."""
+        views = []
+        for url in self.rpc.all_sources:
+            data = decode_service_data(self.rpc.run_get_method(address, "get_service_data", url))
+            data["balance"] = int((self.rpc.info(address, url) or {}).get("balance") or 0)
+            views.append(data)
+        if any(v != views[0] for v in views):
+            raise Refusal(f"sources disagree on the Service Actor state of {address}")
+        return views[0]
+
+    def sa_show(self, address: str) -> dict:
+        """`agent service show` on every source (terms_hash, attestor, metadata); must agree."""
+        configs = [None, *[Path(p) for p in self.quorum_configs()]]
+        views = []
+        for url, config in zip(self.rpc.all_sources, configs, strict=True):
+            rc, view = self.cli.run(
+                f"sa-show-{self.cli.calls}",
+                "agent",
+                "service",
+                "show",
+                "--address",
+                address,
+                want_json=True,
+                config=config,
+            )
+            if rc != 0 or not isinstance(view, dict):
+                raise Refusal(f"Service Actor {address} could not be read on {url}")
+            views.append(view)
+        if any(v != views[0] for v in views):
+            raise Refusal(f"sources disagree on Service Actor {address}")
+        return views[0]
+
+    def sa_agreed(self, read, accept=lambda v: True):
+        """The first read on which every source agrees and `accept` holds, within the settle
+        window; a read that never settles refuses."""
+        seen: dict = {}
+
+        def ok() -> bool:
+            seen["v"] = read()
+            return bool(accept(seen["v"]))
+
+        if not self.wait(ok):
+            raise Refusal(f"state never settled as required (last {seen.get('v')!r})")
+        return seen["v"]
+
+    # ----- setup, funding, activation ------------------------------------------------------
+    def setup_service_actor(self) -> dict:
+        """Create sa-provider and sa-buyer (V3R2) and the ML-DSA-44 controllers through the
+        CLI's own custody; record only addresses, public keys and key ids; write the provider
+        Agent policy; and take the opening snapshot of the case wallets before any funding."""
+        self.preflight(value_action=False)
+        registry_payer = self.sa_address(NR_ACTOR)
+        for wallet in SA_WALLETS:
+            self.local(
+                f"setup-wallet-{wallet}", "wallet", "create", "-n", wallet, "-v", "V3R2", "-w", "0"
+            )
+        rc, rows = self.cli.run(f"setup-sa-ls-{self.cli.calls}", "wallet", "ls", want_json=True)
+        if rc != 0 or not isinstance(rows, list):
+            raise Refusal("wallet ls failed")
+        wallets = {}
+        for wallet in SA_WALLETS:
+            hits = [
+                norm_addr(r["address"])
+                for r in rows
+                if isinstance(r, dict) and r.get("name") == wallet and r.get("address")
+            ]
+            if len(hits) != 1:
+                raise Refusal(f"{wallet} has no unique address")
+            wallets[wallet] = hits[0]
+        controllers = {}
+        for name in (SA_CONTROLLER, SA_ATTESTOR):
+            self.local(
+                f"setup-controller-{name}",
+                "agent",
+                "native-registry",
+                "new-controller",
+                "--name",
+                name,
+                want_json=True,
+            )
+            pub = self.local(
+                f"setup-controller-pub-{name}",
+                "agent",
+                "native-registry",
+                "controller",
+                "--name",
+                name,
+                want_json=True,
+            )
+            if not isinstance(pub, dict) or pub.get("suite") != "ML-DSA-44":
+                raise Refusal(f"controller {name}: unexpected answer")
+            controllers[name] = {"key_id": pub["key_id"], "public_key": pub["public_key"]}
+        policy = self.evidence / "sa-provider-policy.json"
+        if not policy.exists():
+            policy.write_text(
+                json.dumps(
+                    {
+                        "threshold": 1,
+                        "recovery_threshold": 1,
+                        "recovery_timelock": 86400,
+                        "controllers": [
+                            {
+                                "public_key": controllers[SA_CONTROLLER]["public_key"],
+                                "weight": 1,
+                                "purposes": 15,
+                            }
+                        ],
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+        path = self.evidence / "service-actor-actors.json"
+        if not path.exists():
+            path.write_text(
+                json.dumps(
+                    {"wallets": wallets, "controllers": controllers, "created_utc": utc(now())},
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+        if self.sa_evidence_read("scsa-opening.json") is None:
+            accounts = {**wallets, NR_ACTOR: registry_payer}
+            self.sa_evidence_write(
+                "scsa-opening.json",
+                {
+                    "utc": utc(now()),
+                    "accounts": {
+                        name: {url: self.sa_point(addr, url) for url in self.rpc.all_sources}
+                        for name, addr in accounts.items()
+                    },
+                },
+            )
+        return self.sa_actors()
+
+    def plan_funding_service_actor(self) -> dict:
+        source = self.funding_source()
+        plan, total = [], 0
+        for name, amount in SA_FUNDING_TOS.items():
+            total += tos_to_nanotos(amount)
+            plan.append(
+                {
+                    "actor": name,
+                    "to": self.sa_address(name),
+                    "amount_tos": amount,
+                    "operation_id": SA_FUND_OPS[name],
+                    "purpose": f"service actor settlement case {name} {SA_RUN}",
+                }
+            )
+        if self.sa_case_funded() + total > SA_CASE_ABORT_NANOTOS:
+            raise Refusal("the scsa funding plan exceeds the case abort line")
+        if self.funded_total() + total > self.ceiling:
+            raise Refusal("the scsa funding plan exceeds the stop ceiling")
+        out = {
+            "funding_source": source,
+            "plan": plan,
+            "total_nanotos": total,
+            "case_abort_nanotos": SA_CASE_ABORT_NANOTOS,
+            "case_cap_nanotos": SA_CASE_CAP_NANOTOS,
+            "tool": "testnet-elections.py owner-fund --name node-4 --new --dry-run first",
+        }
+        self.sa_evidence_write("service-actor-funding-plan.json", out)
+        return out
+
+    def activate_service_actor(self) -> dict:
+        """Activate sa-provider and sa-buyer once each (labels activate-<wallet>-gde1), judged
+        on every source; an earlier attempt is never repeated. The scsa pins are checked first,
+        since an activation is already a value step."""
+        self.temp_limit = SA_TEMP_LIMIT_C
+        self.preflight()
+        self.sa_require_gate()
+        self.sa_cli_codes()
+        out = {}
+        for wallet in SA_WALLETS:
+            address = self.sa_address(wallet)
+            states = {
+                url: (self.rpc.info(address, url) or {}).get("state")
+                for url in self.rpc.all_sources
+            }
+            if all(v == "active" for v in states.values()):
+                out[wallet] = "already-active"
+                continue
+            label = f"activate-{wallet}-{SA_RUN}"
+            if self.journal.attempted(label):
+                raise Refusal(f"{label} was attempted before; wallet states {states}; by hand")
+            if self.rpc.balance(address) < WALLET_ACTIVATE_MIN_NANOTOS:
+                out[wallet] = "unfunded"
+                continue
+            self.guards()
+            self.journal.attempt(label, {"kind": "wallet-activate", "address": address})
+            rc, _ = self.cli.run(label, "wallet", "activate", "-n", wallet)
+            ok = rc == 0 and self.wait(
+                lambda a=address: all(
+                    (self.rpc.info(a, url) or {}).get("state") == "active"
+                    for url in self.rpc.all_sources
+                )
+            )
+            self.journal.done(label, {"exit_code": rc, "active": ok})
+            if not ok:
+                raise Refusal(f"{label}: wallet did not become active on every source")
+            out[wallet] = "activated"
+        return out
+
+    # ----- actor and deploy sends ----------------------------------------------------------
+    def sa_actor_send(
+        self,
+        label: str,
+        argv: list[str],
+        *,
+        sender: str,
+        target: str,
+        operation: str,
+        amount_nanotos: int,
+    ) -> dict:
+        """One `agent service deploy|send`, which signs and broadcasts inside the CLI.
+
+        Before the CLI runs, the intent is journaled with an fsynced O_EXCL marker: operation,
+        sender, target, attached value, an explicit query id drawn once, the sender seqno and
+        the per-source sender and target state. The CLI runs once; its exit status is advisory.
+        The outcome is then resolved from the chain on every source (sa_locate). A label with a
+        marker is never re-signed, its query id never regenerated, and it is never retried: a
+        rerun only re-reads. No expiry is ever concluded here."""
+        done = self.journal.result(label)
+        if done is not None:
+            if done.get("verdict") == "applied":
+                done.setdefault("label", label)
+                return done
+            if done.get("verdict") in SA_SEND_STOPS:
+                raise Refusal(f"{label} ended {done.get('verdict')!r}; never re-sent; by hand")
+        attempt = self.journal.attempt_record(label)
+        if attempt is None:
+            self.sa_case_budget_ok()
+            self.guards()
+            sender_address = self.sa_address(sender)
+            target = norm_addr(target)
+            sources = self.rpc.all_sources
+            sender_before = {url: self.sa_point(sender_address, url, seqno=True) for url in sources}
+            seqnos = {p["seqno"] for p in sender_before.values()}
+            if len(seqnos) != 1 or any(p["state"] != "active" for p in sender_before.values()):
+                raise Refusal(f"{label}: sender not active with one seqno on every source")
+            if any(p["balance"] < amount_nanotos for p in sender_before.values()):
+                raise Refusal(f"{label}: {sender} cannot carry {amount_nanotos} nanoTOS")
+            target_before = {url: self.sa_point(target, url) for url in sources}
+            if operation == "deploy" and any(p["last_lt"] for p in target_before.values()):
+                raise Refusal(f"{label}: the actor address {target} already has history")
+            query_id = None if operation == "deploy" else secrets.randbits(63) + 1
+            full = [*argv, *([] if query_id is None else ["--query-id", str(query_id)])]
+            record = {
+                "kind": "actor-send",
+                "operation": operation,
+                "op": SA_OPS.get(operation),
+                "query_id": query_id,
+                "sender": sender,
+                "sender_address": sender_address,
+                "target": target,
+                "amount_nanotos": amount_nanotos,
+                "seqno": seqnos.pop(),
+                "argv": self.cli.redact(tuple(full)),
+                "sender_before": sender_before,
+                "target_before": target_before,
+                "sender_shard_utime": {
+                    url: self.rpc.account_shard_utime(sender_address, url) for url in sources
+                },
+            }
+            if os.environ.get("SC_DRILL_CRASH") == label:
+                self.journal.attempt(label, record)
+                raise SystemExit(f"drill: process lost after the attempt marker of {label}")
+            self.journal.attempt(label, record)
+            rc, _ = self.cli.run(label, *full)
+            self.journal.log(kind="actor-send-cli", label=label, exit_code=rc)
+            if os.environ.get("SC_DRILL_CRASH_AFTER_SEND") == label:
+                raise SystemExit(f"drill: process lost after the CLI returned for {label}")
+            attempt = self.journal.attempt_record(label)
+        return self.sa_resolve(label, attempt)
+
+    def sa_resolve(self, label: str, attempt: dict) -> dict:
+        """Judge an actor/deploy send from the chain only (live or on a rerun)."""
+        found: dict = {}
+
+        def read() -> bool:
+            found.clear()
+            found.update(self.sa_locate(attempt))
+            return found["verdict"] in ("applied", *SA_SEND_STOPS)
+
+        self.wait(read)
+        if not found:
+            found = {"verdict": "unknown-unreadable"}
+        record = {k: v for k, v in attempt.items() if k not in ("kind", "utc", "label")}
+        record.update(found)
+        record.update({"re_sent": False, "resolved_utc": utc(now())})
+        self.journal.done(label, record)
+        self.journal.log(kind="actor-send", label=label, verdict=record["verdict"])
+        record["label"] = label
+        if record["verdict"] != "applied":
+            raise Refusal(
+                f"{label}: {record['verdict']}; never re-signed or retried, a rerun only re-reads"
+            )
+        return record
+
+    def sa_match(self, wallet_tx: dict, attempt: dict) -> tuple[dict | None, str]:
+        """The single out-message of the sender's transaction, if it is exactly the intent."""
+        target, amount = attempt["target"], int(attempt["amount_nanotos"])
+        try:
+            env = decode_wallet_envelope(wallet_tx["in_msg"]["cell"])
+        except Refusal as exc:
+            return None, f"wallet message not decodable: {exc}"
+        if env["global_id"] != NR_GLOBAL_ID or env["seqno"] != attempt["seqno"]:
+            return None, "wallet message signed for another network or seqno"
+        outs = [m for m in wallet_tx["out_msgs"] if m["kind"] == "internal"]
+        if len(outs) != 1 or not same_addr(outs[0]["destination"], target):
+            return None, f"{len(outs)} internal out-messages, not one to {target}"
+        m = outs[0]
+        if not same_addr(env["destination"], target) or m["value"] != amount:
+            return None, "out-message value or destination differs from the intent"
+        if env["value_nanotos"] != amount or dag_cell_hash(m["body"]) != dag_cell_hash(env["body"]):
+            return None, "signed message differs from the transaction's out-message"
+        if attempt["operation"] == "deploy":
+            si = m["state_init"]
+            if si is None or dag_cell_hash(si).hex() != target.split(":")[1]:
+                return None, "deploy StateInit does not derive the journaled actor address"
+            if "tvm-cell-sha256:" + dag_cell_hash(state_init_code(si)).hex() != SA_CODE_HASH:
+                return None, "deploy StateInit code is not the pinned release"
+            if m["body"].bits or m["body"].refs:
+                return None, "deploy body is not empty"
+        elif body_op_query(m["body"]) != (attempt["op"], attempt["query_id"]):
+            return None, "out-message op or query_id differs from the intent"
+        return m, "match"
+
+    def sa_locate(self, attempt: dict) -> dict:
+        """Per source: seqno unchanged, or seqno+1 with exactly one sender transaction at that
+        seqno carrying exactly the intended out-message (SENT), or anything else (foreign
+        activity). Then the target's transaction bound to that message hash (APPLIED)."""
+        sender = attempt["sender_address"]
+        per: dict = {}
+        for url in self.rpc.all_sources:
+            before = attempt["sender_before"][url]
+            seqno = stack_int((self.rpc.run_get_method(sender, "seqno", url) or [None])[0])
+            if seqno == attempt["seqno"]:
+                per[url] = {"status": "unchanged", "seqno": seqno}
+                continue
+            if seqno != attempt["seqno"] + 1:
+                per[url] = {"status": "foreign", "why": f"seqno moved to {seqno}"}
+                continue
+            mine = []
+            for item in self.sa_history(sender, before["last_lt"], before["last_hash"], url):
+                m = item["tx"]["in_msg"]
+                if m and m["kind"] == "external-in":
+                    try:
+                        if decode_wallet_envelope(m["cell"])["seqno"] == attempt["seqno"]:
+                            mine.append(item)
+                    except Refusal:
+                        mine.append(item)
+            if len(mine) != 1:
+                per[url] = {"status": "foreign", "why": f"{len(mine)} sends at the seqno"}
+                continue
+            out, why = self.sa_match(mine[0]["tx"], attempt)
+            if out is None:
+                per[url] = {"status": "foreign", "why": why}
+                continue
+            per[url] = {
+                "status": "sent",
+                "wallet_tx": mine[0]["row"]["transaction_id"],
+                "out_hash": out["hash"],
+            }
+        statuses = {p["status"] for p in per.values()}
+        if "foreign" in statuses:
+            return {"verdict": "stop-foreign-activity", "per_source": per}
+        if statuses == {"unchanged"}:
+            return {"verdict": "unknown-unchanged-seqno", "per_source": per}
+        sent = {(p["wallet_tx"]["hash"], p["out_hash"]) for p in per.values() if "out_hash" in p}
+        if statuses != {"sent"} or len(sent) != 1:
+            return {"verdict": "unknown-sources-disagree", "per_source": per}
+        out_hash = sent.pop()[1]
+        target = attempt["target"]
+        for url, p in per.items():
+            before = attempt["target_before"][url]
+            hits = [
+                i
+                for i in self.sa_history(target, before["last_lt"], before["last_hash"], url)
+                if i["tx"]["in_msg"] and i["tx"]["in_msg"]["hash"] == out_hash
+            ]
+            if len(hits) > 1:
+                return {"verdict": "stop-binding-mismatch", "per_source": per}
+            if hits:
+                row = hits[0]["row"]
+                p["target_tx"] = row["transaction_id"]
+                p["aborted"] = row.get("aborted")
+                p["compute"] = {
+                    k: (row.get("compute") or {}).get(k) for k in ("success", "exit_code")
+                }
+        if not all("target_tx" in p for p in per.values()):
+            return {"verdict": "sent-not-applied", "out_hash": out_hash, "per_source": per}
+        if len({p["target_tx"]["hash"] for p in per.values()}) != 1:
+            return {"verdict": "unknown-sources-disagree", "per_source": per}
+        first = per[self.rpc.primary]
+        ok = first["aborted"] is False and first["compute"] == {"success": True, "exit_code": 0}
+        return {
+            "verdict": "applied" if ok else "stop-target-aborted",
+            "out_hash": out_hash,
+            "per_source": per,
+        }
+
+    # ----- buyer call ----------------------------------------------------------------------
+    def sa_status(self, request_hash: str) -> dict:
+        rc, view, err = self.sa_read(
+            "buyer", "status", *self.sa_buyer_args("buyer"), "--request-hash", request_hash
+        )
+        if rc != 0 or not isinstance(view, dict):
+            raise Refusal(f"status --request-hash failed: {err[-300:]}")
+        return view
+
+    def sa_buyer_call(self, label: str, request_hash: str) -> dict:
+        """The buyer's one call through the pinned buyer (which runs `tosctl agent service send
+        --operation call --expected-terms-hash`). Marker first; the call runs once; its outcome,
+        sending or ambiguous included, is resolved only by `status --request-hash`. Never a
+        second prepare or call."""
+        done = self.journal.result(label)
+        if done is not None and done.get("verdict") == "admitted":
+            done.setdefault("label", label)
+            return done
+        if self.journal.attempt_record(label) is None:
+            self.sa_case_budget_ok()
+            self.guards()
+            vault = self.cli.env().get("VAULT_URL")
+            if not vault:
+                raise Refusal(f"{label}: no CLI vault configured; nothing sent")
+            buyer = self.sa_address(SA_BUYER)
+            sources = self.rpc.all_sources
+            self.journal.attempt(
+                label,
+                {
+                    "kind": "buyer-call",
+                    "request_hash": request_hash,
+                    "buyer": buyer,
+                    "buyer_before": {url: self.sa_point(buyer, url, seqno=True) for url in sources},
+                },
+            )
+            rc, out, _ = self._tool_exec(
+                label,
+                "buyer",
+                [
+                    "call",
+                    *self.sa_buyer_args("buyer"),
+                    "--request-hash",
+                    request_hash,
+                    "--tosctl",
+                    str(Path(self.cli.path).resolve()),
+                    "--tosctl-sha256",
+                    self.args.cli_sha256,
+                    "--tosctl-config",
+                    str(self.cli.config.resolve()),
+                    "--wallet",
+                    SA_BUYER,
+                    "--vault-url",
+                    "<vault-url>",
+                ],
+                secret={"<vault-url>": vault},
+            )
+            answer = self._json_answer(out) or {}
+            self.journal.log(
+                kind="buyer-call", label=label, exit_code=rc, phase=answer.get("phase")
+            )
+        status: dict = {}
+
+        def admitted() -> bool:
+            status.clear()
+            status.update(self.sa_status(request_hash))
+            return status.get("found") is True and status.get("state") in ("pending", "responded")
+
+        ok = self.wait(admitted)
+        hash_ok = status.get("request_hash") in (None, request_hash)
+        record = {
+            **{k: v for k, v in self.journal.attempt_record(label).items() if k != "kind"},
+            "status": dict(status),
+            "verdict": "admitted" if ok and hash_ok else "unknown-call",
+            "resolved_by": "status --request-hash",
+        }
+        self.journal.done(label, record)
+        record["label"] = label
+        if record["verdict"] != "admitted":
+            raise Refusal(f"{label}: call not resolved as admitted; a rerun only reads status")
+        return record
+
+    # ----- refusals ------------------------------------------------------------------------
+    def sa_r1(self, capability_id: str, actor: str) -> dict:
+        """R1, read-only and before any buyer value: discovery pinned to a foreign actor code
+        hash must fail with exactly NATIVE_WRONG_CONTRACT from every endpoint, while every source
+        serves the actor with the release code. Any other failure is a look-alike (FAIL)."""
+        previous = self.sa_evidence_read("scsa-r1.json")
+        if previous and previous.get("refused_as_stated"):
+            return previous
+        rc, _, err = self.sa_read(
+            "buyer",
+            "discover",
+            *self.sa_buyer_args("wrong-code", SA_FOREIGN_CODE_HASH),
+            "--capability-id",
+            capability_id,
+            "--version",
+            SA_VERSION,
+        )
+        expected = sa_r1_error(len(self.rpc.all_sources))
+        codes = self.sa_code_everywhere(actor)
+        record = {
+            "utc": utc(now()),
+            "foreign_code_hash": SA_FOREIGN_CODE_HASH,
+            "exit_code": rc,
+            "stderr": err[-800:],
+            "expected_stderr": expected,
+            "actor_code_hash_per_source": codes,
+            "refused_as_stated": rc not in (0, None)
+            and err == expected
+            and all(v == SA_CODE_HASH for v in codes.values()),
+        }
+        self.sa_evidence_write("scsa-r1.json", record)
+        return record
+
+    def sa_r2(self, actor: str, meta: dict, quote_args: list[str]) -> dict:
+        """R2, the Prepare-admission control: a quote under the current terms is taken, the
+        provider changes only the price (0.1 -> 0.11, metadata and proof scheme unchanged), and
+        once that is finalized the buyer prepares the old quote in a separate state dir with a
+        fresh budget. PASS only on the exact step-8 stale-terms error with the actor's request
+        counter and the buyer wallet seqno unchanged on every source."""
+        quote = self.sa_tool_once("scsa-quote-r2", "fixture", *quote_args)
+        if not self.journal.attempted("scsa-r2-policy"):
+            current = self.sa_show(actor)
+            if current.get("terms_hash") != quote.get("terms_hash"):
+                raise Refusal("the R2 quote is not under the actor's current terms")
+        policy = self.sa_actor_send(
+            "scsa-r2-policy",
+            self.sa_policy_argv(
+                actor, SA_R2_PRICE_TOS, meta["metadata_hash"], meta["proof_scheme_hash"]
+            ),
+            sender=SA_PROVIDER,
+            target=actor,
+            operation="update-policy",
+            amount_nanotos=SA_ACTION_NANOTOS,
+        )
+        view = self.sa_agreed(
+            lambda: self.sa_show(actor),
+            lambda v: (
+                v.get("terms_hash") != quote.get("terms_hash")
+                and str(v.get("metadata_hash", "")).endswith(meta["metadata_hash"])
+            ),
+        )
+        buyer = self.sa_address(SA_BUYER)
+        before = self.sa_evidence_read("scsa-r2-before.json")
+        if before is None:
+            before = {
+                "next_request_id": self.sa_agreed(lambda: self.sa_data(actor))["next_request_id"],
+                "buyer_seqno": {
+                    url: self.sa_point(buyer, url, seqno=True)["seqno"]
+                    for url in self.rpc.all_sources
+                },
+            }
+            self.sa_evidence_write("scsa-r2-before.json", before)
+        prep = self.sa_tool_once(
+            "scsa-r2-prepare",
+            "buyer",
+            "prepare",
+            *self.sa_buyer_args("stale"),
+            "--package",
+            str(quote["package"]),
+            "--execution-id",
+            self.sa_nonce("r2-execution"),
+            "--input-digest",
+            self.sa_nonce("r2-input"),
+            allow_failure=True,
+        )
+        after = {
+            "next_request_id": self.sa_agreed(lambda: self.sa_data(actor))["next_request_id"],
+            "buyer_seqno": {
+                url: self.sa_point(buyer, url, seqno=True)["seqno"] for url in self.rpc.all_sources
+            },
+        }
+        refused = (
+            prep.get("exit_code") not in (0, None)
+            and prep.get("stderr") == SA_R2_ERROR
+            and before == after
+        )
+        return {
+            "quote_terms_hash": quote.get("terms_hash"),
+            "terms_hash_after_change": view.get("terms_hash"),
+            "policy_change": {"verdict": policy["verdict"], "price": SA_R2_PRICE_TOS},
+            "prepare_exit_code": prep.get("exit_code"),
+            "prepare_stderr": prep.get("stderr"),
+            "expected_stderr": SA_R2_ERROR,
+            "before": before,
+            "after": after,
+            "refused_as_stated": refused,
+            "scope": "Prepare-admission control; call revalidation is out of scope",
+        }
+
+    def sa_policy_argv(self, actor: str, price: str, metadata: str, proof: str) -> list[str]:
+        return [
+            "agent",
+            "service",
+            "send",
+            "--operation",
+            "update-policy",
+            "--address",
+            actor,
+            "--from",
+            SA_PROVIDER,
+            "--price-per-call",
+            price,
+            "--storage-fee",
+            SA_STORAGE_TOS,
+            "--cleanup-bounty",
+            SA_BOUNTY_TOS,
+            "--response-sla",
+            str(SA_WINDOW_S),
+            "--refund-claim-window",
+            str(SA_WINDOW_S),
+            "--active",
+            "true",
+            "--open-access",
+            "--rate-limit-per-day",
+            "0",
+            "--metadata-hash",
+            metadata,
+            "--proof-scheme-hash",
+            proof,
+            "--yes",
+        ]
+
+    def sa_custody_argv(self, label: str, argv: list[str]) -> None:
+        """The tosctl call the pinned buyer runs itself (recorded by the planner only)."""
+        return None
+
+    # ----- withdraw ------------------------------------------------------------------------
+    def sa_withdraw(self, actor: str) -> dict:
+        """Withdraw exactly all withdrawable revenue, read finalized on every source; stop when
+        withdrawable exceeds balance minus floor (reserve + liabilities + locked fees)."""
+        pre = self.sa_evidence_read("scsa-withdraw-pre.json")
+        if pre is None:
+            if self.journal.attempted("scsa-withdraw"):
+                raise Refusal("scsa-withdraw has a marker but no pre-read record; by hand")
+            per = {}
+            for url in self.rpc.all_sources:
+                data = decode_service_data(self.rpc.run_get_method(actor, "get_service_data", url))
+                balance = int((self.rpc.info(actor, url) or {}).get("balance") or 0)
+                per[url] = {
+                    "balance": balance,
+                    "floor": data["floor"],
+                    "withdrawable_revenue": data["withdrawable_revenue"],
+                }
+            amounts = {p["withdrawable_revenue"] for p in per.values()}
+            if len(amounts) != 1:
+                raise Refusal("sources disagree on withdrawable revenue; nothing sent")
+            amount = amounts.pop()
+            if amount <= 0:
+                raise Refusal("no withdrawable revenue; nothing sent")
+            for url, p in per.items():
+                if amount > p["balance"] - p["floor"]:
+                    raise Refusal(f"withdrawable exceeds balance - floor on {url}: {p}; stop")
+            pre = {"utc": utc(now()), "withdraw_nanotos": amount, "per_source": per}
+            self.sa_evidence_write("scsa-withdraw-pre.json", pre)
+        amount = int(pre["withdraw_nanotos"])
+        record = self.sa_actor_send(
+            "scsa-withdraw",
+            [
+                "agent",
+                "service",
+                "send",
+                "--operation",
+                "withdraw-revenue",
+                "--address",
+                actor,
+                "--from",
+                SA_PROVIDER,
+                "--withdraw-amount",
+                nanotos_text(amount),
+                "--yes",
+            ],
+            sender=SA_PROVIDER,
+            target=actor,
+            operation="withdraw-revenue",
+            amount_nanotos=SA_PAYOUT_GAS_NANOTOS,
+        )
+        if tos_to_nanotos(self.argv_value(record, "--withdraw-amount")) != amount:
+            raise Refusal("the journaled withdraw amount differs from its pre-read")
+        return {**record, "withdraw_nanotos": amount, "pre": pre}
+
+    def sa_payouts(self, label: str, withdraw: dict, actor: str, provider: str) -> dict:
+        """Both payout messages of the withdraw, hash-bound on every source: the actor's
+        transaction carries exactly the principal (value == withdrawn amount) and the change
+        (0 < value <= the attached payout gas) to the provider, and each is credited by a
+        non-aborted provider transaction. Not yet visible everywhere -> pending, re-read later."""
+        done = self.journal.result(label)
+        if done is not None and done.get("bound"):
+            return done
+        amount = int(withdraw["withdraw_nanotos"])
+        per: dict = {}
+        pending = False
+        for url in self.rpc.all_sources:
+            p = withdraw["per_source"][url]
+            tx = self.sa_tx(actor, p["target_tx"], url)["tx"]
+            outs = [m for m in tx["out_msgs"] if m["kind"] == "internal"]
+            shape = (
+                len(outs) == 2
+                and all(same_addr(m["destination"], provider) for m in outs)
+                and outs[0]["value"] == amount
+                and 0 < outs[1]["value"] <= SA_PAYOUT_GAS_NANOTOS
+            )
+            if not shape:
+                record = {"bound": False, "verdict": "payout-mismatch", "url": url}
+                self.journal.done(label, record)
+                raise Refusal(f"{label}: withdraw out-messages are not principal + change on {url}")
+            wallet_tx = p["wallet_tx"]
+            credits = {}
+            for item in self.sa_history(provider, int(wallet_tx["lt"]), wallet_tx["hash"], url):
+                m = item["tx"]["in_msg"]
+                if m and m["hash"] in (outs[0]["hash"], outs[1]["hash"]):
+                    if item["row"].get("aborted") is True or m["hash"] in credits:
+                        raise Refusal(f"{label}: payout credit aborted or duplicated on {url}")
+                    credits[m["hash"]] = item["row"]["transaction_id"]["hash"]
+            per[url] = {
+                "principal": {"hash": outs[0]["hash"], "value": outs[0]["value"]},
+                "change": {"hash": outs[1]["hash"], "value": outs[1]["value"]},
+                "credited": credits,
+            }
+            pending = pending or len(credits) != 2
+        same = len({json.dumps(v, sort_keys=True) for v in per.values()}) == 1
+        record = {"bound": not pending and same, "pending": pending, "per_source": per}
+        self.journal.done(label, record)
+        if not record["bound"]:
+            raise Refusal(f"{label}: payout credit not yet bound on every source; rerun re-reads")
+        return record
+
+    # ----- returns -------------------------------------------------------------------------
+    def sa_return(self) -> dict:
+        """Step 12: each case wallet's balance above the 0.05 TOS floor back to the recorded
+        source through the reviewed `step` path, under labels unique to this run."""
+        to = self.funding_source()
+        keep = tos_to_nanotos("0.05")
+        out = {}
+        for wallet in (SA_PROVIDER, SA_BUYER, NR_ACTOR):
+            label = f"return-{wallet}-{SA_RUN}"
+            address = self.sa_address(wallet)
+            previous = self.journal.result(label)
+            if previous is None:
+                balance = self.rpc.balance(address)
+                if balance <= keep * 2:
+                    out[wallet] = {"skipped": balance}
+                    continue
+                amount = balance - keep
+            else:
+                amount = int(self.argv_value(previous, "--amount-nanotos"))
+            rec = self.step(
+                label,
+                [
+                    "wallet",
+                    "send",
+                    "--from",
+                    wallet,
+                    "--to",
+                    to,
+                    "--amount-nanotos",
+                    str(amount),
+                    "--bounce",
+                    "--yes",
+                ],
+                payer=address,
+                observe=to,
+            )
+            out[wallet] = {
+                "returned_nanotos": int(self.argv_value(rec, "--amount-nanotos")),
+                "tx": rec.get("tx"),
+                "in_msg_hash": rec.get("in_msg_hash"),
+            }
+        return out
+
+    # ----- exact value-flow reconciliation (Final amendment A) -----------------------------
+    def sa_reconcile(self, accounts: dict, returns: dict) -> dict:
+        """Exact value flows over the case account set S, from every transaction of every S
+        account since the opening snapshot, parsed from its BOC:
+          per account: closing - opening == in - out - total_fees - remaining fwd_fee;
+          over S: messages between S accounts cancel, funded = values from the SC source into
+          S, returned = values from S to the SC source. Anything from or to another account,
+          or an S-to-S message still in flight, keeps the reconciliation open (pending /
+          FAIL); it must agree on every source and match the ledger and the return records."""
+        source = self.funding_source()
+        opening = (self.sa_evidence_read("scsa-opening.json") or {}).get("accounts") or {}
+        members = {norm_addr(a): name for name, a in accounts.items()}
+        per_source = {}
+        for url in self.rpc.all_sources:
+            sums = {"funded": 0, "returned": 0, "total_fees": 0, "fwd_fees": 0}
+            outs, ins, flows = [], {}, {}
+            foreign = []
+            for name, address in accounts.items():
+                o = (opening.get(name) or {}).get(url) or {"balance": 0, "last_lt": 0}
+                close = self.sa_point(address, url)
+                hist = self.sa_history(address, int(o["last_lt"]), o.get("last_hash"), url)
+                f = {"in": 0, "out": 0, "fees": 0, "fwd": 0}
+                for item in hist:
+                    tx = item["tx"]
+                    m = tx["in_msg"]
+                    if m and m["kind"] == "internal":
+                        f["in"] += m["value"]
+                        ins[m["hash"]] = {
+                            "to": name,
+                            "from": m["source"],
+                            "value": m["value"],
+                            "fwd_fee": m["fwd_fee"],
+                        }
+                    for om in tx["out_msgs"]:
+                        if om["kind"] == "internal":
+                            f["out"] += om["value"]
+                            f["fwd"] += om["fwd_fee"]
+                            outs.append(
+                                {
+                                    "from": name,
+                                    **{
+                                        k: om[k]
+                                        for k in ("destination", "value", "fwd_fee", "hash")
+                                    },
+                                }
+                            )
+                    f["fees"] += tx["total_fees"]
+                delta = close["balance"] - int(o["balance"])
+                flows[name] = {
+                    **f,
+                    "opening": int(o["balance"]),
+                    "closing": close["balance"],
+                    "transactions": [i["row"]["transaction_id"]["hash"] for i in hist],
+                    "exact": delta == f["in"] - f["out"] - f["fees"] - f["fwd"],
+                }
+                sums["total_fees"] += f["fees"]
+                sums["fwd_fees"] += f["fwd"]
+            in_flight, internal_ins = [], set()
+            for om in outs:
+                dest = norm_addr(om["destination"])
+                if dest == source:
+                    sums["returned"] += om["value"]
+                elif dest in members:
+                    if om["hash"] in ins:
+                        internal_ins.add(om["hash"])
+                    else:
+                        in_flight.append(om)
+                else:
+                    foreign.append({"out": om})
+            funding_fwd = 0
+            for h, m in ins.items():
+                if h in internal_ins:
+                    continue
+                if same_addr(m["from"], source):
+                    sums["funded"] += m["value"]
+                    funding_fwd += m["fwd_fee"]
+                else:
+                    foreign.append({"in": {"hash": h, **m}})
+            delta = sum(v["closing"] - v["opening"] for v in flows.values())
+            identity = delta == sums["funded"] - sums["returned"] - sums["total_fees"] - sums[
+                "fwd_fees"
+            ] - sum(o["value"] for o in in_flight) + sum(
+                x["in"]["value"] for x in foreign if "in" in x
+            ) - sum(x["out"]["value"] for x in foreign if "out" in x)
+            per_source[url] = {
+                **sums,
+                "delta": delta,
+                "accounts": flows,
+                "in_flight": in_flight,
+                "foreign": foreign,
+                "identity_holds": identity,
+                "funding_fwd_fees_outside_s": funding_fwd,
+            }
+        views = list(per_source.values())
+        agree = all(
+            json.dumps(v, sort_keys=True) == json.dumps(views[0], sort_keys=True) for v in views
+        )
+        first = views[0]
+        ledger = self.sa_case_funded()
+        returned_records = sum(int(r.get("returned_nanotos") or 0) for r in returns.values())
+        source_view = {
+            url: (self.rpc.info(source, url) or {}).get("balance") for url in self.rpc.all_sources
+        }
+        exact = (
+            agree
+            and all(a["exact"] for a in first["accounts"].values())
+            and first["identity_holds"]
+            and not first["foreign"]
+            and not first["in_flight"]
+            and first["funded"] == ledger
+            and first["returned"] == returned_records
+        )
+        return {
+            "set": {name: norm_addr(a) for name, a in accounts.items()},
+            "funded_nanotos": first["funded"],
+            "ledger_case_funding_nanotos": ledger,
+            "returned_nanotos": first["returned"],
+            "return_records_nanotos": returned_records,
+            "total_fees_nanotos": first["total_fees"],
+            "fwd_fees_nanotos": first["fwd_fees"],
+            "retained_delta_nanotos": first["delta"],
+            "per_account": first["accounts"],
+            "in_flight": first["in_flight"],
+            "foreign": first["foreign"],
+            "sources_agree": agree,
+            "pending": bool(first["in_flight"]) and not first["foreign"],
+            "exact": exact,
+            "outside_s": {
+                "source": source,
+                "source_balance_per_source": source_view,
+                "note": "SC-source transaction fees are outside S and are not part of the "
+                "identity; the source's remaining headroom is its balance above",
+            },
+        }
+
+    def sa_secret_scan(self) -> dict:
+        """No vault URL or master key in any evidence file."""
+        vault = self.cli.env().get("VAULT_URL") or ""
+        needles = [n for n in (vault, vault.partition("master_key=")[2]) if len(n) >= 16]
+        hits, scanned = [], 0
+        for path in sorted(self.evidence.rglob("*")):
+            if path.is_file():
+                scanned += 1
+                data = path.read_bytes()
+                if any(n.encode() in data for n in needles) or b"master_key=" in data:
+                    hits.append(str(path.relative_to(self.evidence)))
+        return {"clean": not hits, "scanned_files": scanned, "hits": hits}
+
+    def sa_check_registry_state_init(self, built: dict) -> None:
+        """The registration StateInit the pinned CLI built carries the pinned registry code."""
+        init = boc_decode(base64.b64decode(str(built.get("state_init_boc") or ""), validate=True))
+        if dag_cell_hash(state_init_code(init)).hex() != NR_CODE_HASH:
+            raise Refusal("the registration StateInit does not carry the pinned registry code")
+
+    def sa_deployed(self, actor: str, attestor_text: str) -> dict:
+        codes = self.sa_agreed(
+            lambda: self.sa_code_everywhere(actor),
+            lambda v: all(c is not None for c in v.values()),
+        )
+        if any(c != SA_CODE_HASH for c in codes.values()):
+            raise Refusal(f"deployed actor code is not the pinned release: {codes}; stop")
+        view = self.sa_show(actor)
+        if view.get("attestor_key_id") != attestor_text:
+            raise Refusal(f"actor attestor {view.get('attestor_key_id')} != {attestor_text}; stop")
+        return {"code_hash_per_source": codes, "attestor_key_id": view.get("attestor_key_id")}
+
+    def case_scsa(self, w: dict) -> dict:
+        """Public Gate D/E settlement path on global_id 2 (PLAN-FINAL, amendments A-G):
+
+        register a fresh provider Agent; deploy a Service Actor (open access, price 0.1,
+        storage fee 0.2, cleanup bounty 0.1, SLA and refund window 3600 s, ML-DSA-44 attestor,
+        1.2 TOS); register a Capability whose manifest key 21 names it; point metadata_hash at
+        NSM1 of that version; R1 (foreign code hash at discovery); discover, quote, prepare and
+        call; attested respond; R2 (Prepare-admission stale terms); withdraw all revenue; return
+        the leftovers; reconcile every value flow of the case accounts exactly."""
+        self.temp_limit = SA_TEMP_LIMIT_C
+        gate = self.sa_require_gate()
+        codes = self.sa_cli_codes()
+        funded = self.sa_case_budget_ok()
+        sa = self.sa_actors()
+        provider, buyer = self.sa_address(SA_PROVIDER), self.sa_address(SA_BUYER)
+        attestor = sa["controllers"][SA_ATTESTOR]
+        attestor_text = "mldsa44:" + attestor["key_id"]
+        domain = str(self.sa_network_domain())
+        steps: dict = {}
+        # 2. Provider Agent (fresh) with the ML-DSA-44 controller.
+        reg = self.nr_build(
+            "scsa-build-register-agent",
+            "register-agent",
+            "--policy",
+            str(self.evidence / "sa-provider-policy.json"),
+            "--nonce",
+            self.sa_nonce("agent"),
+            "--signer",
+            SA_CONTROLLER,
+        )
+        self.sa_check_registry_state_init(reg)
+        steps["register-agent"] = self.registry_send("scsa-register-agent", reg, bounce=False)
+        agent_address = norm_addr(reg["destination"])
+        agent_id = "agent_" + str(reg.get("object_id"))
+        # 3. Service Actor at the address the CLI derives offline.
+        terms = [
+            "--open-access",
+            "--price-per-call",
+            SA_PRICE_TOS,
+            "--storage-fee",
+            SA_STORAGE_TOS,
+            "--cleanup-bounty",
+            SA_BOUNTY_TOS,
+            "--response-sla",
+            str(SA_WINDOW_S),
+            "--refund-claim-window",
+            str(SA_WINDOW_S),
+            "--rate-limit-per-day",
+            "0",
+            "--metadata-hash",
+            SA_RESERVED_ZERO_HASH,
+            "--proof-scheme-hash",
+            SA_RESERVED_ZERO_HASH,
+        ]
+        derived = self.local(
+            "scsa-build-state",
+            "agent",
+            "service",
+            "build-state",
+            "--owner",
+            provider,
+            *terms,
+            "--attestor-pubkey",
+            attestor["public_key"],
+            "-w",
+            "0",
+            want_json=True,
+        )
+        actor = norm_addr(derived["address"])
+        steps["deploy"] = self.sa_actor_send(
+            "scsa-deploy",
+            [
+                "agent",
+                "service",
+                "deploy",
+                "--name",
+                f"sa-{SA_RUN}",
+                "--owner",
+                provider,
+                *terms,
+                "--attestor-controller",
+                SA_ATTESTOR,
+                "--from",
+                SA_PROVIDER,
+                "--amount",
+                nanotos_text(SA_DEPLOY_NANOTOS),
+                "-w",
+                "0",
+                "--yes",
+            ],
+            sender=SA_PROVIDER,
+            target=actor,
+            operation="deploy",
+            amount_nanotos=SA_DEPLOY_NANOTOS,
+        )
+        deployed = self.sa_deployed(actor, attestor_text)
+        # 4. Capability whose manifest key 21 names the actor, its code hash and attestor.
+        manifest = self.sa_tool_once(
+            "scsa-manifest",
+            "fixture",
+            "manifest",
+            "--actor",
+            actor,
+            "--code-hash",
+            SA_CODE_HASH,
+            "--attestor",
+            attestor_text,
+            "--version",
+            SA_VERSION,
+            "--out-dir",
+            str(self.sa_manifest_dir()),
+        )
+        digest = str(manifest["manifest_digest"])
+        cap = self.nr_build(
+            "scsa-build-register-cap",
+            "action",
+            "--kind",
+            "register-capability",
+            "--agent",
+            agent_address,
+            "--nonce",
+            self.sa_nonce("register-cap"),
+            "--object-nonce",
+            self.sa_nonce("cap-object"),
+            "--version",
+            SA_VERSION,
+            "--manifest",
+            digest.removeprefix("sha256:"),
+            "--signer",
+            SA_CONTROLLER,
+        )
+        steps["register-capability"] = self.registry_send("scsa-register-cap", cap, bounce=True)
+        capability = norm_addr(cap["final_target"])
+        capability_id = "cap_" + str(self.nr_show(capability).get("object_id"))
+        # 5. metadata_hash = NSM1(capability version); proof scheme as in the reference flow.
+        meta = self.sa_tool_once(
+            "scsa-metadata",
+            "fixture",
+            "metadata",
+            "--network-domain",
+            domain,
+            "--capability-id",
+            capability_id,
+            "--provider-agent-id",
+            agent_id,
+            "--version",
+            SA_VERSION,
+            "--manifest-digest",
+            digest,
+        )
+        steps["metadata-policy"] = self.sa_actor_send(
+            "scsa-metadata-policy",
+            self.sa_policy_argv(
+                actor, SA_PRICE_TOS, meta["metadata_hash"], meta["proof_scheme_hash"]
+            ),
+            sender=SA_PROVIDER,
+            target=actor,
+            operation="update-policy",
+            amount_nanotos=SA_ACTION_NANOTOS,
+        )
+        self.sa_agreed(
+            lambda: self.sa_show(actor),
+            lambda v: (
+                str(v.get("metadata_hash", "")).endswith(meta["metadata_hash"])
+                and str(v.get("proof_scheme_hash", "")).endswith(meta["proof_scheme_hash"])
+            ),
+        )
+        # 6. R1 before any buyer value.
+        r1 = self.sa_r1(capability_id, actor)
+        if not r1["refused_as_stated"]:
+            raise Refusal("R1 was not refused as stated; no buyer value is sent (rerun repeats R1)")
+        # 7-8. Discover, quote, prepare, call; admitted and pending.
+        offer = self.sa_agreed(
+            lambda: self.sa_read(
+                "buyer",
+                "discover",
+                *self.sa_buyer_args("buyer"),
+                "--capability-id",
+                capability_id,
+                "--version",
+                SA_VERSION,
+            )[1],
+            lambda v: isinstance(v, dict),
+        )
+        if (
+            not same_addr(offer.get("actor"), actor)
+            or offer.get("attestor_key_id") != attestor_text
+        ):
+            raise Refusal(f"the discovered offer does not bind the actor and attestor: {offer}")
+        quote_args = self.sa_quote_args(str(manifest["path"]), capability_id, agent_id, "quote-1")
+        quote = self.sa_tool_once("scsa-quote-1", "fixture", *quote_args)
+        if quote.get("terms_hash") != offer.get("terms_hash"):
+            raise Refusal("the quote terms_hash is not the discovered offer's")
+        prepared = self.sa_tool_once(
+            "scsa-prepare",
+            "buyer",
+            "prepare",
+            *self.sa_buyer_args("buyer"),
+            "--package",
+            str(quote["package"]),
+            "--execution-id",
+            self.sa_nonce("execution"),
+            "--input-digest",
+            self.sa_nonce("input"),
+        )
+        payment = tos_to_nanotos(SA_PRICE_TOS) + tos_to_nanotos(SA_STORAGE_TOS)
+        payment += SA_ADMISSION_GAS_NANOTOS
+        if (
+            prepared.get("phase") != "prepared"
+            or prepared.get("terms_hash") != quote.get("terms_hash")
+            or int(prepared.get("payment_nanotos") or 0) != payment
+            or payment > SA_MAX_PER_CALL_NANOTOS
+        ):
+            raise Refusal(f"the prepared call is not the quoted one: {prepared}")
+        request_hash = str(prepared["request_hash"])
+        self.sa_custody_argv(
+            "scsa-call-custody",
+            [
+                "agent",
+                "service",
+                "send",
+                "--operation",
+                "call",
+                "--address",
+                actor,
+                "--from",
+                SA_BUYER,
+                "--query-id",
+                str(prepared.get("query_id")),
+                "--request-hash",
+                request_hash,
+                "--expected-terms-hash",
+                str(prepared.get("terms_hash")),
+                "--yes",
+            ],
+        )
+        call = self.sa_buyer_call("scsa-call", request_hash)
+        request_id = call["status"]["request_id"]
+        # 9. Attested respond; resolved as responded; the index shows it.
+        respond = self.sa_actor_send(
+            "scsa-respond",
+            [
+                "agent",
+                "service",
+                "send",
+                "--operation",
+                "respond",
+                "--address",
+                actor,
+                "--from",
+                SA_PROVIDER,
+                "--request-id",
+                str(request_id),
+                "--response-hash",
+                self.sa_nonce("response"),
+                "--attestor-controller",
+                SA_ATTESTOR,
+                "--yes",
+            ],
+            sender=SA_PROVIDER,
+            target=actor,
+            operation="respond",
+            amount_nanotos=SA_ACTION_NANOTOS,
+        )
+        response_hash = self.argv_value(respond, "--response-hash")
+        responded = self.sa_agreed(
+            lambda: self.sa_status(request_hash),
+            lambda v: v.get("state") == "responded" and v.get("response_hash") == response_hash,
+        )
+        index = self.sa_agreed(
+            lambda: self.sa_read(
+                "buyer",
+                "requests",
+                *self.sa_buyer_args("buyer"),
+                "--actor",
+                actor,
+                "--caller",
+                buyer,
+            )[1],
+            lambda v: (
+                isinstance(v, dict)
+                and any(
+                    r.get("request_id") == request_id and r.get("state") == "responded"
+                    for r in v.get("requests") or []
+                )
+            ),
+        )
+        # 10. R2.
+        r2_args = self.sa_quote_args(str(manifest["path"]), capability_id, agent_id, "quote-r2")
+        r2 = self.sa_r2(actor, meta, r2_args)
+        # 11. Withdraw all revenue; both payouts bound on every source.
+        withdraw = self.sa_withdraw(actor)
+        payouts = self.sa_payouts("scsa-withdraw-payouts", withdraw, actor, provider)
+        after = self.sa_agreed(lambda: self.sa_data(actor))
+        # 12. Leftovers back to the SC source.
+        returns = self.sa_return()
+        objects = {
+            NR_ACTOR: self.sa_address(NR_ACTOR),
+            SA_PROVIDER: provider,
+            SA_BUYER: buyer,
+            "actor": actor,
+            "agent": agent_address,
+            "capability": capability,
+        }
+        recon = self.sa_reconcile(objects, returns)
+        scan = self.sa_secret_scan()
+        keep2 = 2 * tos_to_nanotos("0.05")
+        criteria = {
+            "registry_sends_settled": all(
+                steps[k]["verdict"] == "settled" for k in ("register-agent", "register-capability")
+            ),
+            "actor_sends_applied": all(
+                s["verdict"] == "applied"
+                for s in (steps["deploy"], steps["metadata-policy"], respond)
+            )
+            and withdraw["verdict"] == "applied",
+            "deployed_code_is_release": all(
+                c == SA_CODE_HASH for c in deployed["code_hash_per_source"].values()
+            ),
+            "r1_refused_as_stated": bool(r1["refused_as_stated"]),
+            "r2_refused_as_stated": bool(r2["refused_as_stated"]),
+            "call_admitted": call["verdict"] == "admitted",
+            "attested_respond_resolved": responded.get("response_hash") == response_hash,
+            "index_shows_response": bool(index),
+            "revenue_fully_withdrawn": after["withdrawable_revenue"] == 0,
+            "payouts_bound": bool(payouts.get("bound")),
+            "leftovers_returned": all(
+                "returned_nanotos" in r or int(r.get("skipped", 0)) <= keep2
+                for r in returns.values()
+            ),
+            "case_funding_within_abort_line": self.sa_case_funded() <= SA_CASE_ABORT_NANOTOS,
+            "reconciliation_exact": bool(recon["exact"]),
+            "secret_scan_clean": bool(scan["clean"]),
+        }
+        return {
+            "qualifies_as": SA_QUALIFIES_AS,
+            "stand_ins": SA_STAND_INS,
+            "not_covered": SA_NOT_COVERED,
+            "domain": {"label": NR_LABEL, "global_id": NR_GLOBAL_ID},
+            "pins": {
+                "cli_sha256": self.args.cli_sha256,
+                "actor_code_hash": SA_CODE_HASH,
+                "registry_code_hash": "tvm-cell-sha256:" + NR_CODE_HASH,
+                "gate": gate,
+                "cli_codes": codes,
+            },
+            "case_funding_nanotos_at_start": funded,
+            "objects": {
+                "agent_id": agent_id,
+                "agent": agent_address,
+                "capability_id": capability_id,
+                "capability": capability,
+                "actor": actor,
+                "manifest_digest": digest,
+                "attestor": attestor_text,
+                "metadata_hash": meta["metadata_hash"],
+            },
+            "steps": {
+                k: {
+                    "verdict": v.get("verdict"),
+                    "per_source": v.get("per_source"),
+                    "tx": v.get("tx"),
+                }
+                for k, v in {**steps, "respond": respond, "withdraw": withdraw}.items()
+            },
+            "call": {
+                "request_hash": request_hash,
+                "request_id": request_id,
+                "verdict": call["verdict"],
+            },
+            "responded": responded,
+            "r1": r1,
+            "r2": r2,
+            "payouts": payouts,
+            "after_withdraw": after,
+            "returns": returns,
+            "reconciliation": recon,
+            "secret_scan": scan,
+            "criteria": criteria,
+            "pass": all(criteria.values()),
+        }
+
     def case_sc05x(self, w: dict) -> dict:
         """Duplicate settlement of the already settled SC-05 task must be refused with no second
         payout: the escrow accepts settle only in `result_submitted`."""
@@ -4401,6 +6418,9 @@ class Runner:
         if (self.evidence / "registry-actors.json").exists():
             # The Native Registry payer is funded from the same source and returns the same way.
             actors[NR_ACTOR] = norm_addr(self.nr_actors()["wallet"])
+        if (self.evidence / "service-actor-actors.json").exists():
+            # So are the Service Actor case wallets (their own -gde1 returns run inside scsa).
+            actors.update(self.sa_actors()["wallets"])
         out = {}
         keep = tos_to_nanotos("0.05")
         suffix = "" if round_ == 1 else f"-r{round_}"
@@ -4850,6 +6870,7 @@ class PlanRunner(Runner):
             "action_hash": "00" * 32,
             "generation": 1,
             "sequence": 1,
+            "object_id": "00" * 32,
         }
 
     def registry_send(self, label, built, *, bounce, expect_exit=0, body_boc=None):
@@ -4923,6 +6944,157 @@ class PlanRunner(Runner):
     def reconcile_attempt(self, label):
         return {"label": label, "verdict": "settled"}
 
+    # scsa: the planner records every CLI, buyer and fixture argument vector and sends nothing.
+    def sa_require_gate(self):
+        return {"plan": True}
+
+    def sa_cli_codes(self):
+        self.local(
+            "sa-domain",
+            "agent",
+            "native-registry",
+            "domain",
+            "--global-config",
+            "/plan/testnet-global.config.json",
+            "--network-label",
+            NR_LABEL,
+            want_json=True,
+        )
+        return {"plan": True}
+
+    def sa_case_funded(self):
+        return 0
+
+    def sa_actors(self):
+        key = {"key_id": "00" * 32, "public_key": "00" * 1312}
+        return {
+            "wallets": {SA_PROVIDER: self.fake, SA_BUYER: self.fake},
+            "controllers": {SA_CONTROLLER: key, SA_ATTESTOR: key},
+        }
+
+    def sa_address(self, name):
+        return self.fake
+
+    def funding_source(self):
+        return self.fake
+
+    def sa_network_domain(self):
+        return Path("/plan/sa-network-domain.json")
+
+    def sa_manifest_dir(self):
+        return Path("/plan/sa-manifests")
+
+    def sa_buyer_args(self, state, code_hash=SA_CODE_HASH):
+        return ["--state-dir", f"/plan/{state}", "--actor-code-hash", code_hash]
+
+    def sa_quote_args(self, manifest, capability_id, agent_id, name):
+        return ["quote", "--manifest", manifest, "--out", f"/plan/{name}.json"]
+
+    def sa_evidence_read(self, name):
+        return None
+
+    def sa_evidence_write(self, name, record):
+        return None
+
+    def sa_check_registry_state_init(self, built):
+        return None
+
+    def sa_agreed(self, read, accept=lambda v: True):
+        return read()
+
+    def sa_point(self, address, url, seqno=False):
+        return {
+            "state": "active",
+            "balance": 10 * NANO,
+            "last_lt": 0,
+            "last_hash": None,
+            "seqno": 1,
+        }
+
+    def sa_code_everywhere(self, address):
+        return {"plan": SA_CODE_HASH}
+
+    def sa_show(self, address):
+        self.local("sa-show", "agent", "service", "show", "--address", address, want_json=True)
+        return {
+            "terms_hash": "33" * 32,
+            "metadata_hash": "11" * 32,
+            "proof_scheme_hash": "22" * 32,
+            "attestor_key_id": "mldsa44:" + "00" * 32,
+        }
+
+    def sa_actor_send(self, label, argv, *, sender, target, operation, amount_nanotos):
+        full = [*argv, *([] if operation == "deploy" else ["--query-id", "1"])]
+        self.recorded.append(
+            {
+                "label": label,
+                "argv": full,
+                "value": True,
+                "payer": sender,
+                "operation": operation,
+                "expect_exit": 0,
+            }
+        )
+        return {"label": label, "argv": full, "verdict": "applied", "per_source": {}}
+
+    def sa_tool_once(self, label, which, *argv, allow_failure=False):
+        self.recorded.append({"label": label, "argv": list(argv), "tool": which, "value": False})
+        if allow_failure:
+            return {"exit_code": 1, "answer": None, "stderr": SA_R2_ERROR}
+        return {
+            "manifest_digest": "sha256:" + "00" * 32,
+            "path": "/plan/manifest.cbor",
+            "metadata_hash": "11" * 32,
+            "proof_scheme_hash": "22" * 32,
+            "package": "/plan/quote.json",
+            "terms_hash": "33" * 32,
+            "phase": "prepared",
+            "request_hash": "44" * 32,
+            "query_id": 1,
+            "payment_nanotos": "500000000",
+        }
+
+    def sa_read(self, which, *argv):
+        self.recorded.append(
+            {"label": f"sa-read-{argv[0]}", "argv": list(argv), "tool": which, "value": False}
+        )
+        if SA_FOREIGN_CODE_HASH in argv:
+            return 1, None, sa_r1_error(len(self.rpc.all_sources))
+        return (
+            0,
+            {
+                "actor": self.fake,
+                "attestor_key_id": "mldsa44:" + "00" * 32,
+                "terms_hash": "33" * 32,
+                "found": True,
+                "state": "responded",
+                "request_id": 0,
+                "requests": [{"request_id": 0, "state": "responded"}],
+            },
+            "",
+        )
+
+    def sa_buyer_call(self, label, request_hash):
+        argv = ["call", *self.sa_buyer_args("buyer"), "--request-hash", request_hash]
+        self.recorded.append(
+            {"label": label, "argv": argv, "tool": "buyer", "value": True, "expect_exit": 0}
+        )
+        return {"label": label, "verdict": "admitted", "status": {"request_id": 0}}
+
+    def sa_custody_argv(self, label, argv):
+        # Recorded as a tosctl vector (flag-checked) but not a separate value step: the buyer's
+        # call above is the one send.
+        self.recorded.append({"label": label, "argv": list(argv), "value": False})
+
+    def sa_payouts(self, label, withdraw, actor, provider):
+        return {"bound": True}
+
+    def sa_reconcile(self, accounts, returns):
+        return {"exact": True, "set": accounts}
+
+    def sa_secret_scan(self):
+        return {"clean": True}
+
     @property
     def rpc(self):
         return _PlanRpc()
@@ -4937,8 +7109,19 @@ class PlanRunner(Runner):
 
 
 class _PlanRpc:
+    all_sources = ["plan"]
+    primary = "plan"
+
     def balance(self, address):
         return 10 * NANO
+
+    def info(self, address, url=None):
+        return {"balance": str(10 * NANO), "state": "active"}
+
+    def run_get_method(self, address, method, url=None):
+        stack = [["num", "0x0"]] * SA_DATA_STACK_LEN
+        stack[SA_DATA_SLOTS["withdrawable_revenue"]] = ["num", hex(300_000_000)]
+        return stack
 
     def state(self, address):
         return "active"
@@ -4975,6 +7158,9 @@ class _PlanEvidence:
 class _PlanPart:
     def __init__(self, name):
         self.name = name
+
+    def __str__(self):
+        return f"/plan/{self.name}"
 
     def exists(self):
         return True
@@ -5017,6 +7203,27 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="explicit opt-in for the registry case (needs the owner's deployment ruling)",
     )
+    p.add_argument(
+        "--allow-service-actor-deploy",
+        action="store_true",
+        help="explicit opt-in for the Service Actor settlement case (owner deployment ruling)",
+    )
+    p.add_argument(
+        "--service-actor-release",
+        default=None,
+        help="tos-service-actor-v1.release.json in a tos tree (code hash pinned)",
+    )
+    p.add_argument(
+        "--registry-code-boc",
+        default=None,
+        help="Native Registry release code BOC (base64) for the buyer and fixture (hash pinned)",
+    )
+    p.add_argument("--service-buyer", default=None, help="absolute path of tos-service-buyer")
+    p.add_argument("--service-buyer-sha256", default=SA_BUYER_SHA256)
+    p.add_argument(
+        "--service-fixture", default=None, help="absolute path of service-actor-e2e-fixture"
+    )
+    p.add_argument("--service-fixture-sha256", default=SA_FIXTURE_SHA256)
     p.add_argument("--date", default=time.strftime("%Y%m%d", time.gmtime()))
     sub = p.add_subparsers(dest="command", required=True)
     sub.add_parser("preflight")
@@ -5038,6 +7245,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status")
     sub.add_parser("setup-registry")
     sub.add_parser("activate-registry")
+    sub.add_parser("setup-service-actor")
+    sub.add_parser("plan-funding-service-actor")
+    sub.add_parser("activate-service-actor")
     rc = sub.add_parser("reconcile")
     rc.add_argument("label")
     rc.add_argument(
@@ -5078,6 +7288,12 @@ def main(argv: list[str] | None = None) -> int:
             out = runner.setup_registry()
         elif args.command == "activate-registry":
             out = runner.activate_registry()
+        elif args.command == "setup-service-actor":
+            out = runner.setup_service_actor()
+        elif args.command == "plan-funding-service-actor":
+            out = runner.plan_funding_service_actor()
+        elif args.command == "activate-service-actor":
+            out = runner.activate_service_actor()
         elif args.command == "reconcile":
             out = runner.reconcile(args.label, external=args.external, sender=args.sender)
         else:
