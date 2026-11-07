@@ -3239,6 +3239,10 @@ class LoadDriver:
         from load_finality_collector import NativeCollector
         from load_native_observer import NativeObserver
 
+        interval, max_captures = native_capture_policy(
+            self.args.duration, getattr(self.args, "native_poll_seconds", None)
+        )
+
         def record(kind, **fields):
             with self.qualification.guard:
                 self.qualification.event(kind, **fields)
@@ -3256,9 +3260,11 @@ class LoadDriver:
             global_id=self.global_id,
             global_version=16,
             subwallet_id=HIGHLOAD_SUBWALLET,
-            max_captures=min(1000000, int((self.args.duration + 600) / 2) + 100),
+            max_captures=max_captures,
         )
-        self.native_observer = NativeObserver(collector, record, self.qualification.halt)
+        self.native_observer = NativeObserver(
+            collector, record, self.qualification.halt, interval=interval
+        )
         self.native_observer.bootstrap()
         self.qualification.attach_native(self.native_observer)
         self.native_observer.start()
@@ -3270,6 +3276,27 @@ class LoadDriver:
             if not (self.state / name).is_file():
                 raise lib.TestnetError("native mode requires an existing deployed highload wallet")
         self.start_native_observer(address_from_file(self.state / "highload.addr"))
+
+
+def native_capture_policy(duration, interval=None):
+    interval = 2 if interval is None else interval
+    if (
+        type(interval) not in (int, float)
+        or not math.isfinite(interval)
+        or not 0.1 <= interval <= 10
+        or type(duration) not in (int, float)
+        or not math.isfinite(duration)
+        or duration <= 0
+    ):
+        raise lib.TestnetError("native poll interval must be 0.1..10 seconds with finite duration")
+    # Include setup/drain margin. Refuse an unsupported horizon before signing;
+    # silently clamping the count would exhaust acquisition during a long run.
+    if duration > (1000000 - 100) * interval - 600:
+        raise lib.TestnetError("native poll interval exceeds capture-count budget for duration")
+    count = math.ceil((duration + 600) / interval) + 100
+    if count > 1000000:
+        raise lib.TestnetError("native capture-count budget exceeded")
+    return interval, count
 
 
 def run_load(args, chain, global_id, operations=None):
@@ -3310,6 +3337,7 @@ def check_load_args(args: argparse.Namespace) -> None:
         "native_wallet_code_hash",
     )
     if getattr(args, "native_finality", False):
+        native_capture_policy(args.duration, getattr(args, "native_poll_seconds", None))
         if (
             not getattr(args, "qualify_load", False)
             or args.transfers != "skip"
@@ -3325,7 +3353,10 @@ def check_load_args(args: argparse.Namespace) -> None:
         for field in ("native_verifier_sha256", "native_anchor_sha256", "native_wallet_code_hash"):
             if not re.fullmatch(r"[0-9a-f]{64}", getattr(args, field)):
                 raise lib.TestnetError("invalid native SHA256/code pin")
-    elif any(getattr(args, field, None) for field in native_fields):
+    elif (
+        any(getattr(args, field, None) for field in native_fields)
+        or getattr(args, "native_poll_seconds", None) is not None
+    ):
         raise lib.TestnetError("native options require --native-finality")
     if getattr(args, "qualify_load", False):
         if not getattr(args, "confirm_rpc", None) or args.confirm_rpc == args.rpc:
@@ -3484,6 +3515,11 @@ def main(argv: list[str] | None = None) -> int:
     p_load.add_argument("--dry-run", action="store_true")
     p_load.add_argument("--qualify-load", action="store_true")
     p_load.add_argument("--native-finality", action="store_true")
+    p_load.add_argument(
+        "--native-poll-seconds",
+        type=float,
+        help="native capture start spacing (0.1..10 seconds, default 2); slow captures never overlap",
+    )
     p_load.add_argument("--native-verifier")
     p_load.add_argument("--native-verifier-sha256")
     p_load.add_argument("--native-anchor")

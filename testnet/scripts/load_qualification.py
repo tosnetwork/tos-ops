@@ -233,8 +233,10 @@ class Qualification:
             if self.native is not None:
                 if type(request_hashes) is not dict or set(request_hashes) != set(ids):
                     raise lib.TestnetError("native offer needs every signed request digest")
-                self.native.offer(request_hashes)
+                native_offer = self.native.offer(request_hashes)
                 fields["signed_request_hashes"] = request_hashes
+                fields["native_boot_id"] = native_offer["boot_id"]
+                fields["native_offered_monotonic_seconds"] = native_offer["monotonic_seconds"]
             self.event("offered", query_ids=ids, carrier_bytes=target.stat().st_size, **fields)
             for query in ids:
                 self.seen[query // 8] |= 1 << (query % 8)
