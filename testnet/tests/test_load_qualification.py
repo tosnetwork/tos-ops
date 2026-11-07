@@ -44,6 +44,8 @@ def test_native_offer_journals_signed_request_not_carrier_digest(tmp_path):
     events = [json.loads(line) for line in (q.run / "events.jsonl").read_text().splitlines()]
     offered = next(event for event in events if event["event"] == "offered")
     assert offered["signed_request_hashes"] == {"0": "ab" * 32}
+    assert offered["native_boot_id"] == "test-boot"
+    assert offered["native_offered_monotonic_seconds"] == o.window.pending[0][1]
     assert not q.finish()["safe_to_start_new_run"]
 
 

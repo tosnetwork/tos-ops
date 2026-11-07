@@ -66,6 +66,20 @@ def test_bootstrap_restores_strict_policy_and_has_no_admission():
     assert c.closed
 
 
+def test_offered_and_observation_timestamps_are_exact_window_inputs():
+    records = []
+    o, _ = observer(record=lambda kind, **fields: records.append((kind, fields)))
+    o.bootstrap()
+    baseline = records[0][1]
+    assert baseline["boot_id"] == "test-boot"
+    assert baseline["verified_observation_monotonic_seconds"] == o.window.last_verified
+    assert baseline["poll_interval_seconds"] == o.interval
+    offered = o.offer({1: "ab" * 32})
+    assert offered["boot_id"] == "test-boot"
+    assert offered["monotonic_seconds"] == o.window.pending[1][1]
+    o.finish()
+
+
 def test_failed_bootstrap_restores_timeout():
     c = Collector()
     c.capture = lambda: (_ for _ in ()).throw(HistoryError("cold timeout"))
@@ -162,7 +176,8 @@ def test_worker_matches_request_digest_and_joins_before_close():
         return capture(13, OLD, NEW, (SubmitReceipt(1, NEW, "ab" * 32, 1, 255, 254, 1),))
 
     c.next_capture = next_capture
-    o, halted = observer(c)
+    records = []
+    o, halted = observer(c, lambda kind, **fields: records.append((kind, fields)))
     o.bootstrap()
     o.start()
     assert ready.wait(2)
@@ -173,6 +188,9 @@ def test_worker_matches_request_digest_and_joins_before_close():
     assert result["all_offered_native_finalized"] and result["latency_criteria_pass"]
     assert o.finalized(1) and not o.finalized(2)
     assert not halted and c.closed and not o.thread.is_alive()
+    checkpoint = next(fields for kind, fields in records if kind == "native_checkpoint")
+    assert checkpoint["boot_id"] == "test-boot"
+    assert checkpoint["verified_observation_monotonic_seconds"] == o.window.last_verified
 
 
 def test_wrong_digest_keeps_pending_and_latches_admission():

@@ -158,6 +158,31 @@ wallet-lock waits and balance RPCs, at the actual owner signature call, and afte
 the signed message export before broadcast. Failure after signing retains the
 original signed operation and unknown-funding fence; it never signs a replacement.
 
+`--native-poll-seconds` explicitly selects capture start spacing (0.1..10 seconds,
+default2). The worker remains serial; a slow capture consumes its interval and
+does not spawn overlapping work. The capture-count allowance is
+`ceil((duration + 600) / interval) + 100`, capped at the collector's supported
+one million by **rejecting** an unsupported horizon before signing, not clamping
+it. A72hour run at0.5seconds therefore allows519700captures. Count allowance
+does not establish disk capacity or prove throughput; existing byte/inode/free
+space guards remain active.
+
+Native offered events now include `native_boot_id` and
+`native_offered_monotonic_seconds`, sampled from the actual window offer call.
+Baseline/checkpoint events include `boot_id` and
+`verified_observation_monotonic_seconds`, the same value passed to the window
+after persisted native capture and while holding its guard. Event/journal timing
+remains separate; delayed callbacks cannot rewrite native observation latency.
+These are additive fields; older runs do not retroactively gain exact timestamps.
+
+The retained120second diagnostic fromNov4 stopped early with16/16bound native
+receipts settled and one query beyond5seconds (p95bucket10), preservingFAIL.
+Twenty-seven captures and all16exact request digests replay independently
+offline. Historical probes show slowquery2639 already present atMC1228752,
+while its original observation wasMC1228756. The explicit shorter interval is
+a measured follow-up option; no p95/p99 limit is relaxed or new performancePASS
+claimed. Fullrun replay/continuous key-boundary/live SLO/72hour gates stay open.
+
 `verification_mode` distinguishes native signed-request completion from legacy
 two-RPC processed checks. RPC seqno acceptance remains a separate metric; the
 native histogram measures offered digests through verified, persisted capture
