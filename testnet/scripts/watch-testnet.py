@@ -16,7 +16,7 @@ need nothing installed, and appends one TSV row per host to --out:
   consensus_sessions  free_gib  cpu_busy_pct  cpu_iowait_pct
   mempool_eligible  mempool_postponed  mempool_oldest_age_s
   jsonrpc_active_requests  metrics_snapshot_age_s  metrics_generation
-  missing_reason
+  missing_reason  future_skew_ms
 
 An unobserved value is written as `-`. A host that cannot be read is still
 written, every round, as a row with reachable False, every value `-` and a
@@ -50,8 +50,10 @@ the run. Without it, ordinary alert debounce and exit behavior are unchanged.
 In that mode a host missing for --missing-alert-after seconds is alerted once;
 it is alerted again only after it was observed and then went missing again.
 Use a new TSV when its header differs; old files are never silently migrated
-(the trailing missing_reason column was added this way: a series written before
-it is refused, not extended).
+(the trailing missing_reason and future_skew_ms columns were added this way: a
+series written before them is refused, not extended). A metrics snapshot dated
+up to MAX_FUTURE_SKEW_SECONDS after the coordinator's clock has
+metrics_snapshot_age_s 0 and its offset in future_skew_ms.
 
 Exit status: 0 when --once or --duration ends (except strict anomalies),
 1 on a bad inventory or mismatched TSV header.
@@ -77,6 +79,16 @@ PROBE = Path(__file__).resolve().parent / "check-host-disk.py"
 MIB = 1 << 20
 GIB = 1 << 30
 CURRENT_SHARD_AGE = 60
+MAX_FUTURE_SKEW_SECONDS = 2.0
+"""How far a metrics snapshot may be dated after the coordinator's clock and still count.
+
+Host and coordinator clocks agree only to within NTP error, so a snapshot can be
+dated a few milliseconds after the moment that judges it. Such a snapshot
+counts as age 0 for freshness and its offset is recorded as future_skew_ms; one
+dated more than this far ahead keeps its negative age, which
+--require-load-metrics reports as unobserved, as before. No freshness bound
+changes.
+"""
 
 COLUMNS = (
     "utc",
@@ -102,6 +114,7 @@ COLUMNS = (
     "metrics_snapshot_age_s",
     "metrics_generation",
     "missing_reason",
+    "future_skew_ms",
 )
 
 SSH_FAILED = "ssh_failed"
@@ -296,6 +309,9 @@ def row(now: float, name: str, report: dict | None, reason: str | None = None) -
         ),
         metrics_generation=report.get("metrics_generation"),
     )
+    age = out["metrics_snapshot_age_s"]
+    if age is not None and 0 < -age <= MAX_FUTURE_SKEW_SECONDS:
+        out["metrics_snapshot_age_s"], out["future_skew_ms"] = 0.0, int(round(-age * 1000))
     return out
 
 

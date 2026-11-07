@@ -59,7 +59,9 @@ OOM kills).
 The integrity refusals end the watch (exit 1 with a traceback, as before):
 probe source not matching the pin; an expected host absent from the inventory;
 DIR already existing; a host clock more than 60 s off when its answer arrives;
-an observation dated in the future at publication; coordinator free space below
+an observation dated more than MAX_FUTURE_SKEW_SECONDS after the cycle's stamp
+("dated in the future"; one within it counts as age 0 and carries
+future_skew_ms); coordinator free space below
 20 GiB or series.jsonl above 256 MiB; in any active observation, fresh or
 expired, missing cgroup OOM counters or filesystems or a disk/inode reserve
 below its floor; and, against that host's baseline, a changed main PID,
@@ -96,6 +98,15 @@ PAUSE = 60
 RETRY_AFTER = 5
 PROBE_TIMEOUT = 30
 MAX_AGE = 60
+MAX_FUTURE_SKEW_SECONDS = 2.0
+"""How far a host's sample may be dated after the coordinator's stamp and still count.
+
+Host and coordinator clocks agree only to within NTP error, so a sample can be
+dated a few milliseconds after the stamp that judges it. Such a sample counts
+as age 0 for freshness and its offset is recorded as future_skew_ms; one dated
+more than this far ahead is refused as dated in the future. This is not the
+60 s clock-skew refusal and changes no freshness bound.
+"""
 ALERT_AFTER = 600
 MIN_FREE = 20 << 30
 MAX_LOG = 256 << 20
@@ -128,10 +139,24 @@ def iso(stamp: float) -> str:
     return datetime.datetime.fromtimestamp(stamp, datetime.timezone.utc).isoformat()
 
 
+def publication_age(stamp: float, utc_unix: float) -> tuple[float, int | None]:
+    """(age for freshness, future_skew_ms or None) of a sample judged at `stamp`.
+
+    A sample dated up to MAX_FUTURE_SKEW_SECONDS after the stamp has age 0 and
+    its offset in whole milliseconds; one dated further ahead is refused.
+    """
+    age = stamp - utc_unix
+    if age >= 0:
+        return age, None
+    if -age > MAX_FUTURE_SKEW_SECONDS:
+        raise RuntimeError("Host observation dated in the future")
+    return 0.0, int(round(-age * 1000))
+
+
 def fresh(hosts: dict, names: set, now=time.time) -> None:
     stamp = now()
     if set(hosts) != names or any(
-        not 0 <= stamp - value["utc_unix"] <= MAX_AGE for value in hosts.values()
+        publication_age(stamp, value["utc_unix"])[0] > MAX_AGE for value in hosts.values()
     ):
         raise RuntimeError("Completed host observation expired before publication")
 
@@ -367,9 +392,9 @@ def watch(
             stamp = now()
             for name in sorted(observed):
                 value = observed[name]
-                age = stamp - value["utc_unix"]
-                if age < 0:
-                    raise RuntimeError("Completed host observation expired before publication")
+                age, skew = publication_age(stamp, value["utc_unix"])
+                if skew is not None:
+                    value = dict(value, future_skew_ms=skew)
                 if inactive(value):
                     if name in baseline:
                         check_inactive(value, baseline[name])
@@ -398,18 +423,18 @@ def watch(
                 tracker.observed(name)
             for name in sorted(violations):
                 state = violations[name].get("unit_active")
-                append(
-                    stream,
-                    {
-                        "status": VIOLATION,
-                        "host": name,
-                        "checked_unix": stamp,
-                        "checked_utc": iso(stamp),
-                        "reason": VALIDATOR_INACTIVE,
-                        "observed_unix": violations[name]["utc_unix"],
-                        "unit_active": state if state in UNIT_STATES else "unknown",
-                    },
-                )
+                record = {
+                    "status": VIOLATION,
+                    "host": name,
+                    "checked_unix": stamp,
+                    "checked_utc": iso(stamp),
+                    "reason": VALIDATOR_INACTIVE,
+                    "observed_unix": violations[name]["utc_unix"],
+                    "unit_active": state if state in UNIT_STATES else "unknown",
+                }
+                if "future_skew_ms" in violations[name]:
+                    record["future_skew_ms"] = violations[name]["future_skew_ms"]
+                append(stream, record)
                 if name not in inactive_hosts:
                     inactive_hosts.add(name)
                     emit(f"VIOLATION {iso(stamp)} {name}:{VALIDATOR_INACTIVE}")

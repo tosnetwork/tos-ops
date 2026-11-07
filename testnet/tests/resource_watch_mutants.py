@@ -131,8 +131,8 @@ M = [
     (
         "V6 extra: inactive violation not written",
         EXTRA,
-        '                        "reason": VALIDATOR_INACTIVE,\n',
-        '                        "reason": PROBE_FAILED,\n',
+        '                    "reason": VALIDATOR_INACTIVE,\n',
+        '                    "reason": PROBE_FAILED,\n',
     ),
     (
         "T1 extra: outage timed on wall time",
@@ -242,10 +242,58 @@ M = [
         "        return True\n",
     ),
     (
-        "X1 extra: future observation accepted",
+        "X1 extra: future observation accepted (skew bound removed)",
         EXTRA,
-        "                if age < 0:\n                    raise",
-        "                if False:\n                    raise",
+        "    if -age > MAX_FUTURE_SKEW_SECONDS:\n        raise",
+        "    if False:\n        raise",
+    ),
+    (
+        "F1 extra: no future tolerance (the earlier behaviour)",
+        EXTRA,
+        "MAX_FUTURE_SKEW_SECONDS = 2.0\n",
+        "MAX_FUTURE_SKEW_SECONDS = 0.0\n",
+    ),
+    (
+        "F2 extra: future_skew_ms not recorded",
+        EXTRA,
+        "                if skew is not None:\n                    value = dict(value, future_skew_ms=skew)\n",
+        "",
+    ),
+    (
+        "F3 extra: fresh() ignores the tolerance",
+        EXTRA,
+        '        publication_age(stamp, value["utc_unix"])[0] > MAX_AGE for value in hosts.values()\n',
+        '        not 0 <= stamp - value["utc_unix"] <= MAX_AGE for value in hosts.values()\n',
+    ),
+    (
+        "F4 extra: future refusal keeps the old message",
+        EXTRA,
+        '        raise RuntimeError("Host observation dated in the future")\n',
+        '        raise RuntimeError("Completed host observation expired before publication")\n',
+    ),
+    (
+        "F5 extra: violation row drops future_skew_ms",
+        EXTRA,
+        '                    record["future_skew_ms"] = violations[name]["future_skew_ms"]\n',
+        "                    pass\n",
+    ),
+    (
+        "F6 primary: future snapshot bound removed",
+        PRIMARY,
+        "    if age is not None and 0 < -age <= MAX_FUTURE_SKEW_SECONDS:\n",
+        "    if age is not None and 0 < -age:\n",
+    ),
+    (
+        "F7 primary: no future tolerance (the earlier behaviour)",
+        PRIMARY,
+        "MAX_FUTURE_SKEW_SECONDS = 2.0\n",
+        "MAX_FUTURE_SKEW_SECONDS = 0.0\n",
+    ),
+    (
+        "F8 primary: future_skew_ms not recorded",
+        PRIMARY,
+        '        out["metrics_snapshot_age_s"], out["future_skew_ms"] = 0.0, int(round(-age * 1000))\n',
+        '        out["metrics_snapshot_age_s"] = 0.0\n',
     ),
     ("X2 extra: bool pid accepted", EXTRA, "        or isinstance(pid, bool)\n", ""),
     (

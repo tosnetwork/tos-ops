@@ -313,9 +313,9 @@ def test_future_observation_at_publication_is_fatal(tmp_path):
     clock = Clock()
 
     def probe_host(host):
-        return host.name, observation(clock.t + 1), ""
+        return host.name, observation(clock.t + 2.5), ""
 
-    with pytest.raises(RuntimeError, match="expired before publication"):
+    with pytest.raises(RuntimeError, match="Host observation dated in the future"):
         wer.watch(
             HOSTS,
             tmp_path / "extra",
@@ -824,10 +824,10 @@ def test_a_future_observation_is_fatal_in_a_partial_cycle(tmp_path):
     def probe_host(host):
         if host.name == "node-4":
             return host.name, None, "ssh_failed"
-        offset = 1 if host.name == "node-1" and clock.cycle == 1 else 0
+        offset = 2.5 if host.name == "node-1" and clock.cycle == 1 else 0
         return host.name, observation(clock.now() + offset), ""
 
-    with pytest.raises(RuntimeError, match="expired before publication"):
+    with pytest.raises(RuntimeError, match="Host observation dated in the future"):
         run_late(tmp_path, probe_host, clock, cycles=3)
 
 
@@ -1014,3 +1014,83 @@ def test_integrity_refusals_are_not_mistaken_for_malformed_answers(tmp_path):
         folder.mkdir()
         with pytest.raises(RuntimeError, match=match):
             run_late(folder, late_probe(clock, "node-2", 0, **changes), clock)
+
+
+# A sample dated slightly after the cycle's stamp: up to 2.0 s counts as age 0.
+
+
+def ahead(clock, host, cycle, offset, **changes):
+    def probe_host(probed):
+        if probed.name == host and clock.cycle == cycle:
+            return probed.name, observation(clock.now() + offset, **changes), ""
+        return probed.name, observation(clock.now()), ""
+
+    return probe_host
+
+
+@pytest.mark.parametrize("offset,skew", [(0.005, 5), (0.5, 500), (2.0, 2000)])
+def test_a_slightly_future_sample_is_fresh_and_records_its_skew(tmp_path, offset, skew):
+    clock = Clock()
+    rows = run_late(tmp_path, ahead(clock, "node-1", 1, offset), clock)
+    assert [r["status"] for r in rows] == [HEALTHY] * 3
+    assert rows[1]["hosts"]["node-1"]["future_skew_ms"] == skew
+    assert all("future_skew_ms" not in v for r in (rows[0], rows[2]) for v in r["hosts"].values())
+    assert not statuses(rows, MISSING)
+    assert wer.MAX_FUTURE_SKEW_SECONDS == 2.0
+
+
+def test_latest_carries_the_skew_of_a_fresh_cycle(tmp_path):
+    clock = Clock()
+    run_late(tmp_path, ahead(clock, "node-2", 1, 0.005), clock, cycles=2)
+    latest = json.loads((tmp_path / "extra" / "LATEST.json").read_text())
+    assert latest["hosts"]["node-2"]["future_skew_ms"] == 5
+
+
+@pytest.mark.parametrize("offset", [2.5, 2.001, 59.0])
+def test_a_sample_dated_beyond_the_tolerance_is_fatal(tmp_path, offset):
+    clock = Clock()
+    with pytest.raises(RuntimeError, match="Host observation dated in the future"):
+        run_late(tmp_path, ahead(clock, "node-3", 1, offset), clock)
+
+
+def test_a_host_clock_more_than_60_s_ahead_is_still_refused_at_the_probe():
+    clock = Clock()
+    answer = Answer(json.dumps(observation(clock.now() + 61)))
+    with pytest.raises(RuntimeError, match="Host observation clock stale"):
+        wer.probe(HOSTS[0], "s", run=lambda *_a, **_k: answer, sleep=lambda _s: None, now=clock.now)
+
+
+def test_a_slightly_future_sample_is_still_checked(tmp_path):
+    clock = Clock()
+    with pytest.raises(RuntimeError, match="reserve exhausted"):
+        run_late(tmp_path, ahead(clock, "node-2", 1, 1.0, **LOW_DISK), clock)
+    clock = Clock()
+    folder = tmp_path / "pid"
+    folder.mkdir()
+    with pytest.raises(RuntimeError, match="changed: main_pid"):
+        run_late(folder, ahead(clock, "node-2", 1, 1.0, main_pid=1), clock)
+
+
+def test_a_slightly_future_inactive_sample_records_its_skew(tmp_path):
+    clock = Clock()
+
+    def probe_host(host):
+        if host.name == "node-4" and clock.cycle == 1:
+            return host.name, json.loads(inactive_answer(clock.now() + 0.25).stdout), ""
+        return host.name, observation(clock.now()), ""
+
+    rows = run_late(tmp_path, probe_host, clock)
+    (violation,) = statuses(rows, VIOLATION)
+    assert violation["future_skew_ms"] == 250
+
+
+def test_fresh_and_classification_agree_on_the_tolerance():
+    names = {"node-1"}
+    for offset in (0.005, 2.0):
+        wer.fresh({"node-1": observation(START + offset)}, names, lambda: START)
+    with pytest.raises(RuntimeError, match="Host observation dated in the future"):
+        wer.fresh({"node-1": observation(START + 2.5)}, names, lambda: START)
+    with pytest.raises(RuntimeError, match="expired before publication"):
+        wer.fresh({"node-1": observation(START - 61)}, names, lambda: START)
+    assert wer.publication_age(START, START + 0.005) == (0.0, 5)
+    assert wer.publication_age(START, START - 3) == (3, None)
