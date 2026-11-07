@@ -561,3 +561,41 @@ The relayer refill trigger is one third of `--relayer-amount`. It must exceed
 accepted, while a 3 TOS target with that floor is refused before key creation or
 signing. This ordering check is necessary, not a funding-latency guarantee;
 leave headroom for the five-second refill check and transfer settlement.
+
+
+Native finality defaults to `--native-slo-population completion-prefix`: each
+completion prefix must satisfy the p95/p99 limits; a breach stops admission for
+that run. Opt-in `fixed-stage` changes this policy. It declares one monotonic
+interval before offers and rejects offers at or after the original deadline,
+including queued workers. Running percentiles remain visible but provisional.
+After sealing admission and bounded native drain/join, all originally offered
+requests must finalize and conservative bucket-upper p95/p99 must satisfy 5/10
+seconds. Empty, pending, shorter or failed populations cannot pass. Proof-age,
+query-age, integrity, funding and resource guards still stop admission immediately.
+Do not append samples, extend stages after outliers or relabel legacy failures.
+This is an explicit policy choice, not a quantile arithmetic correction.
+
+Fixed-stage journals record start/duration, seal and final evaluation events.
+Closed-run replay binds mode to the producer packet, baseline and summary, checks
+the original offer interval and finalization order, and recomputes the population
+histogram and successful final percentile bounds. Missing legacy mode fields mean
+completion-prefix. Replay coverage alone does not establish throughput, 72-hour
+acceptance or authority to clear an interrupted financial fence.
+
+
+The default `--native-cutoff-policy fail` preserves strict fixed-stage behavior: a
+preparation reaching admission after the original deadline fails the run. The
+explicit `not-offered` option requires fixed-stage native qualification. A valid
+preparation that reaches admission at or after the original cutoff is archived
+and recorded as `not_offered`, its allocated query IDs remain consumed, and it
+is never broadcast or put in flight. It is outside the offered population and
+sent/failed counters; throughput still uses every originally offered request
+over the full declared interval. Cancellation cannot remove an admitted request.
+Admission errors, stale proofs, journal failure and uncertain actual HTTP sends
+still fail the original run. An unrecorded cancellation prevents closing its
+financial fence. The replay binds this policy to immutable argv/baseline/summary,
+checks cancellation time, disjoint IDs/counts and rejects any native receipt
+hidden as not offered. No retry or signed-carrier replay is introduced. Existing
+failed campaigns retain their original policy and verdict. This is an explicit
+pre-admission disposition policy change; it does not extend the interval or
+relax the p95/p99, proof-age, query-age or funding guards.

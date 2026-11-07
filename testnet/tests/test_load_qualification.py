@@ -802,3 +802,206 @@ def test_broadcast_timing_journal_failure_stops_without_second_send(tmp_path, mo
     error = obj.send((None, [0], carrier(tmp_path)), SimpleNamespace(send_boc=sent.append))
     assert "timing journal" in error and obj.stop and len(sent) == 1
     assert q.halted and not q.finish()["safe_to_start_new_run"]
+
+
+def cutoff_audit(tmp_path, monkeypatch):
+    from load_finality import Head, SubmitReceipt
+    from load_native_observer import NativeObserver
+
+    q = audit(tmp_path)
+    base = time.monotonic()
+    now = [base]
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+    o = NativeObserver(
+        SimpleNamespace(max_age=10, timeout=8, close=lambda: None),
+        lambda *a, **k: None,
+        q.halt,
+        boot=lambda: "test-boot",
+        slo_population="fixed-stage",
+        cutoff_policy="not-offered",
+    )
+    old = Head(1, "11" * 32)
+    new = Head(2, "22" * 32)
+    o.window.advance(1, old, old, (), boot_id="test-boot", now=base)
+    o.window.begin_stage(1, boot_id="test-boot", now=base)
+    q.attach_native(o)
+    now[0] = base + 0.1
+    q.offer([0], carrier(tmp_path), {0: "ab" * 32})
+    now[0] = base + 0.2
+    o.window.advance(
+        2,
+        old,
+        new,
+        [SubmitReceipt(0, new, "ab" * 32, 1, 255, 254, 1)],
+        boot_id="test-boot",
+        now=now[0],
+    )
+    q.accept([0])
+    q.terminal(0, True)
+    now[0] = base + 1
+    return q, o, now
+
+
+def test_deadline_preparation_is_recorded_but_never_broadcast(tmp_path, monkeypatch):
+    from load_finality_window import AdmissionClosed
+
+    q, o, now = cutoff_audit(tmp_path, monkeypatch)
+    obj = driver()
+    obj.qualification = q
+    obj.request_hashes = {1: "cd" * 32}
+    route = SimpleNamespace(send_boc=lambda _: pytest.fail("canceled preparation broadcast"))
+    result = obj.send(
+        (SimpleNamespace(address="public-fake"), [1], carrier(tmp_path, "late.boc")), route
+    )
+    assert isinstance(result, AdmissionClosed) and not obj.stop and not q.halted
+    assert q.not_offered == 1 and q.offered == q.executed == 1 and o.window.failure is None
+    records = [json.loads(x) for x in (q.run / "events.jsonl").read_text().splitlines()]
+    assert sum(r["event"] == "not_offered" for r in records) == 1
+    assert not any(r["event"] == "broadcast_timing" for r in records)
+    with pytest.raises(lib.TestnetError, match="reused"):
+        q.offer([1], carrier(tmp_path, "retry.boc"), {1: "cd" * 32})
+    o.window.seal(boot_id="test-boot", now=now[0])
+    o.window.finish_stage(boot_id="test-boot", now=now[0])
+    result = q.finish()
+    assert result["safe_to_start_new_run"] and result["native_finality"]["latency_criteria_pass"]
+    assert result["not_offered"] == 1 and not result["not_offered_unknown"]
+
+
+def test_not_offered_journal_failure_keeps_original_fence(tmp_path, monkeypatch):
+    q, o, _ = cutoff_audit(tmp_path, monkeypatch)
+    obj = driver()
+    obj.qualification = q
+    obj.request_hashes = {1: "cd" * 32}
+    original = q.event
+
+    def event(kind, **fields):
+        if kind == "not_offered":
+            raise OSError("fake journal fsync failure")
+        return original(kind, **fields)
+
+    monkeypatch.setattr(q, "event", event)
+    route = SimpleNamespace(send_boc=lambda _: pytest.fail("failed journal broadcast"))
+    assert isinstance(
+        obj.send(
+            (SimpleNamespace(address="public-fake"), [1], carrier(tmp_path, "late.boc")), route
+        ),
+        str,
+    )
+    assert obj.stop and q.not_offered_unknown
+    assert not q.finish()["safe_to_start_new_run"]
+
+
+def test_archive_fsync_crossing_cutoff_never_submits(tmp_path, monkeypatch):
+    import load_qualification as qualification_module
+    from load_finality_window import AdmissionClosed
+
+    q, o, now = cutoff_audit(tmp_path, monkeypatch)
+    deadline = now[0]
+    now[0] -= 0.1
+    sync = qualification_module.sync_directory
+
+    def delayed(path):
+        sync(path)
+        if path.name == "private-outbox":
+            now[0] = deadline + 0.01
+
+    monkeypatch.setattr(qualification_module, "sync_directory", delayed)
+    obj = driver()
+    obj.qualification = q
+    obj.request_hashes = {1: "cd" * 32}
+    route = SimpleNamespace(send_boc=lambda _: pytest.fail("late archived carrier submitted"))
+    result = obj.send(
+        (SimpleNamespace(address="public-fake"), [1], carrier(tmp_path, "late.boc")), route
+    )
+    assert isinstance(result, AdmissionClosed) and not obj.stop and not q.halted
+    assert q.not_offered == 1 and q.offered == 1 and o.window.failure is None
+    o.window.seal(boot_id="test-boot", now=now[0])
+    o.window.finish_stage(boot_id="test-boot", now=now[0])
+    assert q.finish()["native_finality"]["latency_criteria_pass"]
+
+
+def test_admission_exception_after_http_attempt_is_not_canceled(tmp_path, monkeypatch):
+    from load_finality_window import AdmissionClosed
+
+    q, o, now = cutoff_audit(tmp_path, monkeypatch)
+    deadline = now[0]
+    now[0] -= 0.5
+    obj = driver()
+    obj.qualification = q
+    obj.request_hashes = {1: "cd" * 32}
+
+    def uncertain(_):
+        raise AdmissionClosed("test-boot", deadline, deadline)
+
+    result = obj.send(
+        (SimpleNamespace(address="public-fake"), [1], carrier(tmp_path, "sent.boc")),
+        SimpleNamespace(send_boc=uncertain),
+    )
+    assert isinstance(result, str) and obj.stop and q.halted
+    assert q.not_offered == 0 and o.window.pending
+    assert not q.finish()["safe_to_start_new_run"]
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_actual_send_result_loop_does_not_count_canceled_preparations(tmp_path, cancel):
+    """Execute the actual result-loop AST with fake frames, not a second implementation."""
+    import ast
+
+    from load_finality_window import AdmissionClosed
+
+    source = (SCRIPTS / "testnet-elections.py").read_text()
+    tree = ast.parse(source)
+    loop = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.For)
+        and isinstance(n.iter, ast.Call)
+        and ast.unparse(n.iter) == "zip(externals, results, routes)"
+    )
+    path = tmp_path / "fake.boc"
+    path.write_bytes(b"FAKE-NOT-SIGNED")
+    relayer = SimpleNamespace(seqno=7, inflight=None)
+    counts = {"externals_sent": 0, "batches_sent": 0}
+    obj = SimpleNamespace(
+        counts=counts, fail=lambda *a: pytest.fail("canceled result treated as failure")
+    )
+    error = AdmissionClosed("test-boot", 10, 10) if cancel else None
+    scope = {
+        "self": obj,
+        "externals": [(relayer, [1], path)],
+        "results": [error],
+        "routes": ["fake-route"],
+        "work": tmp_path,
+        "AdmissionClosed": AdmissionClosed,
+        "time": time,
+        "EXTERNAL_TTL": 300,
+    }
+    exec(compile(ast.Module(body=[loop], type_ignores=[]), "actual-result-loop", "exec"), scope)
+    assert counts == {"externals_sent": 0 if cancel else 1, "batches_sent": 0 if cancel else 1}
+    assert (relayer.inflight is None) == cancel
+    assert not path.exists()
+
+
+def test_a_second_preparation_cannot_clear_unknown_cancel_evidence(tmp_path, monkeypatch):
+    from load_finality_window import AdmissionClosed
+
+    q, _, _ = cutoff_audit(tmp_path, monkeypatch)
+    original = q.event
+
+    def failed(kind, **fields):
+        if kind == "not_offered":
+            raise OSError("one failed durable cancellation")
+        return original(kind, **fields)
+
+    monkeypatch.setattr(q, "event", failed)
+    with pytest.raises(OSError):
+        q.offer([1], carrier(tmp_path, "first-late.boc"), {1: "cd" * 32})
+    # Another worker can acquire the qualification lock before the first sender
+    # reaches its error handler. Success must not erase that earlier unknown.
+    monkeypatch.setattr(q, "event", original)
+    try:
+        q.offer([2], carrier(tmp_path, "second-late.boc"), {2: "ef" * 32})
+    except (AdmissionClosed, lib.TestnetError):
+        pass
+    assert q.not_offered_unknown
+    assert not q.finish()["safe_to_start_new_run"]

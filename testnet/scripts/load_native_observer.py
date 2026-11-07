@@ -14,14 +14,27 @@ def boot_identity():
 
 class NativeObserver:
     def __init__(
-        self, collector, record, halt, *, interval=2, max_pending=8192, boot=boot_identity
+        self,
+        collector,
+        record,
+        halt,
+        *,
+        interval=2,
+        max_pending=8192,
+        boot=boot_identity,
+        slo_population="completion-prefix",
+        cutoff_policy="fail",
     ):
         if not 0.1 <= interval <= 10:
             raise HistoryError("native poll interval must be 0.1..10")
         self.collector, self.record, self.halt = collector, record, halt
         self.interval, self.boot = interval, boot
         self.window = FinalityWindow(
-            boot(), max_pending=max_pending, max_proof_age=collector.max_age
+            boot(),
+            max_pending=max_pending,
+            max_proof_age=collector.max_age,
+            slo_population=slo_population,
+            cutoff_policy=cutoff_policy,
         )
         self.failure = None
         self.failure_guard = threading.Lock()
@@ -71,6 +84,8 @@ class NativeObserver:
             boot_id=boot_id,
             verified_observation_monotonic_seconds=observed,
             poll_interval_seconds=self.interval,
+            slo_population=self.window.slo_population,
+            cutoff_policy=self.window.cutoff_policy,
         )
 
     def start(self):
@@ -106,6 +121,20 @@ class NativeObserver:
             raise HistoryError("native observer thread stopped")
         with self.window.guard:
             self.window.healthy(boot_id=self.boot(), now=time.monotonic())
+
+    def begin_stage(self, duration):
+        if self.window.slo_population != "fixed-stage":
+            return
+        with self.window.guard:
+            boot, now = self.boot(), time.monotonic()
+            self.window.begin_stage(duration, boot_id=boot, now=now)
+        self.record(
+            "native_stage_started",
+            boot_id=boot,
+            started_monotonic_seconds=now,
+            duration_seconds=duration,
+        )
+        return now
 
     def offer(self, request_hashes):
         self.assert_healthy()
@@ -174,6 +203,20 @@ class NativeObserver:
         if self.thread is None:
             self.collector.close()
             return self.summary()
+        if self.window.slo_population == "fixed-stage" and not self.window.sealed:
+            try:
+                with self.window.guard:
+                    boot, now = self.boot(), time.monotonic()
+                    self.window.seal(boot_id=boot, now=now)
+                    offered = self.window.offered
+                self.record(
+                    "native_stage_sealed",
+                    boot_id=boot,
+                    sealed_monotonic_seconds=now,
+                    offered=offered,
+                )
+            except HistoryError as exc:
+                self._fail(exc)
         self.draining.set()
         self.thread.join(timeout=timeout)
         if self.thread.is_alive():
@@ -183,6 +226,18 @@ class NativeObserver:
             self._fail("native worker did not stop; original run remains unfinished")
             raise HistoryError("native worker did not stop")
         self.collector.close()
+        if self.window.slo_population == "fixed-stage" and not self.window.stage_finalized:
+            boot, now = self.boot(), time.monotonic()
+            try:
+                self.window.finish_stage(boot_id=boot, now=now)
+            except HistoryError as exc:
+                self._fail(exc)
+            self.record(
+                "native_stage_finalized",
+                boot_id=boot,
+                finalized_monotonic_seconds=now,
+                summary=self.summary(),
+            )
         return self.summary()
 
     def summary(self):

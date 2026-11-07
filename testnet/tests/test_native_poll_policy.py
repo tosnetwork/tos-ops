@@ -59,7 +59,8 @@ def test_poll_option_without_native_mode_refused_before_other_arguments():
         elections.check_load_args(SimpleNamespace(native_finality=False, native_poll_seconds=0.5))
 
 
-def test_factory_passes_same_cadence_to_worker_and_collector(tmp_path, monkeypatch):
+@pytest.mark.parametrize("cutoff", [None, "not-offered"])
+def test_factory_passes_same_cadence_to_worker_and_collector(tmp_path, monkeypatch, cutoff):
     import load_finality_collector
     import load_native_observer
 
@@ -94,6 +95,8 @@ def test_factory_passes_same_cadence_to_worker_and_collector(tmp_path, monkeypat
         rpc="rpc",
         confirm_rpc="confirm-rpc",
     )
+    obj.args.native_cutoff_policy = cutoff
+    obj.args.native_slo_population = "fixed-stage" if cutoff else None
     obj.global_id = 2
     obj.qualification = SimpleNamespace(
         guard=threading.RLock(),
@@ -106,4 +109,23 @@ def test_factory_passes_same_cadence_to_worker_and_collector(tmp_path, monkeypat
     assert received["collector"]["confirm_rpc"] == "confirm-rpc"
     assert received["collector"]["max_captures"] == 1540
     assert received["worker"]["interval"] == 0.5
+    assert received["worker"]["cutoff_policy"] == (cutoff or "fail")
     assert order == ["baseline", "attach", "start"]
+
+
+def test_slo_option_without_native_mode_refused():
+    with pytest.raises(lib.TestnetError, match="native options"):
+        elections.check_load_args(
+            SimpleNamespace(native_finality=False, native_slo_population="fixed-stage")
+        )
+
+
+def test_cutoff_option_requires_native_fixed_population():
+    with pytest.raises(lib.TestnetError, match="native options"):
+        elections.check_load_args(
+            SimpleNamespace(native_finality=False, native_cutoff_policy="not-offered")
+        )
+    with pytest.raises(lib.TestnetError, match="requires fixed-stage"):
+        elections.check_load_args(
+            SimpleNamespace(native_finality=True, duration=120, native_cutoff_policy="not-offered")
+        )
