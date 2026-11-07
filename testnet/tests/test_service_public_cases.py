@@ -5019,6 +5019,7 @@ class SaRefusals(SaCase):
             )
 
         self.runner._tool_exec = exec_
+        self.runner._sa_tools = {"buyer": {"path": "/x/buyer", "sha256": spc.SA_BUYER_SHA256}}
         self.runner.sa_code_everywhere = lambda a: {u: spc.SA_CODE_HASH for u in SA_SOURCES}
 
     def test_r1_passes_only_on_the_exact_wrong_contract_error_from_every_endpoint(self):
@@ -5117,7 +5118,7 @@ class SaRefusals(SaCase):
             "",
         )
         self.chain.fund(SA_BUYER_ADDR, 800_000_000)
-        self.runner.args.service_buyer_sha256 = "ab" * 32
+        self.runner._sa_tools = {"buyer": {"path": "/x/buyer", "sha256": "ab" * 32}}
         self.runner.sa_buyer_call("scsa-call", "45" * 32)
         calls = [i for i, t in enumerate(self.tool) if t[2][0] == "call"]
         self.assertEqual(len(calls), 1)
@@ -5128,9 +5129,28 @@ class SaRefusals(SaCase):
         self.assertTrue(env.get("VAULT_URL"))
         self.assertNotIn("master_key", json.dumps(self.runner.journal.attempt_record("scsa-call")))
 
-    def test_the_pinned_legacy_buyer_still_gets_the_vault_flag(self):
-        self.assertIn(spc.SA_BUYER_SHA256, spc.SA_BUYER_VAULT_FLAG_SHA256)
-        self.assertEqual(len(spc.SA_BUYER_VAULT_FLAG_SHA256), 1)
+    def test_the_legacy_flag_set_is_the_literal_pre_env_buyer_only(self):
+        legacy = "a48874562feccdeedc3c5907b6e34e22432c9b2c4968572b8e2d07bc47718ea4"
+        self.assertEqual(spc.SA_BUYER_VAULT_FLAG_SHA256, frozenset({legacy}))
+        # A re-pin must not drag the flag set along with it.
+        with mock.patch.object(spc, "SA_BUYER_SHA256", "cd" * 32):
+            self.assertNotIn(spc.SA_BUYER_SHA256, spc.SA_BUYER_VAULT_FLAG_SHA256)
+
+    def test_the_checked_legacy_buyer_gets_the_flag_and_no_env(self):
+        self.answers["call"] = (0, json.dumps({"phase": "admitted"}), "")
+        self.answers["status"] = (
+            0,
+            json.dumps({"found": True, "state": "pending", "request_id": 4}),
+            "",
+        )
+        self.chain.fund(SA_BUYER_ADDR, 800_000_000)
+        legacy = "a48874562feccdeedc3c5907b6e34e22432c9b2c4968572b8e2d07bc47718ea4"
+        self.runner._sa_tools = {"buyer": {"path": "/x/buyer", "sha256": legacy}}
+        self.runner.args.service_buyer_sha256 = "ef" * 32  # the branch follows the checked tool
+        self.runner.sa_buyer_call("scsa-call", "46" * 32)
+        i = [k for k, t in enumerate(self.tool) if t[2][0] == "call"][0]
+        self.assertIn("--vault-url", self.tool[i][2])
+        self.assertEqual(self.tool_env[i], {})
 
     def test_a_call_marker_without_a_result_is_never_called_again(self):
         self.answers["status"] = (0, json.dumps({"found": False}), "")

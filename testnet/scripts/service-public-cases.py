@@ -162,7 +162,9 @@ SA_BUYER_SHA256 = "a48874562feccdeedc3c5907b6e34e22432c9b2c4968572b8e2d07bc47718
 # Buyer builds that take the vault URL only as `call --vault-url` (before the protocol change
 # that reads it from VAULT_URL alone and refuses the flag). Every other pinned build gets the
 # vault URL through its environment, never on the command line.
-SA_BUYER_VAULT_FLAG_SHA256 = frozenset({SA_BUYER_SHA256})
+SA_BUYER_VAULT_FLAG_SHA256 = frozenset(
+    {"a48874562feccdeedc3c5907b6e34e22432c9b2c4968572b8e2d07bc47718ea4"}
+)
 SA_FIXTURE_SHA256 = "0b832bff4d5c13c2c8dc1593b38b9a2af97bb3d3b384476e348d621fae4d4efd"
 SA_CODE_HASH = "tvm-cell-sha256:0594f9a5743440f9c5f63913ab790c0ea6f4fd5c627d9962d63e09428e42aa0c"
 SA_BOC_SHA256 = "sha256:21f1ea22576fce66ec3b218513adf037710b078ea12a8d84929eda970d62d5a8"
@@ -5412,6 +5414,15 @@ class Runner:
             vault = self.cli.env().get("VAULT_URL")
             if not vault:
                 raise Refusal(f"{label}: no CLI vault configured; nothing sent")
+            # Decided from the checked binary before the attempt marker, so a refused pin
+            # check leaves no marker behind.
+            checked = self.__dict__.setdefault("_sa_tools", {})
+            if "buyer" not in checked:
+                checked["buyer"] = self.sa_check_tool("buyer")
+            if checked["buyer"]["sha256"] in SA_BUYER_VAULT_FLAG_SHA256:
+                vault_flag, vault_env = ["--vault-url", "<vault-url>"], None
+            else:
+                vault_flag, vault_env = [], {"VAULT_URL": vault}
             buyer = self.sa_address(SA_BUYER)
             sources = self.rpc.all_sources
             self.journal.attempt(
@@ -5423,10 +5434,6 @@ class Runner:
                     "buyer_before": {url: self.sa_point(buyer, url, seqno=True) for url in sources},
                 },
             )
-            if self.args.service_buyer_sha256 in SA_BUYER_VAULT_FLAG_SHA256:
-                vault_flag, vault_env = ["--vault-url", "<vault-url>"], None
-            else:
-                vault_flag, vault_env = [], {"VAULT_URL": vault}
             rc, out, _ = self._tool_exec(
                 label,
                 "buyer",
