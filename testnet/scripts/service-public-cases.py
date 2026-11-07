@@ -447,6 +447,14 @@ def _depths_and_hashes(root: Cell) -> tuple[dict[int, int], dict[int, bytes]]:
 
 
 MAX_DAG_CELLS = 4096
+# A positively established absence of a registry object (JSON-safe; survives a journal reload).
+NR_ABSENT = {"registered": False, "absent": True}
+NR_FEE_ALLOWANCE_NANOTOS = 10_000_000  # the payer's own transfer fee, on top of the value
+NR_PAYER_RESERVE_NANOTOS = 50_000_000  # kept in the payer after each send
+
+
+def dag_cell_hash_b64(root: Cell) -> str:
+    return base64.b64encode(dag_cell_hash(root)).decode()
 
 
 def dag_cell_hash(root: Cell) -> bytes:
@@ -3539,12 +3547,20 @@ class Runner:
         return built
 
     def nr_show(self, address: str) -> dict:
-        """The decoded registry object at `address` on every source (chain_time excluded); all
-        sources must agree. None for a source that has no object yet."""
+        """The registry object at `address`, read on every source (chain_time excluded).
+
+        Returns the decoded object, or NR_ABSENT only when every source positively reports no
+        initialized account there. Any read failure, or sources that disagree, raises: a failed
+        read is never mistaken for an unchanged or absent object."""
         gc = self.nr_require_deploy_gate()
+        urls = [self.rpc.primary, *self.rpc.confirms]
         configs = [None, *[Path(p) for p in self.quorum_configs()]]
         views = []
-        for i, config in enumerate(configs):
+        for url, config in zip(urls, configs, strict=True):
+            state = (self.rpc.info(address, url) or {}).get("state")
+            if state in ("uninitialized", "nonexist", "uninit"):
+                views.append(dict(NR_ABSENT))
+                continue
             rc, view = self.cli.run(
                 f"nr-show-{self.cli.calls}",
                 "agent",
@@ -3559,14 +3575,51 @@ class Runner:
                 want_json=True,
                 config=config,
             )
-            if rc == 0 and isinstance(view, dict):
-                view = {k: v for k, v in view.items() if k != "chain_time"}
-            else:
-                view = None
-            views.append(view)
+            if rc != 0 or not isinstance(view, dict) or view.get("registered") is not True:
+                raise Refusal(f"registry object at {address} could not be read on {url}")
+            views.append({k: v for k, v in view.items() if k != "chain_time"})
         if any(v != views[0] for v in views):
             raise Refusal(f"sources disagree on the registry object at {address}")
         return views[0]
+
+    def nr_payer_ready(self, payer: str) -> None:
+        """The payer is active on every source and holds the value, its own fee and the reserve."""
+        need = NR_VALUE_NANOTOS + NR_FEE_ALLOWANCE_NANOTOS + NR_PAYER_RESERVE_NANOTOS
+        for url in self.rpc.all_sources:
+            info = self.rpc.info(payer, url) or {}
+            if info.get("state") != "active":
+                raise Refusal(f"{NR_ACTOR} is not active on {url}; run activate-registry")
+            if int(info.get("balance") or 0) < need:
+                raise Refusal(f"{NR_ACTOR} holds less than {need} nanoTOS on {url}")
+
+    def activate_registry(self) -> dict:
+        """Activate the registry payer once (it must be funded first). An existing attempt is
+        never repeated: its outcome is judged read-only from the chain."""
+        self.preflight()
+        address = self.nr_actors()["wallet"]
+        states = {
+            url: (self.rpc.info(address, url) or {}).get("state") for url in self.rpc.all_sources
+        }
+        if all(v == "active" for v in states.values()):
+            return {NR_ACTOR: "already-active", "states": states}
+        label = f"activate-{NR_ACTOR}"
+        if self.journal.attempted(label):
+            raise Refusal(f"{label} was attempted before; wallet states {states}; judge by hand")
+        if self.rpc.balance(address) < tos_to_nanotos("0.05"):
+            return {NR_ACTOR: "unfunded", "states": states}
+        self.guards()
+        self.journal.attempt(label, {"kind": "wallet-activate", "address": address})
+        rc, _ = self.cli.run(label, "wallet", "activate", "-n", NR_ACTOR)
+        ok = rc == 0 and self.wait(
+            lambda: all(
+                (self.rpc.info(address, url) or {}).get("state") == "active"
+                for url in self.rpc.all_sources
+            )
+        )
+        self.journal.done(label, {"exit_code": rc, "active": ok})
+        if not ok:
+            raise Refusal(f"{label}: wallet did not become active on every source")
+        return {NR_ACTOR: "activated"}
 
     def wallet_seqno(self, address: str) -> int:
         seqnos = set()
@@ -3609,6 +3662,7 @@ class Runner:
         self.guards()
         actors = self.nr_actors()
         payer = actors["wallet"]
+        self.nr_payer_ready(payer)
         carried = {**built, "body_boc": body_boc or built["body_boc"]}
         if body_boc is not None:
             carried.pop("state_init_boc", None)
@@ -3621,6 +3675,20 @@ class Runner:
             "final_lt": self.rpc.last_lt(final),
             "final_state": self.nr_show(final),
         }
+        registering = (
+            body_boc is None
+            and bool(carried.get("state_init_boc"))
+            or (
+                expect_exit == 0
+                and final != destination
+                and built.get("generation") == 1
+                and built.get("sequence") == 1
+            )
+        )
+        if expect_exit != 0 and before["final_state"].get("registered") is not True:
+            raise Refusal(f"{label}: a refusal control needs an existing registry object")
+        if registering and before["final_state"] != NR_ABSENT:
+            raise Refusal(f"{label}: the object to register already exists or is unreadable")
         seqno = self.wallet_seqno(payer)
         argv = [
             "wallet",
@@ -3653,7 +3721,7 @@ class Runner:
             global_id=NR_GLOBAL_ID,
             seqno=seqno,
         )
-        external_hash = cell_hash_b64(msg)
+        external_hash = dag_cell_hash_b64(msg)
         record: dict = {
             "kind": "registry-send",
             "payer": payer,
@@ -3753,35 +3821,61 @@ class Runner:
 
             ok_final = self.wait(landed)
             record["after"] = {"final_state": found.get("after")}
+            record["settlement_basis"] = "first-hop+final-state"
             record["verdict"] = "settled" if ok_first and ok_final else "unexpected-abort"
         else:
             aborted = tx.get("aborted") is True and compute.get("exit_code") == expect_exit
             after_state = self.nr_show(final)
             unchanged = after_state == before["final_state"]
-            refund_ok = True
+            refund_ok, refund_pending = True, False
             if bounce:
                 bounces = [
                     m for m in tx.get("out_msgs", []) if same_addr(m.get("destination"), payer)
                 ]
                 refund_ok = False
                 if len(bounces) == 1:
-                    back = [
-                        r
-                        for r in self.rpc.transactions_after(payer, before["payer_lt"])
-                        if (r.get("in_msg") or {}).get("hash") == bounces[0]["hash"]
-                    ]
-                    refund_ok = len(back) == 1
-                    record["refund_tx"] = back[0]["transaction_id"] if back else None
+                    refund = self.nr_refund(payer, before["payer_lt"], bounces[0]["hash"])
+                    record["refund"] = refund
+                    refund_ok = refund["bound"]
+                    refund_pending = not refund_ok and refund["pending"]
             record["after"] = {"final_state": after_state}
             record["refund_bound"] = refund_ok
             ok = aborted and unchanged and refund_ok
-            record["verdict"] = "refused-as-intended" if ok else "refusal-control-failed"
+            if aborted and unchanged and refund_pending:
+                record["verdict"] = "refund-pending"
+            else:
+                record["verdict"] = "refused-as-intended" if ok else "refusal-control-failed"
         self.journal.done(label, record)
         self.journal.log(kind="registry-send", label=label, verdict=record["verdict"])
         record["label"] = label
         if record["verdict"] not in ("settled", "refused-as-intended"):
             raise Refusal(f"{label}: {record['verdict']} ({compute}, aborted={tx.get('aborted')})")
         return record
+
+    def nr_refund(self, payer: str, since_lt: int, bounce_hash: str) -> dict:
+        """The bounce credit of a refused message on every source: exactly one non-aborted payer
+        transaction whose input is that bounced message with a positive value, and the same
+        transaction on every source. `pending` when it is not yet visible everywhere."""
+        seen: dict[str, str | None] = {}
+
+        def everywhere() -> bool:
+            for url in self.rpc.all_sources:
+                hits = [
+                    r
+                    for r in self.rpc.transactions_after(payer, since_lt, url)
+                    if (r.get("in_msg") or {}).get("hash") == bounce_hash
+                ]
+                ok = (
+                    len(hits) == 1
+                    and hits[0].get("aborted") is not True
+                    and str((hits[0].get("in_msg") or {}).get("bounced")) == "True"
+                    and int((hits[0].get("in_msg") or {}).get("value") or 0) > 0
+                )
+                seen[url] = hits[0]["transaction_id"]["hash"] if ok else None
+            return all(seen.values()) and len(set(seen.values())) == 1
+
+        bound = self.wait(everywhere, REFUSAL_OBSERVE_S)
+        return {"bound": bound, "pending": not bound, "per_source": dict(seen)}
 
     def registry_reconcile(self, label: str) -> dict:
         """Read-only recovery of a registry send whose reply was lost. Nothing is sent. On every
@@ -3795,7 +3889,10 @@ class Runner:
         done = self.journal.result(label)
         if record is None or record.get("kind") != "registry-send":
             raise Refusal(f"{label} has no registry-send attempt marker")
-        if done is not None and done.get("verdict") != "unknown-not-observed":
+        if done is not None and done.get("verdict") not in (
+            "unknown-not-observed",
+            "refund-pending",
+        ):
             raise Refusal(f"{label} already ended {done.get('verdict')!r}")
         before = record["before"]
         payer, destination = record["payer"], record["observe"]
@@ -3828,10 +3925,28 @@ class Runner:
             picks[url] = (hits[0], first[0])
         if all(v is None for v in picks.values()):
             deadline = int(record.get("valid_until") or 0)
-            if deadline and now() > deadline:
-                result = {**record, "verdict": "expired-unsent", "reconciled_from": "attempt"}
+            observed = {
+                url: {
+                    "wallet_shard_utime": self.rpc.account_shard_utime(payer, url),
+                    "wallet_seqno": int(self.rpc.run_get_method(payer, "seqno", url)[0][1]),
+                }
+                for url in self.rpc.all_sources
+            }
+            past = deadline and all(
+                o["wallet_shard_utime"] > deadline + EXPIRY_MARGIN_S for o in observed.values()
+            )
+            unspent = all(o["wallet_seqno"] == record["wallet_seqno"] for o in observed.values())
+            if past and unspent:
+                result = {
+                    **record,
+                    "verdict": "expired-unsent",
+                    "reconciled_from": "attempt",
+                    "expiry_observations": observed,
+                }
                 self.journal.done(label, result)
                 return result
+            if past and not unspent:
+                raise Refusal(f"{label}: wallet seqno moved without the message; by hand")
             raise Refusal(f"{label}: no source carries the message yet; wait for its deadline")
         if any(v is None for v in picks.values()):
             raise Refusal(f"{label}: sources disagree on whether the message applied; by hand")
@@ -4038,6 +4153,12 @@ class Runner:
             "agent_b": self.nr_show(agent_b),
             "capability": self.nr_show(capability),
         }
+        refusals = [steps[k] for k in ("refuse-stale", "refuse-signature", "refuse-tombstone")]
+        codes_executed = all(
+            r.get("verdict") == "refused-as-intended"
+            and (r.get("compute") or {}).get("exit_code") == r.get("expect_exit")
+            for r in refusals
+        )
         ok = all(v["verdict"] in ("settled", "refused-as-intended") for v in steps.values())
         ok = ok and bool(final["agent_a"]) and final["agent_a"].get("tombstone") is True
         return {
@@ -4049,7 +4170,9 @@ class Runner:
                 for k, v in steps.items()
             },
             "final": final,
-            "pass": ok,
+            "expected_codes_executed": codes_executed,
+            "settlement_basis": "first-hop+final-state",
+            "pass": ok and codes_executed,
         }
 
     def case_sc05x(self, w: dict) -> dict:
@@ -4907,6 +5030,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--round", type=int, default=1, help="return round; 2+ after further funding")
     sub.add_parser("status")
     sub.add_parser("setup-registry")
+    sub.add_parser("activate-registry")
     rc = sub.add_parser("reconcile")
     rc.add_argument("label")
     rc.add_argument(
@@ -4945,6 +5069,8 @@ def main(argv: list[str] | None = None) -> int:
             out = runner.return_funds(args.to, args.round)
         elif args.command == "setup-registry":
             out = runner.setup_registry()
+        elif args.command == "activate-registry":
+            out = runner.activate_registry()
         elif args.command == "reconcile":
             out = runner.reconcile(args.label, external=args.external, sender=args.sender)
         else:

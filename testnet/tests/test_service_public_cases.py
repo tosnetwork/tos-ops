@@ -3747,9 +3747,12 @@ class NativeRegistrySend(RunnerCase):
         self.runner.args.registry_global_config = str(NR_GC)
         self.runner.guards = lambda: {}
         self.runner.nr_actors = lambda: {"wallet": PAYER}
+        self.runner.nr_payer_ready = lambda payer: None
         self.seqnos = [7, 7]
         self.runner.wallet_seqno = lambda address: self.seqnos.pop(0) if self.seqnos else 7
-        self.states = {NR_DEST: {"sequence": 1, "last_action": "11" * 32, "generation": 1}}
+        self.states = {
+            NR_DEST: {"registered": True, "sequence": 1, "last_action": "11" * 32, "generation": 1}
+        }
         self.after = None
         self.runner.nr_show = lambda address: (
             self.after
@@ -3795,7 +3798,7 @@ class NativeRegistrySend(RunnerCase):
                     out.append(
                         {
                             "transaction_id": {"lt": "9", "hash": "R"},
-                            "in_msg": {"hash": "B1"},
+                            "in_msg": {"hash": "B1", "bounced": "True", "value": "290000000"},
                             "out_msgs": [],
                         }
                     )
@@ -3825,8 +3828,9 @@ class NativeRegistrySend(RunnerCase):
         }
 
     def test_a_settled_send_needs_the_final_state_to_carry_the_action(self):
-        self.after = {"sequence": 2, "last_action": "22" * 32, "generation": 1}
+        self.after = {"registered": True, "sequence": 2, "last_action": "22" * 32, "generation": 1}
         record = self.runner.registry_send("nr-ok", self.built, bounce=True)
+        self.assertEqual(record["settlement_basis"], "first-hop+final-state")
         self.assertEqual(record["verdict"], "settled")
         self.assertEqual(len(self.sent), 1)
         label, argv, private, fmt = self.envelopes[0]
@@ -3839,7 +3843,7 @@ class NativeRegistrySend(RunnerCase):
         self.assertEqual(attempt["wallet_seqno"], 7)
 
     def test_a_wrong_final_action_hash_is_not_settled(self):
-        self.after = {"sequence": 2, "last_action": "33" * 32, "generation": 1}
+        self.after = {"registered": True, "sequence": 2, "last_action": "33" * 32, "generation": 1}
         with self.assertRaises(spc.Refusal):
             self.runner.registry_send("nr-wrong", self.built, bounce=True)
         self.assertEqual(self.runner.journal.result("nr-wrong")["verdict"], "unexpected-abort")
@@ -3855,13 +3859,12 @@ class NativeRegistrySend(RunnerCase):
         )
         self.assertEqual(record["verdict"], "refused-as-intended")
         self.assertTrue(record["refund_bound"])
-        self.assertEqual(record["refund_tx"]["hash"], "R")
+        self.assertEqual(set(record["refund"]["per_source"].values()), {"R"})
 
     def test_each_refusal_fault_fails_the_control(self):
         faults = {
             "wrong-exit": dict(exit_code=spc.NR_TOMBSTONED),
-            "no-refund": dict(refund=False),
-            "state-moved": dict(after={"sequence": 9}),
+            "state-moved": dict(after={"registered": True, "sequence": 9}),
         }
         for name, fault in faults.items():
             self.setUp()
@@ -3879,6 +3882,90 @@ class NativeRegistrySend(RunnerCase):
             self.assertEqual(
                 self.runner.journal.result(f"nr-{name}")["verdict"], "refusal-control-failed", name
             )
+
+    def test_a_refund_not_yet_seen_everywhere_is_pending_then_reconciled(self):
+        self.aborted, self.exit_code = True, spc.NR_BAD_PREDECESSOR
+        self.refund = False
+        with self.assertRaises(spc.Refusal):
+            self.runner.registry_send(
+                "nr-late",
+                self.built,
+                bounce=True,
+                expect_exit=spc.NR_BAD_PREDECESSOR,
+                body_boc="AA==",
+            )
+        self.assertEqual(self.runner.journal.result("nr-late")["verdict"], "refund-pending")
+        self.refund = True
+        self.runner.preflight = lambda value_action=True: {}
+        self.rpc.send_boc = lambda b64, url=None: self.fail("reconciliation must never send")
+        record = self.runner.registry_reconcile("nr-late")
+        self.assertEqual(record["verdict"], "refused-as-intended")
+
+    def test_a_refund_seen_only_on_the_primary_is_never_bound(self):
+        self.aborted, self.exit_code = True, spc.NR_BAD_PREDECESSOR
+        rows = self.rpc.transactions_after
+
+        def primary_refund(address, lt, url=None):
+            out = rows(address, lt, url)
+            if address == PAYER and url == CONFIRM:
+                return [r for r in out if (r.get("in_msg") or {}).get("hash") != "B1"]
+            return out
+
+        self.rpc.transactions_after = primary_refund
+        with self.assertRaises(spc.Refusal):
+            self.runner.registry_send(
+                "nr-primary",
+                self.built,
+                bounce=True,
+                expect_exit=spc.NR_BAD_PREDECESSOR,
+                body_boc="AA==",
+            )
+        self.assertEqual(self.runner.journal.result("nr-primary")["verdict"], "refund-pending")
+
+    def test_an_unready_payer_stops_before_any_cli_call(self):
+        def unready(payer):
+            raise spc.Refusal("sc-registry is not active")
+
+        self.runner.nr_payer_ready = unready
+        with self.assertRaises(spc.Refusal):
+            self.runner.registry_send("nr-unready", self.built, bounce=True)
+        self.assertEqual((self.envelopes, self.sent), ([], []))
+
+    def test_a_bounceable_refusal_without_a_bounce_message_fails(self):
+        self.aborted, self.exit_code = True, spc.NR_BAD_PREDECESSOR
+        rows = self.rpc.transactions_after
+
+        def no_bounce(address, lt, url=None):
+            out = rows(address, lt, url)
+            if address == NR_DEST:
+                return [{**r, "out_msgs": []} for r in out]
+            return out
+
+        self.rpc.transactions_after = no_bounce
+        with self.assertRaises(spc.Refusal):
+            self.runner.registry_send(
+                "nr-nobounce",
+                self.built,
+                bounce=True,
+                expect_exit=spc.NR_BAD_PREDECESSOR,
+                body_boc="AA==",
+            )
+        self.assertEqual(
+            self.runner.journal.result("nr-nobounce")["verdict"], "refusal-control-failed"
+        )
+
+    def test_a_refusal_control_needs_an_existing_object(self):
+        self.states = {NR_DEST: dict(spc.NR_ABSENT)}
+        with self.assertRaises(spc.Refusal) as cm:
+            self.runner.registry_send(
+                "nr-none",
+                self.built,
+                bounce=True,
+                expect_exit=spc.NR_BAD_PREDECESSOR,
+                body_boc="AA==",
+            )
+        self.assertIn("existing registry object", str(cm.exception))
+        self.assertEqual(self.sent, [])
 
     def test_a_seqno_that_moves_while_building_is_refused_before_the_marker(self):
         self.seqnos = [7, 8]
@@ -3942,7 +4029,7 @@ class NativeRegistryReconcile(NativeRegistrySend):
         self.rpc.send_boc = lambda b64, url=None: self.fail("reconciliation must never send")
 
     def test_a_lost_reply_is_reconciled_from_the_chain_without_a_second_send(self):
-        self.after = {"sequence": 2, "last_action": "22" * 32, "generation": 1}
+        self.after = {"registered": True, "sequence": 2, "last_action": "22" * 32, "generation": 1}
         self.lose_reply("nr-lost")
         record = self.runner.reconcile_attempt("nr-lost")
         self.assertEqual(record["verdict"], "settled")
@@ -3955,22 +4042,33 @@ class NativeRegistryReconcile(NativeRegistrySend):
     def test_a_message_no_source_carries_waits_for_its_deadline_then_is_expired_unsent(self):
         self.lose_reply("nr-unsent")
         self.sent.clear()  # the chain shows nothing for it
-        with mock.patch.object(spc, "now", lambda: 0):
-            with self.assertRaises(spc.Refusal) as cm:
-                self.runner.registry_reconcile("nr-unsent")
-        self.assertIn("deadline", str(cm.exception))
         marker = self.runner.journal.attempt_record("nr-unsent")
         marker_path = self.runner.journal.steps / "nr-unsent.attempt.json"
         marker["valid_until"] = 100
         marker_path.write_text(json.dumps(marker))
-        with mock.patch.object(spc, "now", lambda: 200):
-            record = self.runner.registry_reconcile("nr-unsent")
+        shard = {"t": 50}
+        seqnos = {PRIMARY: 7, CONFIRM: 7}
+        self.rpc.account_shard_utime = lambda a, url=None: shard["t"]
+        self.rpc.run_get_method = lambda a, m, url=None: [["num", str(seqnos[url])]]
+        # the host clock is far past the deadline, the wallet's shard is not: still unknown
+        with mock.patch.object(spc, "now", lambda: 10**10):
+            with self.assertRaises(spc.Refusal) as cm:
+                self.runner.registry_reconcile("nr-unsent")
+        self.assertIn("deadline", str(cm.exception))
+        shard["t"] = 200
+        seqnos[CONFIRM] = 8
+        with self.assertRaises(spc.Refusal) as cm:
+            self.runner.registry_reconcile("nr-unsent")
+        self.assertIn("seqno moved", str(cm.exception))
+        seqnos[CONFIRM] = 7
+        record = self.runner.registry_reconcile("nr-unsent")
         self.assertEqual(record["verdict"], "expired-unsent")
+        self.assertEqual(set(record["expiry_observations"]), {PRIMARY, CONFIRM})
         with self.assertRaises(spc.Refusal):
             self.runner.registry_send("nr-unsent", self.built, bounce=True)
 
     def test_sources_that_disagree_are_refused(self):
-        self.after = {"sequence": 2, "last_action": "22" * 32, "generation": 1}
+        self.after = {"registered": True, "sequence": 2, "last_action": "22" * 32, "generation": 1}
         self.lose_reply("nr-split")
         rows = self.rpc.transactions_after
         self.rpc.transactions_after = lambda a, lt, url=None: (
@@ -3979,3 +4077,209 @@ class NativeRegistryReconcile(NativeRegistrySend):
         with self.assertRaises(spc.Refusal) as cm:
             self.runner.registry_reconcile("nr-split")
         self.assertIn("disagree", str(cm.exception))
+
+
+class NativeRegistryRealEnvelope(RunnerCase):
+    """The real c17d3fca5 registration and its real wallet envelope go through registry_send
+    unmocked: binding, the DAG external hash, the marker and the settled verdict."""
+
+    def setUp(self):
+        super().setUp()
+        self.evidence.mkdir(exist_ok=True)
+        self.runner.args.allow_registry_deploy = True
+        self.runner.args.registry_global_config = str(NR_GC)
+        self.runner.guards = lambda: {}
+        self.runner.nr_actors = lambda: {"wallet": NR_PAYER}
+        self.runner.nr_payer_ready = lambda payer: None
+        self.runner.wallet_seqno = lambda address: 24
+        self.built = NR_FIXTURE["register_a"]
+        self.dest = self.built["destination"]
+        self.sent = []
+        self.runner.nr_show = lambda address: (
+            {
+                "registered": True,
+                "last_action": self.built["action_hash"],
+                "generation": 1,
+                "sequence": 1,
+            }
+            if self.sent
+            else dict(spc.NR_ABSENT)
+        )
+        self.runner.local = lambda *a, **k: NR_FIXTURE["envelope_a"]
+        raw = base64.b64decode(NR_FIXTURE["envelope_a"]["message_boc_base64"])
+        self.ext = spc.dag_cell_hash_b64(spc.boc_decode(raw))
+        self.rpc.send_boc = lambda b64, url=None: self.sent.append(b64) or {}
+        self.rpc.last_lt = lambda address, url=None: 0
+        self.rpc.head = lambda url=None: {"seqno": 1000}
+        self.runner.wait = lambda predicate, timeout=None: predicate()
+
+        def rows(address, lt, url=None):
+            if not self.sent:
+                return []
+            if spc.same_addr(address, NR_PAYER):
+                return [
+                    {
+                        "transaction_id": {"lt": "5", "hash": "P"},
+                        "in_msg": {"hash": self.ext},
+                        "out_msgs": [{"destination": self.dest, "hash": "M1"}],
+                    }
+                ]
+            if spc.same_addr(address, self.dest):
+                return [
+                    {
+                        "transaction_id": {"lt": "6", "hash": "D"},
+                        "in_msg": {"hash": "M1"},
+                        "aborted": False,
+                        "compute": {"exit_code": 0, "success": True},
+                        "out_msgs": [],
+                    }
+                ]
+            return []
+
+        self.rpc.transactions_after = rows
+
+    def test_the_real_envelope_settles_with_its_dag_external_hash(self):
+        with mock.patch.object(spc, "NR_VALUE_NANOTOS", 1):
+            record = self.runner.registry_send("nr-real", self.built, bounce=False)
+        self.assertEqual(record["verdict"], "settled")
+        self.assertEqual(self.runner.journal.attempt_record("nr-real")["external_hash"], self.ext)
+        self.assertEqual(self.sent, [NR_FIXTURE["envelope_a"]["message_boc_base64"]])
+        raw = base64.b64decode(NR_FIXTURE["envelope_a"]["message_boc_base64"])
+        with self.assertRaises(spc.Refusal):
+            spc.cell_hash_b64(spc.boc_decode(raw))  # the tree-only helper cannot hash it
+
+    def test_a_registration_whose_object_already_exists_is_refused_before_sending(self):
+        self.runner.nr_show = lambda address: {"registered": True, "sequence": 1}
+        with mock.patch.object(spc, "NR_VALUE_NANOTOS", 1):
+            with self.assertRaises(spc.Refusal) as cm:
+                self.runner.registry_send("nr-exists", self.built, bounce=False)
+        self.assertIn("already exists", str(cm.exception))
+        self.assertEqual(self.sent, [])
+
+
+class NativeRegistryReads(RunnerCase):
+    """Object reads are tri-state: decoded, positively absent, or an error that stops."""
+
+    def setUp(self):
+        super().setUp()
+        self.runner.args.allow_registry_deploy = True
+        self.runner.args.registry_global_config = str(NR_GC)
+        self.runner.quorum_configs = lambda: ["/private/q1.json"]
+        self.states = {PRIMARY: "active", CONFIRM: "active"}
+        self.rpc.info = lambda address, url=None: {"state": self.states[url], "balance": "0"}
+        self.answers = {}
+        self.cli.run = lambda label, *a, want_json=False, format_flag=True, config=None: (
+            self.answers.get(config, (1, None))
+        )
+
+    def test_a_cli_read_failure_on_any_source_stops_instead_of_matching(self):
+        good = (0, {"registered": True, "sequence": 3, "chain_time": 1})
+        self.answers = {None: good}
+        with self.assertRaises(spc.Refusal) as cm:
+            self.runner.nr_show(NR_DEST)
+        self.assertIn("could not be read", str(cm.exception))
+
+    def test_absence_needs_every_source_to_report_no_account(self):
+        self.states = {PRIMARY: "uninitialized", CONFIRM: "uninitialized"}
+        self.assertEqual(self.runner.nr_show(NR_DEST), spc.NR_ABSENT)
+        self.states = {PRIMARY: "uninitialized", CONFIRM: "active"}
+        with self.assertRaises(spc.Refusal):
+            self.runner.nr_show(NR_DEST)
+
+    def test_chain_time_is_ignored_and_sources_must_agree(self):
+        self.answers = {
+            None: (0, {"registered": True, "sequence": 3, "chain_time": 1}),
+            Path("/private/q1.json"): (0, {"registered": True, "sequence": 3, "chain_time": 9}),
+        }
+        self.assertEqual(self.runner.nr_show(NR_DEST), {"registered": True, "sequence": 3})
+        self.answers[Path("/private/q1.json")] = (0, {"registered": True, "sequence": 4})
+        with self.assertRaises(spc.Refusal):
+            self.runner.nr_show(NR_DEST)
+
+    def test_the_absent_marker_survives_a_journal_round_trip(self):
+        self.assertEqual(json.loads(json.dumps(spc.NR_ABSENT)), spc.NR_ABSENT)
+
+
+class NativeRegistryPayer(RunnerCase):
+    """The payer must be active and funded everywhere; activation is never repeated."""
+
+    def setUp(self):
+        super().setUp()
+        self.evidence.mkdir(exist_ok=True)
+        self.info = {
+            PRIMARY: {"state": "active", "balance": str(10**9)},
+            CONFIRM: {"state": "active", "balance": str(10**9)},
+        }
+        self.rpc.info = lambda address, url=None: self.info[url]
+
+    def test_an_inactive_or_short_payer_is_refused(self):
+        self.runner.nr_payer_ready(PAYER)
+        self.info[CONFIRM] = {"state": "uninitialized", "balance": str(10**9)}
+        with self.assertRaises(spc.Refusal) as cm:
+            self.runner.nr_payer_ready(PAYER)
+        self.assertIn("activate-registry", str(cm.exception))
+        need = spc.NR_VALUE_NANOTOS + spc.NR_FEE_ALLOWANCE_NANOTOS + spc.NR_PAYER_RESERVE_NANOTOS
+        self.info[CONFIRM] = {"state": "active", "balance": str(need - 1)}
+        with self.assertRaises(spc.Refusal):
+            self.runner.nr_payer_ready(PAYER)
+
+    def test_an_earlier_activation_attempt_is_never_repeated(self):
+        self.runner.preflight = lambda value_action=True: {}
+        self.runner.nr_actors = lambda: {"wallet": PAYER}
+        self.info[CONFIRM] = {"state": "uninitialized", "balance": str(10**9)}
+        self.runner.journal.attempt(f"activate-{spc.NR_ACTOR}", {"kind": "wallet-activate"})
+        calls = []
+        self.cli.run = lambda *a, **k: calls.append(a) or (0, None)
+        with self.assertRaises(spc.Refusal) as cm:
+            self.runner.activate_registry()
+        self.assertIn("attempted before", str(cm.exception))
+        self.assertEqual(calls, [])
+
+    def test_a_known_active_payer_needs_no_activation_write(self):
+        self.runner.preflight = lambda value_action=True: {}
+        self.runner.nr_actors = lambda: {"wallet": PAYER}
+        calls = []
+        self.cli.run = lambda *a, **k: calls.append(a) or (0, None)
+        self.assertEqual(self.runner.activate_registry()[spc.NR_ACTOR], "already-active")
+        self.assertEqual(calls, [])
+
+
+class NativeRegistryCaseResult(RunnerCase):
+    """expected_codes_executed comes from the three refusal receipts, never a constant."""
+
+    def run_case(self, drop=None):
+        self.evidence.mkdir(exist_ok=True)
+        self.runner.args.allow_registry_deploy = True
+        self.runner.args.registry_global_config = str(NR_GC)
+        self.runner.nr_build = lambda label, *a: {
+            "destination": NR_DEST,
+            "final_target": NR_CAP,
+            "body_boc": "AA==",
+            "action_hash": "22" * 32,
+            "generation": 1,
+            "sequence": 1,
+        }
+        self.runner.nr_flip_body = lambda b: b
+        self.runner.nr_show = lambda address: {"registered": True, "tombstone": True}
+
+        def send(label, built, *, bounce, expect_exit=0, body_boc=None):
+            code = expect_exit if label != drop else None
+            return {
+                "verdict": "settled" if not expect_exit else "refused-as-intended",
+                "expect_exit": expect_exit,
+                "compute": {"exit_code": code},
+                "tx": None,
+            }
+
+        self.runner.registry_send = send
+        return self.runner.case_scnr(WALLETS)
+
+    def test_all_three_refusal_receipts_make_the_codes_executed(self):
+        result = self.run_case()
+        self.assertTrue(result["expected_codes_executed"])
+        self.assertTrue(result["pass"])
+
+    def test_a_refusal_without_its_exit_code_receipt_fails_the_case(self):
+        result = self.run_case(drop="scnr-refuse-signature")
+        self.assertFalse(result["expected_codes_executed"])
+        self.assertFalse(result["pass"])
