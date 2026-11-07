@@ -434,6 +434,47 @@ def _depths_and_hashes(root: Cell) -> tuple[dict[int, int], dict[int, bytes]]:
     return depth, hashes
 
 
+MAX_DAG_CELLS = 4096
+
+
+def dag_cell_hash(root: Cell) -> bytes:
+    """Representation hash of a cell DAG whose subtrees may be shared (a contract's code inside a
+    StateInit), as the chain computes it. Iterative and memoized per distinct cell; refuses more
+    than MAX_DAG_CELLS distinct cells, a depth beyond MAX_CELL_DEPTH, and cycles. Used only to
+    bind decoded payloads; the runner never re-encodes a DAG, it sends saved bytes as they are."""
+    hashes: dict[int, bytes] = {}
+    depths: dict[int, int] = {}
+    on_path: set[int] = set()
+    stack: list[tuple[Cell, int, bool]] = [(root, 0, False)]
+    while stack:
+        c, level, expanded = stack.pop()
+        key = id(c)
+        if expanded:
+            on_path.discard(key)
+            rep = _descriptors(c) + _cell_data(c.bits)
+            rep += b"".join(depths[id(r)].to_bytes(2, "big") for r in c.refs)
+            rep += b"".join(hashes[id(r)] for r in c.refs)
+            depths[key] = 0 if not c.refs else 1 + max(depths[id(r)] for r in c.refs)
+            if depths[key] > MAX_CELL_DEPTH:
+                raise Refusal("cell DAG too deep")
+            hashes[key] = hashlib.sha256(rep).digest()
+            continue
+        if key in hashes:
+            continue
+        if key in on_path:
+            raise Refusal("cell DAG has a cycle")
+        if level > MAX_CELL_DEPTH:
+            raise Refusal("cell DAG too deep")
+        on_path.add(key)
+        if len(on_path) + len(hashes) > MAX_DAG_CELLS:
+            raise Refusal("cell DAG too large")
+        stack.append((c, level, True))
+        for r in reversed(c.refs):
+            if id(r) not in hashes:
+                stack.append((r, level + 1, False))
+    return hashes[id(root)]
+
+
 def cell_depth(c: Cell) -> int:
     return _depths_and_hashes(c)[0][id(c)]
 
@@ -493,6 +534,121 @@ def agent_external_header(body: Cell) -> dict:
         "seqno": int(b[s + 128 : s + 160], 2),
         "valid_until": int(b[s + 160 : s + 192], 2),
     }
+
+
+class _Bits:
+    """A cursor over one cell's bits and refs that refuses to read past either."""
+
+    def __init__(self, cell: Cell):
+        self.cell, self.pos, self.ref = cell, 0, 0
+
+    def take(self, n: int) -> str:
+        if self.pos + n > len(self.cell.bits):
+            raise Refusal("cell underflow")
+        out = self.cell.bits[self.pos : self.pos + n]
+        self.pos += n
+        return out
+
+    def uint(self, n: int) -> int:
+        return int(self.take(n), 2) if n else 0
+
+    def next_ref(self) -> Cell:
+        if self.ref >= len(self.cell.refs):
+            raise Refusal("cell has no further reference")
+        self.ref += 1
+        return self.cell.refs[self.ref - 1]
+
+    def grams(self) -> int:
+        return self.uint(self.uint(4) * 8)
+
+    def std_address(self) -> str:
+        if self.take(3) != "100":  # addr_std$10, no anycast
+            raise Refusal("not a standard address without anycast")
+        wc = self.uint(8)
+        wc = wc - 256 if wc >= 128 else wc
+        return f"{wc}:{self.uint(256):064x}"
+
+    def at_end(self) -> bool:
+        return self.pos == len(self.cell.bits) and self.ref == len(self.cell.refs)
+
+
+def _inline_state_init(m: _Bits) -> Cell:
+    """Read a StateInit stored inline in a message and return it as its own cell (the cell a
+    reference would hold), so its hash can be compared with a separately built StateInit.
+    Only code and data are accepted: split_depth, special and libraries are refused."""
+    start, first_ref = m.pos, m.ref
+    if m.take(1) != "0" or m.take(1) != "0":
+        raise Refusal("StateInit with split_depth or special flags is not supported")
+    refs = []
+    for _ in ("code", "data"):
+        if m.take(1) == "1":
+            refs.append(m.next_ref())
+    if m.take(1) != "0":
+        raise Refusal("StateInit with libraries is not supported")
+    if m.ref - first_ref != len(refs):
+        raise Refusal("StateInit reference count mismatch")
+    return Cell(m.cell.bits[start : m.pos], refs)
+
+
+def decode_wallet_envelope(msg: Cell) -> dict:
+    """The exact contents of a TOS V3R2 (wallet3) signed external message with one internal
+    message: the wallet address, global id, subwallet, deadline and seqno it was signed for, and the internal
+    message's bounce flag, destination, value, StateInit and body as cells. Anything outside
+    that shape (extra currencies, a second message, an inline StateInit, a non-standard address,
+    trailing data) is refused, so a binding check never compares a partially parsed message."""
+    h = _Bits(msg)
+    if h.take(2) != "10" or h.take(2) != "00":  # ext_in_msg_info$10, src addr_none$00
+        raise Refusal("not an inbound external message without a source")
+    out = {"wallet": h.std_address()}
+    h.grams()  # import_fee
+    if h.take(1) != "0":
+        raise Refusal("a wallet's external message carries no StateInit")
+    if h.take(1) == "1":
+        body = h.next_ref()
+        if not h.at_end():
+            raise Refusal("external message has trailing data after its body reference")
+    else:
+        body = Cell(msg.bits[h.pos :], msg.refs[h.ref :])
+    b = _Bits(body)
+    b.take(AGENT_EXTERNAL_SIGNATURE_BITS)
+    gid = b.uint(32)  # TOS wallet3: global_id anti-replay field (crypto/smartcont/wallet3-code.fc)
+    out["global_id"] = gid - (1 << 32) if gid >= 1 << 31 else gid
+    out["subwallet"], out["valid_until"], out["seqno"] = b.uint(32), b.uint(32), b.uint(32)
+    out["mode"] = b.uint(8)
+    inner = b.next_ref()
+    if not b.at_end():
+        raise Refusal("wallet message carries more than one internal message or trailing data")
+    m = _Bits(inner)
+    if m.take(1) != "0":
+        raise Refusal("not an internal message")
+    m.take(1)  # ihr_disabled
+    out["bounce"] = m.take(1) == "1"
+    if m.take(1) != "0":
+        raise Refusal("a bounced message cannot be an outgoing wallet message")
+    if m.take(2) != "00":
+        raise Refusal("outgoing wallet message must name no source")
+    out["destination"] = m.std_address()
+    out["value_nanotos"] = m.grams()
+    if m.take(1) != "0":
+        raise Refusal("extra currencies are not supported")
+    m.grams()  # ihr_fee
+    m.grams()  # fwd_fee
+    m.uint(64)  # created_lt
+    m.uint(32)  # created_at
+    out["state_init"] = None
+    if m.take(1) == "1":
+        if m.take(1) == "1":
+            out["state_init"] = m.next_ref()
+        else:
+            out["state_init"] = _inline_state_init(m)
+    if m.take(1) == "1":
+        out["body"] = m.next_ref()
+        if not m.at_end():
+            raise Refusal("internal message has trailing data after its body reference")
+    else:
+        rest = m.cell.bits[m.pos :]
+        out["body"] = Cell(rest, m.cell.refs[m.ref :])
+    return out
 
 
 def with_flipped_signature_bit(msg: Cell) -> Cell:
