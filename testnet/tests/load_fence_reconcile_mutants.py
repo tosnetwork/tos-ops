@@ -1,0 +1,419 @@
+#!/usr/bin/env python3
+"""Guard-removal mutants for load_fence_reconcile.py; every one must turn the suite red.
+
+Each mutant is applied to a fresh copy of testnet/ in a temporary directory, so
+the checkout is never modified. Only pytest's exit 1 with a failed test counts
+as RED; a pattern that does not occur exactly once, a mutant that does not
+parse, a green baseline failure, a survivor or an invalid run fails the whole run.
+
+    unshare -rn python testnet/tests/load_fence_reconcile_mutants.py [LABEL ...]
+
+Not collected by pytest.
+"""
+
+import ast
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+W = Path(__file__).resolve().parents[1]
+TARGET = "scripts/load_fence_reconcile.py"
+TEST = "tests/test_load_fence_reconcile.py"
+FAILED = re.compile(r"\b[1-9]\d* failed\b")
+ERRORS = re.compile(r"\b[1-9]\d* errors?\b")
+
+M = [
+    (
+        "R1 json.loads before the projection boundary",
+        "    try:\n        spans = []\n",
+        "    json.loads(bytes(buf[start:end]))\n    try:\n        spans = []\n",
+    ),
+    (
+        "R2 boc span not nulled",
+        '            buf[value_start : value_start + 4] = b"null"\n'
+        "            _wipe(buf, value_start + 4, value_end)\n",
+        "            pass\n",
+    ),
+    (
+        "R3 opens a key file",
+        "    names = reader.listing(st)\n",
+        '    names = reader.listing(st)\n    os.close(os.open("highload.key", os.O_RDONLY, dir_fd=st))\n',
+    ),
+    (
+        "R4 opens a signed .boc file",
+        "    names = reader.listing(st)\n",
+        "    names = reader.listing(st)\n"
+        '    os.close(os.open("highload.init.boc", os.O_RDONLY, dir_fd=st))\n',
+    ),
+    (
+        "R5 reader denylist removed",
+        '        if denied(name, 0):\n            raise Refused(input_id, 0, "denied_name")\n',
+        "",
+    ),
+    (
+        "R6 audit hook veto removed",
+        '        raise PermissionError("refused by the reconcile allowlist")\n',
+        "        pass\n",
+    ),
+    (
+        "R7 pending check removed",
+        '    ok = not pending and result.get("pending") == 0\n',
+        "    ok = True\n",
+    ),
+    (
+        "R8 events hash check removed",
+        '        and digests.get("run:events") == audit_id.get("events_sha256")\n',
+        "",
+    ),
+    (
+        "R9 funding sequence check removed",
+        "    ok = (\n        not broken\n",
+        "    ok = True or (\n        not broken\n",
+    ),
+    (
+        "R10 open operations ignored",
+        'r.get("wallet") in wallets and r.get("state") in OPEN_STATES',
+        'r.get("wallet") in wallets and r.get("state") in ()',
+    ),
+    (
+        "R11 held lock reported free",
+        "    return LOCK_HELD if key in held else LOCK_FREE\n",
+        "    return LOCK_FREE\n",
+    ),
+    (
+        "R12 fence eligibility ignores the marker",
+        '    if not (body["closed"] and body["safe"]):\n',
+        "    if False:\n",
+    ),
+    (
+        "R13 allocated-unlogged ids escape",
+        "            q = next_query_id(q)\n        counter_verdict = UNKNOWN\n",
+        "            q = next_query_id(q)\n        counter_verdict = RECONCILED\n",
+    ),
+    (
+        "R14 core dumps left enabled",
+        "    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))\n",
+        "    pass\n",
+    ),
+    (
+        "R15 read buffer not wiped",
+        "    buf[0 : len(buf)] = bytes(len(buf))\n",
+        "    pass\n",
+    ),
+    (
+        "R16 refused line not wiped",
+        "        _wipe(buf, start, end)\n"
+        '        raise Refused(input_id, start, "line_not_tokenizable") from None\n',
+        '        raise Refused(input_id, start, "line_not_tokenizable") from None\n',
+    ),
+    (
+        "R17 excepthook prints content",
+        "    text = str(value) if isinstance(value, Refused) else kind.__name__\n",
+        "    text = str(value)\n",
+    ),
+    (
+        "R18 secret scan bypassed",
+        "    if scan(document):\n",
+        "    if False:\n",
+    ),
+    (
+        "R19 stability ignores identities",
+        "        stable = (\n            first.idents == reader.idents\n",
+        "        stable = (\n            True\n",
+    ),
+    (
+        "R20 existing output not refused",
+        "    if os.path.lexists(args.out):\n",
+        "    if False:\n",
+    ),
+    (
+        "R21 symlinks followed",
+        "    FILE = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC\n",
+        "    FILE = os.O_RDONLY | os.O_CLOEXEC\n",
+    ),
+    (
+        "R22 archived-not-offered counted as success",
+        "        verdict = UNKNOWN  # archived but not offered: never counted as success\n",
+        "        verdict = RECONCILED\n",
+    ),
+    (
+        "R23 source disagreement report hidden",
+        '        "sources_agree": agree and bool(rows) and len(sources) >= 2,\n',
+        '        "sources_agree": True,\n',
+    ),
+    (
+        "R24 escaped boc key accepted",
+        "                if key_end < 0 or 0x5C in buf[i:key_end]:\n",
+        "                if key_end < 0:\n",
+    ),
+    (
+        "R25 second boc member accepted",
+        "        if _skip_ws(buf, i, end) != end or len(spans) > 1:\n",
+        "        if _skip_ws(buf, i, end) != end:\n",
+    ),
+    (
+        "R26 chain read clears allocated-unlogged ids",
+        '    pops["query_ids"] = evaluate_query_ids(facts, extra, args)\n',
+        '    pops["query_ids"] = evaluate_query_ids(facts, extra, args)\n'
+        '    if chain.get("outbox_consistent"):\n'
+        '        pops["query_ids"]["verdict"] = RECONCILED\n',
+    ),
+    (
+        "R27 parent symlinks followed in the root walk",
+        "                    child = os.open(part, self.DIR, dir_fd=fd)\n",
+        "                    child = os.open(part, self.DIR & ~os.O_NOFOLLOW, dir_fd=fd)\n",
+    ),
+    (
+        "R28 root walk skips the uid check below the prefix",
+        "                else:\n                    _check(os.fstat(fd), True, input_id)\n",
+        "                else:\n                    pass\n",
+    ),
+    (
+        "R29 journal wallets not normalised",
+        '            r["wallet"] = canonical\n',
+        "            pass\n",
+    ),
+    (
+        "R30 partial read buffer not wiped",
+        "            except OSError:\n                wipe_buffer(buf)\n",
+        "            except OSError:\n                pass\n",
+    ),
+    (
+        "R31 probe byte not wiped",
+        "                wipe_buffer(probe)\n",
+        "                pass\n",
+    ),
+    (
+        "R32 public input inside the state or ceremony accepted",
+        "            if inside(path, root):\n",
+        "            if False:\n",
+    ),
+    (
+        "R33 projected document digest dropped",
+        "            if not raw_hash:\n",
+        "            if False:\n",
+    ),
+    (
+        "R34 offered event without ids crashes",
+        '            if not ids and kind in ("offered", "not_offered"):\n',
+        "            if False:\n",
+    ),
+    (
+        "R35 archive metadata left out of the stability check",
+        '        reader.idents["run:outbox-entries"] = [[*e] for e in sorted(entries)] + [[odd]]\n',
+        "",
+    ),
+    (
+        "R36 writable system prefix accepted",
+        "    writable = info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX\n",
+        "    writable = False\n",
+    ),
+    (
+        "R37 address and count arguments not validated",
+        "    if owner is None or args.expected_relayer_count < 1 or args.expected_operator_count < 1:\n",
+        "    if False:\n",
+    ),
+    (
+        "W1 missing relayer file ignored",
+        "        not missing\n        and not extra\n",
+        "        not extra\n",
+    ),
+    (
+        "W2 operator count ignored",
+        '        and len(expected["operators"]) == args.expected_operator_count\n',
+        "",
+    ),
+    (
+        "W3 open operations outside the expected wallets ignored",
+        "UNKNOWN if unknown or odd_open or outside else",
+        "UNKNOWN if unknown or odd_open else",
+    ),
+    (
+        "W4 wallet set not checked",
+        '    pops["wallets"] = evaluate_wallets(facts, expected, args)\n',
+        '    pops["wallets"] = _pop(RECONCILED)\n',
+    ),
+    (
+        "W5 funding destination not bound to the label's relayer",
+        "            or destination != target\n",
+        "",
+    ),
+    (
+        "W6 public match destination ignored",
+        "            or match_tx[tx] != (label, amount, destination)\n",
+        "            or match_tx[tx][:2] != (label, amount)\n",
+    ),
+    (
+        "W7 funding operation kind ignored",
+        '            or chosen.get("kind") != "owner-fund"\n',
+        "",
+    ),
+    (
+        "W8 earlier events digest dropped",
+        '        reader.digests[f"{tag}:events"] = hashlib.sha256(buf).hexdigest()  # no signed bytes\n',
+        "",
+    ),
+    (
+        "W9 journal buffered whole",
+        "            for offset, item in reader.stream_lines(od, name, input_id):\n",
+        "            for offset, item in lines_of(\n"
+        "                reader.read(od, name, input_id, MAX_SMALL_BYTES), input_id\n"
+        "            ):\n",
+    ),
+    (
+        "W10 next line's bytes kept in the line buffer",
+        "                        _wipe(buf, found + 1, fill + count)  # the next line's bytes\n",
+        "                        pass\n",
+    ),
+    (
+        "W11 line bound not enforced",
+        "                    if fill >= len(buf):\n",
+        "                    if False:\n",
+    ),
+    (
+        "W12 invalid simple escapes accepted",
+        "            if e not in b'\"\\\\/bfnrt':\n",
+        "            if False:\n",
+    ),
+    (
+        "W13 invalid unicode escapes accepted",
+        "                if i + 6 > end or not all(buf[k] in HEX_DIGITS for k in range(i + 2, i + 6)):\n",
+        "                if False:\n",
+    ),
+    # The non-author review's guard-removal set, kept here so every guard has a red control.
+    ("X1 executed==offered dropped", "        and x == o\n", ""),
+    (
+        "X2 native==offered dropped",
+        "        native == o\n        and isinstance(finality, dict)\n",
+        "        isinstance(finality, dict)\n",
+    ),
+    (
+        "X3 public reservations pairs dropped",
+        "        and public_pairs == [(lab, amt) for lab, amt, _ in reservations]\n",
+        "",
+    ),
+    ("X4 owner match total dropped", '        and matches.get("total_nanotos") == total\n', ""),
+    ("X5 other gaps ignored", "UNKNOWN if other else RECONCILED", "RECONCILED"),
+    (
+        "X6 start verdict forced",
+        '    out["start_verdict"] = start_verdict\n',
+        '    start_verdict = RECONCILED\n    out["start_verdict"] = start_verdict\n',
+    ),
+    (
+        "X7 errors ignored in overall",
+        "    if UNKNOWN in words or errors:\n",
+        "    if UNKNOWN in words:\n",
+    ),
+    ("X8 digests not compared", "            and first.digests == reader.digests\n", ""),
+    ("X9 summary hash dropped", '        and summary_hash == audit_id.get("summary_sha256")\n', ""),
+    ("X10 chain consistency dropped", "            consistent = False\n", "            pass\n"),
+    (
+        "X11 pre-run rows ignored",
+        "UNKNOWN if unknown else (UNRECONCILED if missing else RECONCILED)",
+        "RECONCILED",
+    ),
+    (
+        "X12 owner_during_run ignored",
+        "    verdict = UNRECONCILED if stray_load or bad_non_load or start is None else RECONCILED\n",
+        "    verdict = RECONCILED\n",
+    ),
+    (
+        "X13 funding_journal ignored",
+        "    verdict = RECONCILED if not unmatched and len(used) == len(reservations) else UNRECONCILED\n",
+        "    verdict = RECONCILED\n",
+    ),
+    ("X14 min_query_id ignored", "    if low < args.min_query_id:\n", "    if False:\n"),
+    (
+        "X15 not_offered ignored",
+        '    pops["not_offered"] = _pop(RECONCILED if ok else UNRECONCILED, count=len(n))\n',
+        '    pops["not_offered"] = _pop(RECONCILED, count=len(n))\n',
+    ),
+    (
+        "X16 accepted subset dropped",
+        '    ok = len(accepted) == len(a) and a <= o and result.get("accepted") == len(a)\n',
+        "    ok = True\n",
+    ),
+    (
+        "X17 closed-but-unsafe fence",
+        "        fence = UNRECONCILED  # a closed marker over an unsafe result (LQ:353-355)\n",
+        "        fence = RECONCILED\n",
+    ),
+    ("X18 second lock observation dropped", "for held in (held0, held1)}", "for held in (held0,)}"),
+    ("X19 outbox size mismatch ignored", "            mismatched += 1\n", "            pass\n"),
+    ("X20 owner check in _check dropped", " or info.st_uid != os.geteuid()", ""),
+    (
+        "X21 projection digest constant",
+        '    reader.digests["ops:projection"] = hashlib.sha256(canonical).hexdigest()\n',
+        '    reader.digests["ops:projection"] = "00" * 32\n',
+    ),
+    (
+        "X22 journal state check dropped",
+        '                if item.get("state") not in JOURNAL_STATES:  # testnet_ops.py:853\n',
+        "                if False:\n",
+    ),
+]
+
+
+def suite(root: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider", TEST],
+        capture_output=True,
+        text=True,
+        cwd=root,
+        timeout=600,
+    )
+
+
+def classify(result: subprocess.CompletedProcess) -> str:
+    if result.returncode == 0:
+        return "SURVIVED"
+    out = result.stdout.strip().splitlines()
+    summary = out[-1] if out else ""
+    if result.returncode == 1 and FAILED.search(summary) and not ERRORS.search(summary):
+        return "RED"
+    return "INVALID"
+
+
+def copy(scratch: Path, name: str) -> Path:
+    root = scratch / name
+    shutil.copytree(W, root, ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
+    return root
+
+
+def main(only: list[str]) -> int:
+    source = (W / TARGET).read_text()
+    chosen = [m for m in M if not only or m[0].split()[0] in only]
+    for label, old, new in chosen:
+        if source.count(old) != 1:
+            print(f"FAIL: {label}: pattern occurs {source.count(old)} times")
+            return 1
+        ast.parse(source.replace(old, new))
+    with tempfile.TemporaryDirectory(prefix="lfr-mutants-") as scratch:
+        scratch = Path(scratch)
+        baseline = suite(copy(scratch, "baseline"))
+        if baseline.returncode != 0:
+            print("FAIL: the unmutated suite is not green")
+            return 1
+        bad = []
+        for n, (label, old, new) in enumerate(chosen):
+            root = copy(scratch, f"m{n}")
+            (root / TARGET).write_text(source.replace(old, new))
+            try:
+                result = suite(root)
+                verdict = classify(result)
+                tail = (result.stdout.strip().splitlines() or [""])[-1]
+            except subprocess.TimeoutExpired:
+                verdict, tail = "INVALID", "timeout"
+            shutil.rmtree(root)
+            if verdict != "RED":
+                bad.append(label)
+            print(f"{label}: {verdict} -- {tail}", flush=True)
+    print(f"{len(chosen) - len(bad)} of {len(chosen)} red; not red: {bad}")
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

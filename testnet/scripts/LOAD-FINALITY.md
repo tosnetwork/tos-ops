@@ -295,3 +295,53 @@ retains the existing refusal path and need not emit a timing event. Finality,
 funding, native proof-age and p95/p99 gates are unchanged. Timings help distinguish
 local offer/admission delays from HTTP/ingress delays, but cannot by themselves
 separate remote queueing from consensus or establish a network latency cause.
+
+## Read-only reconciliation of a closed qualified run
+
+`load_fence_reconcile.py` checks one closed run against public closed-run evidence
+before a new run may launch. It reads, and never changes, the populations: offered,
+accepted, executed/unconfirmed, pending, native-finalized, not offered, funding
+reservations, every operation journal, the query-id counter, the carrier archive
+names, and the unfinished-run marker. It never resets, replays, re-signs or resends,
+and never writes the marker.
+
+- **Allowlist.** Every root is walked from `/` one component at a time
+  (O_NOFOLLOW|O_DIRECTORY at each level). Only the leading system prefixes (`/`,
+  `/home`, `/tos`) may be root-owned, and they must not be writable by others;
+  every component below them must be owned by this uid. Public inputs are refused
+  inside the state or ceremony tree. Keys, signed messages, carrier
+  contents, native captures and dry-run directories are refused by name and again
+  by an audit hook. The carrier archive is listed for names and sizes only.
+- **Locks.** No lock is taken. Locks are observed in `/proc/locks` before and after
+  two complete reads, which must be identical. The result says "free as observed";
+  a launch still takes the producer's own lock.
+- **Wallet set.** `--expected-wallets` is a public file naming the highload
+  wallet, the funding owner, the relayers in index order and the operators.
+  `--expected-relayer-count` and `--expected-operator-count` declare how many there
+  must be. The state's `.addr` files and the public funding labels must match that
+  set exactly. An open operation on any wallet outside the set is UNKNOWN. Each
+  funding record must be an `owner-fund` to its label's relayer, with the amount,
+  destination and transaction of its public match.
+- **Inline signed messages.** Operation journals hold each signed message inline.
+  Journals are read one bounded line at a time into a fixed buffer; bytes read
+  past the newline are wiped before the line is projected. `project_line()`
+  validates every string's escapes and nulls the top-level `boc` string in that
+  buffer before any decoding. A line it cannot tokenize is wiped and never decoded. Every buffer is
+  wiped before it is released. Journals are compared by stat identity plus a hash
+  of the projected metadata, never by a raw hash.
+- **Error reporting.** Errors name a logical input and a byte offset only. Core dumps
+  are disabled before the first open.
+- **Counter.** Ids whose low ten bits are 1023 do not exist, so they are structural
+  gaps. Any other gap, or any id allocated after the last logged one, stays UNKNOWN;
+  relayer seqno reads cannot clear it.
+- **Chain reads.** `--chain-reads` with two distinct sources is required. It
+  records each source's masterchain seqno and each relayer's seqno, and reports
+  source agreement and agreement with the archive. It is observation only: it never
+  clears, decides or downgrades a verdict.
+- **Eligibility.** Launch eligibility needs a closed marker, a result that is safe
+  to start, every population RECONCILED and nothing UNKNOWN.
+- **Output.** One new file (O_EXCL) of counts, ids, typed hashes, public addresses
+  and verdict words, which must pass a secret scan before it is written.
+- **Tests.** `tests/test_load_fence_reconcile.py` builds its fixtures with the
+  producer's own writers and plants canaries in every key, carrier and signed
+  field. `tests/load_fence_reconcile_mutants.py` checks that each guard is load-bearing.
