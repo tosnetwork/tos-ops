@@ -967,6 +967,40 @@ class ReturnFundsReplay(RunnerCase):
             out["sc-owner"], {"returned_nanotos": 123456789, "tx": {"lt": "1", "hash": "OLD"}}
         )
 
+    def test_the_registry_payer_is_returned_in_a_later_round(self):
+        self.write_actors()
+        self.runner.plan_funding(SOURCE)
+        self.runner.preflight = lambda value_action=True: {}
+        nr_payer = "0:" + "9a" * 32
+        (self.evidence / "registry-actors.json").write_text(json.dumps({"wallet": nr_payer}))
+        self.rpc.balances[nr_payer] = spc.tos_to_nanotos("1.133")
+        sent = []
+        self.runner.step = lambda label, argv, payer, observe, **kw: (
+            sent.append((label, list(argv), payer))
+            or {"argv": list(argv), "tx": {"lt": "9", "hash": "NEW"}}
+        )
+        out = self.runner.return_funds(SOURCE, 3)
+        labels = [label for label, _, _ in sent]
+        self.assertEqual(labels, ["return-sc-registry-r3"])
+        label, argv, payer = sent[0]
+        self.assertEqual(payer, nr_payer)
+        self.assertEqual(argv[argv.index("--from") + 1], spc.NR_ACTOR)
+        self.assertEqual(
+            int(argv[argv.index("--amount-nanotos") + 1]),
+            spc.tos_to_nanotos("1.133") - spc.tos_to_nanotos("0.05"),
+        )
+        self.assertEqual(
+            out[spc.NR_ACTOR]["returned_nanotos"],
+            spc.tos_to_nanotos("1.133") - spc.tos_to_nanotos("0.05"),
+        )
+
+    def test_without_a_registry_setup_only_the_service_actors_return(self):
+        self.write_actors()
+        self.runner.plan_funding(SOURCE)
+        self.runner.preflight = lambda value_action=True: {}
+        out = self.runner.return_funds(SOURCE, 3)
+        self.assertNotIn(spc.NR_ACTOR, out)
+
     def record_round_one(self):
         self.write_actors()
         self.runner.plan_funding(SOURCE)

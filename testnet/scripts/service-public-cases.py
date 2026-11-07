@@ -4384,7 +4384,8 @@ class Runner:
 
     # ----- wrap-up ------------------------------------------------------------------------
     def return_funds(self, to: str, round_: int = 1) -> dict:
-        """Send each actor's balance above its 0.05 TOS floor back to the recorded source. Each
+        """Send each actor's balance above its 0.05 TOS floor back to the recorded source (the
+        Native Registry payer included once setup-registry recorded it). Each
         return round has its own once-only labels: round 1 keeps the original `return-<wallet>`
         labels, a later round (after further funding) uses `return-<wallet>-r<N>`, so a replay
         of round 1 can never stand in for a later return and a later round can never re-send
@@ -4396,7 +4397,10 @@ class Runner:
         source = self.funding_source()
         if to != source:
             raise Refusal(f"return destination {to} is not the recorded funding source {source}")
-        actors = self.actors()["wallets"]
+        actors = dict(self.actors()["wallets"])
+        if (self.evidence / "registry-actors.json").exists():
+            # The Native Registry payer is funded from the same source and returns the same way.
+            actors[NR_ACTOR] = norm_addr(self.nr_actors()["wallet"])
         out = {}
         keep = tos_to_nanotos("0.05")
         suffix = "" if round_ == 1 else f"-r{round_}"
