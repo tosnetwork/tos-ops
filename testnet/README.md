@@ -599,3 +599,42 @@ hidden as not offered. No retry or signed-carrier replay is introduced. Existing
 failed campaigns retain their original policy and verdict. This is an explicit
 pre-admission disposition policy change; it does not extend the interval or
 relax the p95/p99, proof-age, query-age or funding guards.
+
+### Replay public proof captures while a load run is active
+
+`testnet/scripts/load_stream_replay.py` verifies retained public captures as the
+producer appends its event journal. Like the closed-run reader, it currently
+accepts qualified highload `skip` runs. It uses the same native full-anchor verifier,
+transaction-history decoder, signed-request digest matching and observation-clock
+checks as the closed-run reader. It acquires no live proofs and never opens
+private carriers, signs, broadcasts or changes the original qualification fence.
+
+Pass an absolute `--run` directory, a new separate `--output` directory and the
+same pinned anchor, schema, verifier, producer packet, wallet and network identity
+arguments accepted by `load_run_replay.py`. The original producer continues to
+own its journal and captures. Partial event lines wait for their newline; file
+replacement, truncation, prefix changes, unsafe summaries and unmatched captures
+prevent successful completion. The result candidate is flushed and fsynced
+before the original journal, summary, closed marker, captures and pinned inputs
+are rechecked immediately before exclusive atomic publication. Output paths
+must have canonical parents so an
+alias cannot place replay files inside the original run.
+
+Live `PROGRESS.json` always says `LIVE_COVERAGE_NOT_ACCEPTED`. A final `RESULT.json`
+requires the producer's own safely closed summary, the complete unchanged event
+journal, every original capture and matching final counters and histogram. An
+open marker for that run cannot be overridden by completed proofs. Coverage does
+not establish throughput, load acceptance or permission to close an interrupted
+financial fence. Require both a successful process exit and the final coverage
+status before accepting the output.
+
+The reader waits up to four days by default, refuses a horizon above seven days
+and stops after 300 seconds without journal or proof progress. These bounds are
+configurable with `--max-seconds` and `--idle-seconds`. It retains the existing
+one-million-capture and one-TiB maximum archive limits, defaults to a 128-GiB
+archive budget, and checks free disk space before each native replay. Set and
+review a suitable `--max-unique-bytes` budget before a long run; a short-stage
+one-GiB allocation is not a long-run retention plan. Run only one native child in
+this reader alongside the producer's native worker. No automatic resume or
+cache-trust shortcut is provided: a failed attempt keeps its partial evidence
+and cannot publish successful closed coverage.
