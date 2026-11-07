@@ -30,8 +30,10 @@ never ends the watch: it is recorded as missing and the next cycle tries again.
 An observation that was more than 60 s old when the cycle was published (another
 host's read was slow) is checked like any other, then recorded as missing with
 reason expired_at_publication; it is never fresh. Missing and violation rows
-never carry command output. Whether missing data fails an acceptance window is
-decided downstream (the stale LATEST.json and the missing rows), not here; the
+never carry command output. An answer that cannot be decoded, parsed or read
+as an observation (wrong types, a missing field, a number too large for a
+float, a non-finite time) is missing data with reason probe_output_invalid.
+Whether missing data fails an acceptance window is decided downstream (the stale LATEST.json and the missing rows), not here; the
 outage alert is timed on the monotonic clock and decides nothing. A host is
 alerted again only after it was observed and then went missing again.
 
@@ -41,7 +43,18 @@ rest of the series stays available; `VIOLATION <utc> <host>:validator_inactive`
 is printed once per episode. --summarize reads a series and prints, as JSON,
 the violations apart from the missing data (summarize()), for the outcome
 review: a violation is a criteria failure, missing data is judged by the
-unchanged missing-data criterion.
+unchanged missing-data criterion. A series whose directory holds no
+MONITOR-COMPLETE.json (the watch is still running, or ended on an integrity
+refusal) is reported complete false and criteria_violated true.
+
+Each host has its own baseline, taken at its first fresh accepted observation,
+whatever the state of the other hosts. BASELINE.json maps host name to that
+observation, as before, but it is rewritten atomically each time another host
+gains a baseline, so it can name fewer than four hosts; MONITOR-COMPLETE.json
+lists hosts_without_baseline, and so does --summarize. Every later observation
+of a baselined host goes through check() however late it is: an active one in
+full, an inactive one on the fields it carries (boot id, restart count, host
+OOM kills).
 
 The integrity refusals end the watch (exit 1 with a traceback, as before):
 probe source not matching the pin; an expected host absent from the inventory;
@@ -49,9 +62,10 @@ DIR already existing; a host clock more than 60 s off when its answer arrives;
 an observation dated in the future at publication; coordinator free space below
 20 GiB or series.jsonl above 256 MiB; in any active observation, fresh or
 expired, missing cgroup OOM counters or filesystems or a disk/inode reserve
-below its floor; and, against the first complete cycle's BASELINE.json, a
-changed main PID, process start time, boot id, restart count, host OOM-kill
-counter or cgroup OOM counter. At the end of the horizon it writes
+below its floor; and, against that host's baseline, a changed main PID,
+process start time, boot id, restart count, host OOM-kill counter or cgroup OOM
+counter (an inactive observation: a changed boot id, restart count or host
+OOM-kill counter). At the end of the horizon it writes
 MONITOR-COMPLETE.json, which is not an acceptance verdict.
 """
 
@@ -62,6 +76,7 @@ import concurrent.futures
 import datetime
 import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -74,7 +89,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import preflight  # noqa: E402
 
 SOURCE = Path(__file__).resolve().parent / "resource_extra_probe.py"
-PIN = "1203afe4bacbc6b70813ba4cb2782d0c4abe7bbead68373d570d5a364497c7a5"
+PIN = "ac4d79a3d31ddcbcb4b38bd5f85072b67f786f6926c89067105d3c388827e8fb"
 HOSTS = ("node-1", "node-2", "node-3", "node-4")
 DURATION = 345600
 PAUSE = 60
@@ -106,6 +121,7 @@ PARTIAL = "PARTIAL_EXTRA_RESOURCE_OBSERVATION"
 MISSING = "MISSING_EXTRA_RESOURCE_OBSERVATION"
 VIOLATION = "VIOLATION_EXTRA_RESOURCE_OBSERVATION"
 ALERT = "ALERT_EXTRA_RESOURCE_HOST_MISSING"
+COMPLETE = "MONITOR_HORIZON_REACHED_NOT_ACCEPTANCE"
 
 
 def iso(stamp: float) -> str:
@@ -150,6 +166,55 @@ def inactive(value: dict) -> bool:
         or not isinstance(pid, int)
         or pid <= 0
     )
+
+
+def whole(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def finite_time(value) -> bool:
+    """A number that is a finite float; probe_once() refuses a bool before this."""
+    if not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
+
+
+def valid_observation(value) -> bool:
+    """Whether every field the checks read is present and of its type.
+
+    The counts and names of filesystems and cgroup counters are left to
+    check_reserves() and check(): those are integrity refusals, not malformed
+    answers.
+    """
+    if not isinstance(value, dict) or not finite_time(value.get("utc_unix")):
+        return False
+    if not isinstance(value.get("unit_active"), str) or not isinstance(value.get("boot_id"), str):
+        return False
+    if not all(whole(value.get(key)) for key in ("unit_restarts", "host_oom_kill")):
+        return False
+    if inactive(value):
+        return True
+    filesystems, events = value.get("filesystems"), value.get("cgroup_memory_events")
+    return (
+        whole(value.get("start_ticks"))
+        and isinstance(filesystems, dict)
+        and all(
+            isinstance(f, dict) and whole(f.get("free_bytes")) and whole(f.get("free_inodes"))
+            for f in filesystems.values()
+        )
+        and isinstance(events, dict)
+        and all(whole(v) for v in events.values())
+    )
+
+
+def check_inactive(current: dict, baseline: dict) -> None:
+    """check() for an inactive observation: the fields it carries."""
+    for name in ("boot_id", "unit_restarts", "host_oom_kill"):
+        if current[name] != baseline[name]:
+            raise RuntimeError("Process/boot/restart/hostOOM changed: " + name)
 
 
 def check_reserves(current: dict) -> None:
@@ -202,16 +267,21 @@ def probe_once(host: preflight.Host, source: str, run=subprocess.run) -> tuple[d
         )
     except subprocess.TimeoutExpired:
         return None, PROBE_TIMEOUT_REASON
+    except UnicodeError:
+        # text=True decodes stdout and stderr before returning.
+        return None, OUTPUT_INVALID
     except OSError:
         return None, LAUNCH_FAILED
     if child.returncode != 0:
         return None, SSH_FAILED if child.returncode == 255 else PROBE_FAILED
     try:
         value = json.loads(child.stdout)
-    except ValueError:
+    except (ValueError, RecursionError):
         return None, OUTPUT_INVALID
     stamp = value.get("utc_unix") if isinstance(value, dict) else None
     if isinstance(stamp, bool) or not isinstance(stamp, (int, float)):
+        return None, OUTPUT_INVALID
+    if not valid_observation(value):
         return None, OUTPUT_INVALID
     return value, ""
 
@@ -279,7 +349,7 @@ def watch(
 ) -> None:
     names = {host.name for host in hosts}
     output.mkdir(mode=0o700)
-    baseline = None
+    baseline: dict[str, dict] = {}  # per host, from its first fresh accepted observation
     tracker = MissingTracker()
     inactive_hosts: set[str] = set()
     started = monotonic()
@@ -301,11 +371,13 @@ def watch(
                 if age < 0:
                     raise RuntimeError("Completed host observation expired before publication")
                 if inactive(value):
+                    if name in baseline:
+                        check_inactive(value, baseline[name])
                     violations[name] = value
                     continue
                 # Every observation is checked, however late it is published.
                 check_reserves(value)
-                if baseline is not None:
+                if name in baseline:
                     check(value, baseline[name])
                 if age > MAX_AGE:
                     # Another host's slow read delayed publication past the
@@ -313,9 +385,13 @@ def watch(
                     missing[name] = EXPIRED
                 else:
                     current[name] = value
-            if baseline is None and not missing and not violations:
-                baseline = current
-                atomic(output / "BASELINE.json", current)
+            joined = False
+            for name in sorted(current):
+                if name not in baseline:
+                    baseline[name] = current[name]
+                    joined = True
+            if joined:
+                atomic(output / "BASELINE.json", baseline)
             # Only a fresh accepted or a violating observation ends an outage;
             # one that expired at publication is still missing.
             for name in set(current) | set(violations):
@@ -387,13 +463,26 @@ def watch(
                 atomic(
                     output / "LATEST.json",
                     value,
-                    before_publish=lambda: fresh(current, names, now),
+                    # Judged at the cycle's stamp, like the classification above.
+                    before_publish=lambda: fresh(current, names, lambda: stamp),
                 )
             sleep(PAUSE)
     atomic(
         output / "MONITOR-COMPLETE.json",
-        {"status": "MONITOR_HORIZON_REACHED_NOT_ACCEPTANCE", "finished_unix": now()},
+        {
+            "status": COMPLETE,
+            "finished_unix": now(),
+            "hosts_without_baseline": sorted(names - set(baseline)),
+        },
     )
+
+
+def load_json(path: Path):
+    """The parsed file, or None when it is absent or unreadable."""
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError, RecursionError):
+        return None
 
 
 def summarize(path: Path) -> dict:
@@ -403,8 +492,21 @@ def summarize(path: Path) -> dict:
     that code; anything else (and a line that is not a JSON object) is counted as
     unrecognized, which a review must not read as clean. An unterminated last
     line, from a watch still writing, is not read.
+
+    complete is true only when MONITOR-COMPLETE.json beside the series records
+    the horizon; otherwise the watch is still running or ended on an integrity
+    refusal, and criteria_violated is true. hosts_without_baseline names the
+    expected hosts with no entry in BASELINE.json (their process and OOM
+    counters were never compared).
     """
+    folder = Path(path).parent
+    marker = load_json(folder / "MONITOR-COMPLETE.json")
+    baselines = load_json(folder / "BASELINE.json")
     out = {
+        "complete": isinstance(marker, dict) and marker.get("status") == COMPLETE,
+        "hosts_without_baseline": sorted(
+            set(HOSTS) - (set(baselines) if isinstance(baselines, dict) else set())
+        ),
         "rows": 0,
         "healthy_cycles": 0,
         "partial_cycles": 0,
@@ -455,7 +557,7 @@ def summarize(path: Path) -> dict:
                 out["alerts"] += 1
             else:
                 out["unrecognized_rows"] += 1
-    out["criteria_violated"] = out["violation_rows"] > 0
+    out["criteria_violated"] = out["violation_rows"] > 0 or not out["complete"]
     out["missing_data"] = out["missing_rows"] > 0
     return out
 

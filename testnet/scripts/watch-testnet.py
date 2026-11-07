@@ -208,6 +208,11 @@ def valid_report(report) -> bool:
         value = report.get(key)
         if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))):
             return False
+        try:
+            # row() divides and subtracts as floats; a huge integer overflows.
+            float(0 if value is None else value)
+        except OverflowError:
+            return False
     return all(report.get(key) is None or math.isfinite(report[key]) for key in WHOLE_FIELDS)
 
 
@@ -232,6 +237,9 @@ def probe_attempt(
         )
     except subprocess.TimeoutExpired:
         return None, PROBE_TIMEOUT
+    except UnicodeError:
+        # text=True decodes stdout and stderr before returning.
+        return None, OUTPUT_INVALID
     except OSError:
         return None, LAUNCH_FAILED
     lines = (result.stdout or "").strip().splitlines()
@@ -239,7 +247,7 @@ def probe_attempt(
         return None, SSH_FAILED if getattr(result, "returncode", None) == 255 else NO_OUTPUT
     try:
         report = json.loads(lines[-1])
-    except ValueError:
+    except (ValueError, RecursionError):
         return None, OUTPUT_INVALID
     if isinstance(report, dict) and "refused" in report:
         return None, PROBE_REFUSED

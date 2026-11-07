@@ -3,6 +3,7 @@
 import functools
 import importlib.util
 import json
+import signal
 import subprocess
 
 import pytest
@@ -15,6 +16,20 @@ spec.loader.exec_module(watch_testnet)
 
 SECRET = "SECRET-TOKEN-0123456789 /home/operator/.ssh/id_key"
 HOST = watch_testnet.preflight.Host(name="n", address="44.0.0.1", roles=["validator"], ssh_key="/k")
+
+
+@pytest.fixture(autouse=True)
+def bounded():
+    """No test here may block: a watch that never ends fails after 30 s."""
+
+    def expire(_signum, _frame):
+        raise TimeoutError("test exceeded 30 s")
+
+    previous = signal.signal(signal.SIGALRM, expire)
+    signal.alarm(30)
+    yield
+    signal.alarm(0)
+    signal.signal(signal.SIGALRM, previous)
 
 
 def strict_args(tmp_path, rounds, interval=30.0, **changes):
@@ -250,6 +265,11 @@ def test_a_host_that_never_answers_still_has_a_row_every_round(tmp_path):
         (Answer('{"unit_restarts": true}'), "probe_output_invalid"),
         (Answer('{"unit_active": 3}'), "probe_output_invalid"),
         (Answer(json.dumps({"ok": False, "refused": SECRET})), "probe_refused"),
+        (UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"), "probe_output_invalid"),
+        (Answer('{"rss_bytes": ' + "9" * 400 + "}"), "probe_output_invalid"),
+        (Answer('{"metrics_snapshot_timestamp": ' + "9" * 400 + "}"), "probe_output_invalid"),
+        (Answer('{"free_bytes": ' + "9" * 5000 + "}"), "probe_output_invalid"),
+        (Answer("[" * 100_000 + "]" * 100_000), "probe_output_invalid"),
     ],
 )
 def test_every_probe_failure_is_a_fixed_reason_and_never_ends_the_watch(tmp_path, answer, reason):
@@ -326,3 +346,30 @@ def test_header_mismatch_and_bad_inventory_still_refuse(tmp_path):
         watch_testnet.main(["--inventory", str(bad), "--out", str(tmp_path / "n.tsv"), "--once"])
         == 1
     )
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf"])
+def test_missing_alert_after_must_be_finite_and_positive(tmp_path, value, capsys):
+    def never(*_args, **_kwargs):
+        raise AssertionError("an invalid threshold reached the watch")
+
+    original, watch_testnet.watch = watch_testnet.watch, never
+    try:
+        with pytest.raises(SystemExit) as exit_info:
+            watch_testnet.main(
+                [
+                    "--inventory",
+                    str(inventory(tmp_path)),
+                    "--out",
+                    str(tmp_path / "s.tsv"),
+                    "--cpu-sample",
+                    "3",
+                    "--require-load-metrics",
+                    "--missing-alert-after",
+                    value,
+                ]
+            )
+    finally:
+        watch_testnet.watch = original
+    assert exit_info.value.code == 2
+    assert "thresholds must be finite and positive" in capsys.readouterr().err

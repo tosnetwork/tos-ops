@@ -87,9 +87,8 @@ M = [
     (
         "E10 extra: baseline not checked while a host is missing",
         EXTRA,
-        "                if baseline is not None:\n                    check(value, baseline[name])\n",
-        "                if baseline is not None and not missing:\n"
-        "                    check(value, baseline[name])\n",
+        "                if name in baseline:\n                    check(value, baseline[name])\n",
+        "                if name in baseline and not missing:\n                    check(value, baseline[name])\n",
     ),
     (
         "E11 extra: child output written as the reason",
@@ -182,6 +181,130 @@ M = [
         PRIMARY,
         "        if last_summary is None or round_clock - last_summary >= args.summary_every:\n",
         "        if last_summary is None or round_start - last_summary >= args.summary_every:\n",
+    ),
+    (
+        "B1 extra: one shared baseline, taken only from a complete cycle",
+        EXTRA,
+        "            for name in sorted(current):\n                if name not in baseline:\n",
+        "            for name in sorted(current) if not missing and not violations else ():\n"
+        "                if name not in baseline:\n",
+    ),
+    (
+        "B2 extra: inactive sample not checked against its baseline",
+        EXTRA,
+        "                    if name in baseline:\n"
+        "                        check_inactive(value, baseline[name])\n",
+        "",
+    ),
+    (
+        "B3 extra: baseline taken from a late or inactive sample",
+        EXTRA,
+        "            for name in sorted(current):\n                if name not in baseline:\n"
+        "                    baseline[name] = current[name]\n",
+        "            for name in sorted(observed):\n                if name not in baseline:\n"
+        "                    baseline[name] = observed[name]\n",
+    ),
+    (
+        "B4 extra: summary treats an unfinished series as complete",
+        EXTRA,
+        '    out["criteria_violated"] = out["violation_rows"] > 0 or not out["complete"]\n',
+        '    out["criteria_violated"] = out["violation_rows"] > 0\n',
+    ),
+    (
+        "B5 extra: hosts without a baseline not reported",
+        EXTRA,
+        '            "hosts_without_baseline": sorted(names - set(baseline)),\n',
+        '            "hosts_without_baseline": [],\n',
+    ),
+    (
+        "B6 extra: malformed observation passed to the checks",
+        EXTRA,
+        "    if not valid_observation(value):\n        return None, OUTPUT_INVALID\n",
+        "",
+    ),
+    (
+        "B7 extra: undecodable answer ends the watch",
+        EXTRA,
+        "    except UnicodeError:\n        # text=True decodes stdout and stderr before returning.\n"
+        "        return None, OUTPUT_INVALID\n    except OSError:\n        return None, LAUNCH_FAILED\n",
+        "    except OSError:\n        return None, LAUNCH_FAILED\n",
+    ),
+    (
+        "B8 extra: publication freshness judged at a later now()",
+        EXTRA,
+        "before_publish=lambda: fresh(current, names, lambda: stamp),",
+        "before_publish=lambda: fresh(current, names, now),",
+    ),
+    (
+        "B9 extra: huge or non-finite time accepted",
+        EXTRA,
+        "        return math.isfinite(float(value))\n",
+        "        return True\n",
+    ),
+    (
+        "X1 extra: future observation accepted",
+        EXTRA,
+        "                if age < 0:\n                    raise",
+        "                if False:\n                    raise",
+    ),
+    ("X2 extra: bool pid accepted", EXTRA, "        or isinstance(pid, bool)\n", ""),
+    (
+        "X5 extra: bool utc_unix accepted",
+        EXTRA,
+        "    if isinstance(stamp, bool) or not isinstance",
+        "    if not isinstance",
+    ),
+    (
+        "X3 extra: violation does not end an outage",
+        EXTRA,
+        "for name in set(current) | set(violations):",
+        "for name in set(current):",
+    ),
+    (
+        "X6 extra: inode reserve unchecked before a baseline",
+        EXTRA,
+        '        if filesystem["free_bytes"] < MIN_FREE or filesystem["free_inodes"] < 100000:\n'
+        '            raise RuntimeError("Disk or inode reserve exhausted")\n\n\ndef check(',
+        '        if filesystem["free_bytes"] < MIN_FREE:\n'
+        '            raise RuntimeError("Disk or inode reserve exhausted")\n\n\ndef check(',
+    ),
+    (
+        "X8 extra: VIOLATION line never re-armed",
+        EXTRA,
+        "            inactive_hosts &= set(violations)\n",
+        "",
+    ),
+    (
+        "X9 extra: LATEST freshness guard removed",
+        EXTRA,
+        "                    before_publish=lambda: fresh(current, names, lambda: stamp),\n",
+        "",
+    ),
+    (
+        "X13 extra: four-host inventory check removed",
+        EXTRA,
+        '    if len(hosts) != len(HOSTS):\n        raise RuntimeError("Expected four original hosts")\n',
+        "",
+    ),
+    ("X16 extra: MAX_LOG bound removed", EXTRA, " or stream.tell() > MAX_LOG", ""),
+    (
+        "Y8 primary: alert threshold validation removed",
+        PRIMARY,
+        "            args.missing_alert_after,\n        )",
+        "        )",
+    ),
+    (
+        "B10 primary: undecodable answer ends the watch",
+        PRIMARY,
+        "    except UnicodeError:\n        # text=True decodes stdout and stderr before returning.\n"
+        "        return None, OUTPUT_INVALID\n",
+        "",
+    ),
+    (
+        "B11 primary: huge integer passed to row()",
+        PRIMARY,
+        "            float(0 if value is None else value)\n",
+        "            pass\n",
     ),
     (
         "P1 primary: a missing host ends the watch",

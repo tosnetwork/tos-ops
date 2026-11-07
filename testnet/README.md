@@ -280,7 +280,14 @@ any other, then recorded as missing (`expired_at_publication`). An inactive
 validator is an observed violation (`VIOLATION_...` row, reason
 `validator_inactive`), not missing data; the watch keeps running.
 `watch_extra_resources.py --summarize series.jsonl` prints the violations apart
-from the missing data for the outcome review.
+from the missing data for the outcome review; a series without
+MONITOR-COMPLETE.json (still running, or ended on an integrity refusal) is
+reported `complete: false` and `criteria_violated: true`. Each host has its own
+baseline from its first fresh sample, so a restart or OOM on one host is caught
+while another is missing; BASELINE.json maps host to baseline as before but
+grows as hosts join, and MONITOR-COMPLETE.json and `--summarize` list
+`hosts_without_baseline`. An answer that cannot be decoded or read as an
+observation is missing data (`probe_output_invalid`) in both watches.
 
 After each rotation, confirm the elected set with the same records file used
 at genesis:

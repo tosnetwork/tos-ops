@@ -1,10 +1,10 @@
 """Read-only resource baselines; intentionally no environments or command lines."""
 
+from pathlib import Path  # noqa: I001 -- import order kept from the deployed probe
 import json
 import os
 import subprocess
 import time
-from pathlib import Path
 
 unit = "tos-testnet-validator.service"
 rows = subprocess.check_output(
@@ -35,6 +35,12 @@ if props["ActiveState"] != "active" or int(props["MainPID"]) <= 0:
                 "unit_active": props["ActiveState"],
                 "main_pid": int(props["MainPID"]),
                 "unit_restarts": int(props["NRestarts"]),
+                "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+                "host_oom_kill": int(
+                    dict(row.split() for row in Path("/proc/vmstat").read_text().splitlines())[
+                        "oom_kill"
+                    ]
+                ),
             }
         )
     )
