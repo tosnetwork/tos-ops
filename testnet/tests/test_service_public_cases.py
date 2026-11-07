@@ -2304,7 +2304,7 @@ class CasePlans(unittest.TestCase):
         checker.check_flags(planned, self.flags)
 
     # Cases that need a CLI newer than the pinned one; the pinned fixture must refuse them.
-    NEEDS_NEWER_CLI = {"sc03e", "scnr"}
+    NEEDS_NEWER_CLI = {"sc03e", "scnr", "scsa"}
 
     def test_every_case_plans_and_matches_the_cli_flags(self):
         for name in spc.Runner.CASES:
@@ -3270,7 +3270,7 @@ class Sc03eFlagFixture(unittest.TestCase):
         checker.args = args
         checker.check_flags(planned, flags)
         # The new binary also still accepts every other case's plan.
-        for name in [c for c in spc.Runner.CASES if c != "scnr"]:
+        for name in [c for c in spc.Runner.CASES if c not in ("scnr", "scsa")]:
             p = spc.PlanRunner(args, WALLETS)
             p.case_fn(name)(p.wallets)
             checker.check_flags(p.recorded, flags)
@@ -4329,3 +4329,1363 @@ class NativeRegistryCaseResult(RunnerCase):
         result = self.run_case(drop="scnr-refuse-signature")
         self.assertFalse(result["expected_codes_executed"])
         self.assertFalse(result["pass"])
+
+
+# ----- scsa: public Gate D/E Service Actor settlement --------------------------------------
+# A fake chain that serves real transaction BOCs (encoded below from the TL-B schema), so the
+# runner's parser, hash binding, history continuity and value-flow accounting run unchanged.
+
+SA_SOURCE = "-1:" + "5c" * 32
+SA_PROVIDER_ADDR = "0:" + "a1" * 32
+SA_BUYER_ADDR = "0:" + "b2" * 32
+SA_REGISTRY_ADDR = "0:" + "c3" * 32
+SA_AGENT_ADDR = "0:" + "d4" * 32
+SA_SOURCES = (PRIMARY, CONFIRM, "http://third/jsonRPC")
+EMPTY = spc.Cell("", [])
+
+
+def _u(v, n):
+    return format(v, f"0{n}b") if n else ""
+
+
+def _grams(v):
+    n = (v.bit_length() + 7) // 8
+    return _u(n, 4) + (_u(v, 8 * n) if n else "")
+
+
+def _addr(a):
+    wc, h = spc.norm_addr(a).split(":")
+    return "100" + _u(int(wc) & 0xFF, 8) + _u(int(h, 16), 256)
+
+
+def int_msg(src, dest, value, fwd=1_000, body=EMPTY, state_init=None, bounce=True, lt=0):
+    bits = "01" + ("1" if bounce else "0") + "0" + _addr(src) + _addr(dest) + _grams(value)
+    bits += "0" + _grams(0) + _grams(fwd) + _u(lt, 64) + _u(0, 32)
+    refs = []
+    if state_init is not None:
+        bits += "11"
+        refs.append(state_init)
+    else:
+        bits += "0"
+    return spc.Cell(bits + "1", [*refs, body])
+
+
+def ext_out(src):
+    return spc.Cell("11" + _addr(src) + "00" + _u(0, 64) + _u(0, 32) + "00", [])
+
+
+def _label(s, m):
+    return "10" + _u(len(s), m.bit_length()) + s
+
+
+def _hm(items, n):
+    if len(items) == 1:
+        ((k, v),) = items.items()
+        return spc.Cell(_label(k, n), [v])
+    keys = list(items)
+    p = os.path.commonprefix(keys)
+    m = n - len(p)
+    left = {k[len(p) + 1 :]: v for k, v in items.items() if k[len(p)] == "0"}
+    right = {k[len(p) + 1 :]: v for k, v in items.items() if k[len(p)] == "1"}
+    return spc.Cell(_label(p, n), [_hm(left, m - 1), _hm(right, m - 1)])
+
+
+def wallet_external(wallet, seqno, dest, value, body, state_init=None):
+    inner = int_msg_unsourced(dest, value, body, state_init)
+    signed = spc.Cell(
+        "0" * 512
+        + _u(2, 32)
+        + _u(698983191, 32)
+        + _u(2_000_000_000, 32)
+        + _u(seqno, 32)
+        + _u(3, 8),
+        [inner],
+    )
+    return spc.Cell("10" + "00" + _addr(wallet) + _grams(0) + "0" + "1", [signed])
+
+
+def int_msg_unsourced(dest, value, body, state_init):
+    bits = "011000" + _addr(dest) + _grams(value) + "0" + _grams(0) + _grams(0) + _u(0, 96)
+    refs = []
+    if state_init is not None:
+        bits += "11"
+        refs.append(state_init)
+    else:
+        bits += "0"
+    return spc.Cell(bits + "1", [*refs, body])
+
+
+def actor_body(op, query_id, tail=""):
+    return spc.Cell(_u(op, 32) + _u(query_id, 64) + tail, [])
+
+
+class SaChain:
+    """Accounts with transaction lists (oldest first); each transaction is a real BOC."""
+
+    def __init__(self):
+        self.acc = {}
+        self.lt = 1_000
+        self.hidden = {}  # url -> set of tx hashes not yet served there
+        self.data = {}
+        self.code = {}
+
+    def a(self, address):
+        address = spc.norm_addr(address)
+        return self.acc.setdefault(
+            address, {"balance": 0, "txs": [], "seqno": 0, "state": "uninitialized"}
+        )
+
+    def record(self, address, in_msg, outs, fees, aborted=False, success=True):
+        acc = self.a(address)
+        self.lt += 10
+        prev = acc["txs"][-1] if acc["txs"] else None
+        prev_hash = base64.b64decode(prev["hash"]) if prev else b"\0" * 32
+        io = spc.Cell(
+            ("1" if in_msg else "0") + ("1" if outs else "0"),
+            [
+                *([in_msg] if in_msg else []),
+                *([_hm({_u(i, 15): m for i, m in enumerate(outs)}, 15)] if outs else []),
+            ],
+        )
+        bits = "0111" + _u(int(spc.norm_addr(address).split(":")[1], 16), 256) + _u(self.lt, 64)
+        bits += _u(int.from_bytes(prev_hash, "big"), 256) + _u(prev["lt"] if prev else 0, 64)
+        bits += _u(0, 32) + _u(len(outs), 15) + "1010" + _grams(fees) + "0"
+        cell = spc.Cell(bits, [io, spc.Cell("0" * 8, []), spc.Cell("0000", [])])
+        parsed_in = spc.parse_message(in_msg) if in_msg else None
+        value_in = parsed_in["value"] if parsed_in and parsed_in["kind"] == "internal" else 0
+        out_cost = 0
+        for m in outs:
+            pm = spc.parse_message(m)
+            if pm["kind"] == "internal":
+                out_cost += pm["value"] + pm["fwd_fee"]
+        acc["balance"] += value_in - fees - out_cost
+        assert acc["balance"] >= 0, address
+        if acc["state"] != "active" and value_in:
+            acc["state"] = "active"
+        row = {
+            "lt": self.lt,
+            "hash": spc.dag_cell_hash_b64(cell),
+            "data": base64.b64encode(spc.boc_encode_dag(cell)).decode(),
+            "aborted": aborted,
+            "compute": {"success": success, "exit_code": 0 if success else 1902},
+            "balance": acc["balance"],
+            "in_hash": parsed_in["hash"] if parsed_in else None,
+        }
+        acc["txs"].append(row)
+        return row
+
+    def fund(self, to, value, fwd=1_234):
+        """A funding message sent by a real SC-source transaction (fees 1,500) and credited."""
+        if not self.a(SA_SOURCE)["txs"]:
+            self.record(SA_SOURCE, int_msg("0:" + "77" * 32, SA_SOURCE, 10**15), [], 0)
+        out = int_msg(SA_SOURCE, to, value, fwd, lt=self.lt + 11)  # created_lt is unique
+        self.record(SA_SOURCE, None, [out], 1_500)
+        return self.record(to, out, [], 2_000)
+
+    def wallet_send(self, wallet, dest, value, body=EMPTY, state_init=None, seqno=None, fwd=7_000):
+        acc = self.a(wallet)
+        seqno = acc["seqno"] if seqno is None else seqno
+        ext = wallet_external(wallet, seqno, dest, value, body, state_init)
+        out = int_msg(wallet, dest, value, fwd, body, state_init)
+        acc["seqno"] += 1
+        self.record(wallet, ext, [out], 3_000)
+        return out
+
+    def deliver(self, msg, to, fees=4_000, outs=(), aborted=False, success=True):
+        return self.record(to, msg, list(outs), fees, aborted=aborted, success=success)
+
+    def hide(self, row, *urls):
+        for url in urls:
+            self.hidden.setdefault(url, set()).add(row["hash"])
+
+    def visible(self, address, url):
+        hidden = self.hidden.get(url, set())
+        return [t for t in self.a(address)["txs"] if t["hash"] not in hidden]
+
+
+class SaRpc(spc.Rpc):
+    def __init__(self, chain):
+        super().__init__(SA_SOURCES[0], list(SA_SOURCES[1:]))
+        self.chain = chain
+
+    def head(self, url=None):
+        return {"seqno": 1000}
+
+    def account_shard_utime(self, account, url=None):
+        return MID
+
+    def rotation_bounds(self):
+        return (SINCE, UNTIL)
+
+    def call_with(self, method, params, url=None):
+        url = url or self.primary
+        c = self.chain
+        if method == "getAddressInformation":
+            txs = c.visible(params["address"], url)
+            acc = c.a(params["address"])
+            last = txs[-1] if txs else None
+            code = c.code.get(spc.norm_addr(params["address"]))
+            return {
+                "balance": str(last["balance"] if last else 0),
+                "state": acc["state"] if last else "uninitialized",
+                "last_transaction_id": {"lt": str(last["lt"]), "hash": last["hash"]}
+                if last
+                else None,
+                "code": code,
+            }
+        if method == "getTransactions":
+            txs = list(reversed(c.visible(params["address"], url)))
+            start = [i for i, t in enumerate(txs) if t["hash"] == params["hash"]]
+            if not start:
+                return []
+            page = txs[start[0] : start[0] + int(params["limit"])]
+            return [
+                {
+                    "transaction_id": {"lt": str(t["lt"]), "hash": t["hash"]},
+                    "data": t["data"],
+                    "aborted": t["aborted"],
+                    "compute": t["compute"],
+                }
+                for t in page
+            ]
+        if method == "runGetMethod":
+            address = spc.norm_addr(params["address"])
+            if params["method"] == "seqno":
+                seqno = c.a(address)["seqno"]
+                return {"exit_code": 0, "stack": [["num", hex(seqno)]]}
+            return {"exit_code": 0, "stack": c.data[address]}
+        raise AssertionError(f"unexpected rpc {method}")
+
+
+def service_stack(withdrawable=0, next_request_id=0, locked=0, pending=0):
+    stack = [["num", "0x0"]] * spc.SA_DATA_STACK_LEN
+    stack[0] = ["cell", {"bytes": "x"}]
+    for key, value in (
+        ("withdrawable_revenue", withdrawable),
+        ("next_request_id", next_request_id),
+        ("locked_storage_fees", locked),
+        ("pending_liability", pending),
+    ):
+        stack[spc.SA_DATA_SLOTS[key]] = ["num", hex(value)]
+    return list(reversed(stack))  # the node serves the TVM stack top-first
+
+
+class SaCli:
+    """The CLI stand-in: an `agent service deploy|send` runs the scripted chain effect."""
+
+    def __init__(self, private):
+        self.private = private
+        self.calls = 0
+        self.ran = []
+        self.effects = {}
+        self.path = Path("/bin/true")
+        self.config = private / "tosctl-config.json"
+        self.receipts = private / "receipts"
+        self.views = {}
+
+    def run(self, label, *args, want_json=False, format_flag=True, config=None):
+        self.calls += 1
+        self.ran.append((label, list(args)))
+        if label in self.effects:
+            self.effects.pop(label)(list(args))
+        if list(args[:3]) == ["agent", "service", "show"]:
+            return 0, dict(self.views[spc.norm_addr(args[args.index("--address") + 1])])
+        return 0, {}
+
+    def redact(self, args):
+        return [a.replace(str(self.private), "<private>") for a in args]
+
+    def env(self):
+        return {"VAULT_URL": "file:///nowhere?master_key=" + "ab" * 32}
+
+    def check_binary(self):
+        return spc.SA_CLI_SHA256
+
+
+class SaCase(RunnerCase):
+    def setUp(self):
+        super().setUp()
+        self.chain = SaChain()
+        self.runner.rpc = SaRpc(self.chain)
+        self.cli = SaCli(self.private)
+        self.runner.cli = self.cli
+        self.runner.guards = lambda: {}
+        self.runner.args.cli_sha256 = spc.SA_CLI_SHA256
+        self.evidence.mkdir(exist_ok=True)
+        (self.evidence / "service-actor-actors.json").write_text(
+            json.dumps(
+                {
+                    "wallets": {spc.SA_PROVIDER: SA_PROVIDER_ADDR, spc.SA_BUYER: SA_BUYER_ADDR},
+                    "controllers": {
+                        n: {"key_id": "ee" * 32, "public_key": "00"}
+                        for n in (spc.SA_CONTROLLER, spc.SA_ATTESTOR)
+                    },
+                }
+            )
+        )
+        (self.evidence / "registry-actors.json").write_text(
+            json.dumps({"wallet": SA_REGISTRY_ADDR})
+        )
+        self.runner.plan_path.write_text(json.dumps({"funding_source": SA_SOURCE}))
+        self.chain.fund(SA_PROVIDER_ADDR, 1_600_000_000)
+        self.chain.a(SA_PROVIDER_ADDR)["state"] = "active"
+        self.actor = "0:" + "e5" * 32
+
+    def send(self, label="sa-x", operation="respond", effect=None, argv=None):
+        if effect is not None:
+            self.cli.effects[label] = effect
+        return self.runner.sa_actor_send(
+            label,
+            argv or ["agent", "service", "send", "--operation", operation, "--yes"],
+            sender=spc.SA_PROVIDER,
+            target=self.actor,
+            operation=operation,
+            amount_nanotos=spc.SA_ACTION_NANOTOS,
+        )
+
+    def query_id(self, argv):
+        return int(argv[argv.index("--query-id") + 1])
+
+    def lands(self, op="respond", deliver=True, seqno=None, query=None):
+        def effect(argv):
+            q = self.query_id(argv) if query is None else query
+            out = self.chain.wallet_send(
+                SA_PROVIDER_ADDR,
+                self.actor,
+                spc.SA_ACTION_NANOTOS,
+                actor_body(spc.SA_OPS[op], q),
+                seqno=seqno,
+            )
+            if deliver:
+                self.chain.deliver(out, self.actor)
+            self.out = out
+
+        return effect
+
+    def sends(self):
+        return [
+            label
+            for label, a in self.cli.ran
+            if a[:2] == ["agent", "service"] and a[2] in ("send", "deploy")
+        ]
+
+
+class SaTransactionParser(SaCase):
+    def test_a_built_transaction_parses_to_its_flows_and_hash(self):
+        out = int_msg(SA_PROVIDER_ADDR, self.actor, 123, fwd=45)
+        row = self.chain.record(
+            SA_PROVIDER_ADDR,
+            int_msg(SA_SOURCE, SA_PROVIDER_ADDR, 1000),
+            [out, ext_out(SA_PROVIDER_ADDR)],
+            7,
+        )
+        tx = spc.parse_transaction(row["data"], row["hash"])
+        self.assertEqual(tx["total_fees"], 7)
+        self.assertEqual(tx["in_msg"]["value"], 1000)
+        self.assertEqual([m["kind"] for m in tx["out_msgs"]], ["internal", "external-out"])
+        self.assertEqual((tx["out_msgs"][0]["value"], tx["out_msgs"][0]["fwd_fee"]), (123, 45))
+        self.assertEqual(tx["out_msgs"][0]["hash"], spc.dag_cell_hash_b64(out))
+        with self.assertRaises(spc.Refusal):
+            spc.parse_transaction(row["data"], "A" * 43 + "=")
+
+    def test_every_hashmap_label_form_is_read(self):
+        leaf = spc.Cell("1", [])
+        short = spc.Cell("0" + "1" * 15 + "0" + "0" * 15, [leaf])  # hml_short, key 0
+        same = spc.Cell("11" + "1" + _u(15, 4), [leaf])  # hml_same, key 2^15-1
+        self.assertEqual(spc.hashmap_refs(short, 15), [(0, leaf)])
+        self.assertEqual(spc.hashmap_refs(same, 15), [(2**15 - 1, leaf)])
+        with self.assertRaises(spc.Refusal):
+            spc.hashmap_refs(spc.Cell("10" + _u(16, 5) + "0" * 16, [leaf]), 15)
+
+
+class SaActorSend(SaCase):
+    def test_happy_path_journals_the_intent_first_and_is_applied_on_every_source(self):
+        record = self.send(effect=self.lands())
+        self.assertEqual(record["verdict"], "applied")
+        attempt = self.runner.journal.attempt_record("sa-x")
+        self.assertEqual(attempt["query_id"], self.query_id(attempt["argv"]))
+        self.assertEqual(attempt["seqno"], 0)
+        self.assertEqual(set(record["per_source"]), set(SA_SOURCES))
+        self.assertEqual(len(self.sends()), 1)
+        # A completed label replays from its record.
+        self.assertEqual(self.send()["verdict"], "applied")
+        self.assertEqual(len(self.sends()), 1)
+
+    def test_seqno_advanced_with_a_foreign_body_stops_and_is_never_resent(self):
+        with self.assertRaises(spc.Refusal):
+            self.send(effect=self.lands(query=7))
+        self.assertEqual(self.runner.journal.result("sa-x")["verdict"], "stop-foreign-activity")
+        with self.assertRaises(spc.Refusal):
+            self.send()
+        self.assertEqual(len(self.sends()), 1)
+
+    def test_seqno_advanced_by_another_operation_stops(self):
+        with self.assertRaises(spc.Refusal):
+            self.send(effect=self.lands(op="withdraw-revenue"))
+        self.assertEqual(self.runner.journal.result("sa-x")["verdict"], "stop-foreign-activity")
+
+    def test_unchanged_seqno_is_unknown_and_a_rerun_only_rereads(self):
+        with self.assertRaises(spc.Refusal):
+            self.send()
+        self.assertEqual(self.runner.journal.result("sa-x")["verdict"], "unknown-unchanged-seqno")
+        attempt = self.runner.journal.attempt_record("sa-x")
+        # The message lands late; the rerun finds it by the journaled query id, sends nothing.
+        self.lands()(attempt["argv"])
+        self.assertEqual(self.send()["verdict"], "applied")
+        self.assertEqual(len(self.sends()), 1)
+
+    def test_sent_but_not_yet_applied_stays_open_then_resolves(self):
+        with self.assertRaises(spc.Refusal):
+            self.send(effect=self.lands(deliver=False))
+        self.assertEqual(self.runner.journal.result("sa-x")["verdict"], "sent-not-applied")
+        self.chain.deliver(self.out, self.actor)
+        self.assertEqual(self.send()["verdict"], "applied")
+        self.assertEqual(len(self.sends()), 1)
+
+    def test_a_source_that_lags_keeps_it_unknown(self):
+        def effect(argv):
+            self.lands()(argv)
+            self.chain.hide(self.chain.a(self.actor)["txs"][-1], SA_SOURCES[2])
+
+        with self.assertRaises(spc.Refusal):
+            self.send(effect=effect)
+        self.assertEqual(self.runner.journal.result("sa-x")["verdict"], "sent-not-applied")
+
+    def test_an_aborted_target_transaction_stops(self):
+        def effect(argv):
+            out = self.chain.wallet_send(
+                SA_PROVIDER_ADDR,
+                self.actor,
+                spc.SA_ACTION_NANOTOS,
+                actor_body(spc.SA_OPS["respond"], self.query_id(argv)),
+            )
+            self.chain.deliver(out, self.actor, aborted=True, success=False)
+
+        with self.assertRaises(spc.Refusal):
+            self.send(effect=effect)
+        self.assertEqual(self.runner.journal.result("sa-x")["verdict"], "stop-target-aborted")
+
+    def restart(self, operation, effect):
+        label = f"scsa-{operation}"
+        with mock.patch.dict(os.environ, {"SC_DRILL_CRASH_AFTER_SEND": label}):
+            self.cli.effects[label] = effect
+            with self.assertRaises(SystemExit):
+                self.runner.sa_actor_send(
+                    label,
+                    ["agent", "service", "send", "--operation", operation],
+                    sender=spc.SA_PROVIDER,
+                    target=self.actor,
+                    operation=operation,
+                    amount_nanotos=self.amount,
+                )
+        self.assertIsNone(self.runner.journal.result(label))
+        record = self.runner.sa_actor_send(
+            label,
+            ["ignored"],
+            sender=spc.SA_PROVIDER,
+            target=self.actor,
+            operation=operation,
+            amount_nanotos=self.amount,
+        )
+        self.assertEqual(record["verdict"], "applied")
+        self.assertEqual(len(self.sends()), 1)
+
+    def test_restart_after_each_journal_point_rereads_without_resending(self):
+        for op in ("respond", "withdraw-revenue", "update-policy"):
+            with self.subTest(op=op):
+                self.amount = spc.SA_ACTION_NANOTOS
+                self.cli.ran.clear()
+
+                def effect(argv, op=op):
+                    out = self.chain.wallet_send(
+                        SA_PROVIDER_ADDR,
+                        self.actor,
+                        self.amount,
+                        actor_body(spc.SA_OPS[op], self.query_id(argv)),
+                    )
+                    self.chain.deliver(out, self.actor)
+
+                self.restart(op, effect)
+
+    def test_a_crash_before_the_cli_leaves_a_marker_that_is_never_signed(self):
+        with mock.patch.dict(os.environ, {"SC_DRILL_CRASH": "sa-x"}):
+            with self.assertRaises(SystemExit):
+                self.send()
+        with self.assertRaises(spc.Refusal):
+            self.send()
+        self.assertEqual(self.sends(), [])
+        self.assertEqual(self.runner.journal.result("sa-x")["verdict"], "unknown-unchanged-seqno")
+
+
+class SaDeploy(SaCase):
+    def setUp(self):
+        super().setUp()
+        code = spc.Cell("1" * 8, [])
+        self.code_hash = "tvm-cell-sha256:" + spc.dag_cell_hash(code).hex()
+        self.init = spc.Cell("00110", [code, spc.Cell("0" * 8, [])])
+        self.actor = "0:" + spc.dag_cell_hash(self.init).hex()
+        self.amount = spc.SA_DEPLOY_NANOTOS
+
+    def deploy_effect(self, argv):
+        out = self.chain.wallet_send(SA_PROVIDER_ADDR, self.actor, self.amount, EMPTY, self.init)
+        self.chain.deliver(out, self.actor)
+
+    def test_deploy_binds_the_state_init_address_and_the_release_code(self):
+        with mock.patch.object(spc, "SA_CODE_HASH", self.code_hash):
+            self.restart_deploy()
+
+    def restart_deploy(self):
+        with mock.patch.dict(os.environ, {"SC_DRILL_CRASH_AFTER_SEND": "scsa-deploy"}):
+            self.cli.effects["scsa-deploy"] = self.deploy_effect
+            with self.assertRaises(SystemExit):
+                self.do()
+        record = self.do()
+        self.assertEqual(record["verdict"], "applied")
+        self.assertEqual(len(self.sends()), 1)
+
+    def do(self):
+        return self.runner.sa_actor_send(
+            "scsa-deploy",
+            ["agent", "service", "deploy"],
+            sender=spc.SA_PROVIDER,
+            target=self.actor,
+            operation="deploy",
+            amount_nanotos=self.amount,
+        )
+
+    def test_a_deploy_of_other_code_is_a_stop(self):
+        self.cli.effects["scsa-deploy"] = self.deploy_effect
+        with self.assertRaises(spc.Refusal):
+            self.do()
+        self.assertEqual(
+            self.runner.journal.result("scsa-deploy")["verdict"], "stop-foreign-activity"
+        )
+
+    def test_a_deploy_to_an_address_with_history_is_refused_before_the_marker(self):
+        self.chain.fund(self.actor, 10_000)
+        with self.assertRaises(spc.Refusal):
+            self.do()
+        self.assertFalse(self.runner.journal.attempted("scsa-deploy"))
+
+
+class SaBudgetAndPins(SaCase):
+    def ledger(self, *rows):
+        with self.runner.ledger_path.open("a") as fh:
+            for op, amount in rows:
+                fh.write(json.dumps({"operation_id": op, "amount_nanotos": amount}) + "\n")
+
+    def test_case_funding_is_separate_from_history_and_aborts_above_four_and_a_half(self):
+        self.ledger(
+            ("sc-fund-owner-20261101", 9_000_000_000),
+            (spc.SA_FUND_OPS["sa-provider"], 1_600_000_000),
+        )
+        self.assertEqual(self.runner.sa_case_funded(), 1_600_000_000)
+        self.assertEqual(self.runner.funded_total(), 10_600_000_000)
+        self.ledger((spc.SA_FUND_OPS["sa-buyer"], 3_000_000_000))
+        with self.assertRaises(spc.Refusal):
+            self.send(effect=self.lands())
+        self.assertFalse(self.runner.journal.attempted("sa-x"))
+
+    def test_recording_case_funding_refuses_above_the_cap_or_under_another_id(self):
+        self.runner.actors_path.write_text(json.dumps({"wallets": WALLETS}))
+        self.runner.rpc.balance = lambda a: 10**10
+        self.ledger((spc.SA_FUND_OPS["sa-provider"], 4_500_000_000))
+        with mock.patch.object(
+            self.runner.rpc, "info", lambda a, url=None: {"balance": str(10**10)}
+        ):
+            with self.assertRaises(spc.Refusal):
+                self.runner.record_funding("sa-buyer", "0.6", spc.SA_FUND_OPS["sa-buyer"])
+            with self.assertRaises(spc.Refusal):
+                self.runner.record_funding("sa-buyer", "0.1", "sa-fund-buyer-other")
+            row = self.runner.record_funding("sa-buyer", "0.5", spc.SA_FUND_OPS["sa-buyer"])
+        self.assertEqual(row["to"], spc.norm_addr(SA_BUYER_ADDR))
+        self.assertEqual(self.runner.sa_case_funded(), 5_000_000_000)
+
+    def gate_args(self, base):
+        tools = base / "tools"
+        tools.mkdir()
+        buyer, fixture = tools / "buyer", tools / "fixture"
+        buyer.write_bytes(b"buyer")
+        fixture.write_bytes(b"fixture")
+        a = self.runner.args
+        a.allow_service_actor_deploy = True
+        a.allow_registry_deploy = True
+        a.registry_global_config = str(NR_GC)
+        a.service_buyer, a.service_fixture = str(buyer), str(fixture)
+        a.service_buyer_sha256 = spc.SA_BUYER_SHA256
+        a.service_fixture_sha256 = spc.SA_FIXTURE_SHA256
+        return buyer, fixture
+
+    def test_missing_or_mismatched_pins_refuse(self):
+        base = Path(self.tmp.name)
+        buyer, fixture = self.gate_args(base)
+        a = self.runner.args
+        cases = [
+            ("allow_service_actor_deploy", False),
+            ("cli_sha256", "00" * 32),
+            ("service_actor_release", None),
+            ("service_buyer_sha256", "00" * 32),
+        ]
+        for attr, value in cases:
+            with self.subTest(attr=attr):
+                old = getattr(a, attr)
+                setattr(a, attr, value)
+                with self.assertRaises(spc.Refusal):
+                    self.runner.sa_require_gate()
+                setattr(a, attr, old)
+        # The pinned sha256 of a binary that is not the pinned one refuses.
+        with self.assertRaises(spc.Refusal):
+            self.runner.sa_check_tool("buyer")
+        with mock.patch.object(spc, "SA_BUYER_SHA256", spc.sha256_file(buyer)):
+            a.service_buyer_sha256 = spc.sha256_file(buyer)
+            self.assertEqual(self.runner.sa_check_tool("buyer")["sha256"], spc.sha256_file(buyer))
+        a.service_buyer = "relative/buyer"
+        with self.assertRaises(spc.Refusal):
+            self.runner.sa_check_tool("buyer")
+
+    def test_a_release_manifest_that_is_not_the_pin_refuses(self):
+        tree = Path(self.tmp.name) / "tos" / "crypto" / "smartcont"
+        tree.mkdir(parents=True)
+        release = tree / "tos-service-actor-v1.release.json"
+        release.write_text(json.dumps({"contract": "tos-service-actor-v1", "code_hash": "x"}))
+        self.runner.args.service_actor_release = str(release)
+        with self.assertRaises(spc.Refusal):
+            self.runner.sa_release()
+        release.write_text(
+            json.dumps(
+                {
+                    "contract": "tos-service-actor-v1",
+                    "code_hash": spc.SA_CODE_HASH,
+                    "boc_sha256": spc.SA_BOC_SHA256,
+                    "artifact_base64": "crypto/smartcont/tos-service-actor-v1.boc.base64",
+                    "boc_bytes": 4,
+                }
+            )
+        )
+        with self.assertRaises(spc.Refusal):  # artifact missing
+            self.runner.sa_release()
+        (tree / "tos-service-actor-v1.boc.base64").write_text(
+            base64.b64encode(spc.boc_encode(spc.Cell("1", []))).decode()
+        )
+        with self.assertRaises(spc.Refusal):  # artifact hashes differ from the pins
+            self.runner.sa_release()
+
+    def test_the_registry_code_boc_must_hash_to_the_pinned_release(self):
+        path = Path(self.tmp.name) / "registry.boc.base64"
+        path.write_text(base64.b64encode(spc.boc_encode(spc.Cell("1", []))).decode())
+        self.runner.args.registry_code_boc = str(path)
+        with self.assertRaises(spc.Refusal):
+            self.runner.sa_registry_code()
+
+    def test_the_cli_must_embed_the_pinned_registry_domain(self):
+        self.runner.args.allow_registry_deploy = True
+        self.runner.args.registry_global_config = str(NR_GC)
+        g = self.runner.sa_genesis_hex()
+        view = {
+            "code_hash": spc.NR_CODE_HASH,
+            "genesis_root": g["root"],
+            "genesis_file": g["file"],
+            "network_label": spc.NR_LABEL,
+        }
+        self.cli.run = lambda label, *a, **k: (0, dict(view))
+        self.assertEqual(
+            self.runner.sa_cli_codes()["registry_code_hash"], "tvm-cell-sha256:" + spc.NR_CODE_HASH
+        )
+        view["code_hash"] = "00" * 32
+        with self.assertRaises(spc.Refusal):
+            self.runner.sa_cli_codes()
+
+
+class SaRefusals(SaCase):
+    def setUp(self):
+        super().setUp()
+        self.tool = []
+        self.answers = {}
+        self.runner.sa_buyer_args = lambda state, code_hash=spc.SA_CODE_HASH: [
+            "--state-dir",
+            state,
+            "--actor-code-hash",
+            code_hash,
+        ]
+
+        def exec_(label, which, argv, secret=None):
+            self.tool.append((label, which, list(argv)))
+            return (
+                self.answers[argv[0]]
+                if not callable(self.answers[argv[0]])
+                else self.answers[argv[0]]()
+            )
+
+        self.runner._tool_exec = exec_
+        self.runner.sa_code_everywhere = lambda a: {u: spc.SA_CODE_HASH for u in SA_SOURCES}
+
+    def test_r1_passes_only_on_the_exact_wrong_contract_error_from_every_endpoint(self):
+        exact = spc.sa_r1_error(3)
+        self.answers["discover"] = (1, "", exact + "\n")
+        r1 = self.runner.sa_r1("cap_x", self.actor)
+        self.assertTrue(r1["refused_as_stated"])
+        self.assertIn(spc.SA_FOREIGN_CODE_HASH, self.tool[0][2])
+
+    def test_r1_look_alikes_do_not_count(self):
+        lookalikes = [
+            "tos-service-buyer: quorum not reached: 0 value groups and 3 endpoint errors (first: dial tcp: connection refused)",
+            "tos-service-buyer: quorum not reached: 1 value groups and 2 endpoint errors (first: NATIVE_WRONG_CONTRACT: Native account code hash mismatch)",
+            "tos-service-buyer: Service Actor binding step 3: the account, manifest key 21, Quote and pinned release code hashes differ",
+        ]
+        for text in lookalikes:
+            with self.subTest(text=text):
+                (self.evidence / "scsa-r1.json").unlink(missing_ok=True)
+                self.answers["discover"] = (1, "", text)
+                self.assertFalse(self.runner.sa_r1("cap_x", self.actor)["refused_as_stated"])
+        self.answers["discover"] = (1, "", spc.sa_r1_error(3))
+        self.runner.sa_code_everywhere = lambda a: {
+            PRIMARY: spc.SA_CODE_HASH,
+            CONFIRM: None,
+            "x": None,
+        }
+        self.assertFalse(self.runner.sa_r1("cap_x", self.actor)["refused_as_stated"])
+
+    def r2(self, stderr, moved=False):
+        self.answers["quote"] = (
+            0,
+            json.dumps({"package": "/p/q.json", "terms_hash": "33" * 32}),
+            "",
+        )
+        self.answers["prepare"] = (1, "", stderr)
+        views = iter(
+            [{"terms_hash": "33" * 32}, {"terms_hash": "99" * 32, "metadata_hash": "11" * 32}]
+        )
+        self.runner.sa_show = lambda a: next(views)
+        self.runner.sa_actor_send = lambda *a, **k: {"verdict": "applied"}
+        counter = iter([5, 6 if moved else 5])
+        self.runner.sa_data = lambda a: {"next_request_id": next(counter)}
+        self.runner.sa_point = lambda a, url, seqno=False: {"seqno": 3}
+        meta = {"metadata_hash": "11" * 32, "proof_scheme_hash": "22" * 32}
+        return self.runner.sa_r2(self.actor, meta, ["quote", "--out", "/p/q.json"])
+
+    def test_r2_passes_only_on_the_exact_stale_terms_admission_error(self):
+        r2 = self.r2(spc.SA_R2_ERROR + "\n")
+        self.assertTrue(r2["refused_as_stated"])
+        prepare = [t for t in self.tool if t[2][0] == "prepare"][0][2]
+        self.assertEqual(prepare[prepare.index("--state-dir") + 1], "stale")
+
+    def test_r2_look_alikes_are_fail_not_pass(self):
+        for text in (
+            "tos-service-buyer: the Quote has expired",
+            "tos-service-buyer: buyer budget exhausted: max calls 1",
+            "tos-service-buyer: Service Actor admission step 8: the Quote policy version, price or storage fee differs from the actor's",
+            "tos-service-buyer: quorum not reached: 0 value groups and 3 endpoint errors",
+        ):
+            with self.subTest(text=text):
+                for p in self.runner.journal.steps.glob("scsa-*"):
+                    p.unlink()
+                for name in ("scsa-r2-before.json",):
+                    (self.evidence / name).unlink(missing_ok=True)
+                self.assertFalse(self.r2(text)["refused_as_stated"])
+
+    def test_r2_with_a_moved_request_counter_fails(self):
+        self.assertFalse(self.r2(spc.SA_R2_ERROR, moved=True)["refused_as_stated"])
+
+    def test_buyer_call_ambiguity_is_resolved_only_by_status_and_never_called_twice(self):
+        statuses = iter(
+            [(1, "", "unreachable")]
+            + [(0, json.dumps({"found": True, "state": "pending", "request_id": 4}), "")] * 9
+        )
+        self.answers["call"] = (
+            1,
+            json.dumps({"phase": "ambiguous"}),
+            "tosctl call outcome is ambiguous",
+        )
+        self.answers["status"] = lambda: next(statuses)
+        self.chain.fund(SA_BUYER_ADDR, 800_000_000)
+        record = self.runner.sa_buyer_call("scsa-call", "44" * 32)
+        self.assertEqual(record["verdict"], "admitted")
+        calls = [t for t in self.tool if t[2][0] == "call"]
+        self.assertEqual(len(calls), 1)
+        self.assertIn("<vault-url>", calls[0][2])
+        self.assertNotIn("master_key", json.dumps(self.runner.journal.attempt_record("scsa-call")))
+        self.runner.sa_buyer_call("scsa-call", "44" * 32)
+        self.assertEqual(len([t for t in self.tool if t[2][0] == "call"]), 1)
+
+    def test_a_call_marker_without_a_result_is_never_called_again(self):
+        self.answers["status"] = (0, json.dumps({"found": False}), "")
+        self.answers["call"] = (0, "{}", "")
+        self.chain.fund(SA_BUYER_ADDR, 800_000_000)
+        with self.assertRaises(spc.Refusal):
+            self.runner.sa_buyer_call("scsa-call", "44" * 32)
+        with self.assertRaises(spc.Refusal):
+            self.runner.sa_buyer_call("scsa-call", "44" * 32)
+        self.assertEqual(len([t for t in self.tool if t[2][0] == "call"]), 1)
+
+
+class SaWithdrawAndConservation(SaCase):
+    """Withdraw both payouts and an exact value-flow reconciliation over the case set."""
+
+    def setUp(self):
+        super().setUp()
+        c = self.chain
+        self.cap = "0:" + "f6" * 32
+        # Opening snapshot before any case funding: the registry payer holds a remainder.
+        c.fund(SA_REGISTRY_ADDR, 50_000_000)
+        c.a(SA_REGISTRY_ADDR)["state"] = "active"
+        prov = c.a(SA_PROVIDER_ADDR)
+        prov["txs"], prov["balance"], prov["seqno"] = [], 0, 0
+        opening = {
+            name: {url: self.runner.sa_point(addr, url) for url in SA_SOURCES}
+            for name, addr in (
+                (spc.SA_PROVIDER, SA_PROVIDER_ADDR),
+                (spc.SA_BUYER, SA_BUYER_ADDR),
+                (spc.NR_ACTOR, SA_REGISTRY_ADDR),
+            )
+        }
+        self.runner.sa_evidence_write("scsa-opening.json", {"accounts": opening})
+        # Case funding from the SC source, recorded in the ledger.
+        for name, addr, amount in (
+            (spc.SA_PROVIDER, SA_PROVIDER_ADDR, 1_600_000_000),
+            (spc.SA_BUYER, SA_BUYER_ADDR, 800_000_000),
+            (spc.NR_ACTOR, SA_REGISTRY_ADDR, 1_000_000_000),
+        ):
+            c.fund(addr, amount)
+            with self.runner.ledger_path.open("a") as fh:
+                fh.write(
+                    json.dumps({"operation_id": spc.SA_FUND_OPS[name], "amount_nanotos": amount})
+                    + "\n"
+                )
+        for a in (SA_PROVIDER_ADDR, SA_BUYER_ADDR):
+            c.a(a)["state"] = "active"
+        # Registry: payer -> Agent (keeps it), Agent -> Capability (forward).
+        reg = c.wallet_send(SA_REGISTRY_ADDR, SA_AGENT_ADDR, 300_000_000)
+        c.deliver(reg, SA_AGENT_ADDR)
+        cap = c.wallet_send(SA_REGISTRY_ADDR, SA_AGENT_ADDR, 300_000_000)
+        fwd = int_msg(SA_AGENT_ADDR, self.cap, 250_000_000, fwd=3_000)
+        c.deliver(cap, SA_AGENT_ADDR, outs=[fwd])
+        c.deliver(fwd, self.cap)
+        # Deploy 1.2 TOS, buyer call 0.5 TOS with change back and a log, respond 0.01.
+        c.deliver(c.wallet_send(SA_PROVIDER_ADDR, self.actor, 1_200_000_000), self.actor)
+        call = c.wallet_send(
+            SA_BUYER_ADDR, self.actor, 500_000_000, actor_body(spc.SA_OPS["call"], 9)
+        )
+        change = int_msg(self.actor, SA_BUYER_ADDR, 190_000_000, fwd=2_000, bounce=False)
+        c.deliver(call, self.actor, outs=[change, ext_out(self.actor)])
+        c.deliver(change, SA_BUYER_ADDR)
+        c.deliver(
+            c.wallet_send(
+                SA_PROVIDER_ADDR, self.actor, 10_000_000, actor_body(spc.SA_OPS["respond"], 5)
+            ),
+            self.actor,
+        )
+        c.data[spc.norm_addr(self.actor)] = service_stack(withdrawable=300_000_000)
+        self.accounts = {
+            spc.NR_ACTOR: SA_REGISTRY_ADDR,
+            spc.SA_PROVIDER: SA_PROVIDER_ADDR,
+            spc.SA_BUYER: SA_BUYER_ADDR,
+            "actor": self.actor,
+            "agent": SA_AGENT_ADDR,
+            "capability": self.cap,
+        }
+
+    def withdraw(self, credit=True):
+        def effect(argv):
+            q = self.query_id(argv)
+            out = self.chain.wallet_send(
+                SA_PROVIDER_ADDR,
+                self.actor,
+                spc.SA_PAYOUT_GAS_NANOTOS,
+                actor_body(spc.SA_OPS["withdraw-revenue"], q),
+            )
+            principal = int_msg(self.actor, SA_PROVIDER_ADDR, 300_000_000, fwd=2_500, bounce=False)
+            change = int_msg(self.actor, SA_PROVIDER_ADDR, 190_000_000, fwd=2_500, bounce=False)
+            self.chain.deliver(out, self.actor, outs=[principal, change])
+            self.payouts = (principal, change)
+            if credit:
+                self.credit()
+
+        self.cli.effects["scsa-withdraw"] = effect
+        return self.runner.sa_withdraw(self.actor)
+
+    def credit(self):
+        for m in self.payouts:
+            self.chain.deliver(m, SA_PROVIDER_ADDR, fees=1_000)
+
+    def returns(self):
+        out = {}
+        for name, addr in (
+            (spc.SA_PROVIDER, SA_PROVIDER_ADDR),
+            (spc.SA_BUYER, SA_BUYER_ADDR),
+            (spc.NR_ACTOR, SA_REGISTRY_ADDR),
+        ):
+            amount = self.chain.a(addr)["balance"] - 50_000_000 - 10_000
+            self.chain.deliver(self.chain.wallet_send(addr, SA_SOURCE, amount), SA_SOURCE, fees=900)
+            out[name] = {"returned_nanotos": amount}
+        return out
+
+    def test_withdraw_takes_all_revenue_and_both_payouts_are_bound_everywhere(self):
+        w = self.withdraw()
+        self.assertEqual(w["withdraw_nanotos"], 300_000_000)
+        self.assertEqual(self.runner.argv_value(w, "--withdraw-amount"), "0.300000000")
+        p = self.runner.sa_payouts("scsa-withdraw-payouts", w, self.actor, SA_PROVIDER_ADDR)
+        self.assertTrue(p["bound"])
+        self.assertEqual(p["per_source"][PRIMARY]["principal"]["value"], 300_000_000)
+
+    def test_a_delayed_payout_credit_stays_reconcilable(self):
+        w = self.withdraw(credit=False)
+        with self.assertRaises(spc.Refusal):
+            self.runner.sa_payouts("scsa-withdraw-payouts", w, self.actor, SA_PROVIDER_ADDR)
+        self.assertTrue(self.runner.journal.result("scsa-withdraw-payouts")["pending"])
+        recon = self.runner.sa_reconcile(self.accounts, {})
+        self.assertTrue(recon["pending"])
+        self.assertFalse(recon["exact"])
+        self.assertEqual(len(recon["in_flight"]), 2)
+        self.credit()
+        self.assertTrue(
+            self.runner.sa_payouts("scsa-withdraw-payouts", w, self.actor, SA_PROVIDER_ADDR)[
+                "bound"
+            ]
+        )
+
+    def test_withdrawable_above_balance_minus_floor_stops_before_any_marker(self):
+        self.chain.data[spc.norm_addr(self.actor)] = service_stack(withdrawable=900_000_000)
+        with self.assertRaises(spc.Refusal):
+            self.runner.sa_withdraw(self.actor)
+        self.assertFalse(self.runner.journal.attempted("scsa-withdraw"))
+
+    def test_exact_conservation_over_the_case_set(self):
+        w = self.withdraw()
+        self.runner.sa_payouts("scsa-withdraw-payouts", w, self.actor, SA_PROVIDER_ADDR)
+        returns = self.returns()
+        recon = self.runner.sa_reconcile(self.accounts, returns)
+        self.assertTrue(recon["exact"], recon)
+        self.assertTrue(all(a["exact"] for a in recon["per_account"].values()))
+        self.assertEqual(recon["funded_nanotos"], 3_400_000_000)
+        self.assertEqual(
+            recon["returned_nanotos"], sum(r["returned_nanotos"] for r in returns.values())
+        )
+        retained = recon["retained_delta_nanotos"]
+        self.assertEqual(
+            retained,
+            recon["funded_nanotos"]
+            - recon["returned_nanotos"]
+            - recon["total_fees_nanotos"]
+            - recon["fwd_fees_nanotos"],
+        )
+        self.assertNotIn(spc.norm_addr(SA_SOURCE), recon["set"].values())
+        # Outside S: each funding transaction's fees plus its message's remaining fwd_fee, and
+        # each return credit's fees, all hash-bound; net cost and headroom follow from them.
+        source = recon["outside_s"]
+        self.assertTrue(source["complete"], source["missing"])
+        self.assertEqual(len(source["funding_messages"]), 3)
+        self.assertEqual(source["funding_fees_nanotos"], 3 * 1_500 + 3 * 1_234)
+        self.assertEqual(source["return_receive_fees_nanotos"], 3 * 900)
+        self.assertEqual(
+            source["source_net_cost_nanotos"],
+            3_400_000_000 + 3 * 1_500 + 3 * 1_234 - recon["returned_nanotos"] + 3 * 900,
+        )
+        self.assertEqual(source["remaining_headroom_nanotos"], self.chain.a(SA_SOURCE)["balance"])
+        self.assertTrue(recon["exact"])
+
+    def test_a_return_not_yet_credited_at_the_source_is_reported_missing(self):
+        w = self.withdraw()
+        self.runner.sa_payouts("scsa-withdraw-payouts", w, self.actor, SA_PROVIDER_ADDR)
+        amount = self.chain.a(SA_BUYER_ADDR)["balance"] - 50_000_000
+        self.chain.wallet_send(SA_BUYER_ADDR, SA_SOURCE, amount)
+        recon = self.runner.sa_reconcile(
+            self.accounts, {spc.SA_BUYER: {"returned_nanotos": amount}}
+        )
+        self.assertFalse(recon["outside_s"]["complete"])
+        self.assertEqual(len(recon["outside_s"]["missing"]), 1)
+
+    def test_a_foreign_credit_or_a_ledger_mismatch_breaks_exactness(self):
+        self.chain.record(SA_BUYER_ADDR, int_msg("0:" + "99" * 32, SA_BUYER_ADDR, 5), [], 0)
+        recon = self.runner.sa_reconcile(self.accounts, {})
+        self.assertFalse(recon["exact"])
+        self.assertEqual(len(recon["foreign"]), 1)
+        self.assertTrue(all(a["exact"] for a in recon["per_account"].values()))
+
+    def test_a_history_gap_refuses_instead_of_undercounting(self):
+        self.chain.hide(self.chain.a(SA_BUYER_ADDR)["txs"][0], PRIMARY)
+        with self.assertRaises(spc.Refusal):
+            self.runner.sa_reconcile(self.accounts, {})
+
+
+class SaPlan(unittest.TestCase):
+    def setUp(self):
+        self.flags = json.loads(spc.SA_FLAG_FIXTURE.read_text())
+        self.args = spc.build_parser().parse_args(
+            [
+                "--private-dir",
+                "/nonexistent",
+                "--evidence-dir",
+                "/nonexistent",
+                "--cli",
+                "/x",
+                "--cli-sha256",
+                spc.SA_CLI_SHA256,
+                "--rpc",
+                PRIMARY,
+                "--genesis-root",
+                "r",
+                "--genesis-file",
+                "f",
+                "--allow-service-actor-deploy",
+                "status",
+            ]
+        )
+
+    def plan(self):
+        planner = spc.PlanRunner(self.args, WALLETS)
+        result = planner.case_fn("scsa")(planner.wallets)
+        return planner.recorded, result
+
+    def test_the_plan_records_every_scsa_vector_and_matches_the_014c88971_fixture(self):
+        self.assertEqual(self.flags["cli_sha256"], spc.SA_CLI_SHA256)
+        planned, result = self.plan()
+        labels = [p["label"] for p in planned]
+        for label in (
+            "scsa-register-agent",
+            "scsa-build-state",
+            "scsa-deploy",
+            "scsa-manifest",
+            "scsa-register-cap",
+            "scsa-metadata-policy",
+            "scsa-quote-1",
+            "scsa-prepare",
+            "scsa-call-custody",
+            "scsa-call",
+            "scsa-respond",
+            "scsa-quote-r2",
+            "scsa-r2-policy",
+            "scsa-r2-prepare",
+            "scsa-withdraw",
+            "return-sa-provider-gde1",
+            "return-sa-buyer-gde1",
+            "return-sc-registry-gde1",
+        ):
+            self.assertIn(label, labels)
+        self.assertLess(labels.index("sa-read-discover"), labels.index("scsa-call"))
+        checker = spc.Runner.__new__(spc.Runner)
+        checker.args = self.args
+        checker.check_flags(planned, self.flags)
+        deploy = planned[labels.index("scsa-deploy")]["argv"]
+        self.assertEqual(spc.tos_to_nanotos(deploy[deploy.index("--amount") + 1]), 1_200_000_000)
+        r2 = planned[labels.index("scsa-r2-policy")]["argv"]
+        self.assertEqual(r2[r2.index("--price-per-call") + 1], "0.11")
+        prep = planned[labels.index("scsa-r2-prepare")]["argv"]
+        self.assertIn("/plan/stale", prep)
+        values = [p for p in planned if p.get("value")]
+        self.assertTrue(all(isinstance(p["expect_exit"], int) for p in values))
+        self.assertEqual(result["qualifies_as"], spc.SA_QUALIFIES_AS)
+
+    def test_the_older_pinned_fixture_refuses_the_scsa_plan(self):
+        planned, _ = self.plan()
+        old = json.loads((DATA / "service-public-cases-cli-flags-c17d3fca5.json").read_text())
+        checker = spc.Runner.__new__(spc.Runner)
+        checker.args = self.args
+        with self.assertRaises(spc.Refusal):
+            checker.check_flags(planned, {**old, "cli_sha256": spc.SA_CLI_SHA256})
+
+
+class SaCaseResult(SaCase):
+    """The case verdict on fixtures: every criterion from its own receipt, never a constant."""
+
+    def run_case(self, **override):
+        self.install(**override)
+        return self.runner.case_scsa(WALLETS)
+
+    def install(self, **override):
+        r = self.runner
+        sent, reads = [], []
+        r.sa_require_gate = lambda: {"gate": True}
+        r.sa_cli_codes = lambda: {"codes": True}
+        r.sa_network_domain = lambda: Path("/p/domain.json")
+        r.sa_manifest_dir = lambda: Path("/p/manifests")
+        r.sa_buyer_args = lambda state, code_hash=spc.SA_CODE_HASH: ["--state-dir", state]
+        r.sa_quote_args = lambda *a: ["quote"]
+        r.nr_build = lambda label, *a: {
+            "destination": SA_AGENT_ADDR,
+            "final_target": "0:" + "f6" * 32,
+            "object_id": "ab" * 32,
+        }
+        r.sa_check_registry_state_init = lambda built: None
+        r.registry_send = lambda label, built, **k: sent.append(label) or {"verdict": "settled"}
+        r.nr_show = lambda a: {"object_id": "cd" * 32}
+        r.local = lambda label, *a, **k: {"address": self.actor}
+
+        def actor_send(label, argv, **k):
+            sent.append(label)
+            return {"label": label, "argv": argv, "verdict": "applied", "per_source": {}}
+
+        r.sa_actor_send = actor_send
+        r.sa_deployed = lambda a, t: {"code_hash_per_source": {PRIMARY: spc.SA_CODE_HASH}}
+        answers = {
+            "scsa-manifest": {"manifest_digest": "sha256:" + "01" * 32, "path": "/p/m.cbor"},
+            "scsa-metadata": {"metadata_hash": "11" * 32, "proof_scheme_hash": "22" * 32},
+            "scsa-quote-1": {"package": "/p/q.json", "terms_hash": "33" * 32},
+            "scsa-prepare": {
+                "phase": "prepared",
+                "terms_hash": "33" * 32,
+                "payment_nanotos": "500000000",
+                "request_hash": "44" * 32,
+                "query_id": 9,
+            },
+        }
+        r.sa_tool_once = lambda label, which, *a, **k: answers[label]
+        r.sa_show = lambda a: {"metadata_hash": "11" * 32, "proof_scheme_hash": "22" * 32}
+        response = r.sa_nonce("response")
+        r.sa_read = lambda which, *a: (
+            reads.append(a[0])
+            or (
+                0,
+                {
+                    "actor": self.actor,
+                    "attestor_key_id": "mldsa44:" + "ee" * 32,
+                    "terms_hash": "33" * 32,
+                    "requests": [{"request_id": 4, "state": "responded"}],
+                },
+                "",
+            )
+        )
+        r.sa_status = lambda h: {"state": "responded", "response_hash": response}
+        r.sa_buyer_call = lambda label, h: (
+            sent.append(label)
+            or {
+                "verdict": "admitted",
+                "status": {"request_id": 4},
+            }
+        )
+        r.sa_r1 = lambda c, a: {"refused_as_stated": override.get("r1", True)}
+        r.sa_r2 = lambda a, m, q: {"refused_as_stated": override.get("r2", True)}
+        r.sa_withdraw = lambda a: sent.append("scsa-withdraw") or {"verdict": "applied"}
+        r.sa_payouts = lambda *a: {"bound": True}
+        r.sa_data = lambda a: {"withdrawable_revenue": override.get("left", 0)}
+        r.sa_return = lambda: {spc.SA_PROVIDER: {"returned_nanotos": 1}}
+        r.sa_reconcile = lambda acc, ret: {
+            "exact": override.get("exact", True),
+            "outside_s": {"complete": True, "source_net_cost_nanotos": 1},
+        }
+        r.sa_secret_scan = lambda: {"clean": True}
+        self.sent = sent
+
+    def test_happy_path_passes_with_every_criterion(self):
+        result = self.run_case()
+        self.assertTrue(result["pass"], result["criteria"])
+        self.assertEqual(result["qualifies_as"], spc.SA_QUALIFIES_AS)
+        self.assertEqual(
+            self.sent,
+            [
+                "scsa-register-agent",
+                "scsa-deploy",
+                "scsa-register-cap",
+                "scsa-metadata-policy",
+                "scsa-call",
+                "scsa-respond",
+                "scsa-withdraw",
+            ],
+        )
+        self.assertEqual(self.runner.temp_limit, spc.SA_TEMP_LIMIT_C)
+
+    def test_each_failed_receipt_fails_the_case(self):
+        for override in ({"r2": False}, {"exact": False}, {"left": 1}):
+            with self.subTest(override=override):
+                self.assertFalse(self.run_case(**override)["pass"])
+
+    def test_an_r1_look_alike_stops_before_any_buyer_value(self):
+        with self.assertRaises(spc.Refusal):
+            self.run_case(r1=False)
+        self.assertNotIn("scsa-call", self.sent)
+
+    def test_the_scsa_thermal_gate_is_78_c(self):
+        self.runner.args.skip_thermal = False
+        with mock.patch.object(spc, "package_temperatures", return_value=[80.0]):
+            self.assertEqual(self.runner.check_thermal(), [80.0])
+            self.runner.temp_limit = spc.SA_TEMP_LIMIT_C
+            with self.assertRaises(spc.Refusal):
+                self.runner.check_thermal()
+
+
+class SaReturnRestart(SaCase):
+    def test_a_recorded_return_replays_its_amount_and_is_never_resent(self):
+        argv = ["wallet", "send", "--from", spc.SA_PROVIDER, "--to", SA_SOURCE]
+        argv += ["--amount-nanotos", "123", "--bounce", "--yes"]
+        self.runner.journal.attempt(f"return-sa-provider-{spc.SA_RUN}", {"kind": "value"})
+        self.runner.journal.done(
+            f"return-sa-provider-{spc.SA_RUN}",
+            {"verdict": "settled", "argv": argv, "tx": {"lt": "1", "hash": "T"}},
+        )
+        out = self.runner.sa_return()
+        self.assertEqual(out[spc.SA_PROVIDER]["returned_nanotos"], 123)
+        self.assertEqual(out[spc.SA_BUYER], {"skipped": 0})
+        self.assertEqual(self.cli.ran, [])
+
+    def test_a_return_marker_without_a_result_is_never_resent(self):
+        self.runner.journal.attempt(f"return-sa-provider-{spc.SA_RUN}", {"kind": "value"})
+        with self.assertRaises(spc.Refusal):
+            self.runner.sa_return()
+        self.assertEqual(self.cli.ran, [])
+
+
+class SaCaseRestart(SaCase):
+    """Whole-case restarts after R2 moved the actor's terms: completed phases replay from the
+    journal; the current offer is judged only before the call is attempted."""
+
+    def install(self, **override):
+        SaCaseResult.install(self, **override)
+        r = self.runner
+        self.terms = "33" * 32
+        offer = {"actor": self.actor, "attestor_key_id": "mldsa44:" + "ee" * 32}
+        evidence = {}
+        r.sa_evidence_read = lambda name: evidence.get(name)
+        r.sa_evidence_write = lambda name, rec: evidence.__setitem__(name, rec)
+        r.sa_read = lambda which, *a: (
+            0,
+            {
+                **offer,
+                "terms_hash": self.terms,
+                "requests": [{"request_id": 4, "state": "responded"}],
+            },
+            "",
+        )
+
+        def call(label, h):
+            if not r.journal.attempted(label):
+                r.journal.attempt(label, {"kind": "buyer-call"})
+                self.sent.append(label)
+            return {"verdict": "admitted", "status": {"request_id": 4}}
+
+        def r2(*a):
+            self.terms = "99" * 32  # the price change moves the actor's terms
+            return {"refused_as_stated": True}
+
+        self.crash = None
+
+        def withdraw(a):
+            if self.crash == "withdraw":
+                self.crash = None
+                raise SystemExit("drill: lost during withdraw")
+            self.sent.append("scsa-withdraw")
+            return {"verdict": "applied"}
+
+        def returns():
+            if self.crash == "return":
+                self.crash = None
+                raise SystemExit("drill: lost during return")
+            return {spc.SA_PROVIDER: {"returned_nanotos": 1}}
+
+        r.sa_buyer_call, r.sa_r2, r.sa_withdraw, r.sa_return = call, r2, withdraw, returns
+
+    def restart_after(self, phase):
+        self.install()
+        self.crash = phase
+        with self.assertRaises(SystemExit):
+            self.runner.case_scsa(WALLETS)
+        self.assertEqual(self.terms, "99" * 32)
+        result = self.runner.case_scsa(WALLETS)
+        self.assertTrue(result["pass"], result["criteria"])
+        self.assertEqual(self.sent.count("scsa-call"), 1)
+
+    def test_a_restart_after_r2_reaches_withdraw_and_return(self):
+        self.restart_after("withdraw")
+
+    def test_a_restart_after_withdraw_reaches_return(self):
+        self.restart_after("return")
+        self.assertEqual(self.sent.count("scsa-withdraw"), 2)  # stub replays; real one rereads
+
+    def test_before_the_call_a_changed_offer_still_refuses(self):
+        self.install()
+        self.terms = "99" * 32
+        with self.assertRaises(spc.Refusal):
+            self.runner.case_scsa(WALLETS)
+        self.assertNotIn("scsa-call", self.sent)
+
+
+class SaStackOrder(unittest.TestCase):
+    def test_a_top_first_stack_with_distinct_slots_decodes_in_return_order(self):
+        # Built top-first by hand: JSON entry i is FunC return slot 24 - i (owner slice last).
+        served = []
+        for i in range(spc.SA_DATA_STACK_LEN):
+            slot = spc.SA_DATA_STACK_LEN - 1 - i
+            served.append(["slice", {"bytes": "owner"}] if slot == 0 else ["num", hex(1000 + slot)])
+        data = spc.decode_service_data(served)
+        for key, slot in spc.SA_DATA_SLOTS.items():
+            self.assertEqual(data[key], 1000 + slot, key)
+        self.assertEqual(data["withdrawable_revenue"], 1019)
+        self.assertEqual(data["floor"], 1_000_000_000 + 1020 + 1021 + 1022)
+
+    def test_a_stack_in_return_order_is_refused_not_misread(self):
+        stack = [["slice", {"bytes": "owner"}]] + [["num", hex(1000 + k)] for k in range(1, 25)]
+        with self.assertRaises(spc.Refusal):
+            spc.decode_service_data(stack)
+
+
+SYNTHETIC_KEY = "5e" * 32
+SYNTHETIC_VAULT = f"hashicorp://ops:tok3n-secret-xyz@vault.invalid/v1?master_key={SYNTHETIC_KEY}"
+
+
+class SaCredentialMasking(SaCase):
+    def test_every_credential_component_is_masked(self):
+        masks = spc.vault_secrets(SYNTHETIC_VAULT)
+        self.assertIn(SYNTHETIC_KEY, masks)
+        self.assertIn("tok3n-secret-xyz", masks)
+        for text in (
+            SYNTHETIC_VAULT,
+            f"error: key {SYNTHETIC_KEY} rejected",
+            "tok3n-secret-xyz",
+            "master_key=" + "9a" * 32,
+            "token=abcdefgh123",
+        ):
+            with self.subTest(text=text):
+                out = spc.mask_secrets(text.encode(), masks)
+                self.assertFalse(spc.holds_secret(out, masks), out)
+                self.assertIn(b"<secret>", out)
+
+    def test_decoded_and_short_credentials_are_masked(self):
+        for url, echoed in (
+            ("hashicorp://ops:long%40password@vault.invalid/v1", "long@password"),
+            ("hashicorp://ops:long%40password@vault.invalid/v1", "long%40password"),
+            ("hashicorp://ops:s3cr3t@vault.invalid/v1", "s3cr3t"),
+            ("hashicorp://vault.invalid/v1?token=a%2Fb", "a/b"),
+        ):
+            with self.subTest(url=url, echoed=echoed):
+                masks = spc.vault_secrets(url)
+                data = f"diagnostic: {echoed} refused".encode()
+                self.assertTrue(spc.holds_secret(data, masks))
+                out = spc.mask_secrets(data, masks)
+                self.assertNotIn(echoed.encode(), out)
+                self.assertFalse(spc.holds_secret(out, masks), out)
+
+    def test_the_scan_goes_red_on_a_decoded_short_password_in_receipts(self):
+        url = "hashicorp://ops:s%40t@vault.invalid/v1"
+        self.cli.env = lambda: {"VAULT_URL": url}
+        receipts = self.private / "receipts"
+        receipts.mkdir(exist_ok=True)
+        (receipts / "probe.stderr").write_text("masked <secret> only")
+        self.assertTrue(self.runner.sa_secret_scan()["clean"])
+        (receipts / "probe.stderr").write_text("auth failed for s@t")
+        self.assertFalse(self.runner.sa_secret_scan()["clean"])
+
+    def test_the_cli_receipts_and_digests_never_see_a_key_fragment(self):
+        base = Path(self.tmp.name)
+        script = base / "fake-tosctl"
+        script.write_text(f"#!/bin/sh\necho 'probe {SYNTHETIC_KEY}' >&2\necho ok\n")
+        script.chmod(0o700)
+        (self.private / "vault.env").write_text(f"VAULT_URL={SYNTHETIC_VAULT}\n")
+        cli = spc.Cli(script, "x", self.private, self.runner.journal)
+        cli.run("probe", "agent", "x")
+        stderr = (self.private / "receipts" / "probe.stderr").read_bytes()
+        self.assertNotIn(SYNTHETIC_KEY.encode(), stderr)
+        self.assertIn(b"<secret>", stderr)
+        events = self.runner.journal.events.read_text()
+        self.assertNotIn(hashlib.sha256(f"probe {SYNTHETIC_KEY}\n".encode()).hexdigest(), events)
+
+    def test_the_scan_covers_receipts_and_goes_red_on_a_planted_fragment(self):
+        self.cli.env = lambda: {"VAULT_URL": SYNTHETIC_VAULT}
+        receipts = self.private / "receipts"
+        receipts.mkdir(exist_ok=True)
+        (receipts / "probe.stderr").write_text("masked <secret> only")
+        self.assertTrue(self.runner.sa_secret_scan()["clean"])
+        (receipts / "probe.stderr").write_text(f"leak {SYNTHETIC_KEY}")
+        scan = self.runner.sa_secret_scan()
+        self.assertFalse(scan["clean"])
+        self.assertEqual(scan["hits"], ["receipts/probe.stderr"])
+        (receipts / "probe.stderr").write_text("ok")
+        (self.evidence / "note.json").write_text("master_key=" + "9a" * 32)
+        self.assertFalse(self.runner.sa_secret_scan()["clean"])
