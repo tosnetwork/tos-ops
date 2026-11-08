@@ -1,0 +1,212 @@
+{
+  "result": "PASS",
+  "sources": {
+    "production/br1_window.py": "f53809d456832f241057c946ab526464052df5b83b1997615c0e538698131ad9",
+    "testnet/tests/test_br1_window.py": "08e7b799c330a955ff52a38868d73e83bfe49b91bf7a89343ebdf52c8121f8d9",
+    "testnet/tests/test_br1_window_refresh.py": "8dd9e95a223fe1239e0bcb2f7a247d770cbef9aaf78ea1fa1eafb4b751c8c6e0",
+    "testnet/tests/br1_window_controls.py": "c34d971ddde92d6706fe313b319607a44f356bc6fab1c280fdd60224628f4907",
+    "production/con01_history/__init__.py": "2669032d72511e45b4145efe98af062bd0f6cd5eee5b0e5f4fd25d4b37e33a8d",
+    "production/con01_history/observer.py": "093dcabafc946575412fe354e85562a840190a057f920da28fa786c0e6fc72f9",
+    "production/con01_history/certificate.py": "cd853372bb2f82cda1866618e60f3c94a1cbf85374a803852733cb4278a18b66",
+    "production/con01_history/frozen.py": "7d1961d005edb6010ec47ddf16380d166ff0e052223cb506cb568e9916f2e26a",
+    "production/con01_history/launch.py": "cb800fcefc1c852f4352704ce546a0671df213cf0ddd12c79883c1c5312f60cf",
+    "production/con01_history/audit.py": "cc9850c26a58c37b4f14c5d866e8e41928aed4deb5518f66ff6979a5107b4c91",
+    "production/con01_history/election_fees.py": "50e81201735397cb66021e50ee2afac4cb1d92ce0fb646c643e929c0face1d94",
+    "production/con01_history/qualify.py": "79199de6841b2161bf100a7fcb3fe16d4dff8977bc5f0ef3f8659d48d352f9a0",
+    "production/con01_history/formats.py": "df2ebfd9e585f7e4d54b020a24819c8b87f4d47e098ee4e7ad12230694c08519",
+    "production/con01_history/rejudge.py": "d564e922726a735f61cbaa8dbf26f5dc21e034bdb2e17fdf182500d6d75e8866",
+    "production/con01_history/_replay.py": "89095f3ff9d65e6b2622bacb8d65ed5d61a501067159dc7f2383c43c5082a988",
+    "testnet/tests/data/br1-window/config.json": "ed4eab8a93a7b7fd9349157445bb92f9e5d0e81314b7b4762d4b21e55e3b5217",
+    "testnet/tests/data/br1-window/MANIFEST.json": "c0f3bcd39146747957a4174268893e0f94ec7685f23c1ed132a1bee274c87f79",
+    "testnet/tests/data/br1-window/key.json": "10e801e6a77669dd0adf68fd67a197897dc645899a5dbc775f98a6f0884ec3e0"
+  },
+  "rows": [
+    {
+      "name": "baseline",
+      "test": null,
+      "exit": 0,
+      "sha256": "a1b509a9c73e083daf04d75c47a07a97018d2cf3ba42a1c692aa8175e529f91c",
+      "bytes": 124
+    },
+    {
+      "name": "election-row-shape",
+      "test": "test_extra_or_malformed_getter_fields_refuse",
+      "exit": 1,
+      "sha256": "eec055345202692b74663e374ced8edd7a991431e69f9656e27c94f7c5b307ea",
+      "bytes": 567
+    },
+    {
+      "name": "legacy-fixed-since",
+      "test": "test_dynamic_term_and_expiring_nonapproval",
+      "exit": 1,
+      "sha256": "d94db97fddd3d9775e1fd93468a8ce2e1e39dd40ebfe46637b1f9c9af95b6983",
+      "bytes": 1171
+    },
+    {
+      "name": "settlement",
+      "test": "test_settlement_boundary",
+      "exit": 1,
+      "sha256": "e7a9e18979da2e0a2b333241ecc53076a10bc7834d69665ca0a62fc494b80d39",
+      "bytes": 681
+    },
+    {
+      "name": "handover",
+      "test": "test_handover_boundary",
+      "exit": 1,
+      "sha256": "57f05fbfc19be3cd9598fa5cb2c021002b570da67b51f0818ef3501520c5d128",
+      "bytes": 721
+    },
+    {
+      "name": "freshness",
+      "test": "test_stale_or_future_signed_target_refuses",
+      "exit": 1,
+      "sha256": "4c1ae10118e8fb6006154f265f1af0c6d74103597c15a0575be30c9efb8bb22f",
+      "bytes": 554
+    },
+    {
+      "name": "election",
+      "test": "test_active_election_blocks",
+      "exit": 1,
+      "sha256": "41b955ff63ecd67c3784f48a0019004449ae19e10449a327b97f419142c83f0e",
+      "bytes": 644
+    },
+    {
+      "name": "election-type",
+      "test": "test_malformed_election_is_not_inactive",
+      "exit": 1,
+      "sha256": "6521a8146bd557d25a4d2f913473c06b9dcc04c75ee6209bf1893b63c58a0c79",
+      "bytes": 548
+    },
+    {
+      "name": "config-peers",
+      "test": "test_config_peer_disagreement_refuses",
+      "exit": 1,
+      "sha256": "1ace07f83bb0a96652d7f1a14b607e28747dfd5b09121947b1bb660334d9abb7",
+      "bytes": 545
+    },
+    {
+      "name": "governing-set",
+      "test": "test_config_must_match_certified_governing_set",
+      "exit": 1,
+      "sha256": "9b14570bf0bbfc6e7624d69a53c4912f628d02aa4fb45366b68dcf9812aa3ea4",
+      "bytes": 563
+    },
+    {
+      "name": "network-version",
+      "test": "test_network_and_version_are_not_interchangeable",
+      "exit": 1,
+      "sha256": "762b4845a16eaa5947807cb116ddcececf79d268434a5987b46861d2206c5792",
+      "bytes": 567
+    },
+    {
+      "name": "validator-count",
+      "test": "test_network_and_version_are_not_interchangeable",
+      "exit": 1,
+      "sha256": "762b4845a16eaa5947807cb116ddcececf79d268434a5987b46861d2206c5792",
+      "bytes": 567
+    },
+    {
+      "name": "source-population",
+      "test": "test_source_population_and_full_target_are_required",
+      "exit": 1,
+      "sha256": "211b9b82d499863cd41b7dad0baa055b597f133372ee02f7911ce716fab3ae9b",
+      "bytes": 573
+    },
+    {
+      "name": "target-full-id",
+      "test": "test_source_population_and_full_target_are_required",
+      "exit": 1,
+      "sha256": "f70a1f0cfa398fe36a5ef14b15d018c62ec93d98964b43b392790b403449a979",
+      "bytes": 573
+    },
+    {
+      "name": "governing-schedule",
+      "test": "test_expired_governing_set_refuses",
+      "exit": 1,
+      "sha256": "2e4171a0ed563dd6ec11501fad631e43c4cec6fb743f4a9f4312230b57f7014c",
+      "bytes": 538
+    },
+    {
+      "name": "config-full-id",
+      "test": "test_real_config_requires_certified_full_key_identity",
+      "exit": 1,
+      "sha256": "165fabe0c85d879450550a940d3a1680ca9240fc7ef56afe6ca3309901a47b66",
+      "bytes": 616
+    },
+    {
+      "name": "proof-status",
+      "test": "test_unknown_proof_status_never_qualifies",
+      "exit": 1,
+      "sha256": "b491acdd747e72c2f2baec9ad070595c6cf6ac935b84f5f6817470df5a1839ce",
+      "bytes": 552
+    },
+    {
+      "name": "header-expiry",
+      "test": "test_validity_never_outlives_oldest_proved_header",
+      "exit": 1,
+      "sha256": "0a7b14fb8defa07e33bed96324630aa105de45207abd4d2133b87d583b12b858",
+      "bytes": 609
+    },
+    {
+      "name": "refresh-genesis-prefix",
+      "test": "test_non_genesis_prefix_refused",
+      "exit": 1,
+      "sha256": "afe926173486a7cbb714849c83b242bab6ece88eec130d9adce2f321dc2132ae",
+      "bytes": 573
+    },
+    {
+      "name": "refresh-genesis",
+      "test": "test_substituted_genesis_refused",
+      "exit": 1,
+      "sha256": "3c4c41801b652070505d1be8a15de4dcd244d27f6b28ee42422ac615e30ff9ad",
+      "bytes": 577
+    },
+    {
+      "name": "refresh-monotonic",
+      "test": "test_backward_target_refused",
+      "exit": 1,
+      "sha256": "921bc8ba45b434ba0ae53d05c24c5985a9fbb3756c3f14f4dea1c9b5f2d21762",
+      "bytes": 737
+    },
+    {
+      "name": "refresh-full-target",
+      "test": "test_full_target_mismatch_refused",
+      "exit": 1,
+      "sha256": "999593c2e0c4d1296068fd9b6894f11bd28b2aea0ed3c20005602d48927e7029",
+      "bytes": 574
+    },
+    {
+      "name": "refresh-keys",
+      "test": "test_key_chain_disagreement_refused",
+      "exit": 1,
+      "sha256": "bbf0c006fe2d22866cb36e24dc55547d76e724f9a9135030c1251f4df0d337d5",
+      "bytes": 576
+    },
+    {
+      "name": "refresh-network",
+      "test": "test_wrong_network_refused",
+      "exit": 1,
+      "sha256": "b702cb985247abab9393377efd62505aa88b122ec19be2faf3745cf99e0ee2aa",
+      "bytes": 563
+    },
+    {
+      "name": "refresh-reply-height",
+      "test": "test_reply_height_must_match_requested_common_head",
+      "exit": 1,
+      "sha256": "f4454914bae6049f512e8af8c4421a27b752d8faec793f24c9c20eb9e3803a30",
+      "bytes": 610
+    },
+    {
+      "name": "restored",
+      "test": null,
+      "exit": 0,
+      "sha256": "0bc6acd8c2345a7f13e56bef9f9fb50b659db69f04c0fbdf33504024de517d98",
+      "bytes": 124
+    }
+  ],
+  "schema": "tos.br1.window-refresh-evidence.v1",
+  "scope": "25 offline tests/24 removed runtime guards; no chain signing or sends",
+  "raw_location": "toserver:/tos/build/e6-public-transfer-20261103/window-refresh-controls-r3",
+  "retained_through": "2027-02-01T00:00:00Z",
+  "access": "Existing authorized toserver access"
+}

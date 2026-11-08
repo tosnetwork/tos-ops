@@ -25,6 +25,10 @@ from con01_history.certificate import Refused, require
 
 AMOUNT = 5_000_000_000
 OP = "br1-pilot-fund-v1"
+CLIENT_AMOUNT = 2_000_000_000
+CLIENT_OP = "br1-pilot-client-fund-v1"
+CLIENT_SCHEMA = "tos.br1.public-client-policy.v1"
+OPERATOR_SCHEMA = "tos.br1.public-pilot-policy.v1"
 EARLIEST = 1793622922  # 2026-11-02 12:35:22UTC; actual resource gate is separate.
 GENESIS_ROOT = "ff60459cb8a51708548290afa16fd4df80d16775bf3c13392146a6d1b5662d57"
 GENESIS_FILE = "3b374df5ebd18368d4bf0eb374704771daf8dacd85175605f3bfd1c7a922a039"
@@ -148,13 +152,17 @@ def journal_anchor(entries):
     )
 
 
-def budget(entries):
+def budget(entries, operation=OP, amount=AMOUNT):
+    require(
+        (operation, amount) in ((OP, AMOUNT), (CLIENT_OP, CLIENT_AMOUNT)),
+        "unknown fixed allocation",
+    )
     journal_anchor(entries)
     spent = 0
     for entry in entries.values():
-        if entry.get("op") == OP and not entry.get("dry_run"):
-            require(entry.get("value") == str(AMOUNT), "malformed prior pilot funding")
-            spent += AMOUNT
+        if entry.get("op") == operation and not entry.get("dry_run"):
+            require(entry.get("value") == str(amount), "malformed prior pilot funding")
+            spent += amount
     require(spent == 0, "pilot funding already journaled: reconcile only")
 
 
@@ -183,6 +191,8 @@ def load_runtime(policy):
 
 
 def checked_init(policy, drv, private_check):
+    if policy.get("schema") == CLIENT_SCHEMA:
+        return checked_client_init(policy, drv, private_check)
     state = Path(policy["provider_state"])
     config = json.loads(read(state / "provider.json"))
     release = config["release"]
@@ -230,6 +240,203 @@ def checked_init(policy, drv, private_check):
     return config["funding_wallet"], init, hashlib.sha256(raw).hexdigest()
 
 
+def client_vault_identity(client, manifest, drv):
+    """Use the pinned CLI's offline public view; never export a private key."""
+    executable = Path(client["cli"])
+    require(
+        executable.is_absolute() and executable.resolve() == executable,
+        "canonical client CLI",
+    )
+    read(executable, client["cli_sha256"], 512 * 1024 * 1024)
+    config = Path(client["config"])
+    require(
+        config.is_absolute() and config.resolve() == config, "canonical client config"
+    )
+    settings = json.loads(read(config, client["config_sha256"]))
+    configured = settings["wallets"][manifest["wallet"]]
+    require(
+        configured["version"] == "V3R2"
+        and type(configured["subwallet_id"]) is int
+        and configured["subwallet_id"] == 3
+        and type(configured["workchain"]) is int
+        and configured["workchain"] == 0,
+        "client configured wallet type mismatch",
+    )
+    key_name = configured["key"]["name"]
+    env_path = Path(client["vault_env"])
+    info = env_path.lstat()
+    require(
+        stat.S_ISREG(info.st_mode)
+        and info.st_nlink == 1
+        and info.st_uid == os.geteuid()
+        and stat.S_IMODE(info.st_mode) == 0o600,
+        "unsafe client Vault environment",
+    )
+    private = json.loads(read(env_path, limit=4096))
+    require(
+        set(private) == {"VAULT_URL"}
+        and type(private["VAULT_URL"]) is str
+        and private["VAULT_URL"].startswith("file:///"),
+        "local file Vault required",
+    )
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": str(config.parent),
+        "NO_COLOR": "1",
+        "VAULT_URL": private["VAULT_URL"],
+        "RAYON_NUM_THREADS": "2",
+        "TOKIO_WORKER_THREADS": "2",
+    }
+    answers = []
+    for command in (["wallet", "ls", "--offline", "--format", "json"], ["key", "ls"]):
+        result = subprocess.run(
+            [str(executable), *command, "-c", str(config)],
+            env=env,
+            capture_output=True,
+            timeout=30,
+        )
+        require(
+            result.returncode == 0
+            and len(result.stdout) <= 256 * 1024
+            and len(result.stderr) <= 65536,
+            "client public identity read refused",
+        )
+        answers.append(result.stdout)
+    wallets = json.loads(answers[0])
+    require(type(wallets) is list and len(wallets) <= 64, "client wallet list bound")
+    matches = [row for row in wallets if row.get("name") == manifest["wallet"]]
+    require(
+        len(matches) == 1
+        and drv.Address(matches[0]["address"]).to_str(is_user_friendly=False)
+        == manifest["wallet_address"],
+        "client configured wallet mismatch",
+    )
+    public = bytes.fromhex(manifest["public_key_hex"])
+    encoded = base64.b64encode(public).decode()
+    require(
+        any(
+            line.split()
+            and line.split()[0] == key_name
+            and line.split()[1] == "Ed25519"
+            and line.split()[-1] == encoded
+            for line in answers[1].decode().splitlines()
+        ),
+        "client Vault public key mismatch",
+    )
+
+
+def checked_client_init(policy, drv, private_check):
+    client = policy["client"]
+    manifest = json.loads(read(client["manifest"], client["manifest_sha256"], 16384))
+    require(
+        manifest["schema"] == "tos.br1.public-client.v1"
+        and type(manifest["global_id"]) is int
+        and manifest["global_id"] == 2
+        and manifest["genesis_root"] == GENESIS_ROOT
+        and manifest["genesis_file"] == GENESIS_FILE,
+        "Epoch-6 client scope required",
+    )
+    require(
+        manifest["wallet_version"] == "V3R2"
+        and type(manifest["subwallet_id"]) is int
+        and manifest["subwallet_id"] == 3,
+        "client wallet version/subwallet",
+    )
+    public = bytes.fromhex(manifest["public_key_hex"])
+    require(len(public) == 32, "client public key width")
+    raw = read(client["state_init"], client["state_init_sha256"], 65536)
+    cell = drv.Cell.one_from_boc(raw)
+    require(
+        manifest["wallet_address"] == "0:" + cell.hash.hex(),
+        "client StateInit/address mismatch",
+    )
+    init = drv.StateInit.deserialize(cell.begin_parse())
+    require(init.code.hash.hex() == V3_CODE, "canonical TOS V3 client code required")
+    data = init.data.begin_parse()
+    require(
+        data.load_uint(32) == 0
+        and data.load_uint(32) == 3
+        and data.load_bytes(32) == public
+        and data.remaining_bits == 0
+        and data.remaining_refs == 0,
+        "client V3 data/public key mismatch",
+    )
+    if private_check:
+        client_vault_identity(client, manifest, drv)
+    return manifest["wallet_address"], init, hashlib.sha256(raw).hexdigest()
+
+
+LEGACY_PRESIGN_SOURCE_SHA = (
+    "9f9118bde244b1a56837f6a50b48b8a17acb9c631ed40d9c79cd646db94e8922"
+)
+
+
+def checked_presign_recovery(args, policy, marker, plan, entries):
+    """A trusted operator incident attestation, never a proof of signature absence."""
+    require(
+        getattr(args, "acknowledge_reviewed_presign_refusal", False) is True,
+        "reviewed pre-sign incident acknowledgement required",
+    )
+    require(
+        policy.get("schema") == CLIENT_SCHEMA, "pre-sign recovery only for client2TOS"
+    )
+    receipt = json.loads(read(args.recovery, args.recovery_sha256, 16384))
+    require(
+        receipt["schema"] == "tos.br1.reviewed-presign-incident.v1"
+        and receipt["trusted_operator_attestation"] is True,
+        "trusted reviewed incident required",
+    )
+    original = json.loads(read(marker, receipt["marker_sha256"], 16384))
+    require(
+        original["plan"] == plan and original["policy_sha256"] == args.policy_sha256,
+        "pre-sign original plan/nonce changed",
+    )
+    old_policy = json.loads(
+        read(receipt["original_policy"], args.policy_sha256, 128 * 1024)
+    )
+    require(old_policy == policy, "pre-sign original policy changed")
+    source = read(receipt["original_source"], LEGACY_PRESIGN_SOURCE_SHA, 1024 * 1024)
+    lines = source.decode().splitlines()
+    require(
+        lines[415].strip()
+        == "require(time.time() < " + 'deadline, "window expired before signing")'
+        and lines[417].strip() == "return wallet.sign(message, seqno)",
+        "reviewed original pre-sign ordering",
+    )
+    log = read(
+        receipt["failure_log"], receipt["failure_log_sha256"], 1024 * 1024
+    ).decode()
+    frame = f'File "{Path(__file__).resolve()}", line 416, in sign'
+    require(
+        log.count("Traceback (most recent call last):") == 1
+        and frame in log
+        and log.rstrip().endswith(
+            "con01_history.certificate.Refused: window expired before signing"
+        )
+        and "COMPLETE client fund" not in log,
+        "not the reviewed pre-sign guard failure",
+    )
+    prior = [
+        row
+        for row in entries.values()
+        if not row.get("dry_run") and row.get("wallet") == plan["source"]
+    ]
+    require(
+        all(
+            type(row.get("seqno")) is int and row["seqno"] != plan["seqno"]
+            for row in prior
+        ),
+        "source nonce already signed or journaled",
+    )
+    require(
+        not (
+            marker.parent / "br1-public-client-presign-resume-v1.signing-started.json"
+        ).exists(),
+        "resume signing already started: reconcile only",
+    )
+    return receipt
+
+
 def fresh_window(policy, out):
     # The legacy wallet client uses the configured venv; sealed native proofs
     # require the host Python's memfd API on this deployment.
@@ -261,14 +468,16 @@ def fresh_window(policy, out):
 
 
 class GuardedBlueprint:
-    def __init__(self, original, seqno, valid_until):
+    def __init__(self, original, seqno, valid_until, before_sign=None):
         self.original, self.seqno, self.valid_until = original, seqno, valid_until
         self.address = original.address
+        self.before_sign = before_sign
 
     def materialize(self, client):
         wallet = self.original.materialize(client)
         expected, deadline = self.seqno, self.valid_until
         claimed = False
+        before_sign = self.before_sign
 
         class Wallet:
             address = wallet.address
@@ -279,14 +488,38 @@ class GuardedBlueprint:
                 require(seqno == expected, "funding nonce changed before signing")
                 require(time.time() < deadline, "window expired before signing")
                 claimed = True
+                if before_sign is not None:
+                    before_sign()
+                    require(
+                        deadline > time.time(), "window expired after signing fence"
+                    )
                 return wallet.sign(message, seqno)
 
         return Wallet()
 
 
 async def work(args, policy):
-    guarded = args.mode in {"dry-run", "fund"}
-    if args.mode == "fund":
+    funding = args.mode in {"fund", "resume-before-sign"}
+    resuming = args.mode in {"resume-dry-run", "resume-before-sign"}
+    client_allocation = policy.get("schema") == CLIENT_SCHEMA
+    operation, amount = (
+        (CLIENT_OP, CLIENT_AMOUNT) if client_allocation else (OP, AMOUNT)
+    )
+    if client_allocation and funding:
+        require(
+            getattr(args, "acknowledge_client_2_tos", False) is True,
+            "explicit new client2TOS allocation acknowledgement required",
+        )
+    if resuming:
+        require(client_allocation, "pre-sign recovery only for client2TOS")
+        require(
+            getattr(args, "recovery", None) is not None
+            and getattr(args, "recovery_sha256", None) is not None
+            and getattr(args, "acknowledge_reviewed_presign_refusal", False) is True,
+            "pinned reviewed pre-sign incident required",
+        )
+    guarded = args.mode in {"dry-run", "fund", "resume-dry-run", "resume-before-sign"}
+    if funding:
         require(
             args.plan is not None and args.plan_sha256 is not None,
             "fresh dry plan required",
@@ -317,7 +550,7 @@ async def work(args, policy):
         endpoints="node-1,node-3",
         funding_dir=policy["funding_dir"],
         funding_config=policy["funding_config"],
-        dry_run=args.mode == "dry-run",
+        dry_run=args.mode in {"dry-run", "resume-dry-run"},
         rebroadcast=False,
     )
     async with AsyncExitStack() as stack:
@@ -326,10 +559,10 @@ async def work(args, policy):
         if args.mode == "reconcile":
             require(
                 all(
-                    row.get("op") == OP
+                    row.get("op") == operation
                     and row.get("destination") == target
                     and row.get("wallet") == source
-                    and row.get("value") == str(AMOUNT)
+                    and row.get("value") == str(amount)
                     and row.get("state_init_sha256") == init_sha
                     for row in run.unresolved().values()
                 ),
@@ -338,9 +571,15 @@ async def work(args, policy):
             await drv.reconcile(common, run, endpoints)
             return
         require(not run.unresolved(), "unresolved PRI action: reconcile first")
-        budget(run.entries())
-        marker = run.private / "br1-public-pilot-funding-v1.marker.json"
-        require(not marker.exists(), "funding marker exists: reconcile only")
+        budget(run.entries(), operation, amount)
+        marker = run.private / (
+            "br1-public-client-funding-v1.marker.json"
+            if client_allocation
+            else "br1-public-pilot-funding-v1.marker.json"
+        )
+        require(
+            resuming or not marker.exists(), "funding marker exists: reconcile only"
+        )
         states = [
             await peer.client.raw_get_account_state(drv.Address(target))
             for peer in endpoints
@@ -359,7 +598,7 @@ async def work(args, policy):
             for peer in endpoints
         ]
         require(
-            balances[0] == balances[1] and balances[0] >= AMOUNT + 10**9,
+            balances[0] == balances[1] and balances[0] >= amount + 10**9,
             "funding balance disagreement/insufficient reserve",
         )
         seqno = await drv.seqno_of(endpoints, source)
@@ -368,10 +607,16 @@ async def work(args, policy):
             policy_sha256=args.policy_sha256,
             destination=target,
             source=source,
-            amount=AMOUNT,
+            amount=amount,
             seqno=seqno,
             state_init_sha256=init_sha,
         )
+        if resuming:
+            checked_presign_recovery(args, policy, marker, plan, run.entries())
+            marker = run.private / "br1-public-client-presign-resume-v1.marker.json"
+            require(
+                not marker.exists(), "pre-sign resume already attempted: reconcile only"
+            )
         if args.mode == "inspect":
             write_new(args.out / "UNSIGNED.json", plan)
             return
@@ -381,7 +626,7 @@ async def work(args, policy):
             (checked_target, checked_sha) == (target, init_sha),
             "native initialization changed",
         )
-        if args.mode == "fund":
+        if funding:
             expected = json.loads(read(args.plan, args.plan_sha256))
             require(
                 expected["plan"] == plan and expected["dry_run"] is True,
@@ -392,13 +637,39 @@ async def work(args, policy):
                 and 0 <= time.time() - expected["checked_utc"] <= 300,
                 "fresh dry run required",
             )
-            write_new(marker, {"policy_sha256": args.policy_sha256, "plan": plan})
+            write_new(
+                marker,
+                {
+                    "policy_sha256": args.policy_sha256,
+                    "plan": plan,
+                    "reviewed_presign_recovery_sha256": args.recovery_sha256
+                    if resuming
+                    else None,
+                },
+            )
         wallets = drv.funding_wallets(common)
         require(
             wallets[0].address.to_str(is_user_friendly=False) == source,
             "approved source wallet mismatch",
         )
-        wallets[0] = GuardedBlueprint(wallets[0], seqno, window["valid_until_utc"])
+
+        def signing_fence():
+            write_new(
+                run.private
+                / "br1-public-client-presign-resume-v1.signing-started.json",
+                {
+                    "policy_sha256": args.policy_sha256,
+                    "plan": plan,
+                    "recovery_sha256": args.recovery_sha256,
+                },
+            )
+
+        wallets[0] = GuardedBlueprint(
+            wallets[0],
+            seqno,
+            window["valid_until_utc"],
+            signing_fence if resuming and funding else None,
+        )
         original_send = drv.send_bytes
         writes = 0
 
@@ -417,17 +688,17 @@ async def work(args, policy):
             run,
             endpoints,
             wallets,
-            OP,
+            operation,
             0,
             target,
-            AMOUNT,
+            amount,
             drv.begin_cell().end_cell(),
             {"pilot_policy_sha256": args.policy_sha256, "state_init_sha256": init_sha},
             {},
             init=init,
             bounce=False,
         )
-        if args.mode == "fund":
+        if funding:
             require(result.get("state") == "delivered", "original funding not settled")
         write_new(
             args.out / "RESULT.json",
@@ -445,15 +716,32 @@ def main():
     parser.add_argument("--policy", type=Path, required=True)
     parser.add_argument("--policy-sha256", required=True)
     parser.add_argument(
-        "--mode", choices=("inspect", "dry-run", "fund", "reconcile"), required=True
+        "--mode",
+        choices=(
+            "inspect",
+            "dry-run",
+            "fund",
+            "reconcile",
+            "resume-dry-run",
+            "resume-before-sign",
+        ),
+        required=True,
     )
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--plan", type=Path)
     parser.add_argument("--plan-sha256")
+    parser.add_argument(
+        "--acknowledge-client-2-tos",
+        action="store_true",
+        help="explicitly acknowledge the separate fixed2TOS client allocation, only after operator authorization",
+    )
+    parser.add_argument("--recovery", type=Path)
+    parser.add_argument("--recovery-sha256")
+    parser.add_argument("--acknowledge-reviewed-presign-refusal", action="store_true")
     args = parser.parse_args()
     os.umask(0o077)
     policy = json.loads(read(args.policy, args.policy_sha256, 128 * 1024))
-    require(policy["schema"] == "tos.br1.public-pilot-policy.v1", "pilot policy schema")
+    require(policy["schema"] in (OPERATOR_SCHEMA, CLIENT_SCHEMA), "pilot policy schema")
     args.out.mkdir(mode=0o700, exist_ok=False)
     asyncio.run(work(args, policy))
 

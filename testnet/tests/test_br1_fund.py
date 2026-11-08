@@ -1,6 +1,7 @@
 """Funding fences and real StateInit decoding; no live network or public sends."""
 
 import asyncio
+import base64
 import hashlib
 import json
 import os
@@ -276,6 +277,9 @@ class Orchestration(unittest.TestCase):
         self.now, self.deadline = fund.EARLIEST + 50, fund.EARLIEST + 200
         self.unknown = self.expire_after_sign = False
         self.mode = "dry-run"
+        self.operation, self.amount = fund.OP, fund.AMOUNT
+        self.marker = "br1-public-pilot-funding-v1.marker.json"
+        self.acknowledge = False
         outer = self
 
         class Address:
@@ -316,6 +320,8 @@ class Orchestration(unittest.TestCase):
 
                     def sign(self, message, seqno):
                         outer.calls["signs"] += 1
+                        if getattr(outer, "fail_after_sign", False):
+                            raise OSError("TEST-ONLY cut after signature")
                         if outer.expire_after_sign:
                             outer.now = outer.deadline
                         return b"TEST-ONLY fake signed message"
@@ -335,8 +341,8 @@ class Orchestration(unittest.TestCase):
 
         def wallets(args):
             self.calls["keys"] += 1
-            if self.mode == "fund":
-                self.assertTrue((private / "br1-public-pilot-funding-v1.marker.json").exists())
+            if self.mode in {"fund", "resume-before-sign"}:
+                self.assertTrue((private / self.marker).exists())
             return [Blueprint()]
 
         async def send(args, peer, boc):
@@ -350,15 +356,15 @@ class Orchestration(unittest.TestCase):
         ):
             self.assertEqual(
                 (op, sender, destination, value, kwargs["bounce"]),
-                (fund.OP, 0, "target", fund.AMOUNT, False),
+                (self.operation, 0, "target", self.amount, False),
             )
             if args.dry_run:
                 return dict(id="dry", dry_run=True)
             signed = keys[0].materialize(peers[0].client).sign(body, 3)
             self.data["fund"] = dict(
-                op=fund.OP,
+                op=self.operation,
                 state="signed",
-                value=str(fund.AMOUNT),
+                value=str(self.amount),
                 wallet="source",
                 destination="target",
                 state_init_sha256="init",
@@ -395,8 +401,12 @@ class Orchestration(unittest.TestCase):
         out.mkdir()
         args = SimpleNamespace(
             mode=mode,
+            recovery=getattr(self, "recovery", None),
+            recovery_sha256=getattr(self, "recovery_sha256", None),
+            acknowledge_reviewed_presign_refusal=getattr(self, "reviewed_refusal", False),
+            acknowledge_client_2_tos=self.acknowledge,
             out=out,
-            policy_sha256="a" * 64,
+            policy_sha256=getattr(self, "policy_sha256", "a" * 64),
             plan=plan,
             plan_sha256=hashlib.sha256(plan.read_bytes()).hexdigest() if plan else None,
         )
@@ -420,7 +430,7 @@ class Orchestration(unittest.TestCase):
     def test_dry_run_does_not_sign_or_send(self):
         self.invoke("dry-run")
         self.assertEqual((self.calls["signs"], self.calls["sends"]), (0, 0))
-        self.assertFalse((self.root / "private/br1-public-pilot-funding-v1.marker.json").exists())
+        self.assertFalse((self.root / "private" / self.marker).exists())
 
     def test_fixed_initialization_once_and_marker_before_keys(self):
         plan = self.invoke("dry-run")
@@ -449,7 +459,195 @@ class Orchestration(unittest.TestCase):
         with self.assertRaisesRegex(Refused, "window expired"):
             self.invoke("fund", plan)
         self.assertEqual((self.calls["signs"], self.calls["sends"]), (1, 0))
-        self.assertTrue((self.root / "private/br1-public-pilot-funding-v1.marker.json").exists())
+        self.assertTrue((self.root / "private" / self.marker).exists())
+
+
+class ClientOrchestration(Orchestration):
+    def setUp(self):
+        super().setUp()
+        self.policy["schema"] = fund.CLIENT_SCHEMA
+        self.operation, self.amount = fund.CLIENT_OP, fund.CLIENT_AMOUNT
+        self.marker = "br1-public-client-funding-v1.marker.json"
+        self.acknowledge = True
+
+    def test_missing_new_allocation_ack_refuses_before_keys(self):
+        plan = self.invoke("dry-run")
+        self.acknowledge = False
+        before = dict(self.calls)
+        with self.assertRaisesRegex(Refused, "acknowledgement"):
+            self.invoke("fund", plan)
+        self.assertEqual(self.calls, before)
+        self.assertFalse((self.root / "private" / self.marker).exists())
+
+    def test_operator_allocation_does_not_consume_client_fence(self):
+        self.data["operator"] = dict(op=fund.OP, state="delivered", value=str(fund.AMOUNT))
+        plan = self.invoke("dry-run")
+        self.invoke("fund", plan)
+        self.assertEqual(self.data["fund"]["value"], str(fund.CLIENT_AMOUNT))
+        self.assertEqual(self.data["fund"]["op"], fund.CLIENT_OP)
+
+    def test_terminal_client_failure_still_consumes_allocation(self):
+        self.data["failed"] = dict(
+            op=fund.CLIENT_OP, state="delivered", value=str(fund.CLIENT_AMOUNT)
+        )
+        with self.assertRaisesRegex(Refused, "reconcile only"):
+            self.invoke("dry-run")
+        self.assertEqual(self.calls["signs"], 0)
+
+
+class ClientInit(NativeInit):
+    # Reuse independently generated canonical V3 fixture, not network identities.
+    def setUp(self):
+        super().setUp()
+        self.manifest = dict(
+            schema="tos.br1.public-client.v1",
+            **self.config["release"],
+            wallet="unit-client",
+            wallet_address=self.config["funding_wallet"],
+            wallet_version="V3R2",
+            subwallet_id=3,
+            public_key_hex=self.public.hex(),
+        )
+        self.client_policy = dict(schema=fund.CLIENT_SCHEMA, client={})
+        self.save_manifest()
+
+    def save_manifest(self):
+        path = self.root / "manifest.json"
+        path.write_text(json.dumps(self.manifest))
+        self.client_policy["client"].update(
+            manifest=str(path),
+            manifest_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+            state_init=str(self.root / "funding-init.boc"),
+            state_init_sha256=hashlib.sha256(
+                (self.root / "funding-init.boc").read_bytes()
+            ).hexdigest(),
+        )
+
+    def test_client_manifest_real_state_init(self):
+        target, _, _ = fund.checked_init(self.client_policy, self.driver, False)
+        self.assertEqual(target, self.config["funding_wallet"])
+
+    def test_client_network_refused(self):
+        self.manifest["global_id"] = 3
+        self.save_manifest()
+        with self.assertRaisesRegex(Refused, "scope"):
+            fund.checked_init(self.client_policy, self.driver, False)
+
+    def test_client_public_key_refused(self):
+        self.manifest["public_key_hex"] = os.urandom(32).hex()
+        self.save_manifest()
+        with self.assertRaisesRegex(Refused, "public key"):
+            fund.checked_init(self.client_policy, self.driver, False)
+
+    def test_client_address_refused(self):
+        self.manifest["wallet_address"] = "0:" + "00" * 32
+        self.save_manifest()
+        with self.assertRaisesRegex(Refused, "address"):
+            fund.checked_init(self.client_policy, self.driver, False)
+
+    def test_client_private_check_calls_vault_identity(self):
+        with patch.object(
+            fund, "client_vault_identity", side_effect=Refused("wrong Vault")
+        ) as check:
+            with self.assertRaisesRegex(Refused, "wrong Vault"):
+                fund.checked_init(self.client_policy, self.driver, True)
+        check.assert_called_once()
+
+    def identity_fixture(self):
+        client = self.client_policy["client"]
+        for name, raw in (
+            ("cli", b"test executable"),
+            (
+                "config",
+                json.dumps(
+                    {
+                        "wallets": {
+                            "unit-client": {
+                                "version": "V3R2",
+                                "subwallet_id": 3,
+                                "workchain": 0,
+                                "key": {"name": "unit-key"},
+                            }
+                        }
+                    }
+                ).encode(),
+            ),
+        ):
+            path = self.root / name
+            path.write_bytes(raw)
+            client[name] = str(path)
+            client[name + "_sha256"] = hashlib.sha256(raw).hexdigest()
+        env = self.root / "env.json"
+        env.write_text(json.dumps({"VAULT_URL": "file:///unit-test-vault"}))
+        env.chmod(0o600)
+        client["vault_env"] = str(env)
+        wallets = [
+            {"name": "unit-client", "address": self.manifest["wallet_address"], "wallet_type": None}
+        ]
+        key = "unit-key Ed25519 No 2026-11-03 00:00 " + base64.b64encode(self.public).decode()
+        self.driver.Address = __import__("pytosiq_core").Address
+        return client, wallets, key
+
+    def test_offline_identity_accepts_unknown_onchain_type(self):
+        client, wallets, key = self.identity_fixture()
+        responses = [
+            SimpleNamespace(returncode=0, stdout=json.dumps(wallets).encode(), stderr=b""),
+            SimpleNamespace(returncode=0, stdout=key.encode(), stderr=b""),
+        ]
+        with patch.object(fund.subprocess, "run", side_effect=responses) as run:
+            fund.client_vault_identity(client, self.manifest, self.driver)
+        self.assertIn("--offline", run.call_args_list[0].args[0])
+        self.assertEqual(len(run.call_args_list), 2)
+
+    def test_offline_key_name_binding_refuses(self):
+        client, wallets, key = self.identity_fixture()
+        key = key.replace("unit-key", "another-key")
+        with patch.object(
+            fund.subprocess,
+            "run",
+            side_effect=[
+                SimpleNamespace(returncode=0, stdout=json.dumps(wallets).encode(), stderr=b""),
+                SimpleNamespace(returncode=0, stdout=key.encode(), stderr=b""),
+            ],
+        ):
+            with self.assertRaisesRegex(Refused, "Vault public key"):
+                fund.client_vault_identity(client, self.manifest, self.driver)
+
+    def test_offline_wrong_carrier_address_refuses(self):
+        client, wallets, key = self.identity_fixture()
+        wallets[0]["address"] = "0:" + "00" * 32
+        with patch.object(
+            fund.subprocess,
+            "run",
+            side_effect=[
+                SimpleNamespace(returncode=0, stdout=json.dumps(wallets).encode(), stderr=b""),
+                SimpleNamespace(returncode=0, stdout=key.encode(), stderr=b""),
+            ],
+        ):
+            with self.assertRaisesRegex(Refused, "configured wallet mismatch"):
+                fund.client_vault_identity(client, self.manifest, self.driver)
+
+    def test_offline_wrong_configured_version_refuses_before_cli(self):
+        client, _, _ = self.identity_fixture()
+        path = Path(client["config"])
+        path.write_text(path.read_text().replace("V3R2", "V4R2"))
+        client["config_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        with patch.object(fund.subprocess, "run") as run:
+            with self.assertRaisesRegex(Refused, "type mismatch"):
+                fund.client_vault_identity(client, self.manifest, self.driver)
+        run.assert_not_called()
+
+
+class FixedClientBudget(unittest.TestCase):
+    def test_arbitrary_amount_and_role_pairs_refused(self):
+        entries = {fund.ANCHOR_ID: dict(state="delivered", external_hash=fund.ANCHOR_HASH)}
+        for operation, amount in (
+            (fund.CLIENT_OP, fund.AMOUNT),
+            (fund.OP, fund.CLIENT_AMOUNT),
+            ("other", 1),
+        ):
+            with self.assertRaises(Refused):
+                fund.budget(entries, operation, amount)
 
 
 if __name__ == "__main__":

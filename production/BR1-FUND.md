@@ -1,8 +1,8 @@
 # Epoch-6 fixed pilot initialization
 
-`br1_fund.py` is an operator wrapper for exactly one 5 TOS transfer, including
-canonical V3 StateInit, from approved PRI wallet0 to a fresh native provider's
-funding wallet on public Epoch-6 (global ID2, global version16). It reuses the
+`br1_fund.py` provides one fixed allocation per role, including canonical V3
+StateInit, from approved PRI wallet0:5TOS to a fresh native provider funding
+wallet, or separately authorized2TOS to an official CLI carrier wallet on public Epoch-6 (global ID2, global version16). It reuses the
 frozen approved PRI driver/transport and existing private journal. This tool is
 not an approval, faucet, refill mechanism, Bond bootstrap or client-proof driver.
 No public transfer is part of its tests.
@@ -28,7 +28,7 @@ SHA256 explicitly. Required fields:
 | `tos_root`, `local_scripts` | Existing approved PRI library roots |
 | `funding_dir` | Existing approved PRI custody directory; no key copying |
 | `run_dir` | Existing canonical PRI run with delivered anchor entry and locked private journal |
-| `provider_state` | Fresh, independently generated public native state containing provider.json, funding-init.boc and funding.seed |
+| `provider_state` | Operator policy only: fresh, independently generated public native state containing provider.json, funding-init.boc and funding.seed |
 | `resource_gate`, `history_gate`, `upgrade_gate` | Objects `{path, sha256}` for independently reviewed qualification reports |
 | `window` | Existing proof inputs: `anchor`, `verifier`, `verifier_sha256`, `archive`, `join_key`, and three `rpc` name=URL strings; see BR1-WINDOW.md |
 
@@ -85,12 +85,13 @@ availability is deliberately subordinate to preventing a second payment.
 "$WALLET_PYTHON" -B testnet/tests/br1_fund_controls.py --out "$NEW_CONTROLS"
 ```
 
-26 tests include real V3 cell serialization/Ed25519 public-key matching and mock
+The original48 tests include real V3 cell serialization/Ed25519 public-key matching and mock
 orchestration for fixed initialization, marker-before-keys, dry/no-sign,
-post-sign expiry, and unknown reconciliation. Eleven individually removed guards
+post-sign expiry, and unknown reconciliation. Twenty individually removed guards
 must cause assertion failures, with complete baseline/restoration passes.
-Orchestration mocks are not live acceptance. The bounded evidence index records
-exact source/raw hashes and retention; no seeds, signed BOCs or journals are in Git.
+Orchestration mocks are not live acceptance. The [client evidence index](evidence/br1-client-fund.json) records historical
+48/20 source and raw hashes with retention. The [original operator index](evidence/br1-fund.json)
+remains historical26/11 evidence for its recorded source, not the new head; no seeds, signed BOCs or journals are in Git.
 
 Inputs are bounded (policy128KiB, normal JSON1MiB, StateInit64KiB, journal16MiB,
 pinned source256MiB per file); subprocess quiet proof has180s timeout and each
@@ -100,3 +101,86 @@ proof/finality/fee-import/full-rescan evidence remain separate pilot requirement
 
 Upstream comparison: this deployment path is absent in upstream TON at
 857b8a57a178e6ae0fe7fa86e7d81c5233de8560. No inherited implementation changed.
+
+
+## Separate official-CLI client allocation
+
+The original operator policy and fixed5TOS allocation are unchanged. A separate
+`tos.br1.public-client-policy.v1` policy selects exactly2TOS for one fresh V3R2
+carrier owned by the official CLI. This new allocation requires explicit operator
+authorization; the original operator5TOS approval does not authorize it. There is
+no custom amount option. Both roles use the same approved PRI journal and overall
+budget, with distinct operation IDs and durable attempt markers. Changing a role
+or policy is never a retry mechanism for an unknown attempt.
+
+The client policy retains all original gate/source/window fields and adds
+`client`: `manifest`, `manifest_sha256`, `state_init`, `state_init_sha256`, `cli`,
+`cli_sha256`, `config`, `config_sha256` and `vault_env`. The public manifest schema
+is `tos.br1.public-client.v1`, with `global_id`, `genesis_root`, `genesis_file`,
+`wallet`, `wallet_address`, `wallet_version`, `subwallet_id`, `public_key_hex`.
+Only the approved Epoch6 identity, canonical TOS V3 code, zero initial sequence,
+subwallet3 and exact manifest public key are accepted. Neither manifest nor policy
+contains a private key. The private mode0600 environment file contains only the
+local file `VAULT_URL`; never hash or display it.
+
+Before source-key loading, the pinned CLI's offline wallet/key lists must bind the
+manifest to the configured carrier and Vault public key. No private export is
+used. Inspect has no Vault/key access; dry-run verifies custody but never signs
+or broadcasts. After reviewing the unsigned packet and receiving the separate
+client authorization, fund also requires `--acknowledge-client-2-tos`. Absence of
+this flag refuses before loading any wallet runtime. The acknowledgement flag
+records intent; it cannot supply human authorization by itself.
+
+Client operation ID is `br1-pilot-client-fund-v1`; its persistent marker is
+`br1-public-client-funding-v1.marker.json`. Every signing/unknown/terminal attempt
+consumes the client allocation. Reconcile checks the same original destination,
+amount and StateInit without source keys or rebroadcast. Never remove a marker,
+change identity, or reset a journal to retry. Mock orchestration tests cover both
+fixed roles independently; they do not claim public-chain acceptance.
+
+Upstream comparison: these TOS deployment and official-CLI paths are absent in
+TON master857b8a57a178e6ae0fe7fa86e7d81c5233de8560; no inherited code changes.
+
+
+## Once-only recovery of the reviewed legacy pre-sign incident
+
+`resume-dry-run` and `resume-before-sign` are client2TOS-only modes. They require
+`--recovery`, its explicit `--recovery-sha256`, and
+`--acknowledge-reviewed-presign-refusal`; funding also retains the existing
+client2TOS acknowledgement and fresh dry-plan requirements. They never remove,
+replace or edit the original allocation marker.
+
+The receipt schema `tos.br1.reviewed-presign-incident.v1` is a **trusted operator
+incident attestation**, not cryptographic evidence that a signature cannot exist.
+Under the operator's standing technical-decision authorization, the test lead
+must accept and record that trust scope after reviewing the complete local
+incident. It is limited to the exact pinned legacy wrapper source whose guard
+at line416 raised before the underlying signature. The receipt pins the original
+marker SHA, original policy, original source, complete failure-log SHA and
+`trusted_operator_attestation: true`. Log provenance is trusted local evidence;
+a copied/truncated log from an untrusted party must never authorize recovery.
+
+Current policy, source/destination/2TOS/nonce/StateInit plan must equal the
+original exactly. Both peers must still prove the same unchanged source nonce
+and a fresh empty target. Any unresolved PRI action, any non-dry entry for that
+wallet/nonce regardless of operation, or malformed source-sequence metadata
+refuses. The canonical PRI lock covers inspection, fencing and submission.
+
+A separate exclusive, fsynced `br1-public-client-presign-resume-v1.marker.json`
+precedes source-key loading. A second exclusive, fsynced
+`br1-public-client-presign-resume-v1.signing-started.json` precedes underlying
+crypto. A signing-start fence or resume marker is irrevocable: failures after
+either do not authorize another resume. Any signed/ambiguous state only permits
+readonly reconciliation of original bytes. The ordinary fund path still
+refuses the retained original marker. No repeated nonce/identity/amount route
+is provided. The additional mode is not a generic timeout/rebroadcast recovery.
+
+Current68tests/28removed guards, including marker/fence/sign/journal/send cuts,
+no-sign dry-run, other-operation/nonce conflicts and concurrent exclusive marker
+creation, are in `evidence/br1-presign-resume.json`. Original26/11 and48/20 indices
+remain historical at their own source pins. Source hashes and raw receipts are
+retained; no secrets or private journals are committed. Mock tests are not a
+live transfer claim. No C++/persistent daemon changes; one bounded incident JSON
+16KiB and existing1MiB inputs plus two small durable fences.
+
+The resumed signer rechecks its deadline after signing-start fsync and before underlying crypto. A late fsync leaves both fences intact and cannot be retried.

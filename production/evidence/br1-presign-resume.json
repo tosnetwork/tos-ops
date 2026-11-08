@@ -1,0 +1,239 @@
+{
+  "result": "PASS",
+  "sources": {
+    "production/br1_fund.py": "41109c4c1f0d12d0e1e34c501a115d061c21b0c40f48de447b1930711f82f7a2",
+    "testnet/tests/test_br1_fund.py": "11596e149bf7eee490a6b1a8e0cd30ea8c0975a0a6efc54967aff32957ba9704",
+    "testnet/tests/test_br1_fund_resume.py": "82b15ca67dab03c4ff93b11265d8f0ef88b9ab789f2a1c18e6e73227b5f268d3",
+    "testnet/tests/br1_fund_controls.py": "7061bc5e6f740a94944a6efc07d5675b5f1e47667ebdffdd5d1c98c5a5158793",
+    "production/con01_history/__init__.py": "2669032d72511e45b4145efe98af062bd0f6cd5eee5b0e5f4fd25d4b37e33a8d",
+    "production/con01_history/observer.py": "093dcabafc946575412fe354e85562a840190a057f920da28fa786c0e6fc72f9",
+    "production/con01_history/certificate.py": "cd853372bb2f82cda1866618e60f3c94a1cbf85374a803852733cb4278a18b66",
+    "production/con01_history/frozen.py": "7d1961d005edb6010ec47ddf16380d166ff0e052223cb506cb568e9916f2e26a",
+    "production/con01_history/launch.py": "cb800fcefc1c852f4352704ce546a0671df213cf0ddd12c79883c1c5312f60cf",
+    "production/con01_history/audit.py": "cc9850c26a58c37b4f14c5d866e8e41928aed4deb5518f66ff6979a5107b4c91",
+    "production/con01_history/election_fees.py": "50e81201735397cb66021e50ee2afac4cb1d92ce0fb646c643e929c0face1d94",
+    "production/con01_history/qualify.py": "79199de6841b2161bf100a7fcb3fe16d4dff8977bc5f0ef3f8659d48d352f9a0",
+    "production/con01_history/formats.py": "df2ebfd9e585f7e4d54b020a24819c8b87f4d47e098ee4e7ad12230694c08519",
+    "production/con01_history/rejudge.py": "d564e922726a735f61cbaa8dbf26f5dc21e034bdb2e17fdf182500d6d75e8866",
+    "production/con01_history/_replay.py": "89095f3ff9d65e6b2622bacb8d65ed5d61a501067159dc7f2383c43c5082a988",
+    "testnet/tests/data/br1-fund/v3-code.boc": "9cea4958800cdaae9040aa1985750ba36df410181c4b508ea527a7048395677c",
+    "testnet/tests/data/br1-fund/MANIFEST.json": "dc616961fa2a9317bb43c4c32d68a5925865b0db2bb81f43724da5ee8276fd44"
+  },
+  "rows": [
+    {
+      "name": "baseline",
+      "test": null,
+      "exit": 0,
+      "sha256": "a01d28fe7aaf627b22ecc8008f1c4fca606b6303e532133d443243a70ba29fd9",
+      "bytes": 167
+    },
+    {
+      "name": "duration",
+      "test": "test_wall_clock_cannot_replace_resource_bound",
+      "exit": 1,
+      "sha256": "0a81e789f8e0c81a44d2b17b542c5ae3cc92057e88f4d7afeeb86b3054b61798",
+      "bytes": 675
+    },
+    {
+      "name": "actual24h",
+      "test": "test_short_nonfinite_or_boolean_soak_refuses",
+      "exit": 1,
+      "sha256": "4307b45d130156a158d9b9bd5f3ddff15d2ed9236029e8e7cfd22ebfc0ae47c5",
+      "bytes": 674
+    },
+    {
+      "name": "history-verdict",
+      "test": "test_inconclusive_history_refuses",
+      "exit": 1,
+      "sha256": "4596a1b220033ce476c44c11483198e590573342357ebcca13ef37cb5c7cc422",
+      "bytes": 643
+    },
+    {
+      "name": "handover-count",
+      "test": "test_insufficient_windows_refuse",
+      "exit": 1,
+      "sha256": "204bf2c5079675f55a14d9ee67b671a0edb41dd4b50b3892db4c2da99b0fd8a2",
+      "bytes": 637
+    },
+    {
+      "name": "input-sha",
+      "test": "test_report_digest_is_checked",
+      "exit": 1,
+      "sha256": "839fbb37d9ac554bc1b1efa0a3a1769e8f38aea377b749e6cd00330a3605d1a5",
+      "bytes": 618
+    },
+    {
+      "name": "budget",
+      "test": "test_any_existing_signed_or_terminal_funding_fences_new_funding",
+      "exit": 1,
+      "sha256": "1c6d13604975a10b9baf5c0edb59abe4e288fde9f558ce12ab884baf53f493d8",
+      "bytes": 745
+    },
+    {
+      "name": "nonce",
+      "test": "test_changed_nonce_refuses_before_signing",
+      "exit": 1,
+      "sha256": "e37e6a78fbae2764b3142f2800846ff7574729470205ab5ffc8cb52d7003e72e",
+      "bytes": 671
+    },
+    {
+      "name": "sign-window",
+      "test": "test_expired_window_refuses_before_signing",
+      "exit": 1,
+      "sha256": "d8a965e11ac0c0fc13e0aed7dc3a18b46318c6140e7e00f728405574b7db9030",
+      "bytes": 676
+    },
+    {
+      "name": "custody-public",
+      "test": "test_wrong_custody_key_or_mode_refuses",
+      "exit": 1,
+      "sha256": "861919a2b85ed4d50651eca817f280901c4886b32328d40ceb4641badca543fd",
+      "bytes": 1243
+    },
+    {
+      "name": "native-address",
+      "test": "test_target_address_is_not_an_arbitrary_destination",
+      "exit": 1,
+      "sha256": "78f6bc1be3055a2852b91ad65d99437e13347cb54f9fc5accbde00ad932bbb15",
+      "bytes": 1313
+    },
+    {
+      "name": "broadcast-window",
+      "test": "test_window_expiring_after_signing_has_zero_broadcast",
+      "exit": 1,
+      "sha256": "443f877c53bdd3f7731987d446a20b62686388e546eb7abd60adf2c0e6b2b4e9",
+      "bytes": 1325
+    },
+    {
+      "name": "client-ack",
+      "test": "test_missing_new_allocation_ack_refuses_before_keys",
+      "exit": 1,
+      "sha256": "9468cebee3a6ac51814110357daaf5f20ff6d7983e0e036ac90121d3983114c8",
+      "bytes": 718
+    },
+    {
+      "name": "client-network",
+      "test": "test_client_network_refused",
+      "exit": 1,
+      "sha256": "8d3be610fdc5402006b92d3f525e32bc5298f085a316cb683115797ffa1b763f",
+      "bytes": 617
+    },
+    {
+      "name": "client-key",
+      "test": "test_client_public_key_refused",
+      "exit": 1,
+      "sha256": "5e4f57374cbe518fa790decd9e33b187438e8c9a7998fe9355d494142f0fb3bc",
+      "bytes": 636
+    },
+    {
+      "name": "client-address",
+      "test": "test_client_address_refused",
+      "exit": 1,
+      "sha256": "ebd2431399396d0f2cdb296161338b779525d06e3db8fb880ba50189ca2dcf87",
+      "bytes": 621
+    },
+    {
+      "name": "client-private-check",
+      "test": "test_client_private_check_calls_vault_identity",
+      "exit": 1,
+      "sha256": "5cd782de4d65dae3f67f539e7bc13d142d6d84c50f4349ef6230a1b7de31d773",
+      "bytes": 686
+    },
+    {
+      "name": "fixed-role-pair",
+      "test": "test_arbitrary_amount_and_role_pairs_refused",
+      "exit": 1,
+      "sha256": "e1152b121c61543d9cd547257b2b6d865918ed11e15a91521ae215e09e849126",
+      "bytes": 647
+    },
+    {
+      "name": "client-vault-key-name",
+      "test": "test_offline_key_name_binding_refuses",
+      "exit": 1,
+      "sha256": "da174632fc32f4a9e17a145cfbb2e4a97bce9aee2e523e97de3b38f7a132c652",
+      "bytes": 669
+    },
+    {
+      "name": "client-vault-wallet-address",
+      "test": "test_offline_wrong_carrier_address_refuses",
+      "exit": 1,
+      "sha256": "a9977de4e3df08144708d152a079ec5d56567bcc710cc546695c1d407a74814e",
+      "bytes": 704
+    },
+    {
+      "name": "client-wallet-version",
+      "test": "test_offline_wrong_configured_version_refuses_before_cli",
+      "exit": 1,
+      "sha256": "5a896630aec27daf6ccf4a6aa267f3d5d54ef2125faa2f4c8ba72d176ac78a28",
+      "bytes": 911
+    },
+    {
+      "name": "resume-attestation",
+      "test": "test_unreviewed_attestation_refuses",
+      "exit": 1,
+      "sha256": "104ea0ce4137817c6e80765fb123e1109a08e77ac2fe0d852badf3ba5f3a2593",
+      "bytes": 672
+    },
+    {
+      "name": "resume-plan",
+      "test": "test_old_plan_cannot_change_destination_or_nonce",
+      "exit": 1,
+      "sha256": "6bd8128a1801d1fd3f1a3e5061e75722c2a3abb376c901b211ecad19b608a6be",
+      "bytes": 700
+    },
+    {
+      "name": "resume-log",
+      "test": "test_wrong_guard_failure_is_not_an_unsent_attestation",
+      "exit": 1,
+      "sha256": "8b11be239317e1ac9988b1c1437d0c864759a987e870e10c2a13926d58fc45c6",
+      "bytes": 721
+    },
+    {
+      "name": "resume-source-nonce",
+      "test": "test_old_nonce_conflict_in_other_operation_refuses",
+      "exit": 1,
+      "sha256": "28994025559b602554dda1e2aace483e6e39199fdc2ebfb7d6364602104fa601",
+      "bytes": 712
+    },
+    {
+      "name": "resume-signing-fence",
+      "test": "test_started_signature_is_irrevocable_fence",
+      "exit": 1,
+      "sha256": "41e93e12915f63a0814112dd8b7db1616f76f2a385aef4c470e3117a5a8605c7",
+      "bytes": 695
+    },
+    {
+      "name": "resume-dry-nosign",
+      "test": "test_resume_dry_never_signs_or_consumes_original_marker",
+      "exit": 1,
+      "sha256": "90aa5b589f106fe5e0a51b6a2c2c4356bf7c4f5e85350c40ff327871f5a497f0",
+      "bytes": 1082
+    },
+    {
+      "name": "resume-before-crypto",
+      "test": "test_signing_fence_exists_before_underlying_crypto",
+      "exit": 1,
+      "sha256": "c577c92d8a580ca393d948ad87ea77b02b6b33c48757a1a3098140da1a303067",
+      "bytes": 951
+    },
+    {
+      "name": "resume-post-fsync-deadline",
+      "test": "test_slow_signing_fence_expiry_never_calls_crypto",
+      "exit": 1,
+      "sha256": "8af9b7297d93ece689930286bb5a8a58a6a7b2d53665c9a3cc7d83914b815e64",
+      "bytes": 721
+    },
+    {
+      "name": "restored",
+      "test": null,
+      "exit": 0,
+      "sha256": "701d1bb86702fa81745a7cb0847306df14857b013f900d5abbc382841028faf4",
+      "bytes": 167
+    }
+  ],
+  "schema": "tos.br1.presign-resume-evidence.v1",
+  "scope": "68 offline tests/28 individually removed runtime guards; trusted reviewed incident only; no live transfer claim",
+  "raw_location": "toserver:/tos/build/e6-public-transfer-20261103/presign-resume-controls-r4",
+  "retained_through": "2027-02-01T00:00:00Z",
+  "access": "Existing authorized toserver access"
+}
