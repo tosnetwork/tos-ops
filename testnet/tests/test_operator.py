@@ -240,3 +240,70 @@ def test_the_refusal_never_prints_the_configured_record(tmp_path, key, kind):
     b64 = base64.b64encode(bytes.fromhex(SECRET_MARKER)).decode()
     for marker in (SECRET_MARKER, b64, SECRET_MARKER[:16]):
         assert marker not in result.stdout and marker not in result.stderr
+
+
+# ---------------------------------------------------------------- submission priority
+
+
+def test_submission_priority_changes_only_the_local_priority():
+    options = operator.submission_priority_options(1)
+    assert options.pop("local_ls_message_priority") == 1
+    assert options and all(value == -1 for value in options.values())
+
+
+@pytest.mark.parametrize("bad", [-1, 1001])
+def test_submission_priority_refuses_a_value_out_of_range(bad):
+    with pytest.raises(lib.TestnetError, match="outside"):
+        operator.submission_priority_options(bad)
+
+
+def test_submission_priority_uses_the_nodes_own_console_keys(tmp_path, monkeypatch):
+    monkeypatch.setattr(operator, "tool", lambda name: name)
+    argv = operator.console_argv(tmp_path, 30002, "set-ext-message-pool-options-json /x.json")
+    assert argv[1:5] == ["-a", "127.0.0.1:30002", "-k", str(tmp_path / "console-client" / "client")]
+    assert argv[5:7] == ["-p", str(tmp_path / "console-client" / "server.pub")]
+    assert argv[7:9] == ["-c", "set-ext-message-pool-options-json /x.json"]
+
+
+def priority_args(tmp_path, wait):
+    return operator.argparse.Namespace(profile=lib.PROFILE_PATH, db=tmp_path, priority=1, wait=wait)
+
+
+def test_submission_priority_retries_until_the_console_accepts(tmp_path, monkeypatch):
+    sent = []
+
+    def console(argv, **kwargs):
+        options = json.loads(Path(argv[-3].split()[-1]).read_text())
+        sent.append(options)
+        accepted = len(sent) == 3
+        return subprocess.CompletedProcess(argv, 0, "success\n" if accepted else "", "")
+
+    monkeypatch.setattr(operator, "tool", lambda name: name)
+    monkeypatch.setattr(operator.subprocess, "run", console)
+    monkeypatch.setattr(operator.time, "sleep", lambda seconds: None)
+    operator.cmd_submission_priority(priority_args(tmp_path, wait=60))
+    assert len(sent) == 3
+    assert sent[-1]["local_ls_message_priority"] == 1
+
+
+def test_submission_priority_refuses_when_the_console_never_accepts(tmp_path, monkeypatch):
+    monkeypatch.setattr(operator, "tool", lambda name: name)
+    monkeypatch.setattr(
+        operator.subprocess,
+        "run",
+        lambda argv, **kw: subprocess.CompletedProcess(argv, 1, "", "connection refused"),
+    )
+    monkeypatch.setattr(operator.time, "sleep", lambda seconds: None)
+    with pytest.raises(lib.TestnetError, match="did not accept"):
+        operator.cmd_submission_priority(priority_args(tmp_path, wait=0))
+
+
+def test_submission_priority_treats_a_hung_console_as_a_failed_attempt(tmp_path, monkeypatch):
+    def hung(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
+
+    monkeypatch.setattr(operator, "tool", lambda name: name)
+    monkeypatch.setattr(operator.subprocess, "run", hung)
+    monkeypatch.setattr(operator.time, "sleep", lambda seconds: None)
+    with pytest.raises(lib.TestnetError, match="did not answer within 30 s"):
+        operator.cmd_submission_priority(priority_args(tmp_path, wait=0))

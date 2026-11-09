@@ -32,6 +32,8 @@ def test_no_start_installs_and_enables_the_full_node_without_starting_it(fake_ho
     lines = systemctl_lines(fake_host)
     assert f"systemctl enable {UNIT}" in lines
     assert not any(x.startswith(("systemctl enable --now", "systemctl start")) for x in lines)
+    # A node that never ran has no console to set its submission priority through.
+    assert "set-ext-message-pool-options-json" not in fake_host.log.read_text()
     assert (fake_host.prefix / "etc/systemd/system" / UNIT).is_file()
     # Everything else activate does is done: the global config, genesis files
     # and the console client keys are in place.
@@ -50,6 +52,13 @@ def test_without_no_start_activate_still_starts_the_full_node(fake_host):  # noq
     assert failed is None, (failed.args, failed.stderr) if failed else ""
     assert [p.name for p in fake_host.state.iterdir()] == ["tos-testnet-fullnode"]
     assert f"systemctl enable --now {UNIT}" in systemctl_lines(fake_host)
+    # The started full node got its submission priority through its own console.
+    pool = [
+        x
+        for x in fake_host.log.read_text().splitlines()
+        if "set-ext-message-pool-options-json" in x
+    ]
+    assert len(pool) == 1 and "/var/lib/tos/fullnode/console-client/client" in pool[0]
 
 
 @pytest.mark.parametrize("role", ["validator", "rpc", "dht"])

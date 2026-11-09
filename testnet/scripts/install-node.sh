@@ -36,7 +36,9 @@
 #   whose validators all wait cannot produce),
 #   adds the console on 30002/tcp (on every address; the host firewall keeps it
 #   closed) and a lite server on a full node, installs the
-#   unit and starts it.
+#   unit and starts it. On a full node it then gives the lite server's own
+#   submissions check priority 1 over externals relayed from the network
+#   (testnet-operator.py submission-priority).
 #   --no-start (full node only) does all of that, enables the unit and does not
 #   start it: the database stays a node that has never run, which is what
 #   `tosctl node sync bootstrap` installs verified chain data into. Bootstrap
@@ -351,10 +353,16 @@ activate() {
     if systemctl is-active --quiet "$UNIT"; then die "$UNIT started although --no-start was given"; fi
     echo "$UNIT is installed and enabled but not started; $DB has never run."
     echo "next: tosctl node sync bootstrap (doc/node-data-sync.md in the tos repository), which starts it"
+    echo "then: testnet-operator.py submission-priority --db $DB (as tos)"
     return
   fi
   systemctl enable --now "$UNIT"
   systemctl --no-pager --lines=5 status "$UNIT" || true
+  if [ "$ROLE" = fullnode ]; then
+    # A full node serves clients: check their submissions ahead of relayed externals.
+    as_tos python3 "$HERE/testnet-operator.py" submission-priority --db "$DB" \
+      || die "the node runs, but its submission priority is not set; rerun testnet-operator.py submission-priority"
+  fi
 }
 
 case "$STEP" in
