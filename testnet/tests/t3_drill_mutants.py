@@ -26,16 +26,75 @@ TEST = W / "tests/test_t3_drills.py"
 FAILED = re.compile(r"\b[1-9]\d* failed\b")
 
 M = [
+    # verdict
     ("V1 stall with 3 up not judged", LIB, "if stall >= 30:", "if stall >= 3000:"),
-    ("V2 blocks during a 2-down halt not judged", LIB, "elif a > 1:", "elif a > 10**9:"),
+    ("V2 progress after settling not judged", LIB, "elif a > 0:", "elif a > 10**9:"),
     ("V3 rate band 0.50-0.70 not judged", LIB, "elif ratio < 0.70:", "elif ratio < 0.0:"),
-    ("V4 double-sign kind not a FAIL", LIB, "if m[1] in DOUBLE_SIGN_KINDS:", "if False:"),
+    ("V4 double-sign kind not a safety failure", LIB, "if m[1] in DOUBLE_SIGN_KINDS:", "if False:"),
     (
         "V5 unconfirmed partition not INCONCLUSIVE",
         LIB,
         "if partitioned and confirmed is not True:",
         "if False:",
     ),
+    ("V6 drop counters not required", LIB, "        if cp:\n", "        if False:\n"),
+    (
+        "V7 settling interval ignored",
+        LIB,
+        "a = advance(samples, port, hf + settle, ht)",
+        "a = advance(samples, port, hf, ht)",
+    ),
+    (
+        "V8 stale heads count as progress",
+        LIB,
+        'if len(fresh) < 0.9 * len(rows) or rows[-1]["seqno"]',
+        'if rows[-1]["seqno"]',
+    ),
+    (
+        "V9 safety failure reported as FAIL",
+        LIB,
+        'verdict = "SAFETY_FAIL" if safety else',
+        'verdict = "FAIL" if safety else',
+    ),
+    # gates
+    (
+        "G1 abort budget not held before the recovery deadline",
+        LIB,
+        "if abort_end > recovery_deadline(term):",
+        "if abort_end > until - 3600:",
+    ),
+    (
+        "G2 clock skew not judged",
+        LIB,
+        "if abs(off) - half > MAX_CLOCK_SKEW or half > 2.0:",
+        "if False:",
+    ),
+    ("G3 frozen heads pass", LIB, 'if b["seqno"] <= a["seqno"]:', "if False:"),
+    (
+        "G4 self-heal deadline not checked",
+        LIB,
+        "if not want_left - tolerance <= left <= want_left + 5:",
+        "if False:",
+    ),
+    (
+        "G5 per-unit rc not judged",
+        LIB,
+        '    if got != want:\n        p.append(f"units',
+        '    if False:\n        p.append(f"units',
+    ),
+    (
+        "G6 socket addresses kept",
+        LIB,
+        "out += [json.dumps(s) for s in socket_summary(lines)]",
+        "out += lines",
+    ),
+    (
+        "G7 alleged validator not mapped to its host",
+        LIB,
+        'elif e.get("validator") in by_vid:',
+        "elif False:",
+    ),
+    # node script
     (
         "K1 workchain-0 signature accepted as masterchain",
         NODE,
@@ -55,12 +114,27 @@ M = [
         'UNTRUSTED = re.compile(r"$^")',
     ),
     (
-        "K4 elections started before the markers",
+        "K4 start-engine also starts elections",
         NODE,
-        '    run(["systemctl", "start", VALIDATOR])\n    out = finish_markers(',
+        '    run(["systemctl", "start", VALIDATOR])\n    return dict(result="ENGINE-STARTED"',
         '    run(["systemctl", "start", VALIDATOR])\n    run(["systemctl", "start", ELECTIONS])\n'
-        "    out = finish_markers(",
+        '    return dict(result="ENGINE-STARTED"',
     ),
+    ("K5 quarantine marker ignored", NODE, "if starts and quarantined():", "if False:"),
+    (
+        "K6 restore timer not verified",
+        NODE,
+        '        quiet(["systemctl", "stop", unit + ".timer"])\n'
+        '        raise Refused(2, "RESTORE-TIMER-NOT-VERIFIED", left=left, exec=execs[:200])',
+        "        pass",
+    ),
+    (
+        "K7 unsafe marker does not quarantine",
+        NODE,
+        'q = do_quarantine(node, run_name, "unsafe ledger marker")',
+        "q = None",
+    ),
+    # runner
     ("D1 execute is the default", SH, "MODE=${2:---dry-run}", "MODE=${2:---execute}"),
     (
         "D2 dry run executes",
@@ -69,17 +143,42 @@ M = [
         "execute=True, printer=printer)",
     ),
     (
-        "P1 no self-heal armed",
-        LIB,
-        'f"systemd-run --unit=t3-heal-{run} --on-active={SELF_HEAL} "\n'
-        "        f\"/usr/sbin/nft delete table inet {TABLE} && nft -f - <<'T3EOF'\\n\"",
-        "f\"nft -f - <<'T3EOF'\\n\"",
+        "D3 open quarantine not refused",
+        SH,
+        'python3 -I "$HERE/t3_lib.py" quarantines "$EVIDENCE" ||',
+        "true ||",
     ),
+    ("P1 rules loaded without a verified self-heal", RUN, "if not self.arm_heal():", "if False:"),
     (
         "P2 ladder does not heal",
         RUN,
         'if self.sc["partition"]:\n            self.say("ladder 1',
         'if False:\n            self.say("ladder 1',
+    ),
+    (
+        "P3 partial install not healed everywhere",
+        RUN,
+        'no rule loaded")\n            self.heal()\n            return False',
+        'no rule loaded")\n            return False',
+    ),
+    (
+        "P4 node-4 start skipped after a node-3 failure",
+        RUN,
+        "            self.say(f\"  node-3: {a3.get('result')}; node-4 starts now, not at t0+11 min\")",
+        "            return",
+    ),
+    (
+        "P5 no host-local restore timer in S3",
+        RUN,
+        'self.stop("node-4", restore_after=int(',
+        'self.stop("node-4", restore_after=0 and int(',
+    ),
+    ("P6 implicated host not quarantined", RUN, "        for h in hosts:", "        for h in []:"),
+    (
+        "P7 rejoin ignores the block hash",
+        RUN,
+        "return len({block_hash(p, common) for p in ports}) == 1",
+        "return True",
     ),
 ]
 

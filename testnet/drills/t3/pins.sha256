@@ -2,5 +2,4 @@
 # DEPLOY = $T3_DEPLOY (default: $HOME/tos-testnet-deploy/epoch-6/run).
 46753e5d0c3ca8adc931aa41efcf40b816aaa15a8194b25b0c8e75435c697a44  DEPLOY/helpers.sh
 c579f7a9d1f86d5b8ccbc3088e8adec267028d53d47f01aff61c1ecce9fca2e8  DEPLOY/u76af/current-term.py
-23b77cc64eb4bd76aae120a66665ed8f63a369920caf84dc222ccfcc664043a3  DEPLOY/u76af/block-rate.py
 335474c80d5f78d886631df7ca3f844d76692a0f5fe6ceaab94be170e4113bbc  /tos/worktrees/tos-ops/tos-ops-epoch6/production/network_check.py
