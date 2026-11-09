@@ -77,6 +77,7 @@ Real inventories and ceremony directories stay outside the tree.
 | [retire-host.sh](testnet/scripts/retire-host.sh) | Archive evidence, then retire a host bound to the explicitly confirmed old zero state. |
 | [systemd/](testnet/systemd/) / [firewall/](testnet/firewall/) | Node, elections and alert units, the rpc role's `tos-testnet-wallet-index` and `tos-testnet-rpc` units; inbound firewall example. |
 | [rehearse-loopback.sh](testnet/scripts/rehearse-loopback.sh) | Rehearse genesis and node activation on an isolated loopback network. |
+| [drills/t3/](testnet/drills/t3/README.md) | Planned validator outage and partition drills (T3); dry run by default. |
 
 Tests: [testnet/tests/](testnet/tests/); operation mutation controls are in
 [mutants.py](testnet/tests/mutants.py). From the repository root:
