@@ -82,7 +82,30 @@ Tests: [testnet/tests/](testnet/tests/); operation mutation controls are in
 [mutants.py](testnet/tests/mutants.py). From the repository root:
 
 ```bash
-TOS_ROOT="$TOS_ROOT" "$TOS_ROOT/.venv/bin/python" -m pytest -q testnet/tests
+TOS_ROOT="$TOS_ROOT" "$TOS_ROOT/.venv/bin/python" -m pytest -q testnet/tests \
+  --ignore testnet/tests/test_con01_history.py \
+  --ignore testnet/tests/test_con01_observer_crypto.py
+```
+
+Some tests skip, and say why, unless their tool is present. Supply them for a run with no skips:
+`dilithium-py` 1.1.0 and `shellcheck` on the interpreter's path (`shellcheck-py` provides the binary),
+`TOS_BIN` pointing at a tos build's `build/utils` (for `generate-random-id`), and
+`PROOF_VERIFY_LIBRARY` set to the built `libtosproofverify.so` (target `tos-proof-embedded`; see
+[production/scripts](production/scripts/README.md)).
+
+The two con01 certificate suites verify real ML-DSA signatures and refuse to skip. They need
+the compiled signature verifier ([con01_history](production/con01_history/README.md#build-and-reproduce))
+and a CPython with `os.memfd_create`; the standalone Python in a uv `.venv` may lack it. Build
+the verifier against an OpenSSL of 3.5 or newer (a tos build carries one under
+`build/third-party/openssl`), then run them with the system interpreter:
+
+```bash
+cc -std=c11 -O2 -Wall -Wextra -Werror -I "$OPENSSL_PREFIX/include" \
+  production/con01_history/mldsa_verify.c "$OPENSSL_PREFIX/lib/libcrypto.a" -ldl -pthread \
+  -o "$VERIFIER" && chmod 500 "$VERIFIER"
+CON01_SIGNATURE_VERIFIER="$VERIFIER" \
+CON01_SIGNATURE_VERIFIER_SHA256="$(sha256sum "$VERIFIER" | cut -d' ' -f1)" \
+  /usr/bin/python3 -m pytest -q testnet/tests/test_con01_history.py testnet/tests/test_con01_observer_crypto.py
 ```
 
 ### `production/` — designs and templates

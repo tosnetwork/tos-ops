@@ -86,6 +86,12 @@ class SignatureVerifier:
                 and hashlib.sha256(raw).hexdigest() == digest,
                 "signature verifier pin",
             )
+            # The sealed snapshot needs memfd_create; some standalone Python builds lack it.
+            require(
+                hasattr(os, "memfd_create"),
+                "this Python has no os.memfd_create for the sealed verifier snapshot; "
+                "run under a CPython built with it, such as /usr/bin/python3",
+            )
             copied = os.memfd_create(
                 "con01-openssl", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING
             )
