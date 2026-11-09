@@ -615,6 +615,13 @@ while [ $# -gt 0 ]; do [ "$1" = -D ] && db=$2; shift; done
 mkdir -p "$db/keyring"
 echo '{"@type": "engine.validator", "addrs": []}' > "$db/config.json"
 """
+# The node's console: accepts the pool options submission-priority sends, as the engine does.
+FAKE_CONSOLE = """#!/bin/sh
+case "$*" in
+  *set-ext-message-pool-options-json*) echo "validator-engine-console $*" >> "$FAKE_LOG"; echo success ;;
+  *) echo validator-engine-console ;;
+esac
+"""
 FAKE_RANDOM_ID = """#!/usr/bin/env python3
 import os, sys
 name = sys.argv[sys.argv.index("-n") + 1]
@@ -668,9 +675,11 @@ def fake_host(tmp_path):
     release = tmp_path / f"release-{PIN}"
     release.mkdir()
     for name in RPC:
-        body = {"validator-engine": FAKE_ENGINE, "generate-random-id": FAKE_RANDOM_ID}.get(
-            name, f"#!/bin/sh\necho {name}\n"
-        )
+        body = {
+            "validator-engine": FAKE_ENGINE,
+            "generate-random-id": FAKE_RANDOM_ID,
+            "validator-engine-console": FAKE_CONSOLE,
+        }.get(name, f"#!/bin/sh\necho {name}\n")
         (release / name).write_text(body)
         (release / name).chmod(0o755)
     (release / "SHA256SUMS").write_text(

@@ -55,6 +55,19 @@ class Certificates(unittest.TestCase):
         self.assertEqual(row["signers"], 3)
         self.assertGreater(3 * row["signed_weight"], 2 * row["total_weight"])
 
+    def test_a_python_without_memfd_create_is_refused_with_its_reason(self):
+        # Standalone Python builds can lack it; the refusal must name the missing call,
+        # not surface as an AttributeError from inside the snapshot code.
+        program = os.environ["CON01_SIGNATURE_VERIFIER"]
+        digest = os.environ["CON01_SIGNATURE_VERIFIER_SHA256"]
+        saved = os.memfd_create
+        del os.memfd_create
+        try:
+            with self.assertRaisesRegex(Refused, "no os.memfd_create"):
+                SignatureVerifier(Path(program), digest)
+        finally:
+            os.memfd_create = saved
+
     def test_corrupted_real_signature_is_rejected(self):
         link = copy.deepcopy(self.link)
         sig = link["cert"]["signatures"][0]

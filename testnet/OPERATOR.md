@@ -333,6 +333,35 @@ checker or change the deployed admission settings; those require a separate
 configuration decision. It also leaves HTTP and liteserver ingress limits in
 place.
 
+### Submission priority on full nodes (owner decision, 2026-11-09)
+
+A full node that serves clients sets local submission priority **1**; validators keep **0**.
+A full node checks the externals its own lite server receives and every external the network
+relays to it with the same checkers. At priority 0 the relayed re-checks fill the admission
+queue under load, and the node refuses its own clients' new messages with
+`too many pending external message checks`. At priority 1 its clients' messages take a checker
+slot ahead of relayed ones. Relayed externals are still checked; they only wait behind the
+node's own clients.
+
+Evidence (local bench, 4 validators and 4 ingress full nodes on one host, 600/s for 180 s,
+builds with the overlay and liteserver admission alignment): at priority 0, 59,448 of 108,000
+transfers settled, with 18,635 backpressure refusals at the ingress nodes. At priority 1,
+84,017 settled, with no backpressure refusals. The remaining loss there is client timeouts and
+the nonce gaps they leave. A shared host cannot tell whether that loss is the chain or the host;
+the bench result is not a capacity claim.
+
+`install-node.sh activate --role fullnode` applies it after starting the node. After
+`--no-start` and `tosctl node sync bootstrap`, and on a full node already running, apply it as
+`tos` once the node is up:
+
+```sh
+runuser -u tos -- python3 /opt/tos-testnet/scripts/testnet-operator.py submission-priority \
+  --db /var/lib/tos/fullnode
+```
+
+It changes only `local_ls_message_priority` through the node's console, which persists it in
+`config.json`. It is not a consensus setting, and the node keeps running.
+
 ## 9. Incidents, leaving and retirement
 
 | Symptom | Verify / response |

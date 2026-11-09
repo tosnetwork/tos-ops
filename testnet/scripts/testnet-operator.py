@@ -21,6 +21,13 @@ Subcommands, in ceremony order:
       client key is written to --client-dir for the operator; the server keys
       go into the node keyring.
 
+  submission-priority --db DIR [--priority N] [--wait SECONDS]
+      On a running full node, give externals submitted to its own lite server
+      check priority N (default 1) over externals relayed from the network,
+      through the node's console (`set-ext-message-pool-options-json`, which
+      validates and persists the setting). Every other pool option is kept.
+      Retries until the console answers or --wait expires.
+
   rpc-config --global-config FILE --liteserver-pub FILE --port N --out FILE
       The liteserver configuration tos-rpc trusts on an rpc host: the
       published global config with its liteservers replaced by the co-hosted
@@ -45,8 +52,10 @@ import ipaddress
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -299,6 +308,67 @@ def cmd_master_wallet(args: argparse.Namespace) -> None:
     print(action)
 
 
+# A full node serving clients checks its own lite server's submissions and every external the
+# network relays to it with the same checkers. Under load the relayed re-checks fill the queue
+# and the node refuses its own clients' new messages; a positive priority lets those go first.
+# -1 keeps a field's current value.
+def submission_priority_options(priority: int) -> dict:
+    if not 0 <= priority <= 1000:
+        raise lib.TestnetError(f"priority {priority} is outside 0..1000")
+    return {
+        "max_mempool_messages": -1,
+        "num_regular_checkers": -1,
+        "num_priority_checkers": -1,
+        "max_admission_waiters": -1,
+        "max_ext_msg_per_addr": -1,
+        "max_ext_msg_per_addr_time_window": -1.0,
+        "local_ls_message_priority": priority,
+    }
+
+
+def console_argv(db: Path, port: int, command: str) -> list[str]:
+    client_dir = db / "console-client"
+    return [
+        tool("validator-engine-console"),
+        "-a",
+        f"{LOOPBACK}:{port}",
+        "-k",
+        str(client_dir / "client"),
+        "-p",
+        str(client_dir / "server.pub"),
+        "-c",
+        command,
+        "-t",
+        "10",
+    ]
+
+
+def cmd_submission_priority(args: argparse.Namespace) -> None:
+    profile = lib.load_profile(args.profile)
+    options = submission_priority_options(args.priority)
+    deadline = time.monotonic() + args.wait
+    with tempfile.TemporaryDirectory(prefix="tos-pool-") as tmp:
+        path = Path(tmp) / "ext-message-pool-options.json"
+        path.write_text(json.dumps(options) + "\n")
+        path.chmod(0o644)
+        argv = console_argv(
+            args.db, profile["ports"]["console_tcp"], f"set-ext-message-pool-options-json {path}"
+        )
+        while True:
+            try:
+                result = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+                accepted = result.returncode == 0 and "success" in result.stdout.split()
+                detail = (result.stderr.strip() or result.stdout.strip())[-300:]
+            except subprocess.TimeoutExpired:
+                accepted, detail = False, "the console did not answer within 30 s"
+            if accepted:
+                break
+            if time.monotonic() >= deadline:
+                raise lib.TestnetError(f"the console did not accept the pool options: {detail}")
+            time.sleep(2)
+    print(f"externals submitted to this node's lite server now check at priority {args.priority}")
+
+
 def cmd_rpc_config(args: argparse.Namespace) -> None:
     try:
         global_config = json.loads(args.global_config.read_text())
@@ -337,6 +407,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--role", choices=("validator", "fullnode"), required=True)
     p.add_argument("--client-dir", type=Path, required=True)
     p.set_defaults(func=cmd_configure)
+
+    p = sub.add_parser("submission-priority")
+    p.add_argument("--db", type=Path, required=True)
+    p.add_argument("--priority", type=int, default=1)
+    p.add_argument("--wait", type=float, default=120.0, help="seconds to wait for the console")
+    p.set_defaults(func=cmd_submission_priority)
 
     p = sub.add_parser("rpc-config")
     p.add_argument("--global-config", type=Path, required=True)
