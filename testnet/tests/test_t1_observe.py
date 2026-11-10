@@ -421,6 +421,19 @@ def test_a_rotated_file_read_to_its_end_may_be_deleted_without_a_gap(tmp_path):
     assert stale(o, ["cache:node-1"]) == []
 
 
+def test_a_rotated_file_deleted_with_unread_bytes_is_a_gap(tmp_path):
+    o, ssh, clocks = baselined(tmp_path)
+    rotated = ssh.tmp / "node-1" / "node.log.old"
+    os.rename(ssh.log("node-1"), rotated)
+    append(rotated, "partial line without newline")  # left unread: the cursor stops before it
+    clocks.tick(60)
+    o.resources_round(HOSTS[0])
+    os.unlink(rotated)
+    clocks.tick(60)
+    o.resources_round(HOSTS[0])
+    assert [r["reason"] for r in rows(o, "cache") if r["kind"] == "coverage_gap"] == ["vanished"]
+
+
 def test_a_truncated_file_is_a_gap(tmp_path):
     o, ssh, clocks = baselined(tmp_path)
     with open(ssh.log("node-1"), "w") as fh:
@@ -635,6 +648,39 @@ def test_ids_reply_for_another_block_is_rejected(tmp_path):
     o.ids_round()
     last = rows(o, "chain")[-1]
     assert last["agree"] is False and last["ids"] == {} and stale(o, ["ids:all"]) != []
+
+
+def test_ids_need_all_four_replies(tmp_path):
+    rpcs = {h: FakeRpc(50) for h in obs.HOSTS}
+    o, _, _ = make(tmp_path, rpcs)
+    all_heads(o)
+    rpcs["node-4"].fail = {"getBlockHeader"}
+    o.ids_round()
+    last = rows(o, "chain")[-1]
+    assert last["agree"] is False and sorted(last["ids"]) == ["node-1", "node-2", "node-3"]
+
+
+def test_a_head_that_is_not_a_masterchain_block_is_an_error(tmp_path):
+    rpc = FakeRpc()
+    rpc.ident = lambda seq: {"workchain": 0, "shard": obs.SHARD, "seqno": seq, "root_hash": "R", "file_hash": "F"}
+    o, _, _ = make(tmp_path, {h: rpc for h in obs.HOSTS})
+    o.chain_round("node-1")
+    assert "not a masterchain block id" in rows(o, "chain")[-1]["error"]
+
+
+def test_the_clock_keeps_the_narrowest_try(tmp_path):
+    o, ssh, clocks = make(tmp_path)
+    real, widths = ssh.__call__, iter([3.0, 0.2, 1.0])
+
+    def varied(argv, **kw):
+        half = next(widths) / 2
+        clocks.tick(half)
+        r = real(argv, **kw)
+        clocks.tick(half)
+        return r
+    o.run = varied
+    row = o.clock_round(HOSTS[0])
+    assert abs(row["best"]["bound"] - 0.1) < 1e-6 and row["verdict"] == "ok"  # float wall clock near 1.76e9
 
 
 def test_ids_divergence_and_missing_heads(tmp_path):
