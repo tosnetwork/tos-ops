@@ -5,12 +5,15 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from read_client import NETWORK_DEADLINE_SECONDS, request
+from read_client import DEADLINE_BOUNDS, NETWORK_DEADLINE_SECONDS, T1_ENDPOINTS, request
+
+RAW_ADDRESS = re.compile(r"^(-1|0):[0-9a-f]{64}$")
 
 BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5)
 METHODS = (
@@ -90,6 +93,16 @@ def worker_budget(rate):
     return maximum
 
 
+def worker_budget_for(rate, deadline):
+    """worker_budget for a calibrated deadline (T1 profile): the same bound of 48 workers, never relaxed."""
+    if type(rate) is not int or not 1 <= rate <= 16:
+        raise RuntimeError("Read worker rate bound")
+    maximum = math.ceil(rate * (deadline + 0.5))
+    if not 1 <= maximum <= 48:
+        raise RuntimeError("Read worker budget exceeds48")
+    return maximum
+
+
 def run(packet, output):
     duration, rate, width = (
         packet["duration_seconds"],
@@ -109,16 +122,35 @@ def run(packet, output):
         raise RuntimeError("Read horizon/rate/window bound")
     if duration * rate * 512 > 1 << 30:
         raise RuntimeError("Read horizon exceeds bounded journal budget")
-    if endpoints != [
-        "http://127.0.0.1:48081/jsonRPC",
-        "http://127.0.0.1:48083/jsonRPC",
-    ]:
-        raise RuntimeError("Exact approved two-source topology required")
-    if address != "0:ce32c0cfd54873d65fdd4b8b1710605ae2176734a1015d2d2c1ea00d8025f15a":
-        raise RuntimeError("Original public wallet required")
+    profile = packet.get("profile")
+    if profile is None:
+        # The original R2 configuration, unchanged.
+        if endpoints != [
+            "http://127.0.0.1:48081/jsonRPC",
+            "http://127.0.0.1:48083/jsonRPC",
+        ]:
+            raise RuntimeError("Exact approved two-source topology required")
+        if address != "0:ce32c0cfd54873d65fdd4b8b1710605ae2176734a1015d2d2c1ea00d8025f15a":
+            raise RuntimeError("Original public wallet required")
+        deadline = NETWORK_DEADLINE_SECONDS
+        maximum_pending = None
+    elif profile == "t1":
+        # T1 (memo public-testnet/T1-PRB-DESIGN-20261110 §3): the four validator tunnels, a pinned public address
+        # and the calibrated per-request deadline, all from the frozen acceptance record.
+        if endpoints != list(T1_ENDPOINTS):
+            raise RuntimeError("Exact T1 four-validator topology required")
+        if type(address) is not str or not RAW_ADDRESS.match(address):
+            raise RuntimeError("T1 read address must be a raw address")
+        deadline = packet.get("network_deadline_seconds")
+        if not (type(deadline) in (int, float) and DEADLINE_BOUNDS[0] <= deadline <= DEADLINE_BOUNDS[1]):
+            raise RuntimeError("T1 network deadline bound")
+        maximum_pending = worker_budget_for(rate, deadline)
+    else:
+        raise RuntimeError(f"Unknown read profile {profile!r}")
     if shutil.disk_usage(output.parent).free < 20 << 30:
         raise RuntimeError("Initial read disk reserve")
-    maximum_pending = worker_budget(rate)
+    if maximum_pending is None:
+        maximum_pending = worker_budget(rate)
     output.mkdir(mode=0o700)
     started = time.monotonic()
     boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
@@ -134,7 +166,7 @@ def run(packet, output):
 
     def invoke(endpoint, method):
         began = time.monotonic()
-        result = request(endpoint, method, address)
+        result = request(endpoint, method, address, deadline)
         result["offered_monotonic_seconds"] = began
         result["finished_monotonic_seconds"] = time.monotonic()
         return result
@@ -149,7 +181,7 @@ def run(packet, output):
             {
                 "packet": packet,
                 "maximum_inflight": maximum_pending,
-                "network_deadline_seconds": NETWORK_DEADLINE_SECONDS,
+                "network_deadline_seconds": deadline,
                 "boot_id": boot,
                 "started_monotonic_seconds": started,
                 "deadline_monotonic_seconds": started + duration,
@@ -198,8 +230,8 @@ def run(packet, output):
                     if len(pending) >= maximum_pending:
                         missed += 1
                     else:
-                        endpoint = endpoints[slot % 2]
-                        method = METHODS[(slot // 2) % len(METHODS)]
+                        endpoint = endpoints[slot % len(endpoints)]
+                        method = METHODS[(slot // len(endpoints)) % len(METHODS)]
                         future = pool.submit(invoke, endpoint, method)
                         pending[future] = now
                     slot += 1
