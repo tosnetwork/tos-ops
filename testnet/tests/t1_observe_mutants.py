@@ -20,10 +20,40 @@ from pathlib import Path
 W = Path(__file__).resolve().parents[1]
 PROBE = W / "scripts/t1_probe.py"
 OBSERVE = W / "scripts/t1-observe.py"
-TEST = W / "tests/test_t1_observe.py"
+BOUND = W / "scripts/t1-boundaries.py"
+TESTS = [W / "tests/test_t1_observe.py", W / "tests/test_t1_boundaries.py"]
 FAILED = re.compile(r"\b[1-9]\d* failed\b")
 
 MUTANTS = [
+    ("S1 safety scan wired", PROBE, "if safety is not None:\n                        scan_safety(text, name, safety)", "if False:\n                        scan_safety(text, name, safety)"),
+    ("S2 safety pattern", PROBE, "if any(p in line for p in SAFETY):", "if False:"),
+    ("S3 safety report validated", OBSERVE, 'and all(isinstance(s, dict) and isinstance(s.get("file"), str) and isinstance(s.get("line"), str)', 'and all(isinstance(s, dict)'),
+    ("S4 safety hits counted", OBSERVE, 'self.counts["safety_hits"] += len(safety)', 'self.counts["safety_hits"] += 0'),
+    ("S5 gaps counted", OBSERVE, 'self.counts["coverage_gaps"] += len(gaps)', 'self.counts["coverage_gaps"] += 0'),
+    ("L1 logs fresh only after the baseline", OBSERVE, "if cur is not None and behind <= LOG_LAG_BYTES and active_read:", "if behind <= LOG_LAG_BYTES and active_read:"),
+    ("L2 logs watched without the cache series", OBSERVE, '            "resources", "logs", "du", "clock", "chain")', '            "resources", "du", "clock", "chain")'),
+    ("L3 cache switch honoured", OBSERVE, '"chain") if self.cache_series else (', '"chain") if True else ('),
+    ("F1 operator floor", OBSERVE, 'if v["balance_nano"] < OPERATOR_FLOOR_NANO)', "if False)"),
+    ("F2 balance validated", OBSERVE, "if not (isinstance(balance, (str, int)) and str(balance).isdigit()):", "if balance is None:"),
+    ("F3 two sources needed", OBSERVE, "if len(answers) < BALANCE_QUORUM:", "if not answers:"),
+    ("F5 minimum of the sources", OBSERVE, "nano = min(answers.values())", "nano = max(answers.values())"),
+    ("A1 safety count restored", OBSERVE, '"safety_hits": self.count_rows("safety", "safety_line")', '"safety_hits": 0'),
+    ("A2 gap count restored", OBSERVE, '"coverage_gaps": self.count_rows("cache", "coverage_gap")', '"coverage_gaps": 0'),
+    ("A3 backlog keeps logs stale", OBSERVE, "if cur is not None and behind <= LOG_LAG_BYTES and active_read:", "if cur is not None and active_read:"),
+    ("A4 the active log must be read", OBSERVE, "if cur is not None and behind <= LOG_LAG_BYTES and active_read:", "if cur is not None and behind <= LOG_LAG_BYTES:"),
+    ("B9 missed boundary row", BOUND, "if now() > boundary + LATE:", "if False:"),
+    ("B10 interrupted boundary", BOUND, "if out_dir.exists():", "if False:"),
+    ("B11 restart resumes", BOUND, "outcome = prior_outcomes(rows)", "outcome = {}"),
+    ("B12 schedule confirmed", BOUND, "if term is not None and not on_grid(boundary, term, a.period):", "if False:"),
+    ("B13 grid alignment", BOUND, 'and (boundary - term["since"]) % period == 0)', "and True)"),
+    ("F4 operators in blind", OBSERVE, ' + [f"fees:{o}" for o in self.operators]', ""),
+    ("B1 handover on four sources", BOUND, 'for host in HOSTS:\n        collect += ["--rpc", urls[host]]', 'for host in HOSTS[:2]:\n        collect += ["--rpc", urls[host]]'),
+    ("B2 key gate on four sources", BOUND, 'for host in HOSTS:\n        argv += ["--source", host]', 'for host in HOSTS[:3]:\n        argv += ["--source", host]'),
+    ("B3 term agreement", BOUND, "if len(set(seen.values())) != 1 or len(seen) != len(HOSTS):", "if False:"),
+    ("B4 collection lead", BOUND, "wait = boundary - LEAD - now()", "wait = boundary - now()"),
+    ("B5 no boundary after the end", BOUND, "while boundary <= a.end:", "while boundary <= a.end + a.period:"),
+    ("B7 key gate after the switch", BOUND, '["--since", str(boundary)', '["--since", str(boundary - 3600)'),
+    ("B8 checks time out", BOUND, 'row[f"{name}_exit"] = "timeout"', 'raise'),
     ("P1 baseline reads nothing", PROBE, 'entry.update(start=size, offset=size, status="baseline"', 'entry.update(start=0, offset=0, status="baseline"'),
     ("P2 shrink detected", PROBE, "elif size < start:", "elif False:"),
     ("P3 fingerprint checked", PROBE, "elif fingerprint(fh, start) != fp:", "elif False:"),
@@ -60,7 +90,7 @@ MUTANTS = [
     ("K11 payloads kind", OBSERVE, 'return (d.get("kind") == "simplex-candidate-payloads"', "return (True"),
     ("K12 refuse re-baseline", OBSERVE, "if cache.exists() and any(", "if False and any("),
     ("K13 grave expires", OBSERVE, 'if fid in new_files or grave[fid]["rounds"] <= 0:', "if fid in new_files:"),
-    ("K14 file offsets ordered", OBSERVE, 'and e["start"] <= e["offset"] <= e["size"] and isinstance(e.get("fp"), str)):', 'and isinstance(e.get("fp"), str)):'),
+    ("K14 file offsets ordered", OBSERVE, 'and e["start"] <= e["offset"] <= e["size"] and isinstance(e.get("fp"), str)\n', 'and isinstance(e.get("fp"), str)\n'),
     ("K15 diag stamp typed", OBSERVE, 'isinstance(d, dict) and type(d.get("ts")) is int and', "isinstance(d, dict) and"),
     ("K16 grave cursors sent", OBSERVE, 'offs = {k: [v["offset"], v["fp"], closed(v)] for k, v in cur.get("grave", {}).items()}', "offs = {}"),
     ("D1 du complete", OBSERVE, "complete = all(count(du.get(p)) for p in DU_PATHS)", "complete = True"),
@@ -81,7 +111,7 @@ MUTANTS = [
     ("C8 ids bound to the request", OBSERVE, "if got is None or got[:3] != (-1, SHARD, common):", "if got is None:"),
     ("C9 ids from all four", OBSERVE, "agree = len(ids) == len(self.rpcs) and ", "agree = "),
     ("C10 ids agree", OBSERVE, "and len({json.dumps(v) for v in ids.values()}) == 1", ""),
-    ("C11 allowlist", OBSERVE, 'if method not in {"getMasterchainInfo", "getBlockHeader"}:', "if False:"),
+    ("C11 allowlist", OBSERVE, 'if method not in {"getMasterchainInfo", "getBlockHeader", "getAddressInformation"}:', "if False:"),
     ("H1 blind", OBSERVE, '"blind": bool(reasons)', '"blind": False'),
     ("H2 never seen is stale", OBSERVE, "if seen is None or now - seen > limit:", "if seen is not None and now - seen > limit:"),
     ("H3 stalled hosts", OBSERVE, 'stalled = sorted(h for h, v in chain.items() if v["head_age_s"] > STALL)', "stalled = []"),
@@ -91,13 +121,13 @@ MUTANTS = [
 
 
 def suite() -> tuple[int, str]:
-    p = subprocess.run([sys.executable, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider", str(TEST)],
+    p = subprocess.run([sys.executable, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider", *map(str, TESTS)],
                        cwd=W / "tests", capture_output=True, text=True, timeout=600)
     return p.returncode, p.stdout + p.stderr
 
 
 def main() -> int:
-    originals = {p: p.read_text() for p in (PROBE, OBSERVE)}
+    originals = {p: p.read_text() for p in (PROBE, OBSERVE, BOUND)}
     labels = [m[0] for m in MUTANTS]
     assert len(set(labels)) == len(labels), "duplicate mutant label"
     assert len({(m[1], m[2], m[3]) for m in MUTANTS}) == len(MUTANTS), "duplicate mutant"
