@@ -5,6 +5,8 @@ cache tests run the real t1_probe.read_logs on temporary log files behind a fake
 rotation, deletion, truncation and collector restart is exercised end to end. No test reaches a host or a tunnel.
 """
 
+import base64
+import hashlib
 import importlib.util
 import json
 import os
@@ -238,14 +240,19 @@ class FakeSsh:
         return subprocess.CompletedProcess(argv, 0, json.dumps(report) + "\n", "")
 
 
+def H(label: str) -> str:
+    """A well-formed 32-byte base64 hash named by `label`."""
+    return base64.b64encode(hashlib.sha256(label.encode()).digest()).decode()
+
+
 class FakeRpc:
     def __init__(self, head=50, ids=None, fail=(), head_hdr=None, wrong_seq=None):
         self.head, self.ids, self.fail = head, ids or {}, set(fail)
         self.head_hdr, self.wrong_seq = head_hdr, wrong_seq
-        self.file_hash = "F"
+        self.file_hash = H("F")
 
     def ident(self, seq):
-        return {"workchain": -1, "shard": obs.SHARD, "seqno": seq, "root_hash": self.ids.get(seq, f"R{seq}"),
+        return {"workchain": -1, "shard": obs.SHARD, "seqno": seq, "root_hash": H(self.ids.get(seq, f"R{seq}")),
                 "file_hash": self.file_hash}
 
     def call(self, method, timeout=None, **p):
@@ -587,15 +594,21 @@ def test_a_head_is_bound_to_its_header(tmp_path):
     o, _, _ = make(tmp_path)
     o.chain_round("node-1")
     head = rows(o, "chain")[-1]
-    assert head["id"] == [-1, obs.SHARD, 50, "R50", "F"] and head["gen_utime"] == 150
+    assert head["id"] == [-1, obs.SHARD, 50, H("R50"), H("F")] and head["gen_utime"] == 150
     assert stale(o, ["chain:node-1"]) == []
 
 
+def hid(**over):
+    i = {"workchain": -1, "shard": obs.SHARD, "seqno": 50, "root_hash": H("R50"), "file_hash": H("F")}
+    i.update(over)
+    return {k: v for k, v in i.items() if v != "DROP"}
+
+
 @pytest.mark.parametrize("hdr", [
-    {"id": {"workchain": -1, "shard": obs.SHARD, "seqno": 50, "root_hash": "R50", "file_hash": "other"}, "gen_utime": 1},
-    {"id": {"workchain": -1, "shard": obs.SHARD, "seqno": 49, "root_hash": "R50", "file_hash": "F"}, "gen_utime": 1},
-    {"id": {"workchain": 0, "shard": obs.SHARD, "seqno": 50, "root_hash": "R50", "file_hash": "F"}, "gen_utime": 1},
-    {"id": {"workchain": -1, "shard": obs.SHARD, "seqno": 50, "root_hash": "R50", "file_hash": "F"}},
+    {"id": hid(file_hash=H("other")), "gen_utime": 1},
+    {"id": hid(seqno=49), "gen_utime": 1},
+    {"id": hid(workchain=0), "gen_utime": 1},
+    {"id": hid()},
 ])
 def test_a_head_whose_header_does_not_match_is_an_error_and_not_fresh(tmp_path, hdr):
     o, _, _ = make(tmp_path, {h: FakeRpc(head_hdr=hdr) for h in obs.HOSTS})
@@ -603,12 +616,55 @@ def test_a_head_whose_header_does_not_match_is_an_error_and_not_fresh(tmp_path, 
     assert "error" in rows(o, "chain")[-1] and stale(o, ["chain:node-1"]) != []
 
 
+BAD_IDS = [hid(root_hash="DROP", file_hash="DROP"), hid(root_hash=None, file_hash=None), hid(file_hash="F"),
+           hid(root_hash=base64.b64encode(b"short").decode()), hid(seqno="50"), hid(seqno=True), hid(workchain="-1")]
+
+
+@pytest.mark.parametrize("bad", BAD_IDS)
+def test_an_incomplete_head_id_is_never_fresh_even_when_the_header_repeats_it(tmp_path, bad):
+    rpc = FakeRpc()
+    rpc.ident = lambda seq: dict(bad)
+    rpc.head_hdr = {"id": dict(bad), "gen_utime": 1}
+    o, _, _ = make(tmp_path, {h: rpc for h in obs.HOSTS})
+    o.chain_round("node-1")
+    assert "error" in rows(o, "chain")[-1] and stale(o, ["chain:node-1"]) != []
+
+
+@pytest.mark.parametrize("bad", [b for b in BAD_IDS if b.get("seqno") == 50 and b.get("workchain") == -1])
+def test_incomplete_ids_at_the_common_height_never_agree(tmp_path, bad):
+    rpcs = {h: FakeRpc(100) for h in obs.HOSTS}
+    o, _, _ = make(tmp_path, rpcs)
+    all_heads(o)
+    for r in rpcs.values():
+        r.head_hdr = None
+        r.call = lambda method, timeout=None, b=bad, **p: {"id": dict(b, seqno=p["seqno"]), "gen_utime": 1}
+    o.ids_round()
+    last = rows(o, "chain")[-1]
+    assert last["agree"] is False and last["ids"] == {} and stale(o, ["ids:all"]) != []
+
+
+def test_returning_to_a_height_after_a_regression_is_not_progress(tmp_path):
+    rpc = FakeRpc(head=50)
+    o, _, clocks = make(tmp_path, {h: rpc for h in obs.HOSTS})
+    o.chain_round("node-1")
+    clocks.tick(130)
+    rpc.head = 49
+    o.chain_round("node-1")
+    rpc.head = 50
+    o.chain_round("node-1")
+    st = o.status()
+    assert st["chain"]["node-1"]["head_age_s"] == 130 and st["stalled_hosts"] == ["node-1"]
+    rpc.head = 51
+    o.chain_round("node-1")
+    assert o.status()["chain"]["node-1"]["head_age_s"] == 0
+
+
 def test_stall_regression_and_identity_change(tmp_path):
     rpc = FakeRpc(head=50)
     o, _, clocks = make(tmp_path, {h: rpc for h in obs.HOSTS})
     o.chain_round("node-1")
     clocks.tick(100)
-    rpc.file_hash = "G"  # same height, different block
+    rpc.file_hash = H("G")  # same height, different block
     o.chain_round("node-1")
     clocks.tick(30)
     rpc.head = 49
@@ -671,10 +727,10 @@ def test_ids_need_all_four_replies(tmp_path):
 
 def test_a_head_that_is_not_a_masterchain_block_is_an_error(tmp_path):
     rpc = FakeRpc()
-    rpc.ident = lambda seq: {"workchain": 0, "shard": obs.SHARD, "seqno": seq, "root_hash": "R", "file_hash": "F"}
+    rpc.ident = lambda seq: hid(workchain=0, seqno=seq)
     o, _, _ = make(tmp_path, {h: rpc for h in obs.HOSTS})
     o.chain_round("node-1")
-    assert "not a masterchain block id" in rows(o, "chain")[-1]["error"]
+    assert "not a complete masterchain block id" in rows(o, "chain")[-1]["error"]
 
 
 def test_the_clock_keeps_the_narrowest_try(tmp_path):

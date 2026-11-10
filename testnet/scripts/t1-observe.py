@@ -39,6 +39,7 @@ wrappers (§4.4-4.6).
 from __future__ import annotations
 
 import argparse
+import base64
 import importlib.util
 import json
 import math
@@ -217,11 +218,26 @@ def closed(cursor: dict) -> bool:
     return ".old" in cursor["name"] and cursor["offset"] >= cursor["size"]
 
 
-def header_id(h) -> tuple | None:
-    i = h.get("id") if isinstance(h, dict) else None
-    if not isinstance(i, dict):
+def hash32(v) -> bool:
+    if not isinstance(v, str):
+        return False
+    try:
+        return len(base64.b64decode(v, validate=True)) == 32
+    except ValueError:
+        return False
+
+
+def block_id(i) -> tuple | None:
+    """A complete block id (workchain, shard, seqno, root_hash, file_hash), or None when any field is missing,
+    mistyped or not a 32-byte base64 hash: two missing hashes must never compare equal."""
+    if not (isinstance(i, dict) and type(i.get("workchain")) is int and isinstance(i.get("shard"), str)
+            and count(i.get("seqno")) and hash32(i.get("root_hash")) and hash32(i.get("file_hash"))):
         return None
-    return tuple(i.get(k) for k in ID_FIELDS)
+    return tuple(i[k] for k in ID_FIELDS)
+
+
+def header_id(h) -> tuple | None:
+    return block_id(h.get("id")) if isinstance(h, dict) else None
 
 
 # ---------------------------------------------------------------- RPC
@@ -433,9 +449,9 @@ class Observer:
         started = self.mono()
         try:
             last = r.call("getMasterchainInfo")["last"]
-            want = tuple(last.get(k) for k in ID_FIELDS)
-            if not (want[0] == -1 and want[1] == SHARD and count(want[2])):
-                raise ValueError(f"head is not a masterchain block id: {want[:3]}")
+            want = block_id(last)
+            if want is None or not (want[0] == -1 and want[1] == SHARD):
+                raise ValueError(f"head is not a complete masterchain block id: {str(last)[:160]}")
             hdr = r.call("getBlockHeader", workchain=-1, shard=SHARD, seqno=want[2])
             if header_id(hdr) != want:
                 raise ValueError(f"header {header_id(hdr)} does not match the head {want}")
@@ -452,10 +468,11 @@ class Observer:
         with self.lock:
             prev = self.heads.get(host)
             seq = want[2]
-            if prev is None or seq > prev["id"][2]:
-                advanced = now_m
+            # Progress is a new maximum: returning to a height after a regression is not progress.
+            if prev is None or seq > prev["max_seqno"]:
+                advanced, top = now_m, seq
             else:
-                advanced = prev["advanced_mono"]
+                advanced, top = prev["advanced_mono"], prev["max_seqno"]
                 if seq < prev["id"][2]:
                     self.sinks["chain"].write({"ts": now_w, "kind": "regression", "host": host,
                                                "from": prev["id"], "to": list(want)})
@@ -463,7 +480,7 @@ class Observer:
                     self.sinks["chain"].write({"ts": now_w, "kind": "identity_change", "host": host,
                                                "from": prev["id"], "to": list(want)})
             self.heads[host] = {"id": list(want), "gen_utime": hdr["gen_utime"], "seen_mono": now_m,
-                                "advanced_mono": advanced}
+                                "advanced_mono": advanced, "max_seqno": top}
         self.sinks["chain"].write({"ts": now_w, "kind": "head", "host": host, "id": list(want),
                                    "gen_utime": hdr["gen_utime"]})
         self.fresh.good(f"chain:{host}")
@@ -503,7 +520,8 @@ class Observer:
         now_m = self.mono()
         with self.lock:
             clock = {h: dict(self.clock_verdict.get(h, {"verdict": "unmeasured"})) for h in names}
-            chain = {h: {"seqno": v["id"][2], "head_age_s": now_m - v["advanced_mono"]} for h, v in self.heads.items()}
+            chain = {h: {"seqno": v["id"][2], "max_seqno": v["max_seqno"], "head_age_s": now_m - v["advanced_mono"]}
+                     for h, v in self.heads.items()}
             baselined = {h: (c or {}).get("baselined") for h, c in self.cursors.items()}
         reasons += [f"clock:{h} latest verdict {v['verdict']}" for h, v in clock.items() if v["verdict"] != "ok"]
         stalled = sorted(h for h, v in chain.items() if v["head_age_s"] > STALL)
