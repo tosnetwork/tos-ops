@@ -20,10 +20,31 @@ from pathlib import Path
 W = Path(__file__).resolve().parents[1]
 PROBE = W / "scripts/t1_probe.py"
 OBSERVE = W / "scripts/t1-observe.py"
-TEST = W / "tests/test_t1_observe.py"
+BOUND = W / "scripts/t1-boundaries.py"
+TESTS = [W / "tests/test_t1_observe.py", W / "tests/test_t1_boundaries.py"]
 FAILED = re.compile(r"\b[1-9]\d* failed\b")
 
 MUTANTS = [
+    ("S1 safety scan wired", PROBE, "if safety is not None:\n                        scan_safety(text, name, safety)", "if False:\n                        scan_safety(text, name, safety)"),
+    ("S2 safety pattern", PROBE, "if any(p in line for p in SAFETY):", "if False:"),
+    ("S3 safety report validated", OBSERVE, 'and all(isinstance(s, dict) and isinstance(s.get("file"), str) and isinstance(s.get("line"), str)', 'and all(isinstance(s, dict)'),
+    ("S4 safety hits counted", OBSERVE, 'self.counts["safety_hits"] += len(safety)', 'self.counts["safety_hits"] += 0'),
+    ("S5 gaps counted", OBSERVE, 'self.counts["coverage_gaps"] += len(gaps)', 'self.counts["coverage_gaps"] += 0'),
+    ("L1 logs fresh only after the baseline", OBSERVE, 'if cur is not None:\n            self.fresh.good(f"logs:{host}")', 'if True:\n            self.fresh.good(f"logs:{host}")'),
+    ("L2 logs watched without the cache series", OBSERVE, '            "resources", "logs", "du", "clock", "chain")', '            "resources", "du", "clock", "chain")'),
+    ("L3 cache switch honoured", OBSERVE, '"chain") if self.cache_series else (', '"chain") if True else ('),
+    ("F1 operator floor", OBSERVE, 'if v["balance_nano"] < OPERATOR_FLOOR_NANO)', "if False)"),
+    ("F2 balance validated", OBSERVE, "if not (isinstance(balance, (str, int)) and str(balance).isdigit()):", "if balance is None:"),
+    ("F3 first answering source", OBSERVE, "nano = int(balance)\n                    break", "nano = int(balance)\n                    continue"),
+    ("F4 operators in blind", OBSERVE, ' + [f"fees:{o}" for o in self.operators]', ""),
+    ("B1 handover on four sources", BOUND, 'for host in HOSTS:\n        collect += ["--rpc", urls[host]]', 'for host in HOSTS[:2]:\n        collect += ["--rpc", urls[host]]'),
+    ("B2 key gate on four sources", BOUND, 'for host in HOSTS:\n        argv += ["--source", host]', 'for host in HOSTS[:3]:\n        argv += ["--source", host]'),
+    ("B3 term agreement", BOUND, "if len(set(seen.values())) != 1 or len(seen) != len(HOSTS):", "if False:"),
+    ("B4 collection lead", BOUND, "wait = boundary - LEAD - now()", "wait = boundary - now()"),
+    ("B5 no boundary after the end", BOUND, "if boundary > a.end:\n                break", "if False:\n                break"),
+    ("B6 boundary dir never reused", BOUND, "out.mkdir(parents=True, exist_ok=False)", "out.mkdir(parents=True, exist_ok=True)"),
+    ("B7 key gate after the switch", BOUND, '["--since", str(boundary)', '["--since", str(boundary - 3600)'),
+    ("B8 checks time out", BOUND, 'row[f"{name}_exit"] = "timeout"', 'raise'),
     ("P1 baseline reads nothing", PROBE, 'entry.update(start=size, offset=size, status="baseline"', 'entry.update(start=0, offset=0, status="baseline"'),
     ("P2 shrink detected", PROBE, "elif size < start:", "elif False:"),
     ("P3 fingerprint checked", PROBE, "elif fingerprint(fh, start) != fp:", "elif False:"),
@@ -91,13 +112,13 @@ MUTANTS = [
 
 
 def suite() -> tuple[int, str]:
-    p = subprocess.run([sys.executable, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider", str(TEST)],
+    p = subprocess.run([sys.executable, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider", *map(str, TESTS)],
                        cwd=W / "tests", capture_output=True, text=True, timeout=600)
     return p.returncode, p.stdout + p.stderr
 
 
 def main() -> int:
-    originals = {p: p.read_text() for p in (PROBE, OBSERVE)}
+    originals = {p: p.read_text() for p in (PROBE, OBSERVE, BOUND)}
     labels = [m[0] for m in MUTANTS]
     assert len(set(labels)) == len(labels), "duplicate mutant label"
     assert len({(m[1], m[2], m[3]) for m in MUTANTS}) == len(MUTANTS), "duplicate mutant"
