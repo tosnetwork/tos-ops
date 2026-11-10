@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
 """T1 resource and cache-diagnostics probe, read-only. It runs on a validator host as `python3 - [args]` over SSH.
 
-It prints one JSON object:
+  python3 - --path P [--path P ...] (--baseline | --cursors JSON) [--cap BYTES]   resources and diagnostics
+  python3 - --du P [--du P ...]                                                   apparent sizes only
+
+It prints one JSON object. Resources come first and carry `sample_clock`, the host time when they were read:
   unit   - tos-testnet-validator MainPID, NRestarts, ActiveState and ExecMainStartTimestampMonotonic
   proc   - RssAnon, VmRSS, RssFile, VmSwap and Threads of the MainPID, plus its open fd count
   mem    - MemTotal, MemAvailable, SwapTotal and SwapFree (bytes)
   oom_kill - the host's OOM-kill count since boot
   boot_id
   disks  - free bytes, size and free/total inodes of each --path (statvfs)
-  du     - apparent size of each --du path, only when --du is given (an expensive walk)
-  diag   - "MEMORY_DIAGNOSTICS simplex-candidate-*" lines in the validator logs dated after --diag-since,
-           parsed into key=integer fields (UTC timestamps, per file)
-  diag_files - each log file read: name, mtime, bytes read and status, so that missing coverage is visible
-  clock  - this host's time.time(), for the coordinator's clock check
+Then the validator logs are read from per-file cursors:
+  files  - one entry per log file, keyed by "dev:ino" from fstat on the open descriptor (a rename keeps it): name,
+           size, the offset read from (`start`), the offset consumed to (`offset`), the fingerprint of the bytes
+           before it (`fp`) and a status (see read_logs).
+  diag   - the "MEMORY_DIAGNOSTICS simplex-candidate-*" lines in the consumed bytes, parsed into key=integer fields.
+  missing - cursor ids no file has any more (the coordinator decides whether that lost data).
+  clock  - this host's time.time() at the end.
 
 It writes nothing and changes nothing. Every section that cannot be read is reported as an error string in its
 place, never omitted.
@@ -21,6 +26,7 @@ place, never omitted.
 import argparse
 import calendar
 import glob
+import hashlib
 import json
 import os
 import re
@@ -30,7 +36,7 @@ import time
 
 UNIT = "tos-testnet-validator"
 LOG_GLOB = "/var/log/tos/validator/node.log*"
-TAIL_BYTES = 4 * 1024 * 1024
+CAP = 32 * 1024 * 1024
 DIAG = re.compile(r"MEMORY_DIAGNOSTICS (simplex-candidate-(?:payloads|resolver))((?: [a-z_]+=-?\d+)+)")
 STAMP = re.compile(r"\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)")
 FIELD = re.compile(r"([a-z_]+)=(-?\d+)")
@@ -40,14 +46,14 @@ def unit() -> dict:
     out = subprocess.run(
         ["systemctl", "show", "-p", "MainPID", "-p", "NRestarts", "-p", "ActiveState",
          "-p", "ExecMainStartTimestampMonotonic", UNIT],
-        capture_output=True, text=True, timeout=20, check=False,
+        capture_output=True, text=True, timeout=20, check=True,
     ).stdout
     v = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
     return {
-        "main_pid": int(v.get("MainPID", "0") or 0),
-        "n_restarts": int(v.get("NRestarts", "0") or 0),
-        "active_state": v.get("ActiveState", ""),
-        "exec_main_start_monotonic_us": int(v.get("ExecMainStartTimestampMonotonic", "0") or 0),
+        "main_pid": int(v["MainPID"]),
+        "n_restarts": int(v["NRestarts"]),
+        "active_state": v["ActiveState"],
+        "exec_main_start_monotonic_us": int(v["ExecMainStartTimestampMonotonic"]),
     }
 
 
@@ -103,73 +109,140 @@ def disks(paths: list) -> dict:
 
 
 def du(paths: list) -> dict:
+    """Apparent sizes; a walk that does not exit 0 is an error, never a partial size."""
     out = {}
     for p in paths:
-        r = subprocess.run(["du", "-sb", p], capture_output=True, text=True, timeout=600, check=False)
         try:
-            out[p] = int(r.stdout.split()[0])
-        except (IndexError, ValueError):
+            r = subprocess.run(["du", "-sb", p], capture_output=True, text=True, timeout=500, check=False)
+        except subprocess.TimeoutExpired:
+            out[p] = "error: du timed out"
+            continue
+        fields = r.stdout.split()
+        if r.returncode != 0 or len(fields) != 2 or not fields[0].isdigit():
             out[p] = f"error: rc={r.returncode} {r.stderr.strip()[:200]}"
+        else:
+            out[p] = int(fields[0])
     return out
 
 
-def diag(since: float, files_glob: str = LOG_GLOB) -> tuple:
-    """Diagnostics lines dated after `since`, from every log file modified within the window."""
-    lines, files = [], []
+def parse_diag(text: str, name: str) -> list:
+    lines = []
+    for line in text.splitlines():
+        m = DIAG.search(line)
+        s = STAMP.search(line) if m else None
+        if not s:
+            continue
+        lines.append({"ts": calendar.timegm(time.strptime(s.group(1), "%Y-%m-%d %H:%M:%S")), "kind": m.group(1),
+                      "fields": {k: int(v) for k, v in FIELD.findall(m.group(2))}, "file": name})
+    return lines
+
+
+FP_BYTES = 64
+
+
+def fingerprint(fh, offset: int) -> str:
+    """Hash of the bytes just before `offset`: a cursor is valid only while these bytes are unchanged."""
+    fh.seek(max(0, offset - FP_BYTES))
+    return hashlib.sha256(fh.read(min(offset, FP_BYTES))).hexdigest()[:32]
+
+
+def read_logs(cursors, files_glob: str = LOG_GLOB, cap: int = CAP) -> tuple:
+    """Read every log file from its cursor. `cursors` is {"dev:ino": [offset, fingerprint, closed]}, or None for a
+    baseline; `closed` says the coordinator saw that file under a rotated name and read it to its end, so a change
+    under the cursor means a new file reused the inode, not lost bytes.
+
+    Each file entry reports `fp`, the fingerprint at its new offset, for the next call. Status of each file:
+      baseline   - first observation: the cursor is set to the current size, nothing is read
+      read       - bytes [start, offset) consumed; a trailing partial line is left for the next read
+      new        - a file the cursors do not know, read from 0
+      shrunk     - size below the cursor: the file was truncated or replaced in place, read from 0 (a gap)
+      rewritten  - the bytes before the cursor changed (truncated and regrown, or a reused inode), read from 0
+                   (a gap)
+      over_cap   - `cap` bytes without a newline: consumed as a gap so that the cursor cannot stall
+      duplicate  - another name for a file already read this time
+      error: ... - could not be opened or read
+    `behind` is the size not yet consumed; it is lag, read on the next call, not a gap.
+    """
+    files, lines, seen = {}, [], set()
     for path in sorted(glob.glob(files_glob)):
+        name = os.path.basename(path)
         try:
-            mtime = os.path.getmtime(path)
+            fh = open(path, "rb")
         except OSError as exc:
-            files.append({"file": path, "status": f"error: {exc}"})
+            files[f"name:{name}"] = {"name": name, "status": f"error: {exc}"}
             continue
-        if mtime < since:
-            files.append({"file": path, "mtime": mtime, "status": "skipped: not modified in the window"})
-            continue
-        if path.endswith(".gz"):
-            files.append({"file": path, "mtime": mtime, "status": "skipped: compressed (rotated before the window)"})
-            continue
-        try:
-            size = os.path.getsize(path)
-            with open(path, "rb") as fh:
-                fh.seek(max(0, size - TAIL_BYTES))
-                data = fh.read().decode("utf-8", "replace")
-        except OSError as exc:
-            files.append({"file": path, "mtime": mtime, "status": f"error: {exc}"})
-            continue
-        files.append({"file": path, "mtime": mtime, "status": "read",
-                      "bytes_read": min(size, TAIL_BYTES), "truncated": size > TAIL_BYTES})
-        for line in data.splitlines():
-            m = DIAG.search(line)
-            if not m:
+        with fh:
+            try:
+                st = os.fstat(fh.fileno())
+            except OSError as exc:
+                files[f"name:{name}"] = {"name": name, "status": f"error: {exc}"}
                 continue
-            s = STAMP.search(line)
-            if not s:
+            fid, size = f"{st.st_dev}:{st.st_ino}", st.st_size
+            if fid in seen:
+                files[f"dup:{name}"] = {"name": name, "id": fid, "status": "duplicate"}
                 continue
-            ts = calendar.timegm(time.strptime(s.group(1), "%Y-%m-%d %H:%M:%S"))
-            if ts <= since:
-                continue
-            lines.append({"ts": ts, "kind": m.group(1), "fields": {k: int(v) for k, v in FIELD.findall(m.group(2))},
-                          "file": os.path.basename(path)})
+            seen.add(fid)
+            entry = {"name": name, "size": size}
+            try:
+                if cursors is None:
+                    entry.update(start=size, offset=size, status="baseline", fp=fingerprint(fh, size))
+                    files[fid] = entry
+                    continue
+                cursor, status = cursors.get(fid), "read"
+                if cursor is None:
+                    start, status = 0, "new"
+                else:
+                    start, fp, closed = cursor
+                    changed = size < start or fingerprint(fh, start) != fp
+                    if changed and closed:
+                        # The old file was closed and fully read; this inode now belongs to a new file.
+                        start, status = 0, "new"
+                    elif size < start:
+                        entry["gap_bytes"] = start
+                        start, status = 0, "shrunk"
+                    elif fingerprint(fh, start) != fp:
+                        entry["gap_bytes"] = start
+                        start, status = 0, "rewritten"
+                fh.seek(start)
+                data = fh.read(min(size - start, cap))
+                cut = data.rfind(b"\n") + 1
+                if cut == 0 and len(data) >= cap:
+                    entry["gap_bytes"] = entry.get("gap_bytes", 0) + len(data)
+                    cut, status = len(data), "over_cap"
+                else:
+                    lines.extend(parse_diag(data[:cut].decode("utf-8", "replace"), name))
+                entry.update(start=start, offset=start + cut, status=status, behind=size - (start + cut),
+                             fp=fingerprint(fh, start + cut))
+            except OSError as exc:
+                entry.update(status=f"error: {exc}")
+            files[fid] = entry
+    missing = sorted(set(cursors or {}) - seen)
     lines.sort(key=lambda d: (d["ts"], d["kind"], d["file"]))
-    return lines, files
+    return files, lines, missing
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--path", action="append", default=[])
     ap.add_argument("--du", action="append", default=[])
-    ap.add_argument("--diag-since", type=float, default=None)
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--baseline", action="store_true")
+    mode.add_argument("--cursors", default=None)
+    ap.add_argument("--cap", type=int, default=CAP)
     a = ap.parse_args(argv)
+    if a.du:
+        print(json.dumps({"du": du(a.du), "clock": time.time()}))
+        return 0
     report = {}
     for name, fn in (("unit", unit), ("mem", meminfo), ("oom_kill", oom_kills)):
         try:
             report[name] = fn()
-        except (OSError, ValueError, subprocess.SubprocessError) as exc:
-            report[name] = f"error: {exc}"
+        except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+            report[name] = f"error: {type(exc).__name__}: {exc}"
     pid = report["unit"].get("main_pid", 0) if isinstance(report["unit"], dict) else 0
     try:
         report["proc"] = proc(pid)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, IndexError) as exc:
         report["proc"] = f"error: {exc}"
     try:
         with open("/proc/sys/kernel/random/boot_id") as fh:
@@ -177,10 +250,11 @@ def main(argv=None) -> int:
     except OSError as exc:
         report["boot_id"] = f"error: {exc}"
     report["disks"] = disks(a.path)
-    if a.du:
-        report["du"] = du(a.du)
-    if a.diag_since is not None:
-        report["diag"], report["diag_files"] = diag(a.diag_since)
+    report["sample_clock"] = time.time()
+    if a.baseline or a.cursors is not None:
+        cursors = None if a.baseline else {
+            k: (int(v[0]), str(v[1]), v[2] is True) for k, v in json.loads(a.cursors).items()}
+        report["files"], report["diag"], report["missing"] = read_logs(cursors, cap=a.cap)
     report["clock"] = time.time()
     print(json.dumps(report))
     return 0
