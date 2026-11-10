@@ -236,7 +236,9 @@ class FakeSsh:
             return subprocess.CompletedProcess(argv, 0, json.dumps({"du": du}) + "\n", "")
         report = resources(self.clocks, **self.over.get(host, {}))
         cursors = None if "--baseline" in args else json.loads(args[args.index("--cursors") + 1])
-        report["files"], report["diag"], report["missing"] = t1_probe.read_logs(cursors, str(self.tmp / host / "node.log*"))
+        report["safety"] = []
+        report["files"], report["diag"], report["missing"] = t1_probe.read_logs(
+            cursors, str(self.tmp / host / "node.log*"), safety=report["safety"])
         return subprocess.CompletedProcess(argv, 0, json.dumps(report) + "\n", "")
 
 
@@ -369,7 +371,7 @@ def test_a_baseline_report_never_makes_the_cache_fresh_even_with_lines(tmp_path)
     o, _, _ = make(tmp_path)
     line = {"ts": T0, "kind": "simplex-candidate-payloads", "fields": dict(ALL_FIELDS), "file": "node.log"}
     report = {"files": {"1:1": {"name": "node.log", "status": "baseline", "start": 5, "offset": 5, "size": 5, "fp": "x"}},
-              "diag": [line], "missing": []}
+              "diag": [line], "missing": [], "safety": []}
     o.cache_part("node-1", None, report, {"ts": T0, "host": "node-1"}, T0)
     assert stale(o, ["cache:node-1"]) != [] and o.cursors["node-1"]["baselined"] == T0
 
@@ -503,7 +505,7 @@ def test_cursors_are_written_only_after_the_cache_row(tmp_path, monkeypatch):
 def test_a_vanished_cursor_is_remembered_then_forgotten(tmp_path):
     o, ssh, clocks = baselined(tmp_path)
     fid = next(iter(o.cursors["node-1"]["files"]))
-    report = {"files": {}, "diag": [], "missing": [fid]}
+    report = {"files": {}, "diag": [], "missing": [fid], "safety": []}
     base = {"ts": T0, "host": "node-1"}
     o.cache_part("node-1", o.cursors["node-1"], report, base, T0)
     assert fid in o.cursors["node-1"]["grave"] and fid in o.cursor_offsets("node-1")
@@ -516,11 +518,13 @@ def test_a_vanished_cursor_is_remembered_then_forgotten(tmp_path):
 def test_a_malformed_log_read_is_a_cache_error_and_keeps_the_cursors(tmp_path):
     o, ssh, clocks = baselined(tmp_path)
     before = dict(o.cursors["node-1"])
-    for report in ({"files": {"1:1": {"name": "n", "status": "read", "start": 9, "offset": 3, "size": 9, "fp": "x"}}, "diag": [], "missing": []},
-                   {"files": {}, "diag": [{"ts": "1", "kind": "k", "fields": {}}], "missing": []},
-                   {"files": {}, "diag": [], "missing": None}):
+    for report in ({"files": {"1:1": {"name": "n", "status": "read", "start": 9, "offset": 3, "size": 9, "fp": "x"}}, "diag": [], "missing": [], "safety": []},
+                   {"files": {}, "diag": [{"ts": "1", "kind": "k", "fields": {}}], "missing": [], "safety": []},
+                   {"files": {}, "diag": [], "missing": None, "safety": []},
+                   {"files": {}, "diag": [], "missing": []},
+                   {"files": {}, "diag": [], "missing": [], "safety": [{"file": "n", "line": 7}]}):
         o.cache_part("node-1", o.cursors["node-1"], report, {"ts": T0, "host": "node-1"}, T0)
-    assert [r["error"] for r in rows(o, "cache") if r["kind"] == "error"] == ["probe returned no valid log read"] * 3
+    assert [r["error"] for r in rows(o, "cache") if r["kind"] == "error"] == ["probe returned no valid log read"] * 5
     assert o.cursors["node-1"] == before
 
 
@@ -784,7 +788,9 @@ def test_status_blind_reasons_and_recovery(tmp_path):
         append(ssh.log(h.name), "x\n")
     everything(o)
     st = o.health_round()
-    assert st["blind"] is True and sorted(st["reasons"]) == sorted(f"cache:{h} stale (never > 180 s)" for h in obs.HOSTS)
+    # After the baseline read, neither the cache nor the log coverage is proven yet.
+    assert st["blind"] is True and sorted(st["reasons"]) == sorted(
+        [f"cache:{h} stale (never > 180 s)" for h in obs.HOSTS] + [f"logs:{h} stale (never > 180 s)" for h in obs.HOSTS])
     clocks.tick(30)
     for h in HOSTS:
         append(ssh.log(h.name), payload_line(clocks.w))
@@ -807,7 +813,79 @@ def test_freshness_ignores_wall_clock_steps(tmp_path):
 def test_never_seen_is_stale(tmp_path):
     o, _, _ = make(tmp_path)
     st = o.status()
-    assert st["blind"] is True and len([r for r in st["reasons"] if "never" in r]) == 21
+    assert st["blind"] is True and len([r for r in st["reasons"] if "never" in r]) == 25
+
+
+# ---------------------------------------------------------------- safety scan and the cache switch
+
+
+MISBEHAVIOR = "[ 1][t 3][2025-11-10 18:40:05.1][pool.cpp:9][!simplex]\tMISBEHAVIOR DETECTED kind=equivocation slot=7\n"
+CONFLICT = "[ 1][t 3][2025-11-10 18:40:06.1][x.cpp:1]\tvote conflicts with a decision already recorded slot=9\n"
+
+
+def test_safety_lines_are_found_in_the_gap_checked_read_and_counted(tmp_path):
+    o, ssh, clocks = baselined(tmp_path)
+    append(ssh.log("node-1"), "ordinary\n" + MISBEHAVIOR + CONFLICT + "MISBEHAVIOR without the marker\n")
+    clocks.tick(60)
+    o.resources_round(HOSTS[0])
+    hits = rows(o, "safety")
+    assert [h["line"] for h in hits] == [MISBEHAVIOR.rstrip("\n"), CONFLICT.rstrip("\n")]
+    assert all(h["host"] == "node-1" and h["file"] == "node.log" for h in hits)
+    assert o.status()["safety_hits"] == 2
+
+
+def test_a_safety_line_before_the_baseline_is_not_reported(tmp_path):
+    o, ssh, clocks = make(tmp_path)
+    append(ssh.log("node-1"), MISBEHAVIOR)
+    o.resources_round(HOSTS[0])
+    assert rows(o, "safety") == [] and o.status()["safety_hits"] == 0
+
+
+def test_a_safety_line_in_a_rotated_file_is_found_once(tmp_path):
+    o, ssh, clocks = baselined(tmp_path)
+    append(ssh.log("node-1"), MISBEHAVIOR)
+    os.rename(ssh.log("node-1"), ssh.tmp / "node-1" / "node.log.old")
+    append(ssh.log("node-1"), "fresh\n")
+    for _ in range(2):
+        clocks.tick(60)
+        o.resources_round(HOSTS[0])
+    assert len(rows(o, "safety")) == 1 and rows(o, "safety")[0]["file"] == "node.log.old"
+
+
+def test_coverage_gaps_are_counted_in_the_status(tmp_path):
+    o, ssh, clocks = baselined(tmp_path)
+    with open(ssh.log("node-1"), "w") as fh:
+        fh.write("")
+    clocks.tick(60)
+    o.resources_round(HOSTS[0])
+    assert o.status()["coverage_gaps"] == 1
+
+
+def test_logs_are_fresh_after_a_valid_read_without_cache_lines(tmp_path):
+    o, ssh, clocks = baselined(tmp_path)
+    assert stale(o, ["logs:node-1"]) != []  # the baseline read is not coverage
+    clocks.tick(60)
+    o.resources_round(HOSTS[0])
+    assert stale(o, ["logs:node-1"]) == [] and stale(o, ["cache:node-1"]) != []
+
+
+def test_without_the_cache_series_the_run_is_not_blind_for_lack_of_cache_lines(tmp_path):
+    (tmp_path / "hosts").mkdir()
+    clocks = Clocks()
+    ssh = FakeSsh(tmp_path / "hosts", clocks)
+    o = obs.Observer(HOSTS, {h: FakeRpc() for h in obs.HOSTS}, tmp_path / "out", wall=clocks.wall,
+                     mono=clocks.mono, run=ssh, cache_series=False)
+    for h in HOSTS:
+        append(ssh.log(h.name), "x\n")
+    everything(o)
+    clocks.tick(30)
+    everything(o)
+    st = o.health_round()
+    assert st["blind"] is False and st["cache_series"] is False
+    clocks.tick(200)  # the log reads lapse too: still blind on logs, whatever the cache switch says
+    for h in HOSTS:
+        o.chain_round(h.name)
+    assert any(r.startswith("logs:") for r in o.status()["reasons"])
 
 
 # ---------------------------------------------------------------- loops
@@ -836,3 +914,72 @@ def test_run_loops_writes_every_series_and_survives_a_failing_round(tmp_path, mo
     health = rows(o, "health")
     assert any(r.get("collector") == "ids" and "boom" in r["error"] for r in health) and calls["n"] > 1
     assert "blind" in json.loads((o.out / "status.json").read_text())
+
+
+# ---------------------------------------------------------------- operator balances
+
+
+class BalanceRpc(FakeRpc):
+    def __init__(self, balances, fail=False):
+        super().__init__()
+        self.balances, self.down = balances, fail
+
+    def call(self, method, timeout=None, **p):
+        if method == "getAddressInformation":
+            if self.down:
+                raise ConnectionError("down")
+            return {"balance": self.balances[p["address"]], "state": "active"}
+        return super().call(method, timeout=timeout, **p)
+
+
+OPS = {"node-1": "-1:" + "1" * 64, "node-2": "-1:" + "2" * 64}
+
+
+def with_operators(tmp_path, rpcs):
+    (tmp_path / "hosts").mkdir()
+    clocks = Clocks()
+    return obs.Observer(HOSTS, rpcs, tmp_path / "out", wall=clocks.wall, mono=clocks.mono,
+                        run=FakeSsh(tmp_path / "hosts", clocks), operators=OPS), clocks
+
+
+def test_operator_balances_are_recorded_and_low_ones_flagged(tmp_path):
+    bal = {OPS["node-1"]: str(25 * 10**9), OPS["node-2"]: str(19 * 10**9)}
+    o, _ = with_operators(tmp_path, {h: BalanceRpc(bal) for h in obs.HOSTS})
+    o.fees_round()
+    st = o.status()
+    assert st["operators"]["node-1"]["balance_nano"] == 25 * 10**9 and st["operators_low"] == ["node-2"]
+    assert stale(o, ["fees:node-1", "fees:node-2"]) == []
+    assert [r["source"] for r in rows(o, "fees")] == ["node-1", "node-1"]
+
+
+def test_a_failing_source_falls_back_and_all_failing_is_an_error_row(tmp_path):
+    bal = {OPS["node-1"]: "30000000000", OPS["node-2"]: "30000000000"}
+    rpcs = {h: BalanceRpc(bal) for h in obs.HOSTS}
+    rpcs["node-1"] = BalanceRpc(bal, fail=True)
+    o, _ = with_operators(tmp_path, rpcs)
+    o.fees_round()
+    assert [r["source"] for r in rows(o, "fees")] == ["node-2", "node-2"]
+    for r in rpcs.values():
+        r.down = True
+    o.fees_round()
+    errors = [r for r in rows(o, "fees") if "error" in r]
+    assert len(errors) == 2 and all(len(r["error"]) == 4 for r in errors)
+
+
+@pytest.mark.parametrize("bad", [None, "-5", "1e9", "abc", 3.5])
+def test_a_malformed_balance_is_never_a_reading(tmp_path, bad):
+    bal = {OPS["node-1"]: bad, OPS["node-2"]: bad}
+    o, _ = with_operators(tmp_path, {h: BalanceRpc(bal) for h in obs.HOSTS})
+    o.fees_round()
+    assert all("error" in r for r in rows(o, "fees")) and o.status()["operators"] == {}
+    assert stale(o, ["fees:node-1"]) != []
+
+
+def test_operator_freshness_is_part_of_blind(tmp_path):
+    bal = {OPS["node-1"]: "30000000000", OPS["node-2"]: "30000000000"}
+    o, clocks = with_operators(tmp_path, {h: BalanceRpc(bal) for h in obs.HOSTS})
+    assert any(r.startswith("fees:node-1") for r in o.status()["reasons"])
+    o.fees_round()
+    assert not any(r.startswith("fees:") for r in o.status()["reasons"])
+    clocks.tick(obs.FRESHNESS["fees"] + 1)
+    assert any(r.startswith("fees:") for r in o.status()["reasons"])

@@ -62,9 +62,12 @@ HOSTS = ("node-1", "node-2", "node-3", "node-4")
 DATA_PATHS = ("/var/lib/tos/validator", "/var/log/tos")
 DU_PATHS = ("/var/lib/tos/validator/celldb", "/var/lib/tos/validator/archive")
 SHARD = "-9223372036854775808"
-INTERVALS = {"resources": 60.0, "du": 600.0, "clock": 3600.0, "chain": 5.0, "ids": 60.0, "health": 30.0}
+INTERVALS = {"resources": 60.0, "du": 600.0, "clock": 3600.0, "chain": 5.0, "ids": 60.0, "health": 30.0,
+             "fees": 600.0}
+OPERATOR_FLOOR_NANO = 20 * 10**9  # T1-PLAN §6: an operator under 20 TOS stops new submissions
 # A series is stale when its last good record is older than this (monotonic seconds); then the run is blind.
-FRESHNESS = {"resources": 180.0, "cache": 180.0, "du": 1800.0, "clock": 7500.0, "chain": 30.0, "ids": 180.0}
+FRESHNESS = {"resources": 180.0, "cache": 180.0, "logs": 180.0, "du": 1800.0, "clock": 7500.0, "chain": 30.0,
+             "ids": 180.0, "fees": 1800.0}
 PROBE_TIMEOUT, DU_TIMEOUT, CLOCK_TIMEOUT, RPC_TIMEOUT = 45, 560, 15, 2.0
 SKEW = 5.0  # host vs coordinator clock allowance when placing a host-stamped time inside a call
 CLOCK_LIMIT = 2.0  # |host - coordinator| allowed; the whole uncertainty interval must lie inside it
@@ -250,7 +253,7 @@ class Rpc:
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def call(self, method: str, timeout: float = RPC_TIMEOUT, **params: Any) -> Any:
-        if method not in {"getMasterchainInfo", "getBlockHeader"}:
+        if method not in {"getMasterchainInfo", "getBlockHeader", "getAddressInformation"}:
             raise ValueError(f"{method} is not in the read-only allowlist")
         body = json.dumps(dict(jsonrpc="2.0", id=1, method=method, params=params)).encode()
         req = urllib.request.Request(self.url, body, {"Content-Type": "application/json"})
@@ -265,12 +268,21 @@ class Rpc:
 
 
 class Observer:
-    def __init__(self, hosts, rpcs: dict, out: Path, wall=time.time, mono=time.monotonic, run=subprocess.run):
+    def __init__(self, hosts, rpcs: dict, out: Path, wall=time.time, mono=time.monotonic, run=subprocess.run,
+                 cache_series: bool = True, operators: dict[str, str] | None = None):
         self.hosts, self.rpcs, self.out = list(hosts), rpcs, out
         self.wall, self.mono, self.run = wall, mono, run
+        # Without TOS_MEMORY_DIAGNOSTICS there are no cache lines; the cache series is then not a freshness
+        # requirement, while the log reads (coverage for the safety scan) still are.
+        self.cache_series = cache_series
         out.mkdir(parents=True, exist_ok=True)
         (out / "cursors").mkdir(exist_ok=True)
-        self.sinks = {k: Sink(out / f"{k}.jsonl") for k in ("resources", "cache", "du", "clock", "chain", "health")}
+        self.sinks = {k: Sink(out / f"{k}.jsonl")
+                      for k in ("resources", "cache", "safety", "du", "clock", "chain", "health")}
+        self.counts = {"safety_hits": 0, "coverage_gaps": 0}
+        self.operators = dict(operators or {})  # name -> address of each operator wallet (public)
+        self.balances: dict[str, dict] = {}
+        self.sinks["fees"] = Sink(out / "fees.jsonl")
         self.fresh = Freshness(mono)
         self.lock = threading.Lock()
         self.cursors = {h.name: self.load_cursors(h.name) for h in self.hosts}
@@ -340,8 +352,11 @@ class Observer:
 
     def cache_part(self, host: str, cur: dict | None, report: dict, base: dict, received: float) -> None:
         files, diag, vanished = report.get("files"), report.get("diag"), report.get("missing")
+        safety = report.get("safety")
         if not (files_shape_ok(files) and diag_shape_ok(diag) and isinstance(vanished, list)
-                and all(isinstance(v, str) for v in vanished)):
+                and all(isinstance(v, str) for v in vanished) and isinstance(safety, list)
+                and all(isinstance(s, dict) and isinstance(s.get("file"), str) and isinstance(s.get("line"), str)
+                        for s in safety)):
             self.sinks["cache"].write({**base, "kind": "error", "error": "probe returned no valid log read"})
             return
         known = {} if cur is None else cur["files"]
@@ -360,6 +375,11 @@ class Observer:
                                    "vanished": vanished})
         for g in gaps:
             self.sinks["cache"].write({**base, "kind": "coverage_gap", **g})
+        for s in safety:
+            self.sinks["safety"].write({**base, "kind": "safety_line", **s})
+        with self.lock:
+            self.counts["coverage_gaps"] += len(gaps)
+            self.counts["safety_hits"] += len(safety)
         # Advance the cursors only now that the evidence they consumed is on disk.
         grave = {k: dict(v) for k, v in buried.items()}
         new_files = {}
@@ -380,6 +400,8 @@ class Observer:
         self.cursors[host] = {"files": new_files, "grave": grave,
                               "baselined": base["ts"] if cur is None else cur["baselined"]}
         self.save_cursors(host)
+        if cur is not None:
+            self.fresh.good(f"logs:{host}")  # a valid read after the baseline; any gap is its own permanent row
         if cur is not None and not gaps and any(payload_ok(d, received) for d in diag):
             self.fresh.good(f"cache:{host}")
 
@@ -512,14 +534,44 @@ class Observer:
         if agree:
             self.fresh.good("ids:all")
 
+    # ---- operator balances
+
+    def fees_round(self) -> None:
+        """Each operator wallet's balance from the first source that answers, every 10 min."""
+        for name, address in self.operators.items():
+            errors = []
+            for host, r in self.rpcs.items():
+                try:
+                    info = r.call("getAddressInformation", address=address)
+                    balance = info.get("balance") if isinstance(info, dict) else None
+                    if not (isinstance(balance, (str, int)) and str(balance).isdigit()):
+                        raise ValueError(f"balance {balance!r} is not a non-negative integer")
+                    nano = int(balance)
+                    break
+                except Exception as exc:  # one source failing tries the next; all failing is a row
+                    errors.append(f"{host}: {type(exc).__name__}: {exc}"[:160])
+            else:
+                self.sinks["fees"].write({"ts": self.wall(), "operator": name, "address": address, "error": errors})
+                continue
+            now = self.wall()
+            self.sinks["fees"].write({"ts": now, "operator": name, "address": address, "source": host,
+                                      "balance_nano": nano})
+            with self.lock:
+                self.balances[name] = {"balance_nano": nano, "at": now}
+            self.fresh.good(f"fees:{name}")
+
     # ---- health
 
     def status(self) -> dict:
         names = [h.name for h in self.hosts]
-        keys = [f"{k}:{h}" for k in ("resources", "cache", "du", "clock", "chain") for h in names] + ["ids:all"]
+        series = ("resources", "cache", "logs", "du", "clock", "chain") if self.cache_series else (
+            "resources", "logs", "du", "clock", "chain")
+        keys = [f"{k}:{h}" for k in series for h in names] + ["ids:all"] + [f"fees:{o}" for o in self.operators]
         reasons = self.fresh.stale(keys)
         now_m = self.mono()
         with self.lock:
+            counts = dict(self.counts)
+            balances = {o: dict(v) for o, v in self.balances.items()}
             clock = {h: dict(self.clock_verdict.get(h, {"verdict": "unmeasured"})) for h in names}
             chain = {h: {"seqno": v["id"][2], "max_seqno": v["max_seqno"], "head_age_s": now_m - v["advanced_mono"]}
                      for h, v in self.heads.items()}
@@ -527,8 +579,10 @@ class Observer:
         reasons += [f"clock:{h} latest verdict {v['verdict']}" for h, v in clock.items() if v["verdict"] != "ok"]
         stalled = sorted(h for h, v in chain.items() if v["head_age_s"] > STALL)
         return {"blind": bool(reasons), "reasons": reasons, "chain": chain, "stalled_hosts": stalled,
-                "clock": clock, "baselined": baselined, "updated": self.wall(), "updated_mono": now_m,
-                "coordinator_boot_id": coordinator_boot_id()}
+                "clock": clock, "baselined": baselined, "cache_series": self.cache_series, **counts,
+                "operators": balances,
+                "operators_low": sorted(o for o, v in balances.items() if v["balance_nano"] < OPERATOR_FLOOR_NANO),
+                "updated": self.wall(), "updated_mono": now_m, "coordinator_boot_id": coordinator_boot_id()}
 
     def health_round(self) -> dict:
         st = self.status()
@@ -567,6 +621,8 @@ def run_loops(obs: Observer, duration: float) -> None:
                 nxt = obs.mono()
 
     jobs = [(INTERVALS["ids"], obs.ids_round, "ids"), (INTERVALS["health"], obs.health_round, "health")]
+    if obs.operators:
+        jobs.append((INTERVALS["fees"], obs.fees_round, "fees"))
     for h in obs.hosts:
         jobs += [(INTERVALS["resources"], lambda h=h: obs.resources_round(h), f"resources:{h.name}"),
                  (INTERVALS["du"], lambda h=h: obs.du_round(h), f"du:{h.name}"),
@@ -588,6 +644,10 @@ def main(argv=None) -> int:
     ap.add_argument("--unit-dir", type=Path, default=Path.home() / ".config/systemd/user")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--duration", type=float, default=80 * 3600)
+    ap.add_argument("--operators", type=Path, default=None,
+                    help="JSON {name: wallet address} of the operator wallets to watch (public addresses only)")
+    ap.add_argument("--no-cache-series", action="store_true",
+                    help="the validators run without TOS_MEMORY_DIAGNOSTICS: do not require cache lines for freshness")
     a = ap.parse_args(argv)
     inventory = json.loads(a.inventory.read_text())
     hosts = [h for h in preflight.load_inventory(a.inventory) if h.name in HOSTS]
@@ -596,7 +656,13 @@ def main(argv=None) -> int:
         return 1
     urls = load_keys_gate().tunnel_inventory(a.unit_dir, inventory)
     try:
-        obs = Observer(hosts, {h: Rpc(urls[h]) for h in HOSTS}, a.out)
+        operators = json.loads(a.operators.read_text()) if a.operators else None
+        if operators is not None and not (isinstance(operators, dict) and operators
+                                          and all(isinstance(v, str) for v in operators.values())):
+            print("--operators must be a non-empty JSON object of name -> address", file=sys.stderr)
+            return 1
+        obs = Observer(hosts, {h: Rpc(urls[h]) for h in HOSTS}, a.out, cache_series=not a.no_cache_series,
+                       operators=operators)
     except RefuseStart as exc:
         print(f"refusing to start: {exc}", file=sys.stderr)
         return 2

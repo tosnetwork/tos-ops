@@ -16,6 +16,7 @@ Then the validator logs are read from per-file cursors:
            size, the offset read from (`start`), the offset consumed to (`offset`), the fingerprint of the bytes
            before it (`fp`) and a status (see read_logs).
   diag   - the "MEMORY_DIAGNOSTICS simplex-candidate-*" lines in the consumed bytes, parsed into key=integer fields.
+  safety - every consumed line holding a SAFETY pattern (the T3 safety scan), on the same gap-checked coverage.
   missing - cursor ids no file has any more (the coordinator decides whether that lost data).
   clock  - this host's time.time() at the end.
 
@@ -40,6 +41,8 @@ CAP = 32 * 1024 * 1024
 DIAG = re.compile(r"MEMORY_DIAGNOSTICS (simplex-candidate-(?:payloads|resolver))((?: [a-z_]+=-?\d+)+)")
 STAMP = re.compile(r"\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)")
 FIELD = re.compile(r"([a-z_]+)=(-?\d+)")
+# The safety lines of the T3 scan: a consensus misbehaviour report, or a vote against a decision already logged.
+SAFETY = ("MISBEHAVIOR DETECTED kind=", "conflicts with a decision already recorded")
 
 
 def unit() -> dict:
@@ -146,7 +149,13 @@ def fingerprint(fh, offset: int) -> str:
     return hashlib.sha256(fh.read(min(offset, FP_BYTES))).hexdigest()[:32]
 
 
-def read_logs(cursors, files_glob: str = LOG_GLOB, cap: int = CAP) -> tuple:
+def scan_safety(text: str, name: str, out: list) -> None:
+    for line in text.splitlines():
+        if any(p in line for p in SAFETY):
+            out.append({"file": name, "line": line[:600]})
+
+
+def read_logs(cursors, files_glob: str = LOG_GLOB, cap: int = CAP, safety: list | None = None) -> tuple:
     """Read every log file from its cursor. `cursors` is {"dev:ino": [offset, fingerprint, closed]}, or None for a
     baseline; `closed` says the coordinator saw that file under a rotated name and read it to its end, so a change
     under the cursor means a new file reused the inode, not lost bytes.
@@ -210,7 +219,10 @@ def read_logs(cursors, files_glob: str = LOG_GLOB, cap: int = CAP) -> tuple:
                     entry["gap_bytes"] = entry.get("gap_bytes", 0) + len(data)
                     cut, status = len(data), "over_cap"
                 else:
-                    lines.extend(parse_diag(data[:cut].decode("utf-8", "replace"), name))
+                    text = data[:cut].decode("utf-8", "replace")
+                    lines.extend(parse_diag(text, name))
+                    if safety is not None:
+                        scan_safety(text, name, safety)
                 entry.update(start=start, offset=start + cut, status=status, behind=size - (start + cut),
                              fp=fingerprint(fh, start + cut))
             except OSError as exc:
@@ -254,7 +266,8 @@ def main(argv=None) -> int:
     if a.baseline or a.cursors is not None:
         cursors = None if a.baseline else {
             k: (int(v[0]), str(v[1]), v[2] is True) for k, v in json.loads(a.cursors).items()}
-        report["files"], report["diag"], report["missing"] = read_logs(cursors, cap=a.cap)
+        report["safety"] = []
+        report["files"], report["diag"], report["missing"] = read_logs(cursors, cap=a.cap, safety=report["safety"])
     report["clock"] = time.time()
     print(json.dumps(report))
     return 0
