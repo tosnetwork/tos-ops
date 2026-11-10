@@ -71,7 +71,7 @@ def int_keys(cap):
 
 def test_green_capture_passes(cap, pinned, verifier):
     v = run(cap, pinned, verifier)
-    assert v["verdict"] == "PASS-FOUR-SIGNER-PINNED-KEYS"
+    assert v["verdict"] == "PASS-FOUR-SIGNER-COVERAGE-PINNED-KEYS"
     assert all(s["signers"] == 4 for s in v["sources"].values())
 
 
@@ -264,6 +264,70 @@ def test_proof_for_another_block_with_identical_header_fields_fails(cap, pinned,
         run(cap, pinned, verifier)
 
 
+def test_envelope_end_and_reported_id_changed_together_fail(cap, pinned, verifier, monkeypatch):
+    # Reviewer's reproduction: the reported file hash and the proof envelope's end are changed consistently on
+    # every source, while the verified link (and its signatures) is untouched. The link's own destination must
+    # bind them.
+    other = base64.b64encode(b"\3" * 32).decode()
+    real = cvk.f.forward_proof
+
+    def outer_end_changed(data, allow_partial=False):
+        start, end, links = real(data, allow_partial)
+        return start, dict(end, file_hash=other), links
+
+    for s in cap["sources"].values():
+        for b in s["blocks"].values():
+            b["header"]["id"]["file_hash"] = other
+    monkeypatch.setattr(cvk.f, "forward_proof", outer_end_changed)
+    with pytest.raises(cvk.Fail, match="does not end at block"):
+        run(cap, pinned, verifier)
+
+
+def test_envelope_start_other_than_the_key_block_fails(cap, pinned, verifier, monkeypatch):
+    real = cvk.f.forward_proof
+
+    def outer_start_changed(data, allow_partial=False):
+        start, end, links = real(data, allow_partial)
+        return dict(start, seqno=start["seqno"] - 1), end, links
+
+    monkeypatch.setattr(cvk.f, "forward_proof", outer_start_changed)
+    with pytest.raises(cvk.Fail, match="does not start at key block"):
+        run(cap, pinned, verifier)
+
+
+def test_term_upper_bound_is_exclusive(cap, pinned, verifier, monkeypatch):
+    # verify_link calls gen_utime == utime_until "within_schedule"; the gate's term is half-open.
+    real = cvk.verify_link
+
+    def until_now(link, verify_signature, expected_source=None):
+        r = real(link, verify_signature, expected_source=expected_source)
+        return dict(r, validator_until=r["header"]["gen_utime"])
+
+    monkeypatch.setattr(cvk, "verify_link", until_now)
+    with pytest.raises(cvk.Fail, match="outside its set's term"):
+        run(cap, pinned, verifier)
+
+
+def test_term_lower_bound_is_inclusive_and_enforced(cap, pinned, verifier, monkeypatch):
+    real = cvk.verify_link
+
+    def since_later(link, verify_signature, expected_source=None):
+        r = real(link, verify_signature, expected_source=expected_source)
+        return dict(r, validator_since=r["header"]["gen_utime"] + 1)
+
+    monkeypatch.setattr(cvk, "verify_link", since_later)
+    with pytest.raises(cvk.Fail, match="outside its set's term"):
+        run(cap, pinned, verifier)
+
+
+def test_verdict_lists_each_members_verified_blocks(cap, pinned, verifier):
+    v = run(cap, pinned, verifier)
+    for s in v["sources"].values():
+        assert sorted(s["signed_blocks"]) == sorted(k.hex() for k in pinned)
+        assert all(s["signed_blocks"][k] for k in s["signed_blocks"])
+        assert all(set(b) == {"seqno", "gen_utime"} for blocks in s["signed_blocks"].values() for b in blocks)
+
+
 def test_a_flipped_signature_byte_fails(cap, pinned, verifier):
     host = next(iter(cap["sources"]))
     s = cap["seqnos"][0]
@@ -387,7 +451,7 @@ def test_retry_then_eligible_block_passes(monkeypatch, tmp_path):
         calls["n"] += 1
         if calls["n"] == 1:
             raise cvk.Retry("no block yet at or after --since")
-        return {"verdict": "PASS-FOUR-SIGNER-PINNED-KEYS"}
+        return {"verdict": "PASS-FOUR-SIGNER-COVERAGE-PINNED-KEYS"}
 
     monkeypatch.setattr(cvk, "capture", lambda rpcs: {})
     monkeypatch.setattr(cvk, "evaluate", evaluate)

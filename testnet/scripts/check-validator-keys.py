@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
-"""Pinned-key four-signer certificate gate for the epoch-6 public testnet (read-only).
+"""Pinned-key recent four-signer coverage gate for the epoch-6 public testnet (read-only).
 
-For one recent masterchain block H that the named sources agree on, it proves:
+For a window of WINDOW consecutive recent masterchain blocks that the named sources agree on, it proves for every
+block B of the window:
 
-  * H's header and finality certificate arrive in one forward BlockLink from H's governing key block
-    (liteServer.getBlockProof). con01_history.certificate.verify_link checks the link:
-    - the key block's config proof root and H's header proof root against their block ids;
+  * B's header and finality certificate arrive in one forward BlockLink from B's governing key block
+    (liteServer.getBlockProof), bound by full id: the requested block = the proof's end = the verified link's
+    destination, and the requested key block = the proof's start = the link's source.
+    con01_history.certificate.verify_link checks the link:
+    - the key block's config proof root and B's header proof root against their block ids;
     - prev_key_block_seqno, catchain seqno and validator-list hash against the certificate;
     - the session id;
-    - every ML-DSA-44 signature against the key block's ConfigParam 34.
+    - every ML-DSA-44 signature against the key block's ConfigParam 34, with more than 2/3 of the weight.
   * That ConfigParam 34 has exactly the four genesis members: validator id -> public key, read from the epoch-6
     zero state, whose root and file hash are pinned in this file and must also match the given global config.
     All weights are equal.
-  * All four members signed.
-  * H is fresh. Its proven gen_utime is at or after --since, at most --max-age seconds old, not more than
-    --future-tolerance seconds ahead, and inside the set's term.
+  * B is fresh. Its proven gen_utime is at or after --since, at most --max-age seconds old, not more than
+    --future-tolerance seconds ahead, and inside the set's half-open term [utime_since, utime_until).
+
+And over the window: all four pinned members signed. A simplex certificate carries a quorum, not necessarily every
+member, so this is **recent signing coverage** across verified certificates, not one certificate signed by all
+four. The verdict lists each member's verified blocks, so the coverage is auditable.
 
 Sources are named hosts, resolved through the tunnel units: each unit's -L port:127.0.0.1:8081 root@address
 must name that host's inventory address. The host under test (--exclude) is never a source.
@@ -232,6 +238,7 @@ def evaluate(
     for host in hosts:
         s = cap["sources"][host]
         signers: set[bytes] = set()
+        signed_in: dict[str, list[dict[str, int]]] = {}
         gens = []
         for seqno in seqnos:
             jh = s["blocks"][seqno]["header"]
@@ -240,10 +247,20 @@ def evaluate(
             c = s["configs"].get(k)
             need(c is not None, f"{host}: no key block header for key block {k}")
             try:
-                _start, end, links = f.forward_proof(f.D(s["blocks"][seqno]["proof_reply"]))
+                start, end, links = f.forward_proof(f.D(s["blocks"][seqno]["proof_reply"]))
                 need(len(links) == 1, f"{host}: expected one forward link key block {k} -> {seqno}")
                 link = links[0]
-                need(identity(end) == identity(jh["id"]), f"{host}: proof does not end at block {seqno}")
+                # Bind by full id: the requested block, the proof envelope's end and the verified link's
+                # destination are one block; the requested key block, the envelope's start and the link's
+                # source are one key block. verify_link checks only the link's own source and destination.
+                need(
+                    identity(end) == identity(jh["id"]) == identity(link["dst"]),
+                    f"{host}: proof does not end at block {seqno}",
+                )
+                need(
+                    identity(start) == identity(c["key_header"]["id"]) == identity(link["src"]),
+                    f"{host}: proof does not start at key block {k}",
+                )
                 result = verify_link(link, verify_signature, expected_source=c["key_header"]["id"])
                 members, weights = governing_set(link)
             except (AssertionError, Refused, KeyError, ValueError, IndexError, struct.error) as exc:
@@ -257,23 +274,37 @@ def evaluate(
                 == (jh["gen_utime"], jh["prev_key_block_seqno"], jh["catchain_seqno"], jh["validator_list_hash_short"]),
                 f"{host}: block {seqno}: JSON header disagrees with the proven header",
             )
-            need(result["term_schedule"] == "within_schedule", f"{host}: block {seqno} is outside its set's term")
             gen = header["gen_utime"]
+            # The term is half-open, [utime_since, utime_until): verify_link's "within_schedule" also admits
+            # gen_utime == utime_until, so the bound is applied here explicitly.
+            need(
+                result["validator_since"] <= gen < result["validator_until"],
+                f"{host}: block {seqno} gen_utime {gen} is outside its set's term "
+                f"[{result['validator_since']}, {result['validator_until']})",
+            )
             need(gen <= now + future, f"{host}: block {seqno} gen_utime {gen} is in the future")
             need(now - gen <= max_age, f"{host}: block {seqno} is {int(now - gen)} s old (max {max_age})")
             if gen < since:
                 retry.append(f"block {seqno} predates --since ({gen} < {since})")
-            signers |= {f.D(x["validator_id"]) for x in link["cert"]["signatures"]}
+            for x in link["cert"]["signatures"]:
+                vid = f.D(x["validator_id"])
+                signers.add(vid)
+                signed_in.setdefault(vid.hex(), []).append({"seqno": seqno, "gen_utime": gen})
             gens.append(gen)
         need(signers <= set(pinned), f"{host}: a signer outside the pinned set")
         if signers != set(pinned):
             retry.append(f"{host}: {len(signers)} of {MEMBERS} signers across blocks {seqnos[0]}..{seqnos[-1]}")
-        head_age = now - s["head"].get("gen_utime", gens[-1]) if isinstance(s["head"], dict) else 0
-        per_source[host] = {"signers": len(signers), "first_gen_utime": gens[0], "last_gen_utime": gens[-1]}
+        per_source[host] = {
+            "signers": len(signers),
+            "first_gen_utime": gens[0],
+            "last_gen_utime": gens[-1],
+            # Auditable coverage: each pinned member's verified blocks in the window.
+            "signed_blocks": {vid: signed_in.get(vid, []) for vid in sorted(v.hex() for v in pinned)},
+        }
     if retry:
         raise Retry("; ".join(retry[:3]))
     return {
-        "verdict": "PASS-FOUR-SIGNER-PINNED-KEYS",
+        "verdict": "PASS-FOUR-SIGNER-COVERAGE-PINNED-KEYS",
         "seqnos": [seqnos[0], seqnos[-1]],
         "last_id": cap["sources"][hosts[0]]["blocks"][seqnos[-1]]["header"]["id"],
         "sources": per_source,

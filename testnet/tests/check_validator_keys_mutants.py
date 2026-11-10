@@ -35,7 +35,11 @@ MUTANTS = [
     ("S6 excluded host", 'need(host != exclude, f"{host} is the host under test and cannot be a source")', 'pass'),
     ("E1 consecutive window", 'need(len(seqnos) >= 1 and seqnos == list(range(seqnos[0], seqnos[0] + len(seqnos))), "window is not consecutive")', 'pass'),
     ("E2 source agreement", 'need(len(ids) == 1, f"sources disagree on block {seqno}\'s full id")', 'pass'),
-    ("E4 proof end", 'need(identity(end) == identity(jh["id"]), f"{host}: proof does not end at block {seqno}")', 'pass'),
+    ("E4 proof end binds the verified link", 'identity(end) == identity(jh["id"]) == identity(link["dst"]),', 'identity(end) == identity(jh["id"]),'),
+    ("E4b proof end", 'identity(end) == identity(jh["id"]) == identity(link["dst"]),', 'True,'),
+    ("E6 proof start", 'identity(start) == identity(c["key_header"]["id"]) == identity(link["src"]),', 'True,'),
+    ("T1 term half-open", 'result["validator_since"] <= gen < result["validator_until"],', 'result["validator_since"] <= gen <= result["validator_until"],'),
+    ("T2 term lower bound", 'result["validator_since"] <= gen < result["validator_until"],', 'gen < result["validator_until"],'),
     ("E5 verify_link", 'result = verify_link(link, verify_signature, expected_source=c["key_header"]["id"])', 'result = verify_link(link, lambda pk, sig, msg: None, expected_source=None)'),
     ("K1 pinned keys", 'need(members == pinned, f"{host}: block {seqno}: governing set is not the four pinned genesis keys")', 'pass'),
     ("K2 equal weights", 'need(len(weights) == 1, f"{host}: governing set weights are not equal")', 'pass'),
@@ -59,7 +63,7 @@ def main() -> int:
     original = SCRIPT.read_text()
     labels = [m[0] for m in MUTANTS]
     assert len(set(labels)) == len(labels), "duplicate mutant label"
-    assert len({m[1] for m in MUTANTS}) == len(MUTANTS), "duplicate mutant pattern"
+    assert len({(m[1], m[2]) for m in MUTANTS}) == len(MUTANTS), "duplicate mutant"
     rc, out = suite()
     if rc != 0:
         print("unmutated suite is not green:\n" + out[-2000:])
