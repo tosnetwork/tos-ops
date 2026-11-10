@@ -861,6 +861,25 @@ def test_coverage_gaps_are_counted_in_the_status(tmp_path):
     assert o.status()["coverage_gaps"] == 1
 
 
+def test_a_host_without_its_active_log_never_has_fresh_coverage(tmp_path):
+    # bot review on #81: no log files at all must not count as a scanned log.
+    o, ssh, clocks = make(tmp_path)
+    o.resources_round(HOSTS[0])  # baseline with no files
+    for _ in range(2):
+        clocks.tick(60)
+        o.resources_round(HOSTS[0])
+    assert stale(o, ["logs:node-1"]) != []
+    append(ssh.tmp / "node-1" / "node.log.thread3.log", "x\n")  # only a thread log, not the active one
+    for _ in range(2):
+        clocks.tick(60)
+        o.resources_round(HOSTS[0])
+    assert stale(o, ["logs:node-1"]) != []
+    append(ssh.log("node-1"), "y\n")
+    clocks.tick(60)
+    o.resources_round(HOSTS[0])
+    assert stale(o, ["logs:node-1"]) == []
+
+
 def test_logs_are_fresh_after_a_valid_read_without_cache_lines(tmp_path):
     o, ssh, clocks = baselined(tmp_path)
     assert stale(o, ["logs:node-1"]) != []  # the baseline read is not coverage

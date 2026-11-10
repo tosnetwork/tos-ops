@@ -69,6 +69,7 @@ BALANCE_QUORUM = 2  # sources that must answer before a balance counts; the read
 # Log coverage counts as current only when no file is more than this behind (the remainder of a partial line
 # is normal); a backlog from the per-read cap leaves the logs series stale until it is read.
 LOG_LAG_BYTES = 1024 * 1024
+ACTIVE_LOG = "node.log"  # the validator's active log file; it must be read for the logs series to be fresh
 # A series is stale when its last good record is older than this (monotonic seconds); then the run is blind.
 FRESHNESS = {"resources": 180.0, "cache": 180.0, "logs": 180.0, "du": 1800.0, "clock": 7500.0, "chain": 30.0,
              "ids": 180.0, "fees": 1800.0}
@@ -421,7 +422,9 @@ class Observer:
         behind = max([e.get("behind", 0) for e in files.values() if e["status"] in READ_STATUSES] or [0])
         with self.lock:
             self.log_behind[host] = behind
-        if cur is not None and behind <= LOG_LAG_BYTES:
+        # Coverage needs evidence: the active log itself was opened and read this round (no files is no coverage).
+        active_read = any(e["name"] == ACTIVE_LOG and e["status"] in READ_STATUSES for e in files.values())
+        if cur is not None and behind <= LOG_LAG_BYTES and active_read:
             # A valid read after the baseline that is caught up: the safety scan is current. Gaps are their own rows.
             self.fresh.good(f"logs:{host}")
         if cur is not None and not gaps and any(payload_ok(d, received) for d in diag):
