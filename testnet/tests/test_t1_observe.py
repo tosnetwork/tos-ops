@@ -12,10 +12,8 @@ import subprocess
 from types import SimpleNamespace
 
 import pytest
-
-from conftest import SCRIPTS
-
 import t1_probe
+from conftest import SCRIPTS
 
 spec = importlib.util.spec_from_file_location("t1_observe", SCRIPTS / "t1-observe.py")
 obs = importlib.util.module_from_spec(spec)
@@ -195,7 +193,16 @@ def test_resources_round_records_a_failed_host_and_keeps_the_others():
     stale = fresh.stale(obs.FRESHNESS, [f"resources:{h}" for h in obs.HOSTS] + [f"cache:{h}" for h in obs.HOSTS])
     assert stale == ["resources:node-2 stale (never > 180 s)", "cache:node-2 stale (never > 180 s)"]
     ok = s["resources"].rows[0]
-    assert ok["oom_kill"] == 0 and ok["clock_offset"] == 1 and ok["unit"]["main_pid"] == 10
+    assert ok["oom_kill"] == 0 and ok["unit"]["main_pid"] == 10 and ok["clock"] is not None
+
+
+def test_clock_offset_is_taken_at_the_call_midpoint_not_the_round_start():
+    ticks = iter([T0 + 10, T0 + 14])  # the call itself ran 10 s into the round and took 4 s
+    run = fake_run({"192.0.2.1": json.dumps(report(clock=T0 + 13))})
+    rep, err = obs.probe_host(HOSTS[0], T0, False, run, clock=lambda: next(ticks))
+    assert err is None and (rep["sent"], rep["received"]) == (T0 + 10, T0 + 14)
+    assert obs.clock_offset(rep) == {"offset": 1, "bound": 2}
+    assert obs.clock_offset(dict(rep, clock="error: x")) is None
 
 
 def test_absent_diagnostics_never_make_the_cache_fresh():
@@ -238,6 +245,11 @@ def test_overlapping_reads_keep_each_line_once_and_lose_none():
     kept = [d["fields"]["node_charged_bytes"] for r in s["cache"].rows for d in r["lines"]]
     assert kept == [1, 2, 3, 4]
     assert len(state["diag_seen"]["node-1"]) == 4  # seconds +5 and +6 only
+    # A later read that still returns the old seconds keeps only the last two seconds' keys.
+    third = second + [diag_entry(70, 5), diag_entry(71, 6)]
+    obs.resources_round(one, s, fresh, state, T0 + 120, fake_run({"192.0.2.1": json.dumps(report(third))}))
+    assert [d["fields"]["node_charged_bytes"] for d in s["cache"].rows[-1]["lines"]] == [5, 6]
+    assert len(state["diag_seen"]["node-1"]) == 2
 
 
 def test_du_runs_on_the_first_and_every_tenth_round():

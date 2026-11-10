@@ -43,6 +43,7 @@ MUTANTS = [
     ("O9 one-second overlap", OBSERVE, 'state["diag_since"][host.name] = max(d["ts"] for d in diag) - 1', 'state["diag_since"][host.name] = max(d["ts"] for d in diag)'),
     ("O10 dedupe", OBSERVE, "if key not in seen:\n            out.append(d)", "out.append(d)"),
     ("O11 seen bounded", OBSERVE, 'for d in lines if d["ts"] >= floor)', "for d in lines)"),
+    ("O12 clock midpoint", OBSERVE, 'mid = (report["sent"] + report["received"]) / 2', 'mid = report["sent"]'),
     ("C1 head freshness", OBSERVE, 'fresh.good(f"chain:{host}")', "pass"),
     ("C2 head time", OBSERVE, '"root_hash": last["root_hash"], "gen_utime": hdr["gen_utime"]}', '"root_hash": last["root_hash"]}'),
     ("C3 all heads", OBSERVE, "if len(heads) < len(rpcs):", "if not heads:"),

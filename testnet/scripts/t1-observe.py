@@ -101,7 +101,24 @@ class Freshness:
 # ---------------------------------------------------------------- resources and cache (SSH)
 
 
-def probe_host(host, since: float, with_du: bool, run=subprocess.run) -> tuple[dict | None, str | None]:
+def probe_host(host, since: float, with_du: bool, run=subprocess.run, clock=time.time) -> tuple[dict | None, str | None]:
+    """The probe's report, with "sent" and "received" (coordinator clock) around the SSH call, or an error."""
+    sent = clock()
+    report, error = _probe_host(host, since, with_du, run)
+    if report is not None:
+        report["sent"], report["received"] = sent, clock()
+    return report, error
+
+
+def clock_offset(report: dict) -> dict | None:
+    """Host clock minus coordinator clock at the call's midpoint; `bound` is half the round trip."""
+    if type(report.get("clock")) not in (int, float):
+        return None
+    mid = (report["sent"] + report["received"]) / 2
+    return {"offset": report["clock"] - mid, "bound": (report["received"] - report["sent"]) / 2}
+
+
+def _probe_host(host, since: float, with_du: bool, run) -> tuple[dict | None, str | None]:
     args = " ".join(f"--path {p}" for p in DATA_PATHS) + f" --diag-since {since:.0f}"
     if with_du:
         args += " " + " ".join(f"--du {p}" for p in DU_PATHS)
@@ -140,7 +157,7 @@ def resources_round(hosts, sinks, fresh, state, now, run=subprocess.run) -> None
             "unit": report.get("unit"), "proc": report.get("proc"), "mem": report.get("mem"),
             "oom_kill": report.get("oom_kill"), "boot_id": report.get("boot_id"),
             "disks": report.get("disks"), "du": report.get("du"),
-            "clock_offset": (report["clock"] - now) if isinstance(report.get("clock"), (int, float)) else None,
+            "probe_sent": report["sent"], "probe_received": report["received"], "clock": clock_offset(report),
         })
         fresh.good(f"resources:{host.name}")
         diag = report.get("diag")
