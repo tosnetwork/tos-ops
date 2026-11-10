@@ -358,6 +358,15 @@ def test_the_baseline_round_never_makes_the_cache_fresh(tmp_path):
     assert o.cursors["node-1"]["baselined"] == T0
 
 
+def test_a_baseline_report_never_makes_the_cache_fresh_even_with_lines(tmp_path):
+    o, _, _ = make(tmp_path)
+    line = {"ts": T0, "kind": "simplex-candidate-payloads", "fields": dict(ALL_FIELDS), "file": "node.log"}
+    report = {"files": {"1:1": {"name": "node.log", "status": "baseline", "start": 5, "offset": 5, "size": 5, "fp": "x"}},
+              "diag": [line], "missing": []}
+    o.cache_part("node-1", None, report, {"ts": T0, "host": "node-1"}, T0)
+    assert stale(o, ["cache:node-1"]) != [] and o.cursors["node-1"]["baselined"] == T0
+
+
 def test_a_new_complete_payload_line_makes_the_cache_fresh(tmp_path):
     o, ssh, clocks = baselined(tmp_path)
     clocks.tick(60)
@@ -500,7 +509,7 @@ def test_a_vanished_cursor_is_remembered_then_forgotten(tmp_path):
 def test_a_malformed_log_read_is_a_cache_error_and_keeps_the_cursors(tmp_path):
     o, ssh, clocks = baselined(tmp_path)
     before = dict(o.cursors["node-1"])
-    for report in ({"files": {"1:1": {"name": "n", "status": "read", "start": 9, "offset": 3, "size": 9}}, "diag": [], "missing": []},
+    for report in ({"files": {"1:1": {"name": "n", "status": "read", "start": 9, "offset": 3, "size": 9, "fp": "x"}}, "diag": [], "missing": []},
                    {"files": {}, "diag": [{"ts": "1", "kind": "k", "fields": {}}], "missing": []},
                    {"files": {}, "diag": [], "missing": None}):
         o.cache_part("node-1", o.cursors["node-1"], report, {"ts": T0, "host": "node-1"}, T0)
