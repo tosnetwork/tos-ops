@@ -75,7 +75,6 @@ MUTANTS = [
     ("C4b advance past the maximum, not the last", OBSERVE, 'if prev is None or seq > prev["max_seqno"]:', 'if prev is None or seq > prev["id"][2]:'),
     ("C12 hashes are 32 bytes", OBSERVE, "return len(base64.b64decode(v, validate=True)) == 32", "return True"),
     ("C13 id hashes required", OBSERVE, 'and count(i.get("seqno")) and hash32(i.get("root_hash")) and hash32(i.get("file_hash"))):', 'and count(i.get("seqno"))):'),
-    ("C14 id types strict", OBSERVE, 'if not (isinstance(i, dict) and type(i.get("workchain")) is int and isinstance(i.get("shard"), str)', 'if not (isinstance(i, dict)'),
     ("C5 regression row", OBSERVE, 'if seq < prev["id"][2]:', "if False:"),
     ("C6 cadence miss", OBSERVE, 'if now_m - started > INTERVALS["chain"]:', "if False:"),
     ("C7 ids need fresh heads", OBSERVE, 'if now_m - v["seen_mono"] <= FRESHNESS["chain"]}', "if True}"),

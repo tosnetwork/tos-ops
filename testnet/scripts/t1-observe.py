@@ -228,9 +228,10 @@ def hash32(v) -> bool:
 
 
 def block_id(i) -> tuple | None:
-    """A complete block id (workchain, shard, seqno, root_hash, file_hash), or None when any field is missing,
-    mistyped or not a 32-byte base64 hash: two missing hashes must never compare equal."""
-    if not (isinstance(i, dict) and type(i.get("workchain")) is int and isinstance(i.get("shard"), str)
+    """A complete block id (workchain, shard, seqno, root_hash, file_hash), or None when the seqno is not a
+    count or a hash is not 32 bytes of base64: two missing hashes must never compare equal. Workchain and shard
+    are not typed here because every use compares them for equality with -1 and SHARD."""
+    if not (isinstance(i, dict) and "workchain" in i and "shard" in i
             and count(i.get("seqno")) and hash32(i.get("root_hash")) and hash32(i.get("file_hash"))):
         return None
     return tuple(i[k] for k in ID_FIELDS)
