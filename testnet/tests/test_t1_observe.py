@@ -1059,3 +1059,33 @@ def test_operator_freshness_is_part_of_blind(tmp_path):
     assert not any(r.startswith("fees:") for r in o.status()["reasons"])
     clocks.tick(obs.FRESHNESS["fees"] + 1)
     assert any(r.startswith("fees:") for r in o.status()["reasons"])
+
+
+# ---------------------------------------------------------------- the latest host row (for the load runner)
+
+
+def test_status_hosts_carries_the_latest_row_even_when_it_is_worse(tmp_path):
+    o, ssh, clocks = make(tmp_path)
+    o.resources_round(HOSTS[0])
+    h = o.status()["hosts"]["node-1"]
+    assert h["complete"] is True and h["unit"]["main_pid"] == 10 and h["received_mono"] == clocks.m
+    ssh.over["node-1"] = {"unit": {"main_pid": 0, "n_restarts": 1, "active_state": "failed"}, "proc": "no main pid"}
+    clocks.tick(60)
+    o.resources_round(HOSTS[0])
+    h = o.status()["hosts"]["node-1"]
+    assert h["unit"]["active_state"] == "failed" and h["unit"]["n_restarts"] == 1
+    ssh.raw["node-1"] = ""
+    clocks.tick(60)
+    o.resources_round(HOSTS[0])
+    h = o.status()["hosts"]["node-1"]
+    assert h["complete"] is False and h["error"] == "no output (ssh rc 0)" and "unit" not in h
+
+
+def test_a_partial_row_replaces_a_complete_one(tmp_path):
+    o, ssh, clocks = make(tmp_path)
+    o.resources_round(HOSTS[0])
+    ssh.over["node-1"] = {"mem": "error: x"}
+    clocks.tick(60)
+    o.resources_round(HOSTS[0])
+    h = o.status()["hosts"]["node-1"]
+    assert h["complete"] is False and "mem" in h["missing"]
