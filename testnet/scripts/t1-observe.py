@@ -65,6 +65,10 @@ SHARD = "-9223372036854775808"
 INTERVALS = {"resources": 60.0, "du": 600.0, "clock": 3600.0, "chain": 5.0, "ids": 60.0, "health": 30.0,
              "fees": 600.0}
 OPERATOR_FLOOR_NANO = 20 * 10**9  # T1-PLAN §6: an operator under 20 TOS stops new submissions
+BALANCE_QUORUM = 2  # sources that must answer before a balance counts; the reading is their minimum
+# Log coverage counts as current only when no file is more than this behind (the remainder of a partial line
+# is normal); a backlog from the per-read cap leaves the logs series stale until it is read.
+LOG_LAG_BYTES = 1024 * 1024
 # A series is stale when its last good record is older than this (monotonic seconds); then the run is blind.
 FRESHNESS = {"resources": 180.0, "cache": 180.0, "logs": 180.0, "du": 1800.0, "clock": 7500.0, "chain": 30.0,
              "ids": 180.0, "fees": 1800.0}
@@ -210,7 +214,8 @@ def files_shape_ok(files) -> bool:
             return False
         if e["status"] in READ_STATUSES and not (
                 count(e.get("start")) and count(e.get("offset")) and count(e.get("size"))
-                and e["start"] <= e["offset"] <= e["size"] and isinstance(e.get("fp"), str)):
+                and e["start"] <= e["offset"] <= e["size"] and isinstance(e.get("fp"), str)
+                and count(e.get("behind", 0))):
             return False
     return True
 
@@ -279,7 +284,11 @@ class Observer:
         (out / "cursors").mkdir(exist_ok=True)
         self.sinks = {k: Sink(out / f"{k}.jsonl")
                       for k in ("resources", "cache", "safety", "du", "clock", "chain", "health")}
-        self.counts = {"safety_hits": 0, "coverage_gaps": 0}
+        # Permanent alarms survive a restart: they are recounted from the durable rows, because the restored
+        # cursors never re-read the bytes that held them.
+        self.counts = {"safety_hits": self.count_rows("safety", "safety_line"),
+                       "coverage_gaps": self.count_rows("cache", "coverage_gap")}
+        self.log_behind: dict[str, int] = {}
         self.operators = dict(operators or {})  # name -> address of each operator wallet (public)
         self.balances: dict[str, dict] = {}
         self.sinks["fees"] = Sink(out / "fees.jsonl")
@@ -288,6 +297,15 @@ class Observer:
         self.cursors = {h.name: self.load_cursors(h.name) for h in self.hosts}
         self.heads: dict[str, dict] = {}
         self.clock_verdict: dict[str, dict] = {}
+
+    def count_rows(self, sink: str, kind: str) -> int:
+        path = self.out / f"{sink}.jsonl"
+        if not path.exists():
+            return 0
+        try:
+            return sum(1 for x in path.read_text().splitlines() if x and strict_json(x).get("kind") == kind)
+        except ValueError as exc:
+            raise RefuseStart(f"{path}: unreadable row ({exc}); refusing to publish alarm counts") from exc
 
     # ---- cursors
 
@@ -400,8 +418,12 @@ class Observer:
         self.cursors[host] = {"files": new_files, "grave": grave,
                               "baselined": base["ts"] if cur is None else cur["baselined"]}
         self.save_cursors(host)
-        if cur is not None:
-            self.fresh.good(f"logs:{host}")  # a valid read after the baseline; any gap is its own permanent row
+        behind = max([e.get("behind", 0) for e in files.values() if e["status"] in READ_STATUSES] or [0])
+        with self.lock:
+            self.log_behind[host] = behind
+        if cur is not None and behind <= LOG_LAG_BYTES:
+            # A valid read after the baseline that is caught up: the safety scan is current. Gaps are their own rows.
+            self.fresh.good(f"logs:{host}")
         if cur is not None and not gaps and any(payload_ok(d, received) for d in diag):
             self.fresh.good(f"cache:{host}")
 
@@ -537,27 +559,31 @@ class Observer:
     # ---- operator balances
 
     def fees_round(self) -> None:
-        """Each operator wallet's balance from the first source that answers, every 10 min."""
+        """Each operator wallet's balance, asked of every source every 10 min.
+
+        A reading needs at least BALANCE_QUORUM answering sources. The reading is their **minimum**, so a lagging
+        source cannot hide a low balance; a disagreement is kept in the row and flagged."""
         for name, address in self.operators.items():
-            errors = []
+            answers, errors = {}, []
             for host, r in self.rpcs.items():
                 try:
                     info = r.call("getAddressInformation", address=address)
                     balance = info.get("balance") if isinstance(info, dict) else None
                     if not (isinstance(balance, (str, int)) and str(balance).isdigit()):
                         raise ValueError(f"balance {balance!r} is not a non-negative integer")
-                    nano = int(balance)
-                    break
-                except Exception as exc:  # one source failing tries the next; all failing is a row
+                    answers[host] = int(balance)
+                except Exception as exc:  # recorded per source
                     errors.append(f"{host}: {type(exc).__name__}: {exc}"[:160])
-            else:
-                self.sinks["fees"].write({"ts": self.wall(), "operator": name, "address": address, "error": errors})
-                continue
             now = self.wall()
-            self.sinks["fees"].write({"ts": now, "operator": name, "address": address, "source": host,
-                                      "balance_nano": nano})
+            row = {"ts": now, "operator": name, "address": address, "answers": answers, "errors": errors}
+            if len(answers) < BALANCE_QUORUM:
+                self.sinks["fees"].write({**row, "error": f"only {len(answers)} sources answered"})
+                continue
+            nano = min(answers.values())
+            disagree = len(set(answers.values())) > 1
+            self.sinks["fees"].write({**row, "balance_nano": nano, "disagree": disagree})
             with self.lock:
-                self.balances[name] = {"balance_nano": nano, "at": now}
+                self.balances[name] = {"balance_nano": nano, "at": now, "disagree": disagree}
             self.fresh.good(f"fees:{name}")
 
     # ---- health
@@ -572,6 +598,7 @@ class Observer:
         with self.lock:
             counts = dict(self.counts)
             balances = {o: dict(v) for o, v in self.balances.items()}
+            log_behind = dict(self.log_behind)
             clock = {h: dict(self.clock_verdict.get(h, {"verdict": "unmeasured"})) for h in names}
             chain = {h: {"seqno": v["id"][2], "max_seqno": v["max_seqno"], "head_age_s": now_m - v["advanced_mono"]}
                      for h, v in self.heads.items()}
@@ -580,7 +607,7 @@ class Observer:
         stalled = sorted(h for h, v in chain.items() if v["head_age_s"] > STALL)
         return {"blind": bool(reasons), "reasons": reasons, "chain": chain, "stalled_hosts": stalled,
                 "clock": clock, "baselined": baselined, "cache_series": self.cache_series, **counts,
-                "operators": balances,
+                "operators": balances, "log_behind": log_behind,
                 "operators_low": sorted(o for o, v in balances.items() if v["balance_nano"] < OPERATOR_FLOOR_NANO),
                 "updated": self.wall(), "updated_mono": now_m, "coordinator_boot_id": coordinator_boot_id()}
 

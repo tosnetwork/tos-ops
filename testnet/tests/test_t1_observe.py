@@ -949,21 +949,78 @@ def test_operator_balances_are_recorded_and_low_ones_flagged(tmp_path):
     st = o.status()
     assert st["operators"]["node-1"]["balance_nano"] == 25 * 10**9 and st["operators_low"] == ["node-2"]
     assert stale(o, ["fees:node-1", "fees:node-2"]) == []
-    assert [r["source"] for r in rows(o, "fees")] == ["node-1", "node-1"]
+    assert all(len(r["answers"]) == 4 and r["disagree"] is False for r in rows(o, "fees"))
 
 
-def test_a_failing_source_falls_back_and_all_failing_is_an_error_row(tmp_path):
-    bal = {OPS["node-1"]: "30000000000", OPS["node-2"]: "30000000000"}
-    rpcs = {h: BalanceRpc(bal) for h in obs.HOSTS}
-    rpcs["node-1"] = BalanceRpc(bal, fail=True)
+def test_a_lagging_source_cannot_hide_a_low_balance(tmp_path):
+    # codex r1 §4: one source still shows 25 TOS, the others the current 19 TOS.
+    low = {OPS["node-1"]: str(19 * 10**9), OPS["node-2"]: str(30 * 10**9)}
+    stale_view = {OPS["node-1"]: str(25 * 10**9), OPS["node-2"]: str(30 * 10**9)}
+    rpcs = {h: BalanceRpc(low) for h in obs.HOSTS}
+    rpcs["node-1"] = BalanceRpc(stale_view)
     o, _ = with_operators(tmp_path, rpcs)
     o.fees_round()
-    assert [r["source"] for r in rows(o, "fees")] == ["node-2", "node-2"]
+    st = o.status()
+    assert st["operators_low"] == ["node-1"] and st["operators"]["node-1"]["disagree"] is True
+    assert st["operators"]["node-1"]["balance_nano"] == 19 * 10**9
+
+
+def test_a_balance_needs_two_sources_and_all_failing_is_an_error_row(tmp_path):
+    bal = {OPS["node-1"]: "30000000000", OPS["node-2"]: "30000000000"}
+    rpcs = {h: BalanceRpc(bal, fail=True) for h in obs.HOSTS}
+    rpcs["node-4"] = BalanceRpc(bal)
+    o, _ = with_operators(tmp_path, rpcs)
+    o.fees_round()
+    assert all(r.get("error") == "only 1 sources answered" for r in rows(o, "fees"))
+    assert o.status()["operators"] == {} and stale(o, ["fees:node-1"]) != []
+    rpcs["node-3"].down = False
+    o.fees_round()
+    assert o.status()["operators"]["node-1"]["balance_nano"] == 30 * 10**9
     for r in rpcs.values():
         r.down = True
     o.fees_round()
-    errors = [r for r in rows(o, "fees") if "error" in r]
-    assert len(errors) == 2 and all(len(r["error"]) == 4 for r in errors)
+    last = rows(o, "fees")[-2:]
+    assert all(r["error"] == "only 0 sources answered" and len(r["errors"]) == 4 for r in last)
+
+
+def test_alarm_counts_survive_an_observer_restart(tmp_path):
+    # codex r1 §1: the restored cursors never re-read a consumed safety line or gap.
+    o, ssh, clocks = baselined(tmp_path)
+    append(ssh.log("node-1"), MISBEHAVIOR)
+    clocks.tick(60)
+    o.resources_round(HOSTS[0])
+    with open(ssh.log("node-1"), "w") as fh:
+        fh.write("")
+    clocks.tick(60)
+    o.resources_round(HOSTS[0])
+    assert (o.status()["safety_hits"], o.status()["coverage_gaps"]) == (1, 1)
+    o2 = obs.Observer(HOSTS, o.rpcs, o.out, wall=clocks.wall, mono=clocks.mono, run=ssh)
+    assert (o2.status()["safety_hits"], o2.status()["coverage_gaps"]) == (1, 1)
+
+
+def test_an_unreadable_alarm_row_refuses_the_start(tmp_path):
+    o, ssh, clocks = baselined(tmp_path)
+    with open(o.out / "safety.jsonl", "a") as fh:
+        fh.write("{not json\n")
+    with pytest.raises(obs.RefuseStart):
+        obs.Observer(HOSTS, o.rpcs, o.out, wall=clocks.wall, mono=clocks.mono, run=ssh)
+
+
+def test_a_read_backlog_keeps_the_logs_series_stale_until_caught_up(tmp_path, monkeypatch):
+    # codex r1 §2: reading some bytes is not proof that the safety scan is current.
+    o, ssh, clocks = baselined(tmp_path)
+    monkeypatch.setattr(obs, "LOG_LAG_BYTES", 100)
+    real_read = t1_probe.read_logs
+    monkeypatch.setattr(t1_probe, "read_logs", lambda c, g, cap=200, safety=None: real_read(c, g, 200, safety))
+    append(ssh.log("node-1"), ("y" * 80 + "\n") * 10 + MISBEHAVIOR)
+    clocks.tick(60)
+    o.resources_round(HOSTS[0])
+    assert stale(o, ["logs:node-1"]) != [] and o.status()["log_behind"]["node-1"] > 100
+    assert o.status()["safety_hits"] == 0
+    for _ in range(10):
+        clocks.tick(60)
+        o.resources_round(HOSTS[0])
+    assert stale(o, ["logs:node-1"]) == [] and o.status()["safety_hits"] == 1
 
 
 @pytest.mark.parametrize("bad", [None, "-5", "1e9", "abc", 3.5])

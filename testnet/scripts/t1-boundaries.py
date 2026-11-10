@@ -9,8 +9,10 @@ At every validator-set switch from now until --end, it runs:
   2. check-validator-keys.py (the four-signer gate) on all four sources, for blocks after the switch.
 Each boundary is taken from the chain: the `until` of the current set (ConfigParam 34), read from all four
 sources, which must agree. One row per boundary goes to DIR/boundaries.jsonl: the boundary, the exit status of
-each step, the verdicts, and the evidence directories. A boundary whose term cannot be read, or whose checks
-cannot run, is a row with its error, never a silent skip. The next boundary is read again after each one.
+each step, the verdicts, and the evidence directories. Every boundary from the first one seen until --end gets
+exactly one outcome row: checked, missed (it passed while the term was unreadable or the wrapper was down) or
+interrupted (an earlier run of the wrapper started it and recorded no end). A restart on the same --out resumes
+from those rows.
 
 Exit statuses of the checks are recorded, not interpreted: the T1 judge applies §5.1 to them.
 """
@@ -126,28 +128,61 @@ def append(path: Path, row: dict) -> None:
         os.fsync(fh.fileno())
 
 
+def prior_outcomes(rows: Path) -> dict[int, str]:
+    """Boundary -> outcome from an earlier run of this wrapper on the same --out (restart)."""
+    out = {}
+    if rows.exists():
+        for line in rows.read_text().splitlines():
+            r = json.loads(line)
+            if "outcome" in r:
+                out[r["boundary"]] = r["outcome"]
+    return out
+
+
 def run_boundaries(a, urls, fetch=rpc, run=subprocess.run, now=time.time, sleep=time.sleep) -> int:
+    """Every boundary from the first one observed until --end gets exactly one outcome row:
+    `checked` (the checks ran), `missed` (it passed while the term could not be read or the wrapper was down),
+    or `interrupted` (an earlier run started it and did not record its end)."""
     a.out.mkdir(parents=True, exist_ok=True)
     rows = a.out / "boundaries.jsonl"
-    done = set()
+    outcome = prior_outcomes(rows)
+    expected = None  # the next boundary that must get an outcome
     while now() < a.end:
         try:
             term = current_term(urls, fetch)
-        except Exception as exc:  # recorded, then retried: a boundary is never skipped silently
+        except Exception as exc:  # recorded and retried; a boundary crossed meanwhile is reported as missed below
             append(rows, {"ts": now(), "error": f"term unreadable: {type(exc).__name__}: {exc}"[:300]})
             sleep(60)
             continue
-        boundary = term["until"]
-        if boundary in done or boundary > a.end:
-            # The switch already handled (or past the end): wait for the next set.
-            if boundary > a.end:
-                break
+        boundary, period = term["until"], term["until"] - term["since"]
+        if expected is None:
+            expected = max(outcome) + period if outcome else boundary
+        # Boundaries passed without a check, while the term was unreadable or the wrapper was not running.
+        while expected < boundary and expected <= a.end:
+            if expected not in outcome:
+                append(rows, {"ts": now(), "boundary": expected, "outcome": "missed",
+                              "reason": f"passed before it was checked; the current term ends at {boundary}"})
+                outcome[expected] = "missed"
+            expected += period
+        if expected != boundary:
+            append(rows, {"ts": now(), "error": f"term schedule moved: expected {expected}, chain says {boundary}"})
+            expected = boundary
+        if boundary > a.end:
+            break
+        if boundary in outcome:
             sleep(60)
+            continue
+        out_dir = a.out / f"boundary-{boundary}"
+        if out_dir.exists():
+            append(rows, {"ts": now(), "boundary": boundary, "outcome": "interrupted", "dir": str(out_dir),
+                          "reason": "an earlier run started this boundary and recorded no end"})
+            outcome[boundary] = "interrupted"
             continue
         append(rows, {"ts": now(), "planned": boundary, "term": term})
         row = one_boundary(boundary, a, urls, run, now, sleep)
-        append(rows, {"ts": now(), **row})
-        done.add(boundary)
+        append(rows, {"ts": now(), **row, "outcome": "checked"})
+        outcome[boundary] = "checked"
+        expected = boundary + period
     return 0
 
 

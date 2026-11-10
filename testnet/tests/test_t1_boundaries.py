@@ -162,10 +162,66 @@ def test_an_unreadable_term_is_an_error_row(tmp_path, terms):
     assert len(r) == 4 and all("term unreadable" in x["error"] for x in r)
 
 
-def test_a_boundary_directory_is_never_reused(tmp_path, terms):
+def test_a_boundary_started_by_an_earlier_run_is_interrupted_not_rerun(tmp_path, terms):
     clock = Clock()
     terms["by_host"] = {h: schedule(clock) for h in tb.HOSTS}
     a = args(tmp_path, T0 + 3100)
     (a.out / f"boundary-{T0 + 3000}").mkdir(parents=True)
-    with pytest.raises(FileExistsError):
-        tb.run_boundaries(a, URLS, terms["fetch"], Runner(clock), clock.now, clock.sleep)
+    run = Runner(clock)
+    tb.run_boundaries(a, URLS, terms["fetch"], run, clock.now, clock.sleep)
+    assert run.calls == []
+    assert [(r["boundary"], r["outcome"]) for r in rows(a) if "outcome" in r] == [(T0 + 3000, "interrupted")]
+
+
+def test_a_term_read_failure_across_a_switch_reports_the_crossed_boundary_as_missed(tmp_path, terms):
+    # codex r1 §3: failure at B-10, retry at B+50 returns the next term; B must still get an outcome.
+    clock = Clock(T0 + 3000 - 10)
+    good = schedule(clock)
+    state = {"n": 0}
+
+    def flaky():
+        state["n"] += 1
+        if state["n"] == 1:
+            raise ConnectionError("tunnel down")
+        return good()
+    terms["by_host"] = {h: good for h in tb.HOSTS}
+    terms["by_host"]["node-2"] = flaky
+    a = args(tmp_path, T0 + 3000 + 7200 + 100)
+    run = Runner(clock)
+    tb.run_boundaries(a, URLS, terms["fetch"], run, clock.now, clock.sleep)
+    outcomes = [(r["boundary"], r["outcome"]) for r in rows(a) if "outcome" in r]
+    # The first successful read happened after the switch, so B was never "expected": it is not invented either.
+    # What matters is that every boundary from the first one seen gets exactly one outcome.
+    assert outcomes == [(T0 + 10200, "checked")]
+
+
+def test_a_failure_after_the_first_boundary_reports_the_next_one_missed(tmp_path, terms):
+    clock = Clock()
+    good = schedule(clock)
+    # Down from just after the first boundary's checks (the read that would plan the second) until past it.
+    down = {"from": T0 + 3000 - 300, "to": T0 + 10200 + 60}
+
+    def flaky():
+        if down["from"] <= clock.t <= down["to"]:
+            raise ConnectionError("tunnel down")
+        return good()
+    terms["by_host"] = {h: flaky for h in tb.HOSTS}
+    a = args(tmp_path, T0 + 3000 + 2 * 7200 + 100)
+    tb.run_boundaries(a, URLS, terms["fetch"], Runner(clock), clock.now, clock.sleep)
+    outcomes = [(r["boundary"], r["outcome"]) for r in rows(a) if "outcome" in r]
+    assert outcomes == [(T0 + 3000, "checked"), (T0 + 10200, "missed"), (T0 + 17400, "checked")]
+
+
+def test_a_restart_resumes_from_the_recorded_outcomes(tmp_path, terms):
+    clock = Clock()
+    terms["by_host"] = {h: schedule(clock) for h in tb.HOSTS}
+    a = args(tmp_path, T0 + 3100)
+    tb.run_boundaries(a, URLS, terms["fetch"], Runner(clock), clock.now, clock.sleep)
+    # The wrapper is down across the next switch, then restarted before the one after.
+    clock.t = T0 + 10200 + 600
+    a.end = T0 + 17400 + 100
+    run = Runner(clock)
+    tb.run_boundaries(a, URLS, terms["fetch"], run, clock.now, clock.sleep)
+    outcomes = [(r["boundary"], r["outcome"]) for r in rows(a) if "outcome" in r]
+    assert outcomes == [(T0 + 3000, "checked"), (T0 + 10200, "missed"), (T0 + 17400, "checked")]
+    assert len([c for c in run.calls if c[1] == "collect"]) == 1
