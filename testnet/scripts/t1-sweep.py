@@ -189,6 +189,7 @@ class Chain(Protocol):
     async def confirm(self, record: dict) -> Any: ...
     async def history(self, address: str, since: int) -> list[list[Any]]: ...
     async def pause(self, seconds: float) -> None: ...
+    def clock(self) -> float: ...
 
 
 class LiveChain:
@@ -216,6 +217,9 @@ class LiveChain:
 
     async def pause(self, seconds):
         await asyncio.sleep(seconds)
+
+    def clock(self):
+        return time.monotonic()
 
     async def mc_seqno(self):
         return int((await self.rpcs[0].call("getMasterchainInfo"))["last"]["seqno"])
@@ -319,15 +323,36 @@ async def prove_sweep(chain: Chain, sender_tx, sender: str, dest: str, balance: 
 
     The sender was confirmed on one RPC; another may not have imported that block yet and shows the old balance
     and no receipt. That is lag, not a failed sweep, so it is read again. A sweep that is really not exact stays
-    so on every read, and the last proof, with its problems, is returned."""
-    rounds = max(1, int(PROOF_WAIT // POLL))
-    for k in range(rounds):
-        after = [int(x.get("balance", -1)) for x in await chain.account(sender)]
-        proof = settle_sweep(sender_tx, sender, dest, balance, await chain.history(dest, since), after)
-        if not proof["problems"] or k == rounds - 1:
+    so on every read, and the last proof, with its problems, is returned.
+
+    PROOF_WAIT bounds the elapsed time on a monotonic clock, reads included: each read gets only what is left,
+    so a slow RPC cannot hold the wallet lock past it."""
+    deadline = chain.clock() + PROOF_WAIT
+    proof: dict[str, Any] = {"problems": [f"no complete read of every RPC within {PROOF_WAIT:.0f} s"]}
+    while True:
+        try:
+            rows = await asyncio.wait_for(chain.account(sender), remaining(chain, deadline))
+            history = await asyncio.wait_for(chain.history(dest, since), remaining(chain, deadline))
+        except (asyncio.TimeoutError, OutOfTime):
+            return proof
+        after = [int(x.get("balance", -1)) for x in rows]
+        proof = settle_sweep(sender_tx, sender, dest, balance, history, after)
+        if not proof["problems"]:
+            return proof
+        if chain.clock() + POLL >= deadline:
             return proof
         await chain.pause(POLL)
-    raise AssertionError("unreachable: the last round returns")
+
+
+class OutOfTime(Exception):
+    pass
+
+
+def remaining(chain: Chain, deadline: float) -> float:
+    left = deadline - chain.clock()
+    if left <= 0:
+        raise OutOfTime()
+    return left
 
 
 def receipt_fields(proof: dict) -> dict:

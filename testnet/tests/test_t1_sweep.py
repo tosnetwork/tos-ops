@@ -53,6 +53,10 @@ class FakeChain:
         self.out = {}
         # the second RPC lags: until `lag` pauses have passed it shows the balance before the sweep and no receipt
         self.lag, self.pauses = lag, 0
+        self.t = 0.0  # the fake monotonic clock: pauses advance it
+
+    def clock(self):
+        return self.t
 
     def lagging(self):
         return self.pauses < self.lag
@@ -60,6 +64,7 @@ class FakeChain:
     async def pause(self, seconds):
         assert seconds == tool.POLL
         self.pauses += 1
+        self.t += seconds
 
     async def network(self):
         return [{"init": dict(self.init), "global_id": self.global_id}] * 2
@@ -605,3 +610,32 @@ def test_recovery_reads_a_lagging_rpc_again(env, tmp_path, monkeypatch):
     finally:
         state.release()
     assert chain.pauses == 2
+
+
+class SlowChain(FakeChain):
+    """After the first send, every account read takes `slow` real seconds; its clock is the real one."""
+
+    def __init__(self, *a, slow, **k):
+        super().__init__(*a, **k)
+        self.slow = slow
+
+    def clock(self):
+        return time.monotonic()
+
+    async def account(self, address):
+        if self.sent:
+            await __import__("asyncio").sleep(self.slow)
+        return await super().account(address)
+
+
+def test_proof_wait_bounds_the_elapsed_time_reads_included(env, tmp_path, monkeypatch):
+    # codex r4: PROOF_WAIT counted rounds, not time; a slow RPC held the wallet lock far past it
+    m, w = env
+    monkeypatch.setattr(tool, "PROOF_WAIT", 0.3)
+    chain = SlowChain(m, w, [BAL, BAL], slow=5.0)
+    t0 = time.monotonic()
+    rc, rows, logs, _ = run(env, chain, tmp_path, monkeypatch=monkeypatch)
+    took = time.monotonic() - t0
+    assert rc == 1 and len(chain.sent) == 1 and took < 2.0, took
+    assert any("no complete read" in x for x in logs if x.startswith("STOP"))
+    assert "delivered" not in [r["type"] for r in rows]
