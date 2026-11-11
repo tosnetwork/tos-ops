@@ -5,7 +5,7 @@
 The verifier is built from the independently held tos commit
 `85c679c3454f306eb867e25b1960ae3d757bd3dd`, using a new `build-network-check`
 directory, Release, clang-21/clang++-21 and Ninja. Follow
-[the complete build instructions](../scripts/README.md#build-the-verifier),
+[the complete build instructions](../../../production/scripts/README.md#build-the-verifier),
 including the source check, dependency prerequisites, C ABI export checks and
 checksum manifest. The exact target is `tos-proof-embedded`; it is excluded from
 the default node build. Its output is

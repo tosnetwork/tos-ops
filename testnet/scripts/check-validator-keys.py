@@ -49,7 +49,8 @@ from typing import Any, Callable
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-sys.path.insert(0, str(HERE.parents[1] / "production"))
+sys.path.insert(0, str(HERE.parents[1] / "production"))  # network_check
+sys.path.insert(0, str(HERE.parents[1] / "testnet" / "acceptance"))  # con01_history
 
 import testnet_lib as lib  # noqa: E402
 import network_check as shared  # noqa: E402

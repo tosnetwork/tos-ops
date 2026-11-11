@@ -73,7 +73,7 @@ recorded by an endpoint being checked is not an independent reference.
 Never fetch the checkout, verifier binary, manifest or trusted network anchor
 from a checked endpoint. The digest in the evidence identifies one local build,
 not a promise of bit-identical binaries across compilers, build paths or flags.
-See [the clean-build evidence](../evidence/README.md) for the measured digest and
+See [the clean-build evidence](../../testnet/acceptance/evidence/README.md) for the measured digest and
 live rerun. Python packages or a running validator are not needed to build or
 load this C ABI.
 

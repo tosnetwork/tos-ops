@@ -347,14 +347,14 @@ def main():
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=False)
     root = Path(__file__).resolve().parents[2]
-    package = root / "production/con01_history"
+    package = root / "testnet/acceptance/con01_history"
     test = Path(__file__).with_name("test_con01_rejudge.py")
     rows = []
     with tempfile.TemporaryDirectory() as temporary:
         private = Path(temporary)
         shutil.copytree(
             package,
-            private / "production/con01_history",
+            private / "testnet/acceptance/con01_history",
             ignore=shutil.ignore_patterns("__pycache__"),
         )
         tests = private / "testnet/tests"
@@ -363,7 +363,7 @@ def main():
             shutil.copyfile(source, tests / source.name)
         shutil.copytree(test.parent / "data", tests / "data")
         shutil.copyfile(Path(__file__), tests / Path(__file__).name)
-        observer = private / "production/con01_history/observer.py"
+        observer = private / "testnet/acceptance/con01_history/observer.py"
         original = observer.read_text()
 
         def run(name, selected=None, red=False):
@@ -415,7 +415,7 @@ def main():
             observer.write_text(original.replace(before, after))
             run(name, selected, red=True)
             observer.write_text(original)
-        qualification = private / "production/con01_history/qualify.py"
+        qualification = private / "testnet/acceptance/con01_history/qualify.py"
         original_qualification = qualification.read_text()
         for name, before, after, selected in QUALIFICATION_MUTATIONS:
             if original_qualification.count(before) != 1:
@@ -423,7 +423,7 @@ def main():
             qualification.write_text(original_qualification.replace(before, after))
             run(name, selected, red=True)
             qualification.write_text(original_qualification)
-        launcher = private / "production/con01_history/launch.py"
+        launcher = private / "testnet/acceptance/con01_history/launch.py"
         original_launcher = launcher.read_text()
         for name, before, after, selected in LAUNCH_MUTATIONS:
             if original_launcher.count(before) != 1:
@@ -431,7 +431,7 @@ def main():
             launcher.write_text(original_launcher.replace(before, after))
             run(name, selected, red=True)
             launcher.write_text(original_launcher)
-        frozen = private / "production/con01_history/frozen.py"
+        frozen = private / "testnet/acceptance/con01_history/frozen.py"
         original_frozen = frozen.read_text()
         for name, before, after, selected in FROZEN_MUTATIONS:
             if original_frozen.count(before) != 1:
@@ -439,7 +439,7 @@ def main():
             frozen.write_text(original_frozen.replace(before, after))
             run(name, selected, red=True)
             frozen.write_text(original_frozen)
-        certificate = private / "production/con01_history/certificate.py"
+        certificate = private / "testnet/acceptance/con01_history/certificate.py"
         original_certificate = certificate.read_text()
         for name, before, after, selected in CERTIFICATE_MUTATIONS:
             if original_certificate.count(before) != 1:

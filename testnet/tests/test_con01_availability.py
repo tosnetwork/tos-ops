@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "production"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "testnet" / "acceptance"))
 import test_con01_rejudge as judge_fixture
 from con01_history import observer
 from con01_history.certificate import Refused, SignatureVerifier

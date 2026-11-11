@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "production"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "testnet" / "acceptance"))
 from con01_history import election_fees as fees  # noqa: E402
 from con01_history.certificate import Refused  # noqa: E402
 

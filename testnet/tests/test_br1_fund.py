@@ -15,7 +15,7 @@ from unittest.mock import patch
 import nacl.signing
 from pytosiq_core import Cell, StateInit, begin_cell
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "production"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "testnet" / "acceptance"))
 import br1_fund as fund
 from con01_history.certificate import Refused
 

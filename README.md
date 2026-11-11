@@ -94,14 +94,14 @@ Some tests skip, and say why, unless their tool is present. Supply them for a ru
 [production/scripts](production/scripts/README.md)).
 
 The two con01 certificate suites verify real ML-DSA signatures and refuse to skip. They need
-the compiled signature verifier ([con01_history](production/con01_history/README.md#build-and-reproduce))
+the compiled signature verifier ([con01_history](testnet/acceptance/con01_history/README.md#build-and-reproduce))
 and a CPython with `os.memfd_create`; the standalone Python in a uv `.venv` may lack it. Build
 the verifier against an OpenSSL of 3.5 or newer (a tos build carries one under
 `build/third-party/openssl`), then run them with the system interpreter:
 
 ```bash
 cc -std=c11 -O2 -Wall -Wextra -Werror -I "$OPENSSL_PREFIX/include" \
-  production/con01_history/mldsa_verify.c "$OPENSSL_PREFIX/lib/libcrypto.a" -ldl -pthread \
+  testnet/acceptance/con01_history/mldsa_verify.c "$OPENSSL_PREFIX/lib/libcrypto.a" -ldl -pthread \
   -o "$VERIFIER" && chmod 500 "$VERIFIER"
 CON01_SIGNATURE_VERIFIER="$VERIFIER" \
 CON01_SIGNATURE_VERIFIER_SHA256="$(sha256sum "$VERIFIER" | cut -d' ' -f1)" \
@@ -115,6 +115,9 @@ retention, joining, validator lifecycle and monitoring; its
 [gap register](production/Production-Node.md#12-gaps-before-this-procedure-can-be-followed)
 records the procedure's limits. This directory is **not an accepted production
 deployment**.
+Only production operator tooling, shaped like upstream TON's, belongs there; test
+harnesses, experiments and acceptance evidence live in `testnet/` (BR1 and CON-01
+under [testnet/acceptance](testnet/acceptance/)).
 
 - [README.md](production/README.md): scope and prerequisites for using the templates.
 - [Hardware-and-Hosting.md](production/Hardware-and-Hosting.md): proposed capacity and hosting-diversity requirements.
@@ -123,7 +126,7 @@ deployment**.
 The read-only [network checker](production/scripts/README.md) verifies explicit
 network identity, held-anchor PQ finality and Elector results over HTTP. Follow
 its [pinned verifier build](production/scripts/README.md#build-the-verifier) and
-review the [evidence and availability limits](production/evidence/README.md).
+review the [evidence and availability limits](testnet/acceptance/evidence/README.md).
 Its fixture and mutation tests are in `testnet/tests`; there is no production
 deployment acceptance suite here.
 

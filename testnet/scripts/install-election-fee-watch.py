@@ -37,7 +37,7 @@ def main():
         parser.error("render-dir required unless apply is explicit")
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     subprocess.run(
-        ["git", "ls-files", "--error-unmatch", "production/con01_history/election_fees.py"],
+        ["git", "ls-files", "--error-unmatch", "testnet/acceptance/con01_history/election_fees.py"],
         cwd=ROOT,
         stdout=subprocess.DEVNULL,
         check=True,
@@ -49,7 +49,7 @@ def main():
             "--exit-code",
             revision,
             "--",
-            "production/con01_history",
+            "testnet/acceptance/con01_history",
             "testnet/systemd",
             "testnet/scripts/install-election-fee-watch.py",
         ],

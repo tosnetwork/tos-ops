@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "production"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "testnet" / "acceptance"))
 import br1_window as window
 from con01_history.certificate import Refused
 

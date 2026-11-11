@@ -176,12 +176,12 @@ def main():
         private = Path(folder)
         (private / "production").mkdir()
         shutil.copytree(
-            root / "production/con01_history",
-            private / "production/con01_history",
+            root / "testnet/acceptance/con01_history",
+            private / "testnet/acceptance/con01_history",
             ignore=shutil.ignore_patterns("__pycache__"),
         )
-        target = private / "production/br1_fund.py"
-        shutil.copyfile(root / "production/br1_fund.py", target)
+        target = private / "testnet/acceptance/br1_fund.py"
+        shutil.copyfile(root / "testnet/acceptance/br1_fund.py", target)
         tests = private / "testnet/tests"
         tests.mkdir(parents=True)
         shutil.copyfile(root / "testnet/tests/test_br1_fund.py", tests / "test_br1_fund.py")
@@ -237,12 +237,12 @@ def main():
             target.write_text(original)
         run("restored")
     paths = [
-        root / "production/br1_fund.py",
+        root / "testnet/acceptance/br1_fund.py",
         root / "testnet/tests/test_br1_fund.py",
         root / "testnet/tests/test_br1_fund_resume.py",
         Path(__file__),
     ]
-    paths += list((root / "production/con01_history").glob("*.py"))
+    paths += list((root / "testnet/acceptance/con01_history").glob("*.py"))
     paths += list((root / "testnet/tests/data/br1-fund").glob("*"))
     files = {
         str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()

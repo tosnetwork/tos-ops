@@ -126,7 +126,7 @@ open election.
 The tooling does not establish which hosts are currently deployed. Verify the
 approved private inventory. The read-only [network checker](../production/scripts/README.md)
 provides held-anchor proof and Elector-result checks over HTTP; its
-[recorded evidence](../production/evidence/README.md) states the remaining
+[recorded evidence](acceptance/evidence/README.md) states the remaining
 historical-proof availability limit. The supplied alert peer has no independent
 chain view.
 
