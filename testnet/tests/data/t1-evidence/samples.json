@@ -1,0 +1,1425 @@
+{
+ "captured": "observer samples from t1-calib-observe (/datax/t1/calibration-20261111/observe), 2026-11-11",
+ "producers": {
+  "tos": "4fb9ee70330e6247f2e0bc766a9ac5638b42ce58",
+  "tos-ops": "83ee36941c285b2ea14f6a6da27f5edf3dfa7980"
+ },
+ "samples": {
+  "boundaries/checked": {
+   "file": "hand-written from the producer code cited in t1_evidence.py; replace with a live capture",
+   "provisional": true,
+   "record": {
+    "boundary": 1794388687,
+    "collect_exit": 0,
+    "dir": "/evidence/b",
+    "ended": 1794389000.0,
+    "handover_report": {
+     "result": "PASS"
+    },
+    "keys_exit": 0,
+    "keys_verdict": {
+     "verdict": "PASS-FOUR-SIGNER-COVERAGE-PINNED-KEYS"
+    },
+    "outcome": "checked",
+    "sources": [
+     "node-2",
+     "node-3",
+     "node-4"
+    ],
+    "ts": 1794388800.0,
+    "verify_exit": 0
+   }
+  },
+  "cache/read": {
+   "file": "/datax/t1/calibration-20261111/observe/cache.jsonl",
+   "line": 5,
+   "record": {
+    "baseline": false,
+    "files": {
+     "64770:786788": {
+      "behind": 0,
+      "fp": "0544d48b0ff94e41b9c5ebead32ab13d",
+      "name": "node.log.old.4",
+      "offset": 15728712,
+      "size": 15728712,
+      "start": 15728712,
+      "status": "read"
+     },
+     "64770:786793": {
+      "behind": 0,
+      "fp": "1188d3910cb22767f53dc56666a48d6d",
+      "name": "node.log.thread14.log.old.3",
+      "offset": 15728815,
+      "size": 15728815,
+      "start": 15728815,
+      "status": "read"
+     },
+     "64770:786794": {
+      "behind": 0,
+      "fp": "7262b2305a9c7b9b9d4fcb699d2e60db",
+      "name": "node.log.thread3.log.old",
+      "offset": 15728686,
+      "size": 15728686,
+      "start": 15728686,
+      "status": "read"
+     },
+     "64770:786795": {
+      "behind": 0,
+      "fp": "c4dfb00b91c6c70f121290c9e75698a9",
+      "name": "node.log.thread1.log.old.3",
+      "offset": 15728778,
+      "size": 15728778,
+      "start": 15728778,
+      "status": "read"
+     },
+     "64770:786812": {
+      "behind": 0,
+      "fp": "83b8120e4a284a43cedaccf6fb352fa6",
+      "name": "node.log.thread16.log",
+      "offset": 58998,
+      "size": 58998,
+      "start": 0,
+      "status": "new"
+     },
+     "64770:786834": {
+      "behind": 0,
+      "fp": "6b3dcc13562418b8dafe890496fbd957",
+      "name": "node.log.thread12.log",
+      "offset": 13073745,
+      "size": 13073745,
+      "start": 12694530,
+      "status": "read"
+     },
+     "64770:786837": {
+      "behind": 0,
+      "fp": "286da665f40746537a313e6f9cdf990c",
+      "name": "node.log.thread14.log",
+      "offset": 198095,
+      "size": 198095,
+      "start": 0,
+      "status": "new"
+     },
+     "64770:786840": {
+      "behind": 0,
+      "fp": "da49de19ea800ba55c4ff64c18f4aca2",
+      "name": "node.log.thread10.log.old.2",
+      "offset": 15729178,
+      "size": 15729178,
+      "start": 15729178,
+      "status": "read"
+     },
+     "64770:786854": {
+      "behind": 0,
+      "fp": "c5bf13330d5bd59c180be03efab4f23b",
+      "name": "node.log.thread8.log.old.4",
+      "offset": 15728677,
+      "size": 15728677,
+      "start": 15728677,
+      "status": "read"
+     },
+     "64770:786855": {
+      "behind": 0,
+      "fp": "c8fe4f58a7e306e52590031ac89ab144",
+      "name": "node.log.thread15.log.old.1",
+      "offset": 15728778,
+      "size": 15728778,
+      "start": 15728778,
+      "status": "read"
+     },
+     "64770:786856": {
+      "behind": 0,
+      "fp": "4b9400692e00847284c07330a4847088",
+      "name": "node.log.thread10.log",
+      "offset": 9983633,
+      "size": 9983633,
+      "start": 9983633,
+      "status": "read"
+     },
+     "64770:786863": {
+      "behind": 0,
+      "fp": "f40475da56f64b96d0754124454b991a",
+      "name": "node.log.thread11.log.old.1",
+      "offset": 15728918,
+      "size": 15728918,
+      "start": 15728918,
+      "status": "read"
+     },
+     "64770:786866": {
+      "behind": 0,
+      "fp": "6974cec307918ae000eaa80861c6912d",
+      "name": "node.log.thread16.log.old.3",
+      "offset": 15728758,
+      "size": 15728758,
+      "start": 15728758,
+      "status": "read"
+     },
+     "64770:786870": {
+      "behind": 0,
+      "fp": "b9cdcda3718066bb4be83963a48124e3",
+      "name": "node.log.thread7.log.old.4",
+      "offset": 15728764,
+      "size": 15728764,
+      "start": 15728764,
+      "status": "read"
+     },
+     "64770:786875": {
+      "behind": 0,
+      "fp": "8a121875bfdfaf467b9bc16c4325ef0d",
+      "name": "node.log.thread3.log.old.2",
+      "offset": 15728737,
+      "size": 15728737,
+      "start": 15728737,
+      "status": "read"
+     },
+     "64770:786879": {
+      "behind": 0,
+      "fp": "342a57709e6004deca897082984d4be0",
+      "name": "node.log.thread1.log.old.4",
+      "offset": 15728780,
+      "size": 15728780,
+      "start": 15728780,
+      "status": "read"
+     },
+     "64770:786889": {
+      "behind": 0,
+      "fp": "a21beb96435f7466e17b4f2a67dd7781",
+      "name": "node.log.thread15.log.old.4",
+      "offset": 15728659,
+      "size": 15728659,
+      "start": 15728659,
+      "status": "read"
+     },
+     "64770:786891": {
+      "behind": 0,
+      "fp": "23086048a885fe08ae15ded8a751ec3d",
+      "name": "node.log.thread2.log.old.1",
+      "offset": 15728741,
+      "size": 15728741,
+      "start": 15728741,
+      "status": "read"
+     },
+     "64770:786892": {
+      "behind": 0,
+      "fp": "b02a69561cb509fe97f39f73f2216936",
+      "name": "node.log.thread4.log.old.1",
+      "offset": 15728799,
+      "size": 15728799,
+      "start": 15728799,
+      "status": "read"
+     },
+     "64770:786893": {
+      "behind": 0,
+      "fp": "3b33f93424bbca4d0c96a6d3c2d5e4fc",
+      "name": "node.log.thread7.log.old",
+      "offset": 15728847,
+      "size": 15728847,
+      "start": 15728847,
+      "status": "read"
+     },
+     "64770:786894": {
+      "behind": 0,
+      "fp": "aa3f76d10c3424048969ff44eedb0c05",
+      "name": "node.log.thread16.log.old.1",
+      "offset": 15729231,
+      "size": 15729231,
+      "start": 15729231,
+      "status": "read"
+     },
+     "64770:786897": {
+      "behind": 0,
+      "fp": "d2e2ccffea6250b9f7aaf40756ece82d",
+      "name": "node.log.thread13.log",
+      "offset": 14816586,
+      "size": 14816586,
+      "start": 14816586,
+      "status": "read"
+     },
+     "64770:786898": {
+      "behind": 0,
+      "fp": "cebff37da8f09a6790ec48560bb42764",
+      "name": "node.log.thread8.log.old.3",
+      "offset": 15728840,
+      "size": 15728840,
+      "start": 15728840,
+      "status": "read"
+     },
+     "64770:786899": {
+      "behind": 0,
+      "fp": "25ab978c5df89788cb9d323b0007b37e",
+      "name": "node.log.thread5.log.old.1",
+      "offset": 15729027,
+      "size": 15729027,
+      "start": 15729027,
+      "status": "read"
+     },
+     "64770:786900": {
+      "behind": 0,
+      "fp": "6d862ea115d9b30dd7e22710beefd793",
+      "name": "node.log.thread4.log.old",
+      "offset": 15729404,
+      "size": 15729404,
+      "start": 15729404,
+      "status": "read"
+     },
+     "64770:786901": {
+      "behind": 0,
+      "fp": "546c9f0091757d28fdf73911874e5794",
+      "name": "node.log.thread13.log.old.3",
+      "offset": 15728762,
+      "size": 15728762,
+      "start": 15728762,
+      "status": "read"
+     },
+     "64770:786903": {
+      "behind": 0,
+      "fp": "e8bbcdcbb2265e6f1cd5f43e3059ea80",
+      "name": "node.log.thread16.log.old.2",
+      "offset": 15728871,
+      "size": 15728871,
+      "start": 15728871,
+      "status": "read"
+     },
+     "64770:786904": {
+      "behind": 0,
+      "fp": "dd6725344eb6a313b0621b9f4da86f56",
+      "name": "node.log.thread6.log.old.4",
+      "offset": 15728912,
+      "size": 15728912,
+      "start": 15728912,
+      "status": "read"
+     },
+     "64770:786907": {
+      "behind": 0,
+      "fp": "7c31494bf2f4d5212667e0b420de6c08",
+      "name": "node.log.thread14.log.old.4",
+      "offset": 15728644,
+      "size": 15728644,
+      "start": 15728644,
+      "status": "read"
+     },
+     "64770:786908": {
+      "behind": 0,
+      "fp": "f4bc9c7cfa116547f73f89bf338c8d58",
+      "name": "node.log.thread6.log.old.2",
+      "offset": 15728906,
+      "size": 15728906,
+      "start": 15728906,
+      "status": "read"
+     },
+     "64770:786910": {
+      "behind": 0,
+      "fp": "2631184102fbe1097a7122065d98d5a3",
+      "name": "node.log.thread12.log.old",
+      "offset": 15728652,
+      "size": 15728652,
+      "start": 15728652,
+      "status": "read"
+     },
+     "64770:786911": {
+      "behind": 0,
+      "fp": "00c1542d7d53ccbc6271fca45ac06837",
+      "name": "node.log.thread3.log.old.1",
+      "offset": 15728696,
+      "size": 15728696,
+      "start": 15728696,
+      "status": "read"
+     },
+     "64770:786912": {
+      "behind": 0,
+      "fp": "6f325c16fd8769b4210fb3f0f07f40e9",
+      "name": "node.log.thread5.log.old",
+      "offset": 15728766,
+      "size": 15728766,
+      "start": 15728766,
+      "status": "read"
+     },
+     "64770:786913": {
+      "behind": 0,
+      "fp": "e66a96be0d3119c3e261bcd541fee7f9",
+      "name": "node.log",
+      "offset": 10939755,
+      "size": 10939755,
+      "start": 10914297,
+      "status": "read"
+     },
+     "64770:786914": {
+      "behind": 0,
+      "fp": "2fb4ca43b8d5d22091df574c68a78144",
+      "name": "node.log.thread6.log",
+      "offset": 8895788,
+      "size": 8895788,
+      "start": 8561305,
+      "status": "read"
+     },
+     "64770:786916": {
+      "behind": 0,
+      "fp": "a9ca85a0e68a229a045208fda3e7981e",
+      "name": "node.log.thread11.log.old",
+      "offset": 15728817,
+      "size": 15728817,
+      "start": 15728817,
+      "status": "read"
+     },
+     "64770:786918": {
+      "behind": 0,
+      "fp": "00b454bc5a40169b53c1ca8d4b47f2b3",
+      "name": "node.log.thread9.log.old",
+      "offset": 15729068,
+      "size": 15729068,
+      "start": 15729068,
+      "status": "read"
+     },
+     "64770:786919": {
+      "behind": 0,
+      "fp": "a0f4969f1076d786aa316d0834c52e10",
+      "name": "node.log.thread13.log.old.2",
+      "offset": 15728751,
+      "size": 15728751,
+      "start": 15728751,
+      "status": "read"
+     },
+     "64770:786920": {
+      "behind": 0,
+      "fp": "c7bcd598a58dc0106ae5d9f7c346c7d3",
+      "name": "node.log.thread14.log.old.1",
+      "offset": 15728816,
+      "size": 15728816,
+      "start": 15728816,
+      "status": "read"
+     },
+     "64770:786921": {
+      "behind": 0,
+      "fp": "7d7c414869e5e32cd23816e49f54fef9",
+      "name": "node.log.thread10.log.old.1",
+      "offset": 15728729,
+      "size": 15728729,
+      "start": 15728729,
+      "status": "read"
+     },
+     "64770:786922": {
+      "behind": 0,
+      "fp": "dbd66d12b81a7dd35dc8ea32beb45002",
+      "name": "node.log.thread8.log.old",
+      "offset": 15729353,
+      "size": 15729353,
+      "start": 15729353,
+      "status": "read"
+     },
+     "64770:786923": {
+      "behind": 0,
+      "fp": "557e8c152e6f54b2d0146d48bc159eb8",
+      "name": "node.log.thread10.log.old.4",
+      "offset": 15728708,
+      "size": 15728708,
+      "start": 15728708,
+      "status": "read"
+     },
+     "64770:786924": {
+      "behind": 0,
+      "fp": "19b44d4369da0d4c3344028ac4ee3707",
+      "name": "node.log.thread9.log.old.1",
+      "offset": 15729203,
+      "size": 15729203,
+      "start": 15729203,
+      "status": "read"
+     },
+     "64770:786925": {
+      "behind": 0,
+      "fp": "e173d2dae7483b69a461fc466dc77600",
+      "name": "node.log.thread12.log.old.3",
+      "offset": 15728966,
+      "size": 15728966,
+      "start": 15728966,
+      "status": "read"
+     },
+     "64770:786926": {
+      "behind": 0,
+      "fp": "d83102a4eef8d0a4edff027747176b2c",
+      "name": "node.log.thread5.log.old.4",
+      "offset": 15728788,
+      "size": 15728788,
+      "start": 15728788,
+      "status": "read"
+     },
+     "64770:786928": {
+      "behind": 0,
+      "fp": "120b341d45f5978c3ba3e0fae6b5e1bc",
+      "name": "node.log.thread3.log",
+      "offset": 658692,
+      "size": 658692,
+      "start": 200341,
+      "status": "read"
+     },
+     "64770:786930": {
+      "behind": 0,
+      "fp": "a70f964f844446343b0197e84061149e",
+      "name": "node.log.thread9.log.old.2",
+      "offset": 15728786,
+      "size": 15728786,
+      "start": 15728786,
+      "status": "read"
+     },
+     "64770:786932": {
+      "behind": 0,
+      "fp": "42f71a9a5e0ac910c9e46be049652c27",
+      "name": "node.log.thread2.log.old",
+      "offset": 15728759,
+      "size": 15728759,
+      "start": 15728759,
+      "status": "read"
+     },
+     "64770:786933": {
+      "behind": 0,
+      "fp": "a27f4a202681ced0391cb90fb5a55cb1",
+      "name": "node.log.thread6.log.old",
+      "offset": 15728783,
+      "size": 15728783,
+      "start": 15728783,
+      "status": "read"
+     },
+     "64770:786935": {
+      "behind": 0,
+      "fp": "f7c7f66cab2b6ef105bfe91ef0cb97c1",
+      "name": "node.log.thread12.log.old.4",
+      "offset": 15728727,
+      "size": 15728727,
+      "start": 15728727,
+      "status": "read"
+     },
+     "64770:786936": {
+      "behind": 0,
+      "fp": "601de40e13c95b133cc5bff3b9fc7778",
+      "name": "node.log.thread4.log",
+      "offset": 11533454,
+      "size": 11533454,
+      "start": 11009376,
+      "status": "read"
+     },
+     "64770:786956": {
+      "behind": 0,
+      "fp": "fbe1cc4fa3d970c52a5553004d6df80d",
+      "name": "node.log.thread8.log",
+      "offset": 5505876,
+      "size": 5505876,
+      "start": 5005127,
+      "status": "read"
+     },
+     "64770:788327": {
+      "behind": 0,
+      "fp": "74502fb2e5b3f3a5166f5cd05416a693",
+      "name": "node.log.thread4.log.old.4",
+      "offset": 15728855,
+      "size": 15728855,
+      "start": 15728855,
+      "status": "read"
+     },
+     "64770:788441": {
+      "behind": 0,
+      "fp": "b28f1869f7f6155a819890ba1f91db84",
+      "name": "node.log.thread7.log",
+      "offset": 2500917,
+      "size": 2500917,
+      "start": 2500917,
+      "status": "read"
+     },
+     "64770:788836": {
+      "behind": 0,
+      "fp": "6b24b555ffe720c4187f7de5d0cfd59d",
+      "name": "node.log.thread12.log.old.1",
+      "offset": 15728893,
+      "size": 15728893,
+      "start": 15728893,
+      "status": "read"
+     },
+     "64770:788838": {
+      "behind": 0,
+      "fp": "a9272a464ffee5e532fae2bf49917923",
+      "name": "node.log.thread2.log",
+      "offset": 11355874,
+      "size": 11355874,
+      "start": 11122977,
+      "status": "read"
+     },
+     "64770:788839": {
+      "behind": 0,
+      "fp": "9db0c5b46684cc6ed6f62b798c63bf26",
+      "name": "node.log.thread9.log",
+      "offset": 3207033,
+      "size": 3207033,
+      "start": 2788239,
+      "status": "read"
+     },
+     "64770:788840": {
+      "behind": 0,
+      "fp": "d8f9f0cda3bf707514779b3a08900605",
+      "name": "node.log.thread5.log.old.3",
+      "offset": 15728683,
+      "size": 15728683,
+      "start": 15728683,
+      "status": "read"
+     },
+     "64770:788841": {
+      "behind": 0,
+      "fp": "a9272a464ffee5e532fae2bf49917923",
+      "name": "node.log.thread11.log",
+      "offset": 13373089,
+      "size": 13373089,
+      "start": 12983801,
+      "status": "read"
+     },
+     "64770:788842": {
+      "behind": 0,
+      "fp": "b6a231873cc461e4c641f8de9cfedfca",
+      "name": "node.log.thread4.log.old.2",
+      "offset": 15729116,
+      "size": 15729116,
+      "start": 15729116,
+      "status": "read"
+     },
+     "64770:788843": {
+      "behind": 0,
+      "fp": "6ceb5c38ba9ea42fbdd60d4f465f06bd",
+      "name": "node.log.thread5.log",
+      "offset": 8396313,
+      "size": 8396313,
+      "start": 8396313,
+      "status": "read"
+     },
+     "64770:788844": {
+      "behind": 0,
+      "fp": "1ee56fd85b0c70f8c14ac015f6e9d8c8",
+      "name": "node.log.thread15.log.old.3",
+      "offset": 15728648,
+      "size": 15728648,
+      "start": 15728648,
+      "status": "read"
+     },
+     "64770:788845": {
+      "behind": 0,
+      "fp": "8e48c9909c8af83c1430c14abc086f52",
+      "name": "node.log.thread2.log.old.2",
+      "offset": 15729052,
+      "size": 15729052,
+      "start": 15729052,
+      "status": "read"
+     },
+     "64770:788846": {
+      "behind": 0,
+      "fp": "a7480288d60aae216fcaffbc03b6facf",
+      "name": "node.log.thread7.log.old.1",
+      "offset": 15728742,
+      "size": 15728742,
+      "start": 15728742,
+      "status": "read"
+     },
+     "64770:788847": {
+      "behind": 0,
+      "fp": "fe3263970e5accce0da7b59bf972316e",
+      "name": "node.log.thread1.log.old",
+      "offset": 15728745,
+      "size": 15728745,
+      "start": 15728745,
+      "status": "read"
+     },
+     "64770:788848": {
+      "behind": 0,
+      "fp": "92bc92865bebcae8c59efc2647647fff",
+      "name": "node.log.thread14.log.old",
+      "offset": 15729187,
+      "size": 15729187,
+      "start": 15477435,
+      "status": "read"
+     },
+     "64770:788849": {
+      "behind": 0,
+      "fp": "d794eea2fa7beb89211e46af2de22515",
+      "name": "node.log.thread11.log.old.4",
+      "offset": 15728909,
+      "size": 15728909,
+      "start": 15728909,
+      "status": "read"
+     },
+     "64770:788850": {
+      "behind": 0,
+      "fp": "9fcc1b2e7c263f741c3cc36769f92ac3",
+      "name": "node.log.thread6.log.old.3",
+      "offset": 15728720,
+      "size": 15728720,
+      "start": 15728720,
+      "status": "read"
+     },
+     "64770:788851": {
+      "behind": 0,
+      "fp": "7747e804ad088d2444255bfd98db5ecb",
+      "name": "node.log.thread4.log.old.3",
+      "offset": 15728802,
+      "size": 15728802,
+      "start": 15728802,
+      "status": "read"
+     },
+     "64770:788853": {
+      "behind": 0,
+      "fp": "fbe1cc4fa3d970c52a5553004d6df80d",
+      "name": "node.log.thread16.log.old.4",
+      "offset": 15728894,
+      "size": 15728894,
+      "start": 15728894,
+      "status": "read"
+     },
+     "64770:788854": {
+      "behind": 0,
+      "fp": "ce9935ac6046dd2c125c3a657bca958c",
+      "name": "node.log.thread9.log.old.4",
+      "offset": 15728647,
+      "size": 15728647,
+      "start": 15728647,
+      "status": "read"
+     },
+     "64770:788855": {
+      "behind": 0,
+      "fp": "ebcbe8de6ea20137f8e0baeb22cef49b",
+      "name": "node.log.thread12.log.old.2",
+      "offset": 15728738,
+      "size": 15728738,
+      "start": 15728738,
+      "status": "read"
+     },
+     "64770:788859": {
+      "behind": 0,
+      "fp": "052471aa7d3edcc94abef041d509e8fa",
+      "name": "node.log.thread2.log.old.4",
+      "offset": 15728699,
+      "size": 15728699,
+      "start": 15728699,
+      "status": "read"
+     },
+     "64770:788860": {
+      "behind": 0,
+      "fp": "ad2a2643faa05d2f9b60f8d88591a1e9",
+      "name": "node.log.thread11.log.old.2",
+      "offset": 15729203,
+      "size": 15729203,
+      "start": 15729203,
+      "status": "read"
+     },
+     "64770:788861": {
+      "behind": 0,
+      "fp": "da49de19ea800ba55c4ff64c18f4aca2",
+      "name": "node.log.thread13.log.old.1",
+      "offset": 15728744,
+      "size": 15728744,
+      "start": 15728744,
+      "status": "read"
+     },
+     "64770:788862": {
+      "behind": 0,
+      "fp": "ddb59ff8ea729a98b8bd370104f5050b",
+      "name": "node.log.thread13.log.old.4",
+      "offset": 15729300,
+      "size": 15729300,
+      "start": 15729300,
+      "status": "read"
+     },
+     "64770:788863": {
+      "behind": 0,
+      "fp": "f0060149f79b5b6f751c262fc898dacc",
+      "name": "node.log.thread8.log.old.2",
+      "offset": 15728758,
+      "size": 15728758,
+      "start": 15728758,
+      "status": "read"
+     },
+     "64770:788864": {
+      "behind": 0,
+      "fp": "d6835662e53d2d964eabbcb6760923c4",
+      "name": "node.log.thread1.log.old.2",
+      "offset": 15728647,
+      "size": 15728647,
+      "start": 15728647,
+      "status": "read"
+     },
+     "64770:788865": {
+      "behind": 0,
+      "fp": "70c180aea0f69aad62036e3538af3cc0",
+      "name": "node.log.thread11.log.old.3",
+      "offset": 15728664,
+      "size": 15728664,
+      "start": 15728664,
+      "status": "read"
+     },
+     "64770:788866": {
+      "behind": 0,
+      "fp": "92d49a53ba646651c0908e1239058d0f",
+      "name": "node.log.thread15.log.old.2",
+      "offset": 15728724,
+      "size": 15728724,
+      "start": 15728724,
+      "status": "read"
+     },
+     "64770:788867": {
+      "behind": 0,
+      "fp": "2f95346f11d235048bdb5fa3acc362cd",
+      "name": "node.log.thread9.log.old.3",
+      "offset": 15728778,
+      "size": 15728778,
+      "start": 15728778,
+      "status": "read"
+     },
+     "64770:788868": {
+      "behind": 0,
+      "fp": "87e14526ef03afa236afc7ce42dc9023",
+      "name": "node.log.thread3.log.old.3",
+      "offset": 15729155,
+      "size": 15729155,
+      "start": 15729155,
+      "status": "read"
+     },
+     "64770:788871": {
+      "behind": 0,
+      "fp": "79e4a774631a050bb2c862b399e8592c",
+      "name": "node.log.thread10.log.old",
+      "offset": 15728771,
+      "size": 15728771,
+      "start": 15728771,
+      "status": "read"
+     },
+     "64770:788872": {
+      "behind": 0,
+      "fp": "0d0fbd79090c8b235a0575f949177e11",
+      "name": "node.log.thread15.log.old",
+      "offset": 15728686,
+      "size": 15728686,
+      "start": 15728686,
+      "status": "read"
+     },
+     "64770:788873": {
+      "behind": 0,
+      "fp": "9b3253490ff85881f63c32477700305a",
+      "name": "node.log.thread10.log.old.3",
+      "offset": 15728662,
+      "size": 15728662,
+      "start": 15728662,
+      "status": "read"
+     },
+     "64770:788875": {
+      "behind": 0,
+      "fp": "4ea878b168dd4bdf482205920403ddeb",
+      "name": "node.log.thread1.log",
+      "offset": 7502264,
+      "size": 7502264,
+      "start": 6888596,
+      "status": "read"
+     },
+     "64770:788877": {
+      "behind": 0,
+      "fp": "6974cec307918ae000eaa80861c6912d",
+      "name": "node.log.thread14.log.old.2",
+      "offset": 15728857,
+      "size": 15728857,
+      "start": 15728857,
+      "status": "read"
+     },
+     "64770:788884": {
+      "behind": 0,
+      "fp": "f21d3f7b10c8d0ce0f6f01a860e5c690",
+      "name": "node.log.thread16.log.old",
+      "offset": 15729311,
+      "size": 15729311,
+      "start": 15332038,
+      "status": "read"
+     },
+     "64770:788888": {
+      "behind": 0,
+      "fp": "55d3880a8ce651d70e2d160125385853",
+      "name": "node.log.thread7.log.old.2",
+      "offset": 15729297,
+      "size": 15729297,
+      "start": 15729297,
+      "status": "read"
+     },
+     "64770:788889": {
+      "behind": 0,
+      "fp": "e8e77919fe3c22d756c5169b429adcec",
+      "name": "node.log.thread6.log.old.1",
+      "offset": 15729143,
+      "size": 15729143,
+      "start": 15729143,
+      "status": "read"
+     },
+     "64770:788890": {
+      "behind": 0,
+      "fp": "5d9967fb9efd7ebd69d6b67e01cc7cc2",
+      "name": "node.log.thread5.log.old.2",
+      "offset": 15728933,
+      "size": 15728933,
+      "start": 15728933,
+      "status": "read"
+     },
+     "64770:788894": {
+      "behind": 0,
+      "fp": "f74e1c2d6eb967c78b128a325d81b31a",
+      "name": "node.log.thread15.log",
+      "offset": 14763290,
+      "size": 14763290,
+      "start": 14276618,
+      "status": "read"
+     },
+     "64770:788897": {
+      "behind": 0,
+      "fp": "ddcd8fa805cd06effee489398df6a72d",
+      "name": "node.log.thread3.log.old.4",
+      "offset": 15728688,
+      "size": 15728688,
+      "start": 15728688,
+      "status": "read"
+     },
+     "64770:788898": {
+      "behind": 0,
+      "fp": "9743abbe8ba75084c7415c62d89dc8cf",
+      "name": "node.log.thread2.log.old.3",
+      "offset": 15728776,
+      "size": 15728776,
+      "start": 15728776,
+      "status": "read"
+     },
+     "64770:788899": {
+      "behind": 0,
+      "fp": "694ac6aa80ad6de8fda815d5dbf2661b",
+      "name": "node.log.thread7.log.old.3",
+      "offset": 15728769,
+      "size": 15728769,
+      "start": 15728769,
+      "status": "read"
+     },
+     "64770:788901": {
+      "behind": 0,
+      "fp": "15356511c01d1dc472403f5875bceb7c",
+      "name": "node.log.thread8.log.old.1",
+      "offset": 15728671,
+      "size": 15728671,
+      "start": 15728671,
+      "status": "read"
+     },
+     "64770:788909": {
+      "behind": 0,
+      "fp": "0bc092c46fc2ea58acb6da83af92b86a",
+      "name": "node.log.thread13.log.old",
+      "offset": 15728870,
+      "size": 15728870,
+      "start": 15728870,
+      "status": "read"
+     },
+     "64770:788910": {
+      "behind": 0,
+      "fp": "2f59316d82a42836102655a785e2e185",
+      "name": "node.log.thread1.log.old.1",
+      "offset": 15728714,
+      "size": 15728714,
+      "start": 15728714,
+      "status": "read"
+     },
+     "64770:788915": {
+      "behind": 0,
+      "fp": "a1761c53a3e1b039db2623e479075d0d",
+      "name": "node.log.old.1",
+      "offset": 15728712,
+      "size": 15728712,
+      "start": 15728712,
+      "status": "read"
+     },
+     "64770:788923": {
+      "behind": 0,
+      "fp": "c5e76efc9489152909e5334164b0c22c",
+      "name": "node.log.old.3",
+      "offset": 15728670,
+      "size": 15728670,
+      "start": 15728670,
+      "status": "read"
+     },
+     "64770:788950": {
+      "behind": 0,
+      "fp": "c872c4d4eac30eef64aeb47eeb9acf0d",
+      "name": "node.log.old.2",
+      "offset": 15728729,
+      "size": 15728729,
+      "start": 15728729,
+      "status": "read"
+     },
+     "64770:788960": {
+      "behind": 0,
+      "fp": "2f50e62b33e7398f3a3754ee488e164f",
+      "name": "node.log.old",
+      "offset": 15728676,
+      "size": 15728676,
+      "start": 15728676,
+      "status": "read"
+     }
+    },
+    "host": "node-1",
+    "kind": "read",
+    "lines": [],
+    "received": 1794388967.950689,
+    "sent": 1794388967.327209,
+    "ts": 1794388967.950689,
+    "vanished": []
+   },
+   "sha256": "ead7cb76640fa73cc640c1547da7c823f82553ad261a38c64095b3e2a51c522a"
+  },
+  "chain/head": {
+   "file": "/datax/t1/calibration-20261111/observe/chain.jsonl",
+   "line": 2,
+   "record": {
+    "gen_utime": 1794388907,
+    "host": "node-1",
+    "id": [
+     -1,
+     "-9223372036854775808",
+     2662240,
+     "uknMloI301GmurNJtHWlBO62J7Lhe8y+eII4nCvtmoU=",
+     "XWiBwnMGrk+30a27i3JZRCgaThYa7viSxnaOVWouTj8="
+    ],
+    "kind": "head",
+    "ts": 1794388907.4703765
+   },
+   "sha256": "dc7cd9f9defb4a39b64b2665def523496fa0017e164d5128e2415124cb9f4808"
+  },
+  "chain/ids": {
+   "file": "/datax/t1/calibration-20261111/observe/chain.jsonl",
+   "line": 54,
+   "record": {
+    "agree": true,
+    "ids": {
+     "node-1": [
+      -1,
+      "-9223372036854775808",
+      2662375,
+      "b8S57AQzjHENnrz7LrzwrTvHaW8J8fYOKLjGOSo1sco=",
+      "a1Y5uJAyW45zDg9Bhn7zuDRWh50vSf0mh0nbMsyHxHk="
+     ],
+     "node-2": [
+      -1,
+      "-9223372036854775808",
+      2662375,
+      "b8S57AQzjHENnrz7LrzwrTvHaW8J8fYOKLjGOSo1sco=",
+      "a1Y5uJAyW45zDg9Bhn7zuDRWh50vSf0mh0nbMsyHxHk="
+     ],
+     "node-3": [
+      -1,
+      "-9223372036854775808",
+      2662375,
+      "b8S57AQzjHENnrz7LrzwrTvHaW8J8fYOKLjGOSo1sco=",
+      "a1Y5uJAyW45zDg9Bhn7zuDRWh50vSf0mh0nbMsyHxHk="
+     ],
+     "node-4": [
+      -1,
+      "-9223372036854775808",
+      2662375,
+      "b8S57AQzjHENnrz7LrzwrTvHaW8J8fYOKLjGOSo1sco=",
+      "a1Y5uJAyW45zDg9Bhn7zuDRWh50vSf0mh0nbMsyHxHk="
+     ]
+    },
+    "kind": "ids",
+    "seqno": 2662375,
+    "ts": 1794388967.7062068
+   },
+   "sha256": "2c79809f1771f48f169ca1bdda4040b9d1965dbb89b4b3c19416785bc0d7fe59"
+  },
+  "chain/ids_error": {
+   "file": "/datax/t1/calibration-20261111/observe/chain.jsonl",
+   "line": 1,
+   "record": {
+    "error": "only 0 of 4 fresh heads",
+    "kind": "ids",
+    "ts": 1794388907.322864
+   },
+   "sha256": "ae2d7b7a266874ef3d96571586d141ed94859fca55e4ba78870ec0b71fa1feb0"
+  },
+  "clock": {
+   "file": "/datax/t1/calibration-20261111/observe/clock.jsonl",
+   "line": 1,
+   "record": {
+    "best": {
+     "bound": 0.25269603729248047,
+     "offset": 0.23692679405212402
+    },
+    "host": "node-2",
+    "limit": 2.0,
+    "tries": [
+     {
+      "bound": 0.2606557607650757,
+      "offset": 0.24444341659545898
+     },
+     {
+      "bound": 0.27218425273895264,
+      "offset": 0.25415754318237305
+     },
+     {
+      "bound": 0.25269603729248047,
+      "offset": 0.23692679405212402
+     }
+    ],
+    "ts": 1794388908.9063132,
+    "verdict": "ok"
+   },
+   "sha256": "3fbaef1ae4b735f6a159a47191050b1397b512080fe50fa76f2b94c9c07dacc5"
+  },
+  "fees/reading": {
+   "file": "/datax/t1/calibration-20261111/observe/fees.jsonl",
+   "line": 1,
+   "record": {
+    "address": "-1:1e93e2802e5c3c017efea12700f6fbe80614a2adcd5dc57dd873dace57f59011",
+    "answers": {
+     "node-1": 42464432298,
+     "node-2": 42464432298,
+     "node-3": 42464432298,
+     "node-4": 42464432298
+    },
+    "balance_nano": 42464432298,
+    "disagree": false,
+    "errors": [],
+    "operator": "node-1",
+    "ts": 1794388907.6637664
+   },
+   "sha256": "22930497b2b989014612eeda5888014c90b4a676a5c63e242fbdc76ff86a3036"
+  },
+  "journal/attempt/funding": {
+   "file": "hand-written from the producer code cited in t1_evidence.py; replace with a live capture",
+   "provisional": true,
+   "record": {
+    "actions": [
+     {
+      "destination": "0:abababababababababababababababababababababababababababababababab",
+      "mode": 3,
+      "value": 2000000000
+     }
+    ],
+    "boc": "te6cc==",
+    "deadline": 1794390100,
+    "external": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+    "fee_bound": null,
+    "id": "funding:bench:0",
+    "nonce": 0,
+    "prior": null,
+    "role": "funding",
+    "sender": "0:abababababababababababababababababababababababababababababababab",
+    "seqno": 0,
+    "signed_at": 1794390005,
+    "time": 1794390005.0,
+    "type": "attempt",
+    "wallet": null,
+    "what": "load-wallet funding"
+   }
+  },
+  "journal/attempt/transfer": {
+   "file": "hand-written from the producer code cited in t1_evidence.py; replace with a live capture",
+   "provisional": true,
+   "record": {
+    "actions": [
+     {
+      "destination": "0:abababababababababababababababababababababababababababababababab",
+      "mode": 3,
+      "value": 1000000
+     }
+    ],
+    "boc": "te6cc==",
+    "deadline": 1794390100,
+    "endpoint": "http://127.0.0.1:18081/jsonRPC",
+    "external": "abababababababababababababababababababababababababababababababab",
+    "fee_bound": 16274552,
+    "id": "transfer:0:0",
+    "intended": 1794390030.0,
+    "nonce": 0,
+    "prior": null,
+    "role": "transfer",
+    "sender": "0:abababababababababababababababababababababababababababababababab",
+    "seqno": 0,
+    "signed_at": 1794390030,
+    "step": 0,
+    "time": 1794390030.0,
+    "type": "attempt",
+    "wallet": 0
+   }
+  },
+  "journal/delivered": {
+   "file": "hand-written from the producer code cited in t1_evidence.py; replace with a live capture",
+   "provisional": true,
+   "record": {
+    "action": 0,
+    "id": "transfer:0:0",
+    "receipt_failure": null,
+    "recipient_mc": 2662011,
+    "recipient_tx": "5656565656565656565656565656565656565656565656565656565656565656",
+    "recipient_utime": 1794390035,
+    "time": 1794390036.0,
+    "type": "delivered"
+   }
+  },
+  "journal/end": {
+   "file": "hand-written from the producer code cited in t1_evidence.py; replace with a live capture",
+   "provisional": true,
+   "record": {
+    "exit_status": 0,
+    "time": 1794393000.0,
+    "type": "end"
+   }
+  },
+  "journal/observed/funding": {
+   "file": "hand-written from the producer code cited in t1_evidence.py; replace with a live capture",
+   "provisional": true,
+   "record": {
+    "block": [
+     0,
+     -9223372036854775808,
+     3000
+    ],
+    "chain_now": 1794390019,
+    "fee": 39000000,
+    "id": "funding:bench:0",
+    "lt": 1000,
+    "out_msgs": [
+     {
+      "destination": "0:abababababababababababababababababababababababababababababababab",
+      "hash": "3434343434343434343434343434343434343434343434343434343434343434",
+      "value": 2000000000
+     }
+    ],
+    "problems": [],
+    "reason": null,
+    "time": 1794390020.0,
+    "tx": "1212121212121212121212121212121212121212121212121212121212121212",
+    "type": "observed",
+    "utime": 1794390015,
+    "verdict": "executed"
+   }
+  },
+  "journal/observed/transfer": {
+   "file": "hand-written from the producer code cited in t1_evidence.py; replace with a live capture",
+   "provisional": true,
+   "record": {
+    "failure": [
+     null
+    ],
+    "fee": 1300000,
+    "id": "transfer:0:0",
+    "time": 1794390033.0,
+    "tx": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+    "tx_mc": 2662010,
+    "type": "observed",
+    "utime": 1794390032
+   }
+  },
+  "journal/run": {
+   "file": "hand-written from the producer code cited in t1_evidence.py; replace with a live capture",
+   "provisional": true,
+   "record": {
+    "deadline_grace": 30.0,
+    "fee_horizon": 1794400000,
+    "load_wallets": [
+     "0:abababababababababababababababababababababababababababababababab"
+    ],
+    "mc_start": 2662000,
+    "time": 1794390001.0,
+    "tool": "t4-ramp",
+    "type": "run",
+    "version": 1,
+    "wallet": "0:abababababababababababababababababababababababababababababababab"
+   }
+  },
+  "journal/sent": {
+   "file": "hand-written from the producer code cited in t1_evidence.py; replace with a live capture",
+   "provisional": true,
+   "record": {
+    "id": "transfer:0:0",
+    "reason": null,
+    "state": "accepted",
+    "time": 1794390030.5,
+    "type": "sent"
+   }
+  },
+  "load/cutoff": {
+   "file": "hand-written from the producer code cited in t1_evidence.py; replace with a live capture",
+   "provisional": true,
+   "record": {
+    "elapsed_s": 3600.0,
+    "kind": "cutoff",
+    "reasons": [],
+    "ts": 1794393600.0,
+    "undelivered": 0
+   }
+  },
+  "load/end": {
+   "file": "hand-written from the producer code cited in t1_evidence.py; replace with a live capture",
+   "provisional": true,
+   "record": {
+    "kind": "end",
+    "result": "cutoff",
+    "ts": 1794393602.0
+   }
+  },
+  "load/ramp_done": {
+   "file": "hand-written from the producer code cited in t1_evidence.py; replace with a live capture",
+   "provisional": true,
+   "record": {
+    "elapsed_s": 3000.0,
+    "kind": "ramp_done",
+    "ts": 1794392000.0
+   }
+  },
+  "load/start": {
+   "file": "hand-written from the producer code cited in t1_evidence.py; replace with a live capture",
+   "provisional": true,
+   "record": {
+    "cutoff_in_s": 259200,
+    "kind": "start",
+    "mode": "t1",
+    "snapshot": {
+     "node-1": [
+      4242,
+      0,
+      "boot-node-1",
+      0
+     ],
+     "node-2": [
+      4242,
+      0,
+      "boot-node-2",
+      0
+     ],
+     "node-3": [
+      4242,
+      0,
+      "boot-node-3",
+      0
+     ],
+     "node-4": [
+      4242,
+      0,
+      "boot-node-4",
+      0
+     ]
+    },
+    "ts": 1794390000.0
+   }
+  },
+  "load/terminated": {
+   "file": "hand-written from the producer code cited in t1_evidence.py; replace with a live capture",
+   "provisional": true,
+   "record": {
+    "children": {
+     "ramp": {
+      "group_alive": false,
+      "rc": 0
+     },
+     "reads": {
+      "group_alive": false,
+      "rc": null
+     }
+    },
+    "kind": "terminated",
+    "ts": 1794393601.0
+   }
+  },
+  "reads/context": {
+   "file": "hand-written from the producer code cited in t1_evidence.py; replace with a live capture",
+   "provisional": true,
+   "record": {
+    "boot_id": "coordinator-boot",
+    "deadline_monotonic_seconds": 259200.0,
+    "maximum_inflight": 64,
+    "network_deadline_seconds": 2.5,
+    "packet": {
+     "address": "-1:1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e",
+     "duration_seconds": 259200,
+     "endpoints": [],
+     "network_deadline_seconds": 2.5,
+     "output": "/evidence/reads",
+     "profile": "t1",
+     "requests_per_second": 8,
+     "window_seconds": 600
+    },
+    "scope": "Read-only RPC workload, not native authentication or full acceptance",
+    "started_monotonic_seconds": 0.0
+   }
+  },
+  "reads/request": {
+   "file": "hand-written from the producer code cited in t1_evidence.py; replace with a live capture",
+   "provisional": true,
+   "record": {
+    "endpoint": "http://127.0.0.1:18081/jsonRPC",
+    "error": null,
+    "finished_monotonic_seconds": 0.05,
+    "latency_seconds": 0.05,
+    "method": "getMasterchainInfo",
+    "offered_monotonic_seconds": 0.0,
+    "response_bytes": 900
+   }
+  },
+  "reads/result": {
+   "file": "hand-written from the producer code cited in t1_evidence.py; replace with a live capture",
+   "provisional": true,
+   "record": {
+    "boot_id": "coordinator-boot",
+    "completed": 0,
+    "deadline_monotonic_seconds": 259200.0,
+    "errors": 0,
+    "maximum_inflight": 64,
+    "not_offered_capacity": 0,
+    "requests_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "scope": "Read-only RPC workload, not native authentication or full acceptance",
+    "started_monotonic_seconds": 0.0,
+    "status": "DECLARED_READ_LOAD_WINDOWS_COMPLETE",
+    "windows": 432
+   }
+  },
+  "resources/complete": {
+   "file": "/datax/t1/calibration-20261111/observe/resources.jsonl",
+   "line": 1,
+   "record": {
+    "boot_id": "dd1d9f3a-edf0-4835-a97d-731798e7be90",
+    "complete": true,
+    "disks": {
+     "/var/lib/tos/validator": {
+      "free_bytes": 64834125824,
+      "free_inodes": 5935133,
+      "size_bytes": 105488314368,
+      "total_inodes": 6553600
+     },
+     "/var/log/tos": {
+      "free_bytes": 64834125824,
+      "free_inodes": 5935133,
+      "size_bytes": 105488314368,
+      "total_inodes": 6553600
+     }
+    },
+    "host": "node-1",
+    "mem": {
+     "MemAvailable": 9531904000,
+     "MemTotal": 12540461056,
+     "SwapFree": 2123542528,
+     "SwapTotal": 2147479552
+    },
+    "missing": [],
+    "oom_kill": 0,
+    "proc": {
+     "RssAnon": 2293866496,
+     "RssFile": 38404096,
+     "Threads": 28,
+     "VmRSS": 2332270592,
+     "VmSwap": 0,
+     "fds": 590
+    },
+    "received": 1794388907.9244123,
+    "sample_clock": 1794388907.8626528,
+    "sent": 1794388907.326688,
+    "ts": 1794388907.9244123,
+    "unit": {
+     "active_state": "active",
+     "exec_main_start_monotonic_us": 2378447225158,
+     "main_pid": 262940,
+     "n_restarts": 0
+    }
+   },
+   "sha256": "1441f87f244b85765455d9df85a754a50029c78e12b96de96d6a40c63ea165e8"
+  }
+ }
+}

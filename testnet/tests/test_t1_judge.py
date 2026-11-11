@@ -8,6 +8,7 @@ import json
 import shutil
 
 import pytest
+import t1_fixture
 from conftest import SCRIPTS
 
 spec = importlib.util.spec_from_file_location("t1_judge", SCRIPTS / "t1-judge.py")
@@ -42,73 +43,28 @@ def jsonl(path, items):
             fh.write(json.dumps(r) + "\n")
 
 
-def full_id(seq, root=H):
-    return [-1, "x", seq, root, H]
+def full_id(seq, root="R" * 43 + "="):
+    return t1_fixture.head_id(seq, root)
+
+
+OPERATORS = {h: f"-1:{i:064x}" for i, h in enumerate(tj.HOSTS, 1)}
 
 
 def build(root):
-    obs, load = root / "observe", root / "load"
-    heads, ids = [], []
-    for k, t in enumerate(range(int(T0), int(END) + 1, 20)):
-        for h in tj.HOSTS:
-            heads.append({"ts": float(t), "kind": "head", "host": h, "id": full_id(1000 + k), "gen_utime": t})
-        if k % 3 == 0:
-            ids.append({"ts": float(t), "kind": "ids", "seqno": 998 + k, "agree": True,
-                        "ids": {h: full_id(998 + k) for h in tj.HOSTS}})
-    jsonl(obs / "chain.jsonl", heads + ids)
-    res, cache = [], []
-    for k, t in enumerate(range(int(T0), int(END) + 1, 60)):
-        for h in tj.HOSTS:
-            res.append({"ts": float(t), "host": h, "complete": True, "boot_id": "b", "oom_kill": 0,
-                        "unit": {"main_pid": 10, "n_restarts": 0, "active_state": "active"},
-                        "proc": {"RssAnon": 2 * GiB + (k % 120) * 1000},
-                        "mem": {"MemAvailable": 8 * GiB},
-                        "disks": {p: {"free_bytes": 60 * GiB - k * 1000, "free_inodes": 5_000_000}
-                                  for p in tj.DATA_PATHS}})
-            cache.append({"ts": float(t), "host": h, "kind": "read", "baseline": k == 0,
-                          "files": {"1:2": {"name": "node.log", "status": "read", "behind": 0},
-                                    "1:3": {"name": "node.log.1", "status": "read", "behind": 0}}})
-    jsonl(obs / "resources.jsonl", res)
-    jsonl(obs / "cache.jsonl", cache)
-    jsonl(obs / "clock.jsonl", [{"ts": T0 + 3600 * i, "host": h, "verdict": "ok"} for i in range(73) for h in tj.HOSTS])
-    b, bounds = FIRST, []
-    while b <= END:
-        bounds.append({"boundary": b, "outcome": "checked", "collect_exit": 0, "verify_exit": 0, "keys_exit": 0,
-                       "handover_report": {"result": "PASS"},
-                       "keys_verdict": {"verdict": "PASS-FOUR-SIGNER-COVERAGE-PINNED-KEYS"}})
-        b += PERIOD
-    jsonl(obs / "boundaries.jsonl", bounds)
-    jsonl(obs / "fees.jsonl", [{"ts": T0 + 600 * i, "operator": h, "balance_nano": 90 * 10**9}
-                               for i in range(0, 433) for h in tj.HOSTS])
-    jsonl(load / "load.jsonl", [
-        {"ts": T0, "kind": "start"}, {"ts": END - 1000, "kind": "ramp_done"},
-        {"ts": END, "kind": "cutoff", "reasons": []},
-        {"ts": END, "kind": "terminated", "children": {"ramp": {"rc": 0, "group_alive": False},
-                                                         "reads": {"rc": 0, "group_alive": False}}},
-        {"ts": END, "kind": "end", "result": "cutoff"}])
-    journal, t, n = [], T0 + 30, 0
-    while t < END - 900:
-        aid = f"a{n}"
-        journal += [{"type": "attempt", "id": aid, "role": "transfer", "signed_at": t, "actions": [{}]},
-                    {"type": "observed", "id": aid, "utime": t + 2, "fee": 10**6, "failure": [None]},
-                    {"type": "delivered", "id": aid, "action": 0, "recipient_tx": f"tx{n}",
-                     "recipient_utime": t + 5, "receipt_failure": None}]
-        t += 1 / RATE
-        n += 1
-    jsonl(load / "ramp" / "journal.jsonl", journal)
-    reads = load / "reads"
-    reads.mkdir(parents=True)
-    (reads / "CONTEXT.json").write_text(json.dumps({"packet": {"duration_seconds": tj.DURATION, "window_seconds": 600,
-                                                               "requests_per_second": READ,
-                                                               "endpoints": list(ENDPOINTS)},
-                                                    "started_monotonic_seconds": 0.0}))
-    reqs = []
-    for i in range(tj.DURATION // 600):
-        for k in range(6):
-            reqs.append({"endpoint": ENDPOINTS[k % 4], "method": tj.READ_METHODS[k % 3], "latency_seconds": 0.05,
-                         "error": None, "offered_monotonic_seconds": i * 600 + k * 100})
-    jsonl(reads / "requests.jsonl", reqs)
-    (reads / "LATEST.json").write_text(json.dumps({"not_offered_capacity": 0}))
+    return t1_fixture.build(root, t0=T0, duration=tj.DURATION, first_boundary=FIRST, period=PERIOD, write_rate=RATE,
+                            read_rate=READ, endpoints=ENDPOINTS, operators=OPERATORS)
+
+
+def reseal(root):
+    """After a test edits requests.jsonl, make RESULT.json describe it again (as the producer would), so that the
+    test exercises the read criterion itself rather than the integrity check."""
+    reads = root / "load" / "reads"
+    data = (reads / "requests.jsonl").read_bytes()
+    rows = [json.loads(x) for x in data.splitlines() if x.strip()]
+    res = json.loads((reads / "RESULT.json").read_text())
+    res.update(requests_sha256=hashlib.sha256(data).hexdigest(), completed=len(rows),
+               errors=sum(1 for r in rows if r.get("error") is not None))
+    (reads / "RESULT.json").write_text(json.dumps(res))
 
 
 @pytest.fixture(scope="module")
@@ -181,7 +137,7 @@ def test_a_stopped_write_hour_fails_even_when_monitoring_recovered(run):
         for r in rs:
             if r["type"] == "attempt" and lo <= r["signed_at"] < hi:
                 gone.add(r["id"])
-        return [r for r in rs if r["id"] not in gone]
+        return [r for r in rs if r.get("id") not in gone]
     edit(run.root / "load/ramp/journal.jsonl", drop)
     w = run()["criteria"]["5.7 writes"]
     assert w["status"] == "FAIL" and w["short_hours"] and w["unresolved_actions"] == 0
@@ -210,9 +166,12 @@ def test_an_oom_kill_fails(run):
 
 
 def test_an_unknown_send_across_a_runner_restart_is_unresolved(run):
-    edit(run.root / "load/ramp/journal.jsonl", lambda rs: rs + [
-        {"type": "attempt", "id": "lost", "role": "transfer", "signed_at": T0 + 1000, "actions": [{}]},
-        {"type": "unknown", "id": "lost", "reason": "runner restarted"}])
+    # an attempt journaled and sent with an ambiguous reply, then never observed (the runner restarted)
+    def lost(rs):
+        a = dict(next(r for r in rs if r["type"] == "attempt" and r["role"] == "transfer"), id="transfer:7:99999")
+        return rs + [a, {"type": "sent", "id": a["id"], "time": a["time"] + 1, "state": "ambiguous",
+                         "reason": "no answer: TimeoutError"}]
+    edit(run.root / "load/ramp/journal.jsonl", lost)
     w = run()["criteria"]["5.7 writes"]
     assert w["status"] == "FAIL" and w["unresolved_actions"] == 1
 
@@ -232,7 +191,9 @@ def test_memory_growth_over_the_bound_fails(run):
 
 
 def test_a_safety_line_fails(run):
-    jsonl(run.root / "observe/safety.jsonl", [{"ts": T0 + 5000, "kind": "safety_line", "line": "MISBEHAVIOR"}])
+    jsonl(run.root / "observe/safety.jsonl", [{"ts": T0 + 5000, "host": "node-2", "sent": T0 + 4999,
+                                                "received": T0 + 5000, "kind": "safety_line",
+                                                "file": "node.log", "line": "MISBEHAVIOR"}])
     assert status(run, "5.5 no safety line") == "FAIL"
 
 
@@ -240,7 +201,7 @@ def test_a_safety_line_fails(run):
 
 
 def test_one_surviving_transfer_does_not_shrink_the_write_window(run):
-    edit(run.root / "load/ramp/journal.jsonl", lambda rs: [r for r in rs if r["id"] == "a5"])
+    edit(run.root / "load/ramp/journal.jsonl", lambda rs: [r for r in rs if r.get("id") == "transfer:5:0"])
     assert status(run, "5.7 writes") == "FAIL"
 
 
@@ -280,7 +241,7 @@ def test_read_coverage_needs_every_endpoint_and_method(run):
 
 
 def test_a_missing_final_read_status_is_inconclusive(run):
-    (run.root / "load/reads/LATEST.json").unlink()
+    (run.root / "load/reads/RESULT.json").unlink()
     assert status(run, "5.6 reads") == "INCONCLUSIVE"
 
 
@@ -350,7 +311,7 @@ def test_a_late_first_transfer_fails_with_no_hour_short(run):
         for r in rs:
             if r["type"] == "attempt" and r["signed_at"] < w0 + 100:
                 gone.add(r["id"])
-        return [r for r in rs if r["id"] not in gone]
+        return [r for r in rs if r.get("id") not in gone]
     edit(run.root / "load/ramp/journal.jsonl", drop)
     w = run()["criteria"]["5.7 writes"]
     assert w["status"] == "FAIL" and w["first_signed_late"] and not w["short_hours"]
@@ -366,7 +327,7 @@ def test_an_early_last_transfer_fails_with_no_hour_short(run):
         for r in rs:
             if r["type"] == "attempt" and r["signed_at"] >= w1 - 100:
                 gone.add(r["id"])
-        return [r for r in rs if r["id"] not in gone]
+        return [r for r in rs if r.get("id") not in gone]
     edit(run.root / "load/ramp/journal.jsonl", drop)
     w = run()["criteria"]["5.7 writes"]
     assert w["status"] == "FAIL" and w["last_signed_early"] and not w["short_hours"] \
@@ -395,8 +356,8 @@ def test_a_delivery_without_a_receipt_failure_field_does_not_count(run):
 
 def test_conflicting_receipts_fail(run):
     edit(run.root / "load/ramp/journal.jsonl",
-         lambda rs: rs + [{"type": "delivered", "id": "a5", "action": 0, "recipient_tx": "other",
-                           "recipient_utime": T0 + 600, "receipt_failure": None}])
+         lambda rs: rs + [dict(next(r for r in rs if r["type"] == "delivered" and r["id"] == "transfer:5:0"),
+                               recipient_tx="ff" * 32)])
     assert status(run, "5.7 writes") == "FAIL"
 
 
@@ -450,13 +411,16 @@ def test_a_missed_boundary_is_inconclusive_and_a_failed_one_fails(run):
 
 
 def test_a_coverage_gap_makes_safety_inconclusive(run):
-    edit(run.root / "observe/cache.jsonl", lambda rs: rs + [{"ts": T0 + 100, "kind": "coverage_gap"}])
+    edit(run.root / "observe/cache.jsonl", lambda rs: rs + [{"ts": T0 + 100, "host": "node-1", "sent": T0 + 99,
+                                                             "received": T0 + 100, "kind": "coverage_gap",
+                                                             "id": "1:2", "name": "node.log", "reason": "shrunk",
+                                                             "bytes": 4096}])
     assert status(run, "5.5 no safety line") == "INCONCLUSIVE"
 
 
 def test_a_disk_constantly_below_its_floor_fails(run):
     edit(run.root / "observe/resources.jsonl",
-         lambda rs: [dict(r, disks={p: {"free_bytes": 10 * GiB, "free_inodes": 5_000_000} for p in r["disks"]})
+         lambda rs: [dict(r, disks={p: dict(d, free_bytes=10 * GiB) for p, d in r["disks"].items()})
                      if r["host"] == "node-2" else r for r in rs])
     assert status(run, "5.4 bounded disk") == "FAIL"
 
@@ -469,8 +433,8 @@ def test_disk_growth_over_the_per_block_bound_fails(run):
 
 
 def test_an_operator_below_the_floor_fails(run):
-    edit(run.root / "observe/fees.jsonl", lambda rs: rs + [{"ts": T0 + 7000, "operator": "node-3",
-                                                             "balance_nano": 5 * 10**9}])
+    edit(run.root / "observe/fees.jsonl", lambda rs: rs + [dict(next(r for r in rs if r["operator"] == "node-3"),
+                                                                  ts=T0 + 7000, balance_nano=5 * 10**9)])
     assert status(run, "5.8 operators") == "FAIL"
 
 
@@ -494,7 +458,10 @@ def test_a_stopped_run_fails(run):
 
 
 def test_a_fail_dominates_an_inconclusive(run):
-    edit(run.root / "observe/cache.jsonl", lambda rs: rs + [{"ts": T0 + 100, "kind": "coverage_gap"}])
+    edit(run.root / "observe/cache.jsonl", lambda rs: rs + [{"ts": T0 + 100, "host": "node-1", "sent": T0 + 99,
+                                                             "received": T0 + 100, "kind": "coverage_gap",
+                                                             "id": "1:2", "name": "node.log", "reason": "shrunk",
+                                                             "bytes": 4096}])
     edit(run.root / "observe/resources.jsonl",
          lambda rs: [dict(r, oom_kill=1) if r["host"] == "node-1" and r["ts"] > T0 + 90_000 else r for r in rs])
     v = run()
@@ -561,19 +528,19 @@ def test_reads_that_skip_the_active_log_are_no_safety_coverage(run):
 
 
 def test_a_funding_record_without_its_fee_is_inconclusive_not_zero(run):
-    edit(run.root / "load/ramp/journal.jsonl", lambda rs: rs + [
-        {"type": "attempt", "id": "f0", "role": "fund", "signed_at": T0 + 10, "actions": [{}]},
-        {"type": "observed", "id": "f0", "utime": T0 + 12, "failure": [None]}])
+    edit(run.root / "load/ramp/journal.jsonl",
+         lambda rs: [{k: v for k, v in r.items() if k != "fee"} if r["type"] == "observed" and
+                     r["id"].startswith("funding") else r for r in rs])
     w = run()["criteria"]["5.7 writes"]
-    assert w["status"] == "INCONCLUSIVE" and w["first_malformed"] == ["f0"] and not w["unresolved_actions"]
+    assert w["status"] == "INCONCLUSIVE" and "journal" in w["contract_violations"] and not w["unresolved_actions"]
 
 
 def test_a_transfer_without_its_signing_time_is_inconclusive(run):
     edit(run.root / "load/ramp/journal.jsonl",
-         lambda rs: [{k: v for k, v in r.items() if k != "signed_at"} if r.get("id") == "a500" and
+         lambda rs: [{k: v for k, v in r.items() if k != "signed_at"} if r.get("id") == "transfer:4:62" and
                      r["type"] == "attempt" else r for r in rs])
     w = run()["criteria"]["5.7 writes"]
-    assert w["status"] == "INCONCLUSIVE" and w["first_malformed"] == ["a500"]
+    assert w["status"] == "INCONCLUSIVE" and "journal" in w["contract_violations"]
 
 
 @pytest.mark.parametrize("field", ["utime", "fee", "failure"])
@@ -595,7 +562,7 @@ def test_a_receipt_after_the_cutoff_does_not_resolve_an_action(run):
 def test_a_receipt_before_its_execution_does_not_resolve_an_action(run):
     edit(run.root / "load/ramp/journal.jsonl",
          lambda rs: [dict(r, recipient_utime=r["recipient_utime"] - 10) if r["type"] == "delivered" and
-                     r["id"] == "a700" else r for r in rs])
+                     r["id"] == "transfer:4:87" else r for r in rs])
     w = run()["criteria"]["5.7 writes"]
     assert w["status"] == "FAIL" and w["unresolved_actions"] == 1 and not w["short_hours"]
 
