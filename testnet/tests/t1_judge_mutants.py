@@ -45,7 +45,7 @@ MUTANTS = [
     ("Q1 packet matches the record", ") != \\\n            (DURATION, width, READ_RATE) or not finite(started):", ") != (DURATION, width, READ_RATE) and False:"),
     ("Q2 completed fraction", 'if (w["ok"] < j["read_completed_fraction"] * scheduled', "if (False"),
     ("Q3 coverage", 'or len(w["endpoints"]) < READ_ENDPOINTS or not set(READ_METHODS) <= w["methods"]):', "):"),
-    ("Q4 final status", "    if lag is None or lag or bad_rows:", "    if lag or bad_rows:"),
+    ("Q4 final status", "    if lag is None or lag or bad_rows or foreign:", "    if lag or bad_rows or foreign:"),
     ("W1 transfers only", 'if a.get("role") == "transfer"}', "}"),
     ("W2 receipt failure", 'if "receipt_failure" not in d or d["receipt_failure"] is not None:', "if False:"),
     ("W3 action index", "if type(i) is not int or not 0 <= i < n:", "if type(i) is not int:"),

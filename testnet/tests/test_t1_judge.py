@@ -245,12 +245,14 @@ def test_one_surviving_transfer_does_not_shrink_the_write_window(run):
 
 
 def test_a_backlog_over_its_bound_fails_even_if_it_drains(run):
-    # every delivery 5400 s late: about 54 undelivered actions are outstanding throughout, over the bound of 50
+    # deliveries 5400 s late: about 54 undelivered actions are outstanding, over the bound of 50. The last two
+    # hours are not delayed, so every receipt still lands before the cutoff and nothing stays unresolved.
     edit(run.root / "load/ramp/journal.jsonl",
-         lambda rs: [dict(r, recipient_utime=r["recipient_utime"] + 5400) if r["type"] == "delivered" else r
-                     for r in rs])
+         lambda rs: [dict(r, recipient_utime=r["recipient_utime"] + 5400)
+                     if r["type"] == "delivered" and r["recipient_utime"] < END - 7200 else r for r in rs])
     w = run()["criteria"]["5.7 writes"]
-    assert w["status"] == "FAIL" and w["backlog_peak"] > 50 and not w["short_hours"]
+    assert w["status"] == "FAIL" and w["backlog_peak"] > 50 and not w["short_hours"] \
+        and not w["unresolved_actions"] and not w["conflicting_receipts"]
 
 
 def test_fabricated_read_windows_do_not_pass(run):
@@ -405,15 +407,21 @@ def test_an_end_row_without_a_clean_cutoff_is_not_a_pass(run):
 
 def test_an_unconfirmed_termination_is_not_a_pass(run):
     edit(run.root / "load/load.jsonl",
-         lambda rs: [dict(r, children={"ramp": {"rc": 0, "group_alive": True}}) if r["kind"] == "terminated" else r
-                     for r in rs])
-    assert status(run, "run completed") == "INCONCLUSIVE"
+         lambda rs: [dict(r, children={"ramp": {"rc": 0, "group_alive": True},
+                                       "reads": {"rc": 0, "group_alive": False}})
+                     if r["kind"] == "terminated" else r for r in rs])
+    c = run()["criteria"]["run completed"]
+    assert c["status"] == "INCONCLUSIVE" and c["problems"] == \
+        ["termination of both children (ramp and reads) is not confirmed"]
 
 
 def test_a_cutoff_before_the_full_duration_is_not_a_pass(run):
+    # ramp_done moves earlier too, so the lifecycle stays in order and only the duration check can catch it
     edit(run.root / "load/load.jsonl",
-         lambda rs: [dict(r, ts=END - 7200) if r["kind"] == "cutoff" else r for r in rs])
-    assert status(run, "run completed") == "INCONCLUSIVE"
+         lambda rs: [dict(r, ts=END - 7200) if r["kind"] == "cutoff" else
+                     dict(r, ts=END - 8000) if r["kind"] == "ramp_done" else r for r in rs])
+    c = run()["criteria"]["run completed"]
+    assert c["status"] == "INCONCLUSIVE" and c["problems"] == ["no single cutoff row at the full duration"]
 
 
 # ---------------------------------------------------------------- further controls
