@@ -427,7 +427,7 @@ Production health-stack placement and its admission blockers live in the tos
 checkout under `tools/node-health-monitor`. This repository has local-stack
 automation and testnet host watching/Telegram alerting, not an accepted production
 monitor deployment. The read-only [network checker](scripts/README.md) verifies
-held-anchor proofs and Elector results over HTTP. Its [build and evidence notes](evidence/README.md)
+held-anchor proofs and Elector results over HTTP. Its [build and evidence notes](../testnet/acceptance/evidence/README.md)
 state its trust inputs and historical-proof availability limit; it is not a
 production monitor deployment.
 

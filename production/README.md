@@ -5,12 +5,21 @@ deployment**. For an independent public-testnet operator use
 [OPERATOR.md](../testnet/OPERATOR.md); for any operation read
 [AGENTS.md](../AGENTS.md). Do not copy the local/testnet profile into mainnet.
 
+**Scope rule.** Only what a production validator operator needs belongs here,
+shaped like upstream TON's operator tooling: install and upgrade, systemd
+units, key custody, monitoring and alerting, and a read-only network check.
+Test harnesses, load generators, judges, calibration and sweep tools,
+acceptance evidence and experiments belong in [`testnet/`](../testnet/README.md)
+or [`local/`](../local/README.md), never here. Testnet acceptance tooling and its
+evidence are in [`testnet/acceptance/`](../testnet/acceptance/).
+
 | File | Use |
 | --- | --- |
 | [Production-Node.md](Production-Node.md) | Roles, custody, layout, retention, lifecycle, maintenance and [acceptance gaps](Production-Node.md#12-gaps-before-this-procedure-can-be-followed) |
 | [Hardware-and-Hosting.md](Hardware-and-Hosting.md) | Proposed capacity, endurance and failure-domain requirements |
 | [tos-validator.service](systemd/tos-validator.service) | Proposed non-root validator unit |
 | [tos-elections.service](systemd/tos-elections.service) | Proposed non-root operator/elections unit |
+| [scripts/check-network.py](scripts/README.md) | Read-only network correctness check |
 
 There is no production installer or deployment acceptance suite here.
 The templates assume `/usr/local/bin`,
@@ -27,11 +36,7 @@ The read-only [HTTP checker](scripts/README.md) takes an explicit network identi
 compares independent nodes, checks the active and previous Elector results and
 reuses the consensus proof verifier from a held anchor. It needs no validator
 keys or SSH. Follow its [pinned proof-library build instructions](scripts/README.md#build-the-verifier)
-before running it. Its [recorded evidence](evidence/README.md) identifies the
-verifier build and the historical Config32 proof availability limitation.
-Fixture tests and mutation controls live in `testnet/tests`; this tooling does
-not establish mainnet readiness or replace deployment acceptance.
-
-The Epoch-6 pilot has a [read-only dynamic window check](BR1-WINDOW.md)
-and a [fixed, journaled initialization wrapper](BR1-FUND.md). Their acceptance
-gates and bounded authorization are specific to that public testnet, not mainnet.
+before running it. Its testnet [recorded evidence](../testnet/acceptance/evidence/README.md)
+identifies the verifier build and the historical Config32 proof availability
+limitation. This tooling does not establish mainnet readiness or replace
+deployment acceptance.

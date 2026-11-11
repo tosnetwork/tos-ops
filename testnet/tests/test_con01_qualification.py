@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "production"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "testnet" / "acceptance"))
 from con01_history import observer, qualify  # noqa: E402
 from con01_history.certificate import Refused  # noqa: E402
 from test_con01_rejudge import fixture  # noqa: E402
@@ -41,7 +41,7 @@ class QualificationMetadata(unittest.TestCase):
         self.provenance = dict(
             source_sha256={name: qualify.sha(package / name) for name in qualify.WORKER_MODULES}
         )
-        repo = package.parents[1]
+        repo = package.parents[2]  # testnet/acceptance/con01_history -> repository root
         tests = repo / "testnet/tests"
         paths = (
             list(package.glob("*.py"))
@@ -150,7 +150,7 @@ class QualificationMetadata(unittest.TestCase):
             self.run_qualification()
 
     def test_changed_control_revision_cannot_qualify(self):
-        self.controls["files"]["production/con01_history/observer.py"] = "00" * 32
+        self.controls["files"]["testnet/acceptance/con01_history/observer.py"] = "00" * 32
         self.write()
         with self.assertRaisesRegex(Refused, "control revision changed"):
             self.run_qualification()

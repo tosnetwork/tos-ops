@@ -16,7 +16,7 @@ Requires Linux, `/proc`, Python3 with `os.memfd_create`, and OpenSSL3.5 or newer
 
 ```sh
 cc -std=c11 -O2 -Wall -Wextra -Werror \
-  -I "$OPENSSL_PREFIX/include" production/con01_history/mldsa_verify.c \
+  -I "$OPENSSL_PREFIX/include" testnet/acceptance/con01_history/mldsa_verify.c \
   "$OPENSSL_PREFIX/lib/libcrypto.a" -ldl -pthread -o "$AUDIT_HELPER"
 chmod 500 "$AUDIT_HELPER"
 sha256sum "$AUDIT_HELPER"

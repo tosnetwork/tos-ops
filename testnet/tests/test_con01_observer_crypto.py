@@ -7,7 +7,7 @@ import sys
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "production"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "testnet" / "acceptance"))
 from con01_history import formats as f  # noqa: E402
 from con01_history import observer
 from con01_history.certificate import SignatureVerifier, source_params, verify_packet  # noqa: E402

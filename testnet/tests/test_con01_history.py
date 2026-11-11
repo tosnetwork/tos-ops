@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "production"))
+sys.path.insert(0, str(ROOT / "testnet" / "acceptance"))
 from con01_history import formats as f  # noqa: E402
 from con01_history.audit import verify_files  # noqa: E402
 from con01_history.certificate import (  # noqa: E402
@@ -152,7 +152,7 @@ class Certificates(unittest.TestCase):
     def test_optimized_python_refuses_assert_based_wire_decoder(self):
         code = "import sys;sys.path.insert(0,sys.argv[1]);import con01_history.formats"
         result = subprocess.run(
-            [sys.executable, "-O", "-c", code, str(ROOT / "production")],
+            [sys.executable, "-O", "-c", code, str(ROOT / "testnet" / "acceptance")],
             capture_output=True,
             timeout=5,
         )

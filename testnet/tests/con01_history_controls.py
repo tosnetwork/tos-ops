@@ -109,11 +109,11 @@ def main():
         with tempfile.TemporaryDirectory(prefix="con01-control-") as temp:
             root = Path(temp)
             shutil.copytree(
-                ROOT / "production/con01_history",
-                root / "production/con01_history",
+                ROOT / "testnet/acceptance/con01_history",
+                root / "testnet/acceptance/con01_history",
                 ignore=shutil.ignore_patterns("__pycache__"),
             )
-            target = root / "production/con01_history" / filename
+            target = root / "testnet/acceptance/con01_history" / filename
             text = target.read_text()
             if text.count(before) != 1:
                 raise RuntimeError(f"mutation does not identify exactly one guard: {name}")

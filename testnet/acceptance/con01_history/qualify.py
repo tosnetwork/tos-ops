@@ -83,7 +83,7 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     require(not args.out.exists(), "new qualification output required")
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[3]
     control = json.loads(args.controls.read_bytes())
     require(control["result"] == "PASS", "completed controls required")
     rows = control["rows"]
