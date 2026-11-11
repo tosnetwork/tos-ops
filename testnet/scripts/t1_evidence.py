@@ -164,7 +164,8 @@ SCHEMAS: dict[str, dict[str, Check]] = {
     "safety/safety_line": {**OBS_BASE, "kind": one_of("safety_line"), "file": STR, "line": STR},
     # clock.jsonl (:499-500)
     "clock": {"ts": NUM, "host": HOST, "verdict": one_of("ok", "skewed", "uncertain", "unmeasured"),
-              "best": null_or(shape({"offset": NUM, "bound": lambda v: NUM(v) and v >= 0})),
+              # best must be one of the tries (RULES), so the non-negative bound is checked on the tries
+              "best": null_or(shape({"offset": NUM, "bound": NUM})),
               "tries": list_of(either(shape({"offset": NUM, "bound": lambda v: NUM(v) and v >= 0}),
                                       shape({"error": STR}))),
               "limit": NUM},
