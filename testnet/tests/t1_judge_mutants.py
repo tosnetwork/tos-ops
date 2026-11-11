@@ -62,6 +62,7 @@ MUTANTS = [
     ("V2 a clean end", 'if len(end) != 1 or end[0].get("result") != "cutoff" or kinds[-1] != "end":', 'if len(end) != 1:'),
     ("V3 termination confirmed", 'c.get("group_alive") is not False for c in term[0]["children"].values()):', "False for c in term[0][\"children\"].values()):"),
     ("V4 full duration", 'or cutoff[0]["ts"] < t1 - 60:', ":"),
+    ("W11 early end", "    if short or late_start or early_end", "    if short or late_start"),
     ("V5 FAIL dominates", "overall = FAIL if FAIL in statuses else INCONCLUSIVE if INCONCLUSIVE in statuses else PASS", "overall = INCONCLUSIVE if INCONCLUSIVE in statuses else FAIL if FAIL in statuses else PASS"),
 ]
 

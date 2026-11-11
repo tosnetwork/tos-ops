@@ -332,7 +332,36 @@ def test_an_unobserved_term_phase_is_inconclusive(run):
 def test_an_invalid_delivery_does_not_count(run, change):
     edit(run.root / "load/ramp/journal.jsonl", lambda rs: [dict(r, **change) if r["type"] == "delivered" else r
                                                            for r in rs])
-    assert status(run, "5.7 writes") == "FAIL"
+    # the backlog bound is lifted so that the delivery validation itself is what fails
+    w = run(dict(JUDGE, backlog_max_actions=10**9))["criteria"]["5.7 writes"]
+    assert w["status"] == "FAIL" and w["delivered"] == 0
+
+
+def test_a_late_first_transfer_fails_with_no_hour_short(run):
+    w0 = T0 + JUDGE["write_start_max_s"]
+    gone = set()
+
+    def drop(rs):
+        for r in rs:
+            if r["type"] == "attempt" and r["signed_at"] < w0 + 100:
+                gone.add(r["id"])
+        return [r for r in rs if r["id"] not in gone]
+    edit(run.root / "load/ramp/journal.jsonl", drop)
+    w = run()["criteria"]["5.7 writes"]
+    assert w["status"] == "FAIL" and w["first_signed_late"] and not w["short_hours"]
+
+
+def test_one_head_series_with_a_gap_is_inconclusive_while_the_chain_advances(run):
+    lo, hi = T0 + 40_000, T0 + 40_050
+    edit(run.root / "observe/chain.jsonl",
+         lambda rs: [r for r in rs if not (r.get("kind") == "head" and r["host"] == "node-2" and lo < r["ts"] < hi)])
+    assert status(run, "5.1 no stall") == "INCONCLUSIVE"
+
+
+def test_a_window_one_request_short_fails_with_full_coverage(run):
+    edit(run.root / "load/reads/requests.jsonl",
+         lambda rs: [r for r in rs if r["offered_monotonic_seconds"] != 70 * 600 + 500])
+    assert status(run, "5.6 reads") == "FAIL"
 
 
 def test_a_delivery_without_a_receipt_failure_field_does_not_count(run):
