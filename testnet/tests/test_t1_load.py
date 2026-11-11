@@ -94,6 +94,27 @@ def test_an_incomplete_record_refuses_the_launch(tmp_path, mutate, message):
         tl.load_record(p, sha)
 
 
+@pytest.mark.parametrize("key", ["tos_checkout", "signer", "key_file"])
+def test_relative_record_paths_refuse(tmp_path, key):
+    # bot review on #82: the children run in other working directories
+    p, sha = write_record(tmp_path, record(**{key: "relative/path"}))
+    with pytest.raises(tl.Refuse, match="absolute path"):
+        tl.load_record(p, sha)
+
+
+def test_relative_cli_paths_are_resolved_before_use(tmp_path, monkeypatch):
+    seen = {}
+
+    def capture(path, sha):
+        seen["record"] = path
+        raise tl.Refuse("stop here")
+    monkeypatch.setattr(tl, "load_record", capture)
+    monkeypatch.chdir(tmp_path)
+    assert tl.main(["--record", "r.json", "--record-sha256", "x", "--status", "s.json", "--out", "run",
+                    "--inventory", "inv.json"]) == 2
+    assert seen["record"] == tmp_path / "r.json" and seen["record"].is_absolute()
+
+
 def test_a_record_with_another_hash_refuses(tmp_path):
     p, sha = write_record(tmp_path, record())
     with pytest.raises(tl.Refuse, match="sha256"):

@@ -128,6 +128,9 @@ def load_record(path: Path, expected_sha: str) -> dict:
     fx = rec["ramp"]["funding_externals"]
     if type(fx) is not int or not 1 <= fx <= 8:
         raise Refuse(f"ramp.funding_externals must be an integer in [1, 8], not {fx!r}")
+    for key in ("tos_checkout", "signer", "key_file"):
+        if not Path(rec[key]).is_absolute():  # the children run in other working directories
+            raise Refuse(f"acceptance record {key} must be an absolute path, not {rec[key]!r}")
     if not (isinstance(rec["ramp"]["rpc"], list) and len(rec["ramp"]["rpc"]) == 4):
         raise Refuse("ramp.rpc must name the four validator tunnels")
     numbers = [("status_stale_s", rec["status_stale_s"])]
@@ -536,6 +539,9 @@ def main(argv=None) -> int:
     ap.add_argument("--inventory", type=Path, required=True, help="the host inventory (as for t1-observe.py)")
     ap.add_argument("--unit-dir", type=Path, default=Path.home() / ".config/systemd/user")
     a = ap.parse_args(argv)
+    # Children run with other working directories (the ramp in the tos checkout, the reads in this directory), so
+    # every path handed to them, and the journal path the tail watches, must be absolute (bot review on #82).
+    a.out, a.status, a.record, a.inventory = (p.resolve() for p in (a.out, a.status, a.record, a.inventory))
     try:
         rec = load_record(a.record, a.record_sha256)
         check_inputs(rec)
