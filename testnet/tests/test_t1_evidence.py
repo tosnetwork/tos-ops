@@ -391,3 +391,20 @@ def test_a_checked_boundary_must_name_the_four_validators(run, sources):
     edit(run.root / FILES["boundaries"], lambda rs: [dict(r, sources=sources) for r in rs])
     b = run()["criteria"]["5.1 handovers and key gate"]
     assert b["status"] != "PASS" and "boundaries" in b["contract_violations"]
+
+
+
+def test_a_try_that_is_both_measured_and_failed_is_a_violation(run):
+    # codex r3: a negative bound hidden behind an error key must not pass as the error variant
+    mixed = {"offset": 1000.0, "bound": -1001.0, "error": "failed try"}
+    edit(run.root / FILES["clock"], lambda rs: [dict(r, best=mixed, tries=[mixed]) for r in rs])
+    c = run()["criteria"]["collector clock"]
+    assert c["status"] != "PASS" and "clock" in c["contract_violations"]
+
+
+def test_best_must_be_a_measured_try(run):
+    # best is a failed try that also appears in tries: only best's own check can catch it
+    failed = {"error": "timeout"}
+    edit(run.root / FILES["clock"], lambda rs: [dict(r, best=failed, tries=r["tries"] + [failed]) for r in rs])
+    c = run()["criteria"]["collector clock"]
+    assert c["status"] != "PASS" and "clock" in c["contract_violations"]

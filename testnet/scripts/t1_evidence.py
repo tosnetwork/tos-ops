@@ -136,6 +136,11 @@ def HEAD_ID(v) -> bool:
             and NAT(v[2]) and HASH32(v[3]) and HASH32(v[4]))
 
 
+# A clock try is either measured or failed, never both (t1-observe.py:475-480); shape() allows extra fields, so
+# each variant also excludes the other's keys.
+MEASURED_TRY = lambda v: (shape({"offset": NUM, "bound": lambda b: NUM(b) and b >= 0})(v)  # noqa: E731
+                          and "error" not in v)
+ERROR_TRY = lambda v: shape({"error": STR})(v) and "offset" not in v and "bound" not in v  # noqa: E731
 DISK = shape({"free_bytes": NAT, "size_bytes": NAT, "free_inodes": NAT, "total_inodes": NAT})
 UNIT = shape({"main_pid": NAT, "n_restarts": NAT, "active_state": lambda v: v in UNIT_STATES})
 MEM = shape({"MemTotal": NAT, "MemAvailable": NAT, "SwapTotal": NAT, "SwapFree": NAT})
@@ -164,10 +169,7 @@ SCHEMAS: dict[str, dict[str, Check]] = {
     "safety/safety_line": {**OBS_BASE, "kind": one_of("safety_line"), "file": STR, "line": STR},
     # clock.jsonl (:499-500)
     "clock": {"ts": NUM, "host": HOST, "verdict": one_of("ok", "skewed", "uncertain", "unmeasured"),
-              # best must be one of the tries (RULES), so the non-negative bound is checked on the tries
-              "best": null_or(shape({"offset": NUM, "bound": NUM})),
-              "tries": list_of(either(shape({"offset": NUM, "bound": lambda v: NUM(v) and v >= 0}),
-                                      shape({"error": STR}))),
+              "best": null_or(MEASURED_TRY), "tries": list_of(either(MEASURED_TRY, ERROR_TRY)),
               "limit": NUM},
     # chain.jsonl (:519-568)
     "chain/head": {"ts": NUM, "kind": one_of("head"), "host": HOST, "id": HEAD_ID, "gen_utime": NAT},
