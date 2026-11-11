@@ -366,3 +366,10 @@ def test_an_answer_from_a_host_that_is_not_a_validator_is_a_violation(run):
     edit(run.root / FILES["fees"], lambda rs: [dict(r, answers={**r["answers"], "node-dht": r["balance_nano"]})
                                                for r in rs])
     assert "fees" in run()["criteria"]["5.8 operators"]["contract_violations"]
+
+
+def test_a_balance_from_a_single_source_is_a_violation(run):
+    # consistent with its one answer, so only the quorum rule can catch it
+    edit(run.root / FILES["fees"], lambda rs: [dict(r, answers={"node-1": r["balance_nano"]}) for r in rs])
+    c = run()["criteria"]["5.8 operators"]
+    assert c["status"] != "PASS" and any("quorum" in x for x in c["contract_violations"]["fees"])
