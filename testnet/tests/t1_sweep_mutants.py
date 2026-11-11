@@ -72,6 +72,10 @@ MUTANTS = [
      "            if attempt.get(\"role\") != \"sweep\":"),
     ("S29 run record readable by the ramp", '"to": dest, "mc_start": mc_start,', '"to": dest,'),
     ("S30 no made-up masterchain block", '"recipient_mc": None,', '"recipient_mc": 0,'),
+    ("S35 the bench wallet is the only destination",
+     "    if dest != m.remote.raw(bench.address):\n        raise Refuse(", "    if False:\n        raise Refuse("),
+    ("S36 a lagging RPC is read again", "        if not proof[\"problems\"] or k == rounds - 1:", "        if True:"),
+    ("S37 no abbreviated options", "allow_abbrev=False", "allow_abbrev=True"),
     ("S24 delivery recorded", "    journal.event(\"delivered\", record[\"id\"],", "    (lambda *a, **k: None)(\"delivered\", record[\"id\"],"),
 ]
 

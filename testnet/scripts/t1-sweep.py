@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""T1 fund recovery: send each load wallet's whole balance back to the bench wallet (or another recorded wallet).
+"""T1 fund recovery: send each load wallet's whole balance back to the bench wallet, and nowhere else.
 
   t1-sweep.py --key-file KEY --out NEW_DIR [--go]
 
@@ -20,14 +20,15 @@ Safety (codex plan review, AGREE-WITH-CHANGES):
 2. A sweep counts as settled only by its sender transaction, found by the external's hash in the sender's complete
    history (journal.find_attempt via confirm); a moved nonce or a passed deadline proves nothing. An ambiguous
    send is never resent.
-3. The recipient side is proved by transaction, on two RPCs: the destination's transaction importing exactly the
-   emitted message, executed, not bounced, crediting its value. The accounting equation is checked: balance
-   before = value sent + the sender transaction's total fees + forwarding (at most FWD_TOLERANCE), and the
-   wallet's balance after is 0 on both RPCs.
-4. The network is pinned: both RPCs report the epoch-6 zerostate and global id 2, the RPCs are the inventory's
+3. The recipient side is proved by transaction, on every RPC (the four validators' tunnels): the destination's
+   transaction importing exactly the emitted message, executed, not bounced, crediting its value. The accounting
+   equation is checked: balance before = value sent + the sender transaction's total fees + forwarding (at most
+   FWD_TOLERANCE), and the wallet's balance after is 0 on every RPC. An RPC behind the one that confirmed the
+   sender is given PROOF_WAIT seconds to show both sides before the sweep counts as not exact.
+4. The network is pinned: every RPC reports the epoch-6 zerostate and global id 2, the RPCs are the inventory's
    tunnels, the derived addresses are the ramp's, and each wallet's live code hash, authority hash, epoch and
-   retirement state are the derived wallet's. The destination is an active workchain-0 account that is no
-   source.
+   retirement state are the derived wallet's. The destination is the active bench wallet derived from the key;
+   no other destination is accepted.
 5. Mode 130 is tested by real execution of the pinned wallet code (tests/test_t1_sweep_emulator.py).
 
 Exit status: 0 done (or dry run passed), 1 stopped on a sweep that did not settle exactly, 2 refused.
@@ -64,6 +65,7 @@ MIN_LEFT_NANO = 50_000_000  # a wallet holding no more than its fee bound + 0.05
 FWD_TOLERANCE_NANO = 10_000_000  # balance before - value - total fees: the forwarding fee, at most 0.01 TOS
 CONFIRM_TIMEOUT = 300.0
 POLL = 2.0
+PROOF_WAIT = 300.0  # seconds every RPC has to show a confirmed sweep on both sides (a lagging node is not a failure)
 
 
 class Refuse(Exception):
@@ -186,6 +188,7 @@ class Chain(Protocol):
     async def send(self, external) -> None: ...
     async def confirm(self, record: dict) -> Any: ...
     async def history(self, address: str, since: int) -> list[list[Any]]: ...
+    async def pause(self, seconds: float) -> None: ...
 
 
 class LiveChain:
@@ -210,6 +213,9 @@ class LiveChain:
 
     async def now(self):
         return await self.remote.now()
+
+    async def pause(self, seconds):
+        await asyncio.sleep(seconds)
 
     async def mc_seqno(self):
         return int((await self.rpcs[0].call("getMasterchainInfo"))["last"]["seqno"])
@@ -274,7 +280,8 @@ async def plan(m, chain: Chain, wallets, code_hash: str, dest: str, config) -> l
 
 
 async def sweep_one(m, chain: Chain, journal, signer, w, seed, s: Sweep, dest: str, seqno: int) -> dict:
-    """Sign, journal (fsynced), send once, and prove one sweep on both sides. Raises Stop when it is not exact."""
+    """Sign, journal (fsynced), send once, and prove one sweep on both sides on every RPC. Raises Stop when it is
+    not exact."""
     now = await chain.now()
     deadline = now + LIFETIME
     action = m.workload.transfer_message(w.address, m.core.Address(dest), 0)
@@ -299,13 +306,28 @@ async def sweep_one(m, chain: Chain, journal, signer, w, seed, s: Sweep, dest: s
     sent = m.remote.settle(journal, record, verdict)
     if sent.state != "settled":
         raise Stop(f"wallet {s.index}: sweep {sent.state} ({sent.reason}); see the journal, never resent")
-    after = [int(a.get("balance", -1)) for a in await chain.account(s.address)]
-    proof = settle_sweep(verdict.found.tx, s.address, dest, s.balance, await chain.history(dest, now), after)
+    proof = await prove_sweep(chain, verdict.found.tx, s.address, dest, s.balance, now)
     if proof["problems"]:
         raise Stop(f"wallet {s.index}: the sweep executed but is not exact: {proof['problems']}")
     r = proof["receipts"][0]
     journal.event("delivered", record["id"], **receipt_fields(proof))
     return {"id": record["id"], "tx": verdict.found.tx.hash, **proof}
+
+
+async def prove_sweep(chain: Chain, sender_tx, sender: str, dest: str, balance: int, since: int) -> dict:
+    """settle_sweep on every RPC, read again every POLL seconds until it holds or PROOF_WAIT has passed.
+
+    The sender was confirmed on one RPC; another may not have imported that block yet and shows the old balance
+    and no receipt. That is lag, not a failed sweep, so it is read again. A sweep that is really not exact stays
+    so on every read, and the last proof, with its problems, is returned."""
+    rounds = max(1, int(PROOF_WAIT // POLL))
+    for k in range(rounds):
+        after = [int(x.get("balance", -1)) for x in await chain.account(sender)]
+        proof = settle_sweep(sender_tx, sender, dest, balance, await chain.history(dest, since), after)
+        if not proof["problems"] or k == rounds - 1:
+            return proof
+        await chain.pause(POLL)
+    raise AssertionError("unreachable: the last round returns")
 
 
 def receipt_fields(proof: dict) -> dict:
@@ -391,9 +413,8 @@ async def recover_receipts(m, chain: Chain, state) -> list[str]:
                                f"duplicates {obs.get('duplicates', 0)}")
                 continue
             dest = attempt["actions"][0]["destination"]
-            after = [int(x.get("balance", -1)) for x in await chain.account(attempt["sender"])]
-            proof = settle_sweep(observed_tx(m, attempt, obs), attempt["sender"], dest, attempt["balance_before"],
-                                 await chain.history(dest, attempt["signed_at"]), after)
+            proof = await prove_sweep(chain, observed_tx(m, attempt, obs), attempt["sender"], dest,
+                                      attempt["balance_before"], attempt["signed_at"])
             if proof["problems"]:
                 pending.append(f"{aid}: {proof['problems']}")
                 continue
@@ -417,7 +438,7 @@ def check_pins(a, run=subprocess.run) -> None:
 
 def check_network(rows: list[dict], zero: dict) -> None:
     if len(rows) < 2:
-        raise Refuse("two RPCs are required")
+        raise Refuse("at least two RPCs are required")
     for r in rows:
         init = r["init"]
         if (init.get("root_hash"), init.get("file_hash"), init.get("seqno")) != \
@@ -435,6 +456,8 @@ async def run(a, m, chain: Chain, state, journal, signer, bench, wallets, seeds,
     sources = {m.remote.raw(w.address) for w in wallets}
     if dest in sources or dest == "":
         raise Refuse("the destination is one of the swept wallets")
+    if dest != m.remote.raw(bench.address):
+        raise Refuse(f"the destination {dest} is not the bench wallet {m.remote.raw(bench.address)}")
     if not dest.startswith("0:"):
         raise Refuse("the destination must be a workchain-0 account")
     d = agreed(await chain.account(dest), keys=("state",))
@@ -466,10 +489,11 @@ async def run(a, m, chain: Chain, state, journal, signer, bench, wallets, seeds,
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    # no abbreviations: a removed option must not silently resolve to a longer one (--to would become --tos)
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+                                 allow_abbrev=False)
     ap.add_argument("--key-file", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True, help="a new directory for the journal and the result")
-    ap.add_argument("--to", help="destination (default: the bench wallet)")
     ap.add_argument("--inventory", type=Path, default=Path.home() / ".config/tos-alert/hosts.json")
     ap.add_argument("--unit-dir", type=Path, default=Path.home() / ".config/systemd/user")
     ap.add_argument("--tos", type=Path, default=TOS_CHECKOUT)
@@ -495,7 +519,7 @@ def main(argv=None) -> int:
         seeds = [m.ramp.load_seed(key.seed, bench.address, i) for i in range(WALLETS)]
         pks = signer.public_keys(seeds)
         wallets = [m.ramp.load_wallet(code, GLOBAL_ID, auth, i, pk, key.rescue_public_key) for i, pk in enumerate(pks)]
-        dest = a.to or m.remote.raw(bench.address)
+        dest = m.remote.raw(bench.address)
         # The ramp's lock first, held to the end; then a clean reconcile of every registered journal.
         state = m.jr.WalletState(m.jr.default_state_dir(a.key_file), m.remote.raw(bench.address))
     except Refuse as exc:

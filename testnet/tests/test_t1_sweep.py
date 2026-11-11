@@ -43,7 +43,7 @@ def b64(cell):
 
 class FakeChain:
     def __init__(self, m, w, balances, *, init=None, global_id=2, disagree=None, send_error=None,
-                 verdict="executed", recipient=True, dest_state="active", after=None):
+                 verdict="executed", recipient=True, dest_state="active", after=None, lag=0):
         self.m, self.w = m, w
         self.bal = {m.remote.raw(x.address): b for x, b in zip(w.loads, balances)}
         self.init, self.global_id = init or ZERO, global_id
@@ -51,6 +51,15 @@ class FakeChain:
         self.dest_state, self.after = dest_state, after
         self.sent, self.journal_at_send, self.journal = [], [], None
         self.out = {}
+        # the second RPC lags: until `lag` pauses have passed it shows the balance before the sweep and no receipt
+        self.lag, self.pauses = lag, 0
+
+    def lagging(self):
+        return self.pauses < self.lag
+
+    async def pause(self, seconds):
+        assert seconds == tool.POLL
+        self.pauses += 1
 
     async def network(self):
         return [{"init": dict(self.init), "global_id": self.global_id}] * 2
@@ -63,6 +72,8 @@ class FakeChain:
         ans = {"state": "active", "balance": str(self.bal[address]), "code": b64(wl.state_init.code),
                "data": b64(wl.state_init.data)}
         other = dict(ans, balance=str(self.bal[address] + 1)) if self.disagree == i else ans
+        if self.lagging() and address in self.out:
+            other = dict(ans, balance=str(self.out[address][1]))
         return [ans, other]
 
     async def now(self):
@@ -102,7 +113,7 @@ class FakeChain:
                                             action_success=None, fee=1000, phase_failure=None),
                                    utime=1_800_000_003 + k, compute_success=True, raw={})
                for k, (msg, _) in enumerate(self.out.values())]
-        return [txs, txs]
+        return [txs, [] if self.lagging() else txs]
 
 
 def run(env, chain, tmp_path, go=True, monkeypatch=None, state=None):
@@ -543,3 +554,54 @@ def test_a_sweep_executed_twice_is_never_counted(env, tmp_path, monkeypatch, whe
         state.release()
     assert len(pending) == 1 and "duplicates 1" in pending[0]
     assert "delivered" not in [json.loads(x)["type"] for x in path.read_text().splitlines()]
+
+
+def test_only_the_bench_wallet_is_a_destination(env, tmp_path, monkeypatch):
+    # coordinator review: no operator-chosen destination; an active wc0 account that is not the bench is refused
+    m, w = env
+    monkeypatch.setattr(m.remote, "external_fee_bound", lambda *a: SimpleNamespace(total=BOUND))
+    chain = FakeChain(m, w, [BAL, BAL])
+    a = SimpleNamespace(go=True, out=tmp_path)
+    state = m.jr.WalletState(tmp_path / "state-x", "0:" + "ef" * 32)
+    try:
+        with pytest.raises(tool.Refuse, match="not the bench wallet"):
+            __import__("asyncio").run(tool.run(a, m, chain, state, None, w.signer, w.bench, w.loads, w.seeds, "x",
+                                               "0:" + "77" * 32, ZERO, log=lambda *_: None))
+    finally:
+        state.release()
+    assert chain.sent == []
+
+
+def test_the_cli_has_no_destination_option(tmp_path, capsys):
+    with pytest.raises(SystemExit):
+        tool.main(["--key-file", str(tmp_path / "k"), "--out", str(tmp_path / "o"), "--to", "0:" + "77" * 32])
+    assert "unrecognized arguments: --to" in capsys.readouterr().err
+
+
+def test_a_lagging_rpc_is_read_again_until_it_shows_the_sweep(env, tmp_path, monkeypatch):
+    # coordinator review: the RPC that confirmed the sender is ahead; the others are read again, not judged at once
+    m, w = env
+    chain = FakeChain(m, w, [BAL, BAL], lag=3)
+    rc, rows, logs, _ = run(env, chain, tmp_path, monkeypatch=monkeypatch)
+    assert rc == 0 and chain.pauses == 3
+    assert [r["type"] for r in rows].count("delivered") == 2
+
+
+def test_an_rpc_that_never_shows_the_sweep_stops_the_run_after_the_wait(env, tmp_path, monkeypatch):
+    m, w = env
+    chain = FakeChain(m, w, [BAL, BAL], lag=10**9)
+    rc, rows, logs, _ = run(env, chain, tmp_path, monkeypatch=monkeypatch)
+    assert rc == 1 and len(chain.sent) == 1
+    assert chain.pauses == int(tool.PROOF_WAIT // tool.POLL) - 1
+    assert "delivered" not in [r["type"] for r in rows]
+
+
+def test_recovery_reads_a_lagging_rpc_again(env, tmp_path, monkeypatch):
+    m, w, chain, rc, rows, out = _interrupted(env, tmp_path, monkeypatch, recipient=False)
+    chain.recipient, chain.lag, chain.pauses = True, 2, 0
+    state = _registry(m, tmp_path, out / "journal.jsonl")
+    try:
+        assert _recover(m, chain, state) == []
+    finally:
+        state.release()
+    assert chain.pauses == 2
