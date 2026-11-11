@@ -320,9 +320,10 @@ def test_an_hour_without_sends_fails_the_hourly_floor_with_nothing_unresolved(ru
 
 
 def test_a_healthy_ramp_that_ends_before_the_cutoff_passes(run):
-    # the ramp signs its last transfer about an hour before the cutoff (preparation, final drain, margin)
+    # the ramp signs its last transfer two hours before the cutoff (preparation, final drain, margin): counting
+    # hours up to the cutoff instead of the last signature would see an empty, failing hour
     edit(run.root / "load/ramp/journal.jsonl",
-         lambda rs: [r for r in rs if not (r["type"] == "attempt" and r["signed_at"] > T0 + tj.DURATION - 3600)])
+         lambda rs: [r for r in rs if not (r["type"] == "attempt" and r["signed_at"] > T0 + tj.DURATION - 7200)])
     edit(run.root / "load/ramp/journal.jsonl",
          lambda rs: [r for r in rs if r["type"] == "attempt" or r["id"] in {a["id"] for a in rs if a["type"] == "attempt"}])
     assert run()["criteria"]["5.7 writes"]["status"] == "PASS"
