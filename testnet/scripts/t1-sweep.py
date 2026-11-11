@@ -45,7 +45,10 @@ import json
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -192,12 +195,50 @@ class Chain(Protocol):
     def clock(self) -> float: ...
 
 
+async def daemon_transport(url: str, body: bytes, timeout: float) -> tuple[int, bytes]:
+    """The pinned urllib transport's request, in a daemon thread instead of asyncio.to_thread.
+
+    asyncio.run joins the default executor before it returns, so a read cancelled at the proof deadline would
+    still hold the wallet lock for as long as its socket lingers. Here a cancelled read is abandoned: its thread
+    is a daemon, nothing joins it, and its late answer is dropped."""
+    loop = asyncio.get_running_loop()
+    answer: asyncio.Future = loop.create_future()
+    request = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+
+    def post() -> None:
+        result, error = None, None
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                result = (response.status, response.read())
+        except urllib.error.HTTPError as http:
+            with http:
+                result = (http.code, http.read())
+        except BaseException as caught:  # handed to the awaiting coroutine, as asyncio.to_thread would
+            error = caught
+
+        def deliver() -> None:
+            if answer.done():
+                return  # the caller gave up
+            if error is not None:
+                answer.set_exception(error)
+            else:
+                answer.set_result(result)
+
+        try:
+            loop.call_soon_threadsafe(deliver)
+        except RuntimeError:
+            pass  # the loop is closed: the caller gave up and returned
+
+    threading.Thread(target=post, name="t1-sweep-rpc", daemon=True).start()
+    return await answer
+
+
 class LiveChain:
     """Reads on every RPC (they must agree), sends on the first; the pinned bench helpers do the rest."""
 
     def __init__(self, m, urls: list[str]):
         self.m = m
-        self.rpcs = [m.rpc.PacedRpc(u, 0.25) for u in urls]
+        self.rpcs = [m.rpc.PacedRpc(u, 0.25, transport=daemon_transport) for u in urls]
         self.remote = m.remote.Remote(self.rpcs, POLL)
 
     async def network(self):

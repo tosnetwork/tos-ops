@@ -639,3 +639,49 @@ def test_proof_wait_bounds_the_elapsed_time_reads_included(env, tmp_path, monkey
     assert rc == 1 and len(chain.sent) == 1 and took < 2.0, took
     assert any("no complete read" in x for x in logs if x.startswith("STOP"))
     assert "delivered" not in [r["type"] for r in rows]
+
+
+class _SlowRpc(__import__("http.server").server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        time.sleep(3)
+        try:
+            body = json.dumps({"ok": True, "result": {}}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except OSError:
+            pass
+
+    def log_message(self, *a):
+        pass
+
+
+def test_a_live_read_cancelled_at_the_deadline_does_not_hold_the_wallet_lock(env, tmp_path, monkeypatch):
+    # codex r5: the pinned transport reads in asyncio.to_thread; asyncio.run joins that thread before it returns,
+    # so the lock was held for the whole slow read. A real HTTP RPC that answers after 3 s, a real LiveChain.
+    import http.server
+    import threading
+    m, w = env
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _SlowRpc)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{server.server_address[1]}/"
+        monkeypatch.setattr(tool, "PROOF_WAIT", 0.3)
+        chain = tool.LiveChain(m, [url, url])
+        state = m.jr.WalletState(tmp_path / "state-live", "0:" + "ef" * 32)
+        t0 = time.monotonic()
+        try:
+            proof = __import__("asyncio").run(tool.prove_sweep(chain, None, "0:" + "11" * 32, "0:" + "22" * 32,
+                                                               BAL, 0))
+        finally:
+            state.release()
+        again = m.jr.WalletState(tmp_path / "state-live", "0:" + "ef" * 32)  # the lock is free again
+        again.release()
+        took = time.monotonic() - t0
+    finally:
+        server.shutdown()
+    assert "no complete read" in proof["problems"][0]
+    assert took < 1.5, f"asyncio.run held the wallet lock {took:.1f} s for a cancelled read"

@@ -82,6 +82,7 @@ MUTANTS = [
     ("S39 the wait ends at the deadline", "        if chain.clock() + POLL >= deadline:\n            return proof",
      "        if False:\n            return proof"),
     ("S37 no abbreviated options", "allow_abbrev=False", "allow_abbrev=True"),
+    ("S40 a cancelled live read is not joined", "PacedRpc(u, 0.25, transport=daemon_transport)", "PacedRpc(u, 0.25)"),
     ("S24 delivery recorded", "    journal.event(\"delivered\", record[\"id\"],", "    (lambda *a, **k: None)(\"delivered\", record[\"id\"],"),
 ]
 
