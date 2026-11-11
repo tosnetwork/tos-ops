@@ -622,9 +622,10 @@ def test_termination_without_the_ramp_is_inconclusive(run):
 
 
 def test_a_lifecycle_out_of_order_is_inconclusive(run):
+    # Terminated before the cutoff, with times that never go back: only the order check can catch it.
     def reorder(rs):
         k = {r["kind"]: r for r in rs}
-        return [k["start"], k["terminated"], k["ramp_done"], k["cutoff"], k["end"]]
+        return [k["start"], k["ramp_done"], k["terminated"], k["cutoff"], k["end"]]
     edit(run.root / "load/load.jsonl", reorder)
     c = run()["criteria"]["run completed"]
     assert c["status"] == "INCONCLUSIVE" and c["problems"] == ["the lifecycle is out of order or its times go back"]
