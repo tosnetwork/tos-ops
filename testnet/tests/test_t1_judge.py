@@ -271,6 +271,72 @@ def test_a_run_without_a_clean_end_is_inconclusive(run):
     assert run()["criteria"]["run completed"]["status"] == "INCONCLUSIVE"
 
 
+# ---------------------------------------------------------------- each guard on its own (from the mutation run)
+
+
+def test_a_record_with_another_hash_refuses(tmp_path):
+    p = tmp_path / "r.json"
+    p.write_text(json.dumps({"judge": JUDGE}))
+    tj.load_record(p, hashlib.sha256(p.read_bytes()).hexdigest())
+    with pytest.raises(tj.Refuse, match="sha256"):
+        tj.load_record(p, "0" * 64)
+
+
+def test_heads_that_keep_coming_without_a_new_seqno_are_a_stall(run):
+    # the observer still answers, but the chain does not advance for 90 s
+    lo, hi = T0 + 40_000, T0 + 40_090
+    edit(run.root / "observe/chain.jsonl",
+         lambda rs: [dict(r, id=[-1, "x", 1, H, H]) if r.get("kind") == "head" and lo < r["ts"] < hi else r
+                     for r in rs])
+    assert run()["criteria"]["5.1 no stall"]["status"] == "FAIL"
+
+
+def test_a_constant_rss_above_the_absolute_bound_fails_without_growth(run):
+    edit(run.root / "observe/resources.jsonl",
+         lambda rs: [dict(r, proc={"RssAnon": 7 * GiB}) if r["host"] == "node-1" else r for r in rs])
+    m = run()["criteria"]["5.3 bounded memory"]
+    assert m["status"] == "FAIL" and m["growth"]["node-1"]["e2e"] == 0
+
+
+def test_a_disk_constantly_below_its_floor_fails_without_growth(run):
+    edit(run.root / "observe/resources.jsonl",
+         lambda rs: [dict(r, disks={p: {"free_bytes": 10 * GiB, "free_inodes": 5_000_000} for p in r["disks"]})
+                     if r["host"] == "node-2" else r for r in rs])
+    assert run()["criteria"]["5.4 bounded disk"]["status"] == "FAIL"
+
+
+def test_an_hour_without_sends_fails_the_hourly_floor_with_nothing_unresolved(run):
+    lo, hi = T0 + 10 * 3600, T0 + 11 * 3600
+    gone = set()
+
+    def drop(rs):
+        for r in rs:
+            if r["type"] == "attempt" and lo <= r["signed_at"] < hi:
+                gone.add(r["id"])
+        return [r for r in rs if r["id"] not in gone]
+    edit(run.root / "load/ramp/journal.jsonl", drop)
+    w = run()["criteria"]["5.7 writes"]
+    assert w["status"] == "FAIL" and w["unresolved_actions"] == 0 and w["short_hours"]
+
+
+def test_a_healthy_ramp_that_ends_before_the_cutoff_passes(run):
+    # the ramp signs its last transfer about an hour before the cutoff (preparation, final drain, margin)
+    edit(run.root / "load/ramp/journal.jsonl",
+         lambda rs: [r for r in rs if not (r["type"] == "attempt" and r["signed_at"] > T0 + tj.DURATION - 3600)])
+    edit(run.root / "load/ramp/journal.jsonl",
+         lambda rs: [r for r in rs if r["type"] == "attempt" or r["id"] in {a["id"] for a in rs if a["type"] == "attempt"}])
+    assert run()["criteria"]["5.7 writes"]["status"] == "PASS"
+
+
+def test_a_fail_dominates_an_inconclusive(run):
+    jsonl(run.root / "observe/cache.jsonl", [{"ts": T0 + 100, "kind": "coverage_gap", "reason": "vanished"}])
+    edit(run.root / "observe/resources.jsonl",
+         lambda rs: [dict(r, oom_kill=1) if r["host"] == "node-1" and r["ts"] > T0 + 90_000 else r for r in rs])
+    v = run()
+    statuses = {c["status"] for c in v["criteria"].values()}
+    assert {"FAIL", "INCONCLUSIVE"} <= statuses and v["verdict"] == "FAIL"
+
+
 def test_a_run_that_never_started_refuses(run):
     (run.root / "load/load.jsonl").write_text("")
     with pytest.raises(tj.Refuse, match="never started"):

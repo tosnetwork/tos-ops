@@ -358,14 +358,20 @@ def judge_writes(load_dir: Path, t0: float, t1: float, j: dict) -> dict:
         hour = int((d["recipient_utime"] - first) // 3600)
         ok_by_hour[hour] = ok_by_hour.get(hour, 0) + 1
         good += 1
-    hours = int((t1 - first) // 3600)
+    # The declared signing window runs from the first to the last signed transfer: the ramp ends signing before
+    # the cutoff (its preparation, final drain and margin), so the hours after it are not write hours. A run that
+    # stopped early fails "run completed" instead.
+    last = max(a.get("signed_at", first) for a in transfers.values())
+    hours = int((last - first) // 3600)
     floor = j["write_hourly_floor_fraction"] * DECLARED_RATE * 3600
     short = [(h, ok_by_hour.get(h, 0)) for h in range(hours) if ok_by_hour.get(h, 0) < floor]
     undelivered = sum(len(a.get("actions") or []) for a in transfers.values()) - good
     fees = sum(o.get("fee") or 0 for o in observed.values() if finite(o.get("fee")))
     facts = dict(delivered=good, hours=hours, hourly_floor=floor, short_hours=short[:20],
                  unresolved_actions=undelivered, fees_nano=fees)
-    if good == 0 or short or fees > j["max_cost_nano"]:
+    # Zero delivered with any transfer signed is already a FAIL below (all of them unresolved), and no transfer at
+    # all is the FAIL above, so no separate "nothing delivered" rule is needed here.
+    if short or fees > j["max_cost_nano"]:
         return result(FAIL, **facts)
     if undelivered:
         return result(FAIL, **facts, reason="unresolved transfers after the drain")
