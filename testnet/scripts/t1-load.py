@@ -10,7 +10,10 @@ adopts a submitter: after any stop, monitoring continues elsewhere and the stopp
 
 Containment: each child runs in its own process group with PR_SET_PDEATHSIG = SIGKILL, so it dies with this
 process; run this under a systemd unit with KillMode=control-group and Restart=no for the window before the
-signal is armed. Children write stdout/stderr to files, never to a pipe.
+signal is armed. Children write stdout/stderr to files, never to a pipe. The launch is:
+
+  systemd-run --user --unit=t1-load -p KillMode=control-group -p Restart=no -p StandardOutput=file:OUT.log \
+      -p StandardError=file:OUT.log /usr/bin/python3 -I t1-load.py --record R --record-sha256 H --status S --out O
 
 Every decision is a line in OUT/load.jsonl: start, each stop reason, the termination check and the end.
 Exit status: 0 when the run ended at the cutoff with no stop condition, 1 when it was stopped, 2 when it refused
