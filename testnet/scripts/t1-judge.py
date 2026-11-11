@@ -4,15 +4,17 @@
   t1-judge.py --record RECORD.json --record-sha256 HEX --observe OBSERVE_DIR --load LOAD_DIR [--out VERDICT.json]
 
 Reads only retained evidence: the observer's series (t1-observe.py, t1-boundaries.py) and the load supervisor's
-directory (t1-load.py: load.jsonl, the ramp's journal.jsonl, the read client's WINDOW files). It recomputes every
+directory (t1-load.py: load.jsonl, the ramp's journal.jsonl, the read client's requests.jsonl). It recomputes every
 §5 criterion from that evidence and the frozen acceptance record, and prints one verdict:
 
   PASS          every criterion passed on complete evidence
   FAIL          at least one criterion failed (a near miss is not reclassified)
   INCONCLUSIVE  no criterion failed, but at least one could not be established (missing or incomplete evidence)
 
-Each criterion's result and the facts it rests on are in the verdict. Missing evidence is never inferred: an
-action without a `delivered` record is not delivered, a series with a gap beyond its limit is incomplete.
+The schedule, the windows and every threshold come from the record, never from the evidence being judged.
+Absence of a recorded violation is never a pass: each series must be positively present and continuous. An
+action without a valid `delivered` record is not delivered. Stored verdicts (a read window's `pass` flag) are
+ignored and recomputed from the underlying measurements.
 Exit status: 0 PASS, 1 FAIL, 3 INCONCLUSIVE, 2 refused (the record does not match or is incomplete).
 """
 
@@ -30,23 +32,36 @@ HOSTS = ("node-1", "node-2", "node-3", "node-4")
 DATA_PATHS = ("/var/lib/tos/validator", "/var/log/tos")
 DURATION = 259_200
 DECLARED_RATE = 2  # transfers/s (T1-PLAN §3.2)
-READ_WINDOW_REQUESTS = 4800
+READ_RATE = 8  # scheduled read requests/s (T1-PLAN §3.1)
+READ_ENDPOINTS = 4
+READ_METHODS = ("getMasterchainInfo", "getAddressInformation", "getTransactions")
 PASS, FAIL, INCONCLUSIVE = "PASS", "FAIL", "INCONCLUSIVE"
 JUDGE_REQUIRED = {
     "max_chain_gap_s": "§5.1: no masterchain gap above this (60)",
     "head_series_gap_s": "a head series gap beyond this makes the stall check incomplete",
+    "ids_series_gap_s": "§5.2: agreed common-height ids must be observed at least this often",
     "resource_series_gap_s": "a resource series gap beyond this makes §5.2–5.4 incomplete",
+    "logs_series_gap_s": "§5.5: each host's log reads must be at least this frequent (coverage)",
+    "clock_series_gap_s": "collector health: an ok clock verdict per host at least this often",
+    "fees_series_gap_s": "§5.8: each operator's balance readings at least this often",
     "divergence_s": "§5.2: ids disagreeing longer than this is a persistent divergence",
     "rss_anon_max_bytes": "§5.3: absolute RssAnon bound",
-    "rss_growth_e2e_bytes": "§5.3: end-to-end growth bound (first vs last complete term)",
-    "rss_growth_rolling_bytes": "§5.3: rolling growth bound over rolling_terms consecutive terms",
+    "rss_growth_e2e_bytes": "§5.3: growth at the same session phase, first vs last full term",
+    "rss_growth_rolling_bytes": "§5.3: growth at the same session phase over rolling_terms consecutive terms",
     "rolling_terms": "§5.3: terms in a rolling window",
+    "phases_per_term": "§5.3: comparable session positions per term",
     "mem_available_floor_bytes": "§5.3: MemAvailable floor",
     "disk_free_floor_bytes": "§5.4: free space floor",
     "disk_free_floor_inodes": "§5.4: free inode floor",
     "disk_bytes_per_block_max": "§5.4: the frozen per-block bound",
+    "read_window_s": "§5.6: the read window (600)",
+    "read_deadline_s": "§5.6: a request completed within this counts",
+    "read_completed_fraction": "§5.6: completed-within-deadline per window ≥ this × scheduled (0.9)",
+    "read_error_fraction_max": "§5.6: errors per window ≤ this fraction",
+    "write_start_max_s": "§5.7: the first transfer must be signed within this after the start (preparation)",
+    "write_end_slack_s": "§5.7: the last transfer must be signed within this before the cutoff (drain, margin)",
     "write_hourly_floor_fraction": "§5.7: delivered per hour ≥ this × the declared rate × 3600",
-    "backlog_max_actions": "§5.7: undelivered actions at any hour end",
+    "backlog_max_actions": "§5.7: executed-but-undelivered actions at any time",
     "max_cost_nano": "§5.8: the spend cap",
     "operator_floor_nano": "§5.8: no operator below this",
     "first_boundary": "§5.1: the pinned schedule",
@@ -74,6 +89,9 @@ def load_record(path: Path, sha: str) -> dict:
     for key, why in JUDGE_REQUIRED.items():
         if not finite(judge.get(key)) or judge[key] <= 0:
             raise Refuse(f"acceptance record judge.{key} must be a finite number > 0 ({why})")
+    ops = judge.get("operators")
+    if not (isinstance(ops, list) and ops and all(isinstance(o, str) and o for o in ops) and len(set(ops)) == len(ops)):
+        raise Refuse("acceptance record judge.operators must list every pinned operator")
     return judge
 
 
@@ -106,28 +124,55 @@ def max_gap(times: list[float], start: float, end: float) -> float:
     return max(b - a for a, b in zip(edges, edges[1:]))
 
 
-# ---------------------------------------------------------------- the run window
+# ---------------------------------------------------------------- the run lifecycle
 
 
-def window(load_dir: Path) -> tuple[float, float, dict]:
+def window(load_dir: Path) -> tuple[float, float, list[dict]]:
     log = rows(load_dir / "load.jsonl")
     start = next((r for r in log if r.get("kind") == "start"), None)
-    end = next((r for r in log if r.get("kind") == "end"), None)
-    if start is None:
+    if start is None or not finite(start.get("ts")):
         raise Refuse("load.jsonl has no start row: the run never started")
-    stops = [r for r in log if r.get("kind") == "stop"]
-    return start["ts"], start["ts"] + DURATION, {"end": end, "stops": stops, "ramp_done": any(
-        r.get("kind") == "ramp_done" for r in log)}
+    return start["ts"], start["ts"] + DURATION, log
+
+
+def judge_completion(log: list[dict], t0: float, t1: float) -> dict:
+    """A clean run has exactly: start, ramp_done, cutoff (no reasons) at the full duration, terminated with every
+    process group gone, end with result cutoff. Any stop fails; anything else missing or contradictory is
+    inconclusive."""
+    kinds = [r.get("kind") for r in log]
+    stops = [r for r in log if r.get("kind") in ("stop", "refused", "alarm")]
+    if stops:
+        return result(FAIL, stops=[s.get("reasons") or s.get("reason") for s in stops])
+    cutoff = [r for r in log if r.get("kind") == "cutoff"]
+    term = [r for r in log if r.get("kind") == "terminated"]
+    end = [r for r in log if r.get("kind") == "end"]
+    problems = []
+    if kinds.count("start") != 1 or kinds.count("ramp_done") != 1:
+        problems.append("start and ramp_done must each appear once")
+    if len(cutoff) != 1 or cutoff[0].get("reasons") not in ([], None) or not finite(cutoff[0].get("ts")) \
+            or cutoff[0]["ts"] < t1 - 60:
+        problems.append("no single cutoff row at the full duration")
+    if len(term) != 1 or not isinstance(term[0].get("children"), dict) or not term[0]["children"] or any(
+            c.get("group_alive") is not False for c in term[0]["children"].values()):
+        problems.append("termination of every child is not confirmed")
+    if len(end) != 1 or end[0].get("result") != "cutoff" or kinds[-1] != "end":
+        problems.append("the run has no clean end")
+    if problems:
+        return result(INCONCLUSIVE, problems=problems)
+    return result(PASS)
 
 
 # ---------------------------------------------------------------- §5.1 no stall, handovers
 
 
-def judge_stall(obs: Path, t0: float, t1: float, j: dict) -> dict:
-    heads = [r for r in rows(obs / "chain.jsonl") if r.get("kind") == "head" and "id" in r and t0 <= r["ts"] <= t1]
-    per_host = {h: [r["ts"] for r in heads if r["host"] == h] for h in HOSTS}
+def heads_in(obs: Path, t0: float, t1: float) -> list[dict]:
+    return [r for r in rows(obs / "chain.jsonl") if r.get("kind") == "head" and isinstance(r.get("id"), list)
+            and len(r["id"]) == 5 and type(r["id"][2]) is int and finite(r.get("ts")) and t0 <= r["ts"] <= t1]
+
+
+def judge_stall(heads: list[dict], t0: float, t1: float, j: dict) -> dict:
+    per_host = {h: [r["ts"] for r in heads if r.get("host") == h] for h in HOSTS}
     worst_series = {h: max_gap(ts, t0, t1) for h, ts in per_host.items()}
-    # The chain advances when the highest seqno seen on any host rises.
     progress, top = [], -1
     for r in sorted(heads, key=lambda r: r["ts"]):
         if r["id"][2] > top:
@@ -136,9 +181,8 @@ def judge_stall(obs: Path, t0: float, t1: float, j: dict) -> dict:
     gap = max_gap(progress, t0, t1) if progress else t1 - t0
     if gap > j["max_chain_gap_s"]:
         return result(FAIL, max_chain_gap_s=gap, limit=j["max_chain_gap_s"])
-    blind = {h: g for h, g in worst_series.items() if g > j["head_series_gap_s"]}
-    if len(blind) == len(HOSTS):
-        return result(INCONCLUSIVE, reason="no head series was continuous", series_gaps=worst_series)
+    if any(g > j["head_series_gap_s"] for g in worst_series.values()):
+        return result(INCONCLUSIVE, reason="a head series has gaps", series_gaps=worst_series)
     return result(PASS, max_chain_gap_s=gap, series_gaps=worst_series)
 
 
@@ -178,9 +222,17 @@ def judge_boundaries(obs: Path, t0: float, t1: float, j: dict) -> dict:
 def resource_rows(obs: Path, t0: float, t1: float) -> dict[str, list[dict]]:
     out = {h: [] for h in HOSTS}
     for r in rows(obs / "resources.jsonl"):
-        if r.get("host") in out and t0 <= r.get("ts", -1) <= t1:
+        if r.get("host") in out and finite(r.get("ts")) and t0 <= r["ts"] <= t1:
             out[r["host"]].append(r)
     return out
+
+
+def identity(r: dict):
+    u = r.get("unit") if isinstance(r.get("unit"), dict) else {}
+    ident = (u.get("main_pid"), u.get("n_restarts"), r.get("boot_id"), r.get("oom_kill"))
+    ok = (type(ident[0]) is int and ident[0] > 0 and type(ident[1]) is int and ident[1] >= 0
+          and isinstance(ident[2], str) and ident[2] and type(ident[3]) is int and ident[3] >= 0)
+    return ident if ok else None
 
 
 def judge_restarts(res: dict, obs: Path, t0: float, t1: float, j: dict) -> dict:
@@ -189,32 +241,42 @@ def judge_restarts(res: dict, obs: Path, t0: float, t1: float, j: dict) -> dict:
         complete = [r for r in rs if r.get("complete") is True]
         if max_gap([r["ts"] for r in complete], t0, t1) > j["resource_series_gap_s"]:
             incomplete.append(h)
-        ids = {(r["unit"]["main_pid"], r["unit"]["n_restarts"], r["boot_id"], r["oom_kill"]) for r in complete}
-        inactive = [r["ts"] for r in complete if r["unit"].get("active_state") != "active"]
+        idents = [identity(r) for r in complete]
+        if any(i is None for i in idents):
+            incomplete.append(f"{h}: unreadable identity")
+        ids = {i for i in idents if i is not None}
+        inactive = [r["ts"] for r in complete if (r.get("unit") or {}).get("active_state") != "active"]
         if len(ids) > 1 or inactive:
             changed.append({"host": h, "identities": sorted(map(str, ids)), "inactive_at": inactive[:5]})
-    # A persistent divergence: the common-height ids disagree for longer than the limit.
-    ids_rows = sorted((r for r in rows(obs / "chain.jsonl") if r.get("kind") == "ids" and "agree" in r
-                       and t0 <= r["ts"] <= t1), key=lambda r: r["ts"])
-    longest, since = 0.0, None
+    ids_rows = sorted((r for r in rows(obs / "chain.jsonl") if r.get("kind") == "ids" and finite(r.get("ts"))
+                       and t0 <= r["ts"] <= t1 and "error" not in r), key=lambda r: r["ts"])
+    # Agreement is recomputed from the four complete ids, never taken from the stored flag.
+    agreed, longest, since = [], 0.0, None
     for r in ids_rows:
-        if r["agree"] is False:
+        got = r.get("ids") if isinstance(r.get("ids"), dict) else {}
+        full = [tuple(got[h]) for h in HOSTS if isinstance(got.get(h), list) and len(got[h]) == 5]
+        agree = len(full) == len(HOSTS) and len(set(full)) == 1
+        if agree:
+            agreed.append(r["ts"])
+            since = None
+        elif len(full) == len(HOSTS):  # four complete ids that differ
             since = r["ts"] if since is None else since
             longest = max(longest, r["ts"] - since)
-        else:
-            since = None
     if changed or longest > j["divergence_s"]:
         return result(FAIL, changed=changed, longest_divergence_s=longest)
+    if max_gap(agreed, t0, t1) > j["ids_series_gap_s"]:
+        incomplete.append("agreed common-height ids")
     if incomplete:
         return result(INCONCLUSIVE, incomplete_series=incomplete)
-    return result(PASS, longest_divergence_s=longest)
+    return result(PASS, longest_divergence_s=longest, agreed_ids=len(agreed))
 
 
 # ---------------------------------------------------------------- §5.3 bounded memory
 
 
 def judge_memory(res: dict, t0: float, t1: float, j: dict) -> dict:
-    period, k = j["period"], int(j["rolling_terms"])
+    period, k, phases = j["period"], int(j["rolling_terms"]), int(j["phases_per_term"])
+    phase_len = period / phases
     over, growth, floor_breach, incomplete = [], {}, [], []
     for h, rs in res.items():
         complete = [r for r in rs if r.get("complete") is True and isinstance(r.get("proc"), dict)
@@ -225,20 +287,30 @@ def judge_memory(res: dict, t0: float, t1: float, j: dict) -> dict:
         rss = [r["proc"]["RssAnon"] for r in complete]
         if max(rss) > j["rss_anon_max_bytes"]:
             over.append({"host": h, "max": max(rss)})
-        avail = [r["mem"]["MemAvailable"] for r in complete if finite(r["mem"].get("MemAvailable"))]
-        if not avail or min(avail) < j["mem_available_floor_bytes"]:
-            floor_breach.append({"host": h, "min": min(avail) if avail else None})
-        # Comparable session position: the median RssAnon of each complete term (same position in every term).
-        terms: dict[int, list[float]] = {}
+        avail = [r["mem"]["MemAvailable"] for r in complete
+                 if isinstance(r.get("mem"), dict) and finite(r["mem"].get("MemAvailable"))]
+        if len(avail) != len(complete) or min(avail, default=0) < j["mem_available_floor_bytes"]:
+            floor_breach.append({"host": h, "min": min(avail, default=None)})
+        # Comparable session position: the median RssAnon of each phase of each term, compared phase by phase
+        # across terms. Every full term inside the window must have every phase observed.
+        cells: dict[tuple[int, int], list[float]] = {}
         for r in complete:
-            terms.setdefault(int((r["ts"] - j["first_boundary"]) // period), []).append(r["proc"]["RssAnon"])
-        full = [statistics.median(v) for _, v in sorted(terms.items()) if len(v) >= 0.9 * period / 60]
-        if len(full) < 2:
-            incomplete.append(h)
+            off = r["ts"] - j["first_boundary"]
+            cells.setdefault((int(off // period), int((off % period) // phase_len)), []).append(r["proc"]["RssAnon"])
+        first_term = math.ceil((t0 - j["first_boundary"]) / period)
+        last_term = math.floor((t1 - j["first_boundary"]) / period) - 1
+        terms = list(range(first_term, last_term + 1))
+        need = 0.9 * phase_len / 60
+        missing = [(t, p) for t in terms for p in range(phases) if len(cells.get((t, p), [])) < need]
+        if len(terms) < 2 or missing:
+            incomplete.append(f"{h}: {len(missing)} term phases unobserved" if missing else f"{h}: < 2 full terms")
             continue
-        e2e = full[-1] - full[0]
-        rolling = max((max(full[i:i + k]) - full[i] for i in range(0, max(1, len(full) - k + 1))), default=0)
-        growth[h] = {"e2e": e2e, "rolling": rolling, "terms": len(full)}
+        med = {key: statistics.median(v) for key, v in cells.items()}
+        e2e = max(med[(terms[-1], p)] - med[(terms[0], p)] for p in range(phases))
+        rolling = max(med[(terms[i + d], p)] - med[(terms[i], p)]
+                      for p in range(phases) for i in range(len(terms)) for d in range(1, k)
+                      if i + d < len(terms))
+        growth[h] = {"e2e": e2e, "rolling": rolling, "terms": len(terms)}
         if e2e > j["rss_growth_e2e_bytes"] or rolling > j["rss_growth_rolling_bytes"]:
             over.append({"host": h, "growth": growth[h]})
     if over or floor_breach:
@@ -251,8 +323,7 @@ def judge_memory(res: dict, t0: float, t1: float, j: dict) -> dict:
 # ---------------------------------------------------------------- §5.4 bounded disk
 
 
-def judge_disk(res: dict, obs: Path, t0: float, t1: float, j: dict) -> dict:
-    heads = [r for r in rows(obs / "chain.jsonl") if r.get("kind") == "head" and "id" in r and t0 <= r["ts"] <= t1]
+def judge_disk(res: dict, heads: list[dict], j: dict) -> dict:
     if not heads:
         return result(INCONCLUSIVE, reason="no chain heads in the window")
     blocks = max(r["id"][2] for r in heads) - min(r["id"][2] for r in heads)
@@ -264,7 +335,8 @@ def judge_disk(res: dict, obs: Path, t0: float, t1: float, j: dict) -> dict:
             continue
         for path in DATA_PATHS:
             series = [r["disks"].get(path) for r in complete]
-            if any(not isinstance(d, dict) for d in series):
+            if any(not (isinstance(d, dict) and finite(d.get("free_bytes")) and finite(d.get("free_inodes")))
+                   for d in series):
                 incomplete.append(f"{h}:{path}")
                 continue
             if min(d["free_bytes"] for d in series) < j["disk_free_floor_bytes"] or \
@@ -282,50 +354,102 @@ def judge_disk(res: dict, obs: Path, t0: float, t1: float, j: dict) -> dict:
     return result(PASS, bytes_per_block=per_block, blocks=blocks)
 
 
-# ---------------------------------------------------------------- §5.5 safety
+# ---------------------------------------------------------------- §5.5 safety, with positive coverage
 
 
-def judge_safety(obs: Path, t0: float, t1: float) -> dict:
+def judge_safety(obs: Path, t0: float, t1: float, j: dict) -> dict:
     hits = [r for r in rows(obs / "safety.jsonl") if r.get("kind") == "safety_line"]
-    gaps = [r for r in rows(obs / "cache.jsonl") if r.get("kind") == "coverage_gap" and t0 <= r.get("ts", -1) <= t1]
+    cache = rows(obs / "cache.jsonl")
+    gaps = [r for r in cache if r.get("kind") == "coverage_gap" and finite(r.get("ts")) and t0 <= r["ts"] <= t1]
     if hits:
         return result(FAIL, safety_lines=len(hits), first=hits[0].get("line"))
-    if gaps:
-        return result(INCONCLUSIVE, coverage_gaps=len(gaps))
+    # Coverage must be positive: every host's logs read (non-baseline) throughout the window.
+    reads = {h: [r["ts"] for r in cache if r.get("kind") == "read" and r.get("host") == h and r.get("baseline") is False
+                 and finite(r.get("ts"))] for h in HOSTS}
+    uncovered = [h for h, ts in reads.items() if max_gap(ts, t0, t1) > j["logs_series_gap_s"]]
+    if gaps or uncovered:
+        return result(INCONCLUSIVE, coverage_gaps=len(gaps), uncovered_hosts=uncovered)
     return result(PASS)
 
 
-# ---------------------------------------------------------------- §5.6 reads
+def judge_clock(obs: Path, t0: float, t1: float, j: dict) -> dict:
+    clk = [r for r in rows(obs / "clock.jsonl") if finite(r.get("ts")) and t0 <= r["ts"] <= t1]
+    bad = [r for r in clk if r.get("verdict") == "skewed"]
+    ok = {h: [r["ts"] for r in clk if r.get("host") == h and r.get("verdict") == "ok"] for h in HOSTS}
+    if bad:
+        return result(INCONCLUSIVE, skewed=[(r.get("host"), r.get("ts")) for r in bad][:10])
+    if any(max_gap(ts, t0, t1) > j["clock_series_gap_s"] for ts in ok.values()):
+        return result(INCONCLUSIVE, reason="a host lacks regular ok clock verdicts")
+    return result(PASS)
 
 
-def judge_reads(load_dir: Path) -> dict:
+# ---------------------------------------------------------------- §5.6 reads, recomputed
+
+
+def judge_reads(load_dir: Path, j: dict) -> dict:
     reads = load_dir / "reads"
-    ctx = reads / "CONTEXT.json"
-    if not ctx.exists():
+    ctx_path = reads / "CONTEXT.json"
+    if not ctx_path.exists():
         return result(INCONCLUSIVE, reason="the read client never started")
-    packet = json.loads(ctx.read_text())["packet"]
-    expect = math.ceil(packet["duration_seconds"] / packet["window_seconds"])
-    windows = {}
-    for p in sorted(reads.glob("WINDOW-*.json")):
-        w = json.loads(p.read_text())
-        windows[w["index"]] = w
-    failed = [i for i, w in windows.items() if w.get("pass") is not True]
+    ctx = json.loads(ctx_path.read_text())
+    packet, started = ctx.get("packet", {}), ctx.get("started_monotonic_seconds")
+    width = j["read_window_s"]
+    if (packet.get("duration_seconds"), packet.get("window_seconds"), packet.get("requests_per_second")) != \
+            (DURATION, width, READ_RATE) or not finite(started):
+        return result(INCONCLUSIVE, reason="the read client's packet does not match the frozen schedule",
+                      packet={k: packet.get(k) for k in ("duration_seconds", "window_seconds", "requests_per_second")})
+    n = DURATION // int(width)
+    scheduled = READ_RATE * width
+    win = [{"ok": 0, "errors": 0, "lat": [], "endpoints": set(), "methods": set()} for _ in range(n)]
+    bad_rows = 0
+    path = reads / "requests.jsonl"
+    if not path.exists():
+        return result(INCONCLUSIVE, reason="no request records")
+    with path.open() as fh:
+        for line in fh:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                bad_rows += 1
+                continue
+            off = r.get("offered_monotonic_seconds")
+            if not (finite(off) and finite(r.get("latency_seconds"))):
+                bad_rows += 1
+                continue
+            i = int((off - started) // width)
+            if not 0 <= i < n:
+                continue
+            w = win[i]
+            w["endpoints"].add(r.get("endpoint"))
+            w["methods"].add(r.get("method"))
+            if r.get("error") is not None:
+                w["errors"] += 1
+            elif r["latency_seconds"] <= j["read_deadline_s"]:
+                w["ok"] += 1
+                w["lat"].append(r["latency_seconds"])
+    failed = []
+    for i, w in enumerate(win):
+        total = w["ok"] + w["errors"]
+        if (w["ok"] < j["read_completed_fraction"] * scheduled
+                or (total and w["errors"] / total > j["read_error_fraction_max"])
+                or len(w["endpoints"]) < READ_ENDPOINTS or not set(READ_METHODS) <= w["methods"]):
+            failed.append({"window": i, "ok": w["ok"], "errors": w["errors"], "endpoints": len(w["endpoints"]),
+                           "methods": sorted(m for m in w["methods"] if isinstance(m, str))})
     if failed:
-        return result(FAIL, failed_windows=failed[:20], windows=len(windows), expected=expect)
+        return result(FAIL, failed_windows=failed[:20], windows=n, scheduled_per_window=scheduled)
     latest = reads / "LATEST.json"
     lag = json.loads(latest.read_text()).get("not_offered_capacity") if latest.exists() else None
-    if len(windows) < expect:
-        return result(INCONCLUSIVE, windows=len(windows), expected=expect)
-    if lag:
-        return result(INCONCLUSIVE, reason="scheduled requests not offered (scheduling lag)", not_offered=lag)
-    return result(PASS, windows=len(windows))
+    if lag is None or lag or bad_rows:
+        return result(INCONCLUSIVE, reason="scheduling lag, unreadable rows or no final read status",
+                      not_offered=lag, bad_rows=bad_rows)
+    return result(PASS, windows=n)
 
 
-# ---------------------------------------------------------------- §5.7 writes, §5.8 spend
+# ---------------------------------------------------------------- §5.7 writes, §5.8 spend and operators
 
 
-def journal(load_dir: Path) -> tuple[dict, dict, dict]:
-    attempts, observed, delivered = {}, {}, {}
+def journal(load_dir: Path):
+    attempts, observed, delivered, conflicts = {}, {}, {}, 0
     for r in rows(load_dir / "ramp" / "journal.jsonl"):
         t, aid = r.get("type"), r.get("id")
         if t == "attempt":
@@ -333,59 +457,88 @@ def journal(load_dir: Path) -> tuple[dict, dict, dict]:
         elif t == "observed":
             observed[aid] = r
         elif t == "delivered":
-            delivered[(aid, r.get("action"))] = r
-    return attempts, observed, delivered
+            key = (aid, r.get("action"))
+            if key in delivered and delivered[key] != r:
+                conflicts += 1
+            delivered[key] = r
+    return attempts, observed, delivered, conflicts
+
+
+def valid_delivery(d: dict, a: dict, o) -> bool:
+    """A delivery counts only with every producer field valid: an action index of its own attempt, the sender's
+    action sent, a recipient transaction, a finite recipient time, and receipt_failure present and None."""
+    n = len(a.get("actions") or [])
+    i = d.get("action")
+    if type(i) is not int or not 0 <= i < n:
+        return False
+    if "receipt_failure" not in d or d["receipt_failure"] is not None:
+        return False
+    if not (isinstance(d.get("recipient_tx"), str) and d["recipient_tx"]) or not finite(d.get("recipient_utime")):
+        return False
+    if not isinstance(o, dict):
+        return False
+    fail = o.get("failure")
+    per = fail if isinstance(fail, list) else [fail] * n
+    return i < len(per) and per[i] is None
 
 
 def judge_writes(load_dir: Path, t0: float, t1: float, j: dict) -> dict:
-    attempts, observed, delivered = journal(load_dir)
-    # Only the load transfers count (bench/t4/ramp.py journals them with role "transfer"); funding does not.
+    attempts, observed, delivered, conflicts = journal(load_dir)
     transfers = {aid: a for aid, a in attempts.items() if a.get("role") == "transfer"}
-    first = min((a.get("signed_at", t1) for a in transfers.values()), default=None)
-    if first is None:
+    if not transfers:
         return result(FAIL, reason="no transfer was ever signed", delivered=0)
-    ok_by_hour: dict[int, int] = {}
-    good = 0
+    # The write windows come from the frozen schedule, never from the surviving signatures.
+    w0, w1 = t0 + j["write_start_max_s"], t1 - j["write_end_slack_s"]
+    signed = [a.get("signed_at") for a in transfers.values() if finite(a.get("signed_at"))]
+    good, by_hour, done_at, exec_at = 0, {}, {}, {}
+    for aid, a in transfers.items():
+        o = observed.get(aid)
+        if isinstance(o, dict) and finite(o.get("utime")):
+            for i in range(len(a.get("actions") or [])):
+                exec_at[(aid, i)] = o["utime"]
     for (aid, i), d in delivered.items():
         a = transfers.get(aid)
-        if a is None or d.get("receipt_failure") is not None or not finite(d.get("recipient_utime")):
+        if a is None or not valid_delivery(d, a, observed.get(aid)):
             continue
-        o = observed.get(aid)
-        fail = o.get("failure") if o else "not observed"
-        per = fail if isinstance(fail, list) else [fail] * len(a.get("actions") or [])
-        if i >= len(per) or per[i] is not None:
-            continue
-        hour = int((d["recipient_utime"] - first) // 3600)
-        ok_by_hour[hour] = ok_by_hour.get(hour, 0) + 1
         good += 1
-    # The declared signing window runs from the first to the last signed transfer: the ramp ends signing before
-    # the cutoff (its preparation, final drain and margin), so the hours after it are not write hours. A run that
-    # stopped early fails "run completed" instead.
-    last = max(a.get("signed_at", first) for a in transfers.values())
-    hours = int((last - first) // 3600)
+        done_at[(aid, i)] = d["recipient_utime"]
+        h = int((d["recipient_utime"] - w0) // 3600)
+        by_hour[h] = by_hour.get(h, 0) + 1
+    hours = int((w1 - w0) // 3600)
     floor = j["write_hourly_floor_fraction"] * DECLARED_RATE * 3600
-    short = [(h, ok_by_hour.get(h, 0)) for h in range(hours) if ok_by_hour.get(h, 0) < floor]
-    undelivered = sum(len(a.get("actions") or []) for a in transfers.values()) - good
-    fees = sum(o.get("fee") or 0 for o in observed.values() if finite(o.get("fee")))
-    facts = dict(delivered=good, hours=hours, hourly_floor=floor, short_hours=short[:20],
-                 unresolved_actions=undelivered, fees_nano=fees)
-    # Zero delivered with any transfer signed is already a FAIL below (all of them unresolved), and no transfer at
-    # all is the FAIL above, so no separate "nothing delivered" rule is needed here.
-    if short or fees > j["max_cost_nano"]:
+    short = [(h, by_hour.get(h, 0)) for h in range(hours) if by_hour.get(h, 0) < floor]
+    # Backlog: executed actions whose delivery has not happened yet, at every hour end and at every execution.
+    events = sorted([(t, 1) for t in exec_at.values()] + [(done_at[k], -1) for k in done_at if k in exec_at])
+    outstanding, peak = 0, 0
+    for _, step in events:
+        outstanding += step
+        peak = max(peak, outstanding)
+    total_actions = sum(len(a.get("actions") or []) for a in transfers.values())
+    unresolved = total_actions - good
+    fees = sum(o.get("fee") for o in observed.values() if finite(o.get("fee")))
+    late_start = min(signed, default=t1) > w0
+    early_end = max(signed, default=t0) < w1
+    facts = dict(delivered=good, hours=hours, hourly_floor=floor, short_hours=short[:20], backlog_peak=peak,
+                 unresolved_actions=unresolved, fees_nano=fees, conflicting_receipts=conflicts,
+                 first_signed_late=late_start, last_signed_early=early_end)
+    if short or late_start or early_end or peak > j["backlog_max_actions"] or fees > j["max_cost_nano"] \
+            or unresolved or conflicts:
         return result(FAIL, **facts)
-    if undelivered:
-        return result(FAIL, **facts, reason="unresolved transfers after the drain")
     return result(PASS, **facts)
 
 
 def judge_operators(obs: Path, t0: float, t1: float, j: dict) -> dict:
-    fees = [r for r in rows(obs / "fees.jsonl") if t0 <= r.get("ts", -1) <= t1]
-    readings = [r for r in fees if finite(r.get("balance_nano"))]
-    if not readings:
-        return result(INCONCLUSIVE, reason="no operator balance readings")
-    low = sorted({r["operator"] for r in readings if r["balance_nano"] < j["operator_floor_nano"]})
+    """§5.8, as scoped by 13.493: every pinned operator's balance is observed throughout the run and never below the
+    floor. Per-transaction fee accounting is the fee watch's job, not the judge's (13.493)."""
+    readings = [r for r in rows(obs / "fees.jsonl") if finite(r.get("balance_nano")) and finite(r.get("ts"))
+                and t0 <= r["ts"] <= t1]
+    low = sorted({r.get("operator") for r in readings if r["balance_nano"] < j["operator_floor_nano"]})
     if low:
         return result(FAIL, below_floor=low)
+    gaps = {o: max_gap([r["ts"] for r in readings if r.get("operator") == o], t0, t1) for o in j["operators"]}
+    thin = [o for o, g in gaps.items() if g > j["fees_series_gap_s"]]
+    if thin:
+        return result(INCONCLUSIVE, operators_without_readings=thin)
     return result(PASS, readings=len(readings))
 
 
@@ -393,23 +546,22 @@ def judge_operators(obs: Path, t0: float, t1: float, j: dict) -> dict:
 
 
 def verdict(rec: dict, obs: Path, load_dir: Path) -> dict:
-    t0, t1, run = window(load_dir)
+    t0, t1, log = window(load_dir)
     res = resource_rows(obs, t0, t1)
+    heads = heads_in(obs, t0, t1)
     criteria = {
-        "5.1 no stall": judge_stall(obs, t0, t1, rec),
+        "5.1 no stall": judge_stall(heads, t0, t1, rec),
         "5.1 handovers and key gate": judge_boundaries(obs, t0, t1, rec),
         "5.2 no restart, OOM or divergence": judge_restarts(res, obs, t0, t1, rec),
         "5.3 bounded memory": judge_memory(res, t0, t1, rec),
-        "5.4 bounded disk": judge_disk(res, obs, t0, t1, rec),
-        "5.5 no safety line": judge_safety(obs, t0, t1),
-        "5.6 reads": judge_reads(load_dir),
+        "5.4 bounded disk": judge_disk(res, heads, rec),
+        "5.5 no safety line": judge_safety(obs, t0, t1, rec),
+        "5.6 reads": judge_reads(load_dir, rec),
         "5.7 writes": judge_writes(load_dir, t0, t1, rec),
         "5.8 operators": judge_operators(obs, t0, t1, rec),
+        "collector clock": judge_clock(obs, t0, t1, rec),
+        "run completed": judge_completion(log, t0, t1),
     }
-    if run["stops"]:
-        criteria["run completed"] = result(FAIL, stops=[s.get("reasons") for s in run["stops"]])
-    elif run["end"] is None or not run["ramp_done"]:
-        criteria["run completed"] = result(INCONCLUSIVE, reason="the run has no clean end")
     statuses = {c["status"] for c in criteria.values()}
     overall = FAIL if FAIL in statuses else INCONCLUSIVE if INCONCLUSIVE in statuses else PASS
     return {"verdict": overall, "window": [t0, t1], "criteria": criteria}
