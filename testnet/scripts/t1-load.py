@@ -20,6 +20,10 @@ It refuses to start outside that unit (its cgroup and KillMode/Restart are check
 lock is held. Within the unit, systemd kills grandchildren (the ramp's signer) with the cgroup; a stop's
 SIGTERM/SIGKILL reaches them through the process group.
 
+--calibrate runs the same machinery for the T1 start checklist's calibration: one ramp step in a one-hour run
+instead of three steps in 72 h, with the same record, refusals, stop rules and OUT layout. The start row
+names the mode ("calibration" or "t1").
+
 Every decision is a line in OUT/load.jsonl: start, each stop reason, the termination check and the end.
 Exit status: 0 when the run ended at the cutoff with no stop condition, 1 when it was stopped, 2 when it refused
 to start.
@@ -67,19 +71,27 @@ def positive(v) -> bool:
     return finite(v) and v > 0
 
 
-def schedule(funding_externals: int, duration: int = DURATION) -> dict:
-    """The step length that lets the ramp fund, run three steps, drain and finish before the cutoff.
+def run_plan(calibrate: bool = False) -> dict:
+    """The run's mode, signing duration and ramp step count: T1 is DURATION in STEPS steps; the calibration
+    (T1 start checklist row 8) is one step in one hour, through the same schedule and supervisor."""
+    if calibrate:
+        return {"mode": "calibration", "duration": 3600, "steps": 1}
+    return {"mode": "t1", "duration": DURATION, "steps": STEPS}
+
+
+def schedule(funding_externals: int, duration: int = DURATION, steps: int = STEPS) -> dict:
+    """The step length that lets the ramp fund, run its steps, drain and finish before the cutoff.
 
     T1-PLAN §5.7 needs zero unresolved transfers after the declared drain, so the ramp must end by itself, never
-    be cut off: preparation + 3 × (step + transition) + the final tail + MARGIN ≤ duration."""
+    be cut off: preparation + steps × (step + transition) + the final tail + MARGIN ≤ duration."""
     t = RAMP_TIMING
     prep = (funding_externals + 1) * t["deploy_wait"]
     transition = 2 * t["drain"] + t["finality_wait"]
     tail = t["drain"] + 2 * t["lifetime"] + t["deadline_grace"] + t["finality_wait"]
-    step = (duration - prep - tail - MARGIN) // STEPS - transition
+    step = (duration - prep - tail - MARGIN) // steps - transition
     if step <= 0 or step > 86_400:
         raise Refuse(f"no step length fits: {step}")
-    total = prep + STEPS * (step + transition) + tail
+    total = prep + steps * (step + transition) + tail
     return {"step_seconds": int(step), "prep": prep, "transition": transition, "tail": tail,
             "ramp_budget": total, "slack": duration - total}
 
@@ -206,15 +218,16 @@ def check_inputs(rec: dict, run=subprocess.run) -> None:
         raise Refuse("the bench key file or its directory is readable by others")
 
 
-def ramp_argv(rec: dict, out: Path) -> list[str]:
+def ramp_argv(rec: dict, out: Path, plan: dict | None = None) -> list[str]:
+    plan = plan or run_plan()
     r = rec["ramp"]
-    s = schedule(r["funding_externals"])
+    s = schedule(r["funding_externals"], plan["duration"], plan["steps"])
     t = RAMP_TIMING
     argv = [sys.executable, str(Path(rec["tos_checkout"]) / "bench" / "run_t4_ramp.py"),
             "--out", str(out / "ramp"), "--key-file", rec["key_file"], "--signer", rec["signer"],
             "--auth-tag", rec["auth_tag"], "--build", str(Path(rec["tos_checkout"]) / "build"),
             "--wallets", str(r["wallets"]), "--batch", str(r["batch"]),
-            "--start-rate", "2", "--factor", "1", "--steps", str(STEPS), "--step-seconds", str(s["step_seconds"]),
+            "--start-rate", "2", "--factor", "1", "--steps", str(plan["steps"]), "--step-seconds", str(s["step_seconds"]),
             "--deploy-wait", str(t["deploy_wait"]), "--drain", str(t["drain"]),
             "--finality-wait", str(t["finality_wait"]), "--lifetime", str(t["lifetime"]),
             "--deadline-grace", str(t["deadline_grace"]),
@@ -226,10 +239,11 @@ def ramp_argv(rec: dict, out: Path) -> list[str]:
     return argv
 
 
-def read_packet(rec: dict, out: Path) -> dict:
+def read_packet(rec: dict, out: Path, plan: dict | None = None) -> dict:
+    plan = plan or run_plan()
     read_client = sibling("read_client")  # the endpoint pins live there
     r = rec["reads"]
-    return {"profile": "t1", "duration_seconds": DURATION, "requests_per_second": 8,
+    return {"profile": "t1", "duration_seconds": plan["duration"], "requests_per_second": 8,
             "window_seconds": r["window_seconds"], "endpoints": list(read_client.T1_ENDPOINTS),
             "address": r["address"], "network_deadline_seconds": r["network_deadline_seconds"],
             "output": str(out / "reads")}
@@ -463,7 +477,13 @@ def read_status(path: Path):
 
 
 def supervise(rec: dict, status_path: Path, out: Path, launch: Callable[[str], subprocess.Popen],
-              mono=time.monotonic, wall=time.time, sleep=time.sleep, boot=boot_id, duration=DURATION) -> int:
+              mono=time.monotonic, wall=time.time, sleep=time.sleep, boot=boot_id, duration=None,
+              plan: dict | None = None) -> int:
+    """`plan` is the run (run_plan); `duration` is its cutoff in seconds, the plan's own duration unless a test
+    compresses time, in which case the ramp's finish point is compressed by the same factor."""
+    plan = plan or run_plan()
+    if duration is None:
+        duration = plan["duration"]
     log = out / "load.jsonl"
     st = read_status(status_path)
     me = boot()
@@ -477,7 +497,7 @@ def supervise(rec: dict, status_path: Path, out: Path, launch: Callable[[str], s
         return 2
     start = mono()
     cutoff = start + duration
-    append(log, {"ts": wall(), "kind": "start", "cutoff_in_s": duration, "snapshot": snapshot})
+    append(log, {"ts": wall(), "kind": "start", "mode": plan["mode"], "cutoff_in_s": duration, "snapshot": snapshot})
     children: dict[str, subprocess.Popen] = {}
     try:
         for name in ("ramp", "reads"):
@@ -492,7 +512,8 @@ def supervise(rec: dict, status_path: Path, out: Path, launch: Callable[[str], s
     ramp_done = False
     # The ramp finishing its whole schedule (exit 0, no earlier than its last step's end) is the normal end of
     # writing: it has drained its last transfers itself. Monitoring and the reads continue until the cutoff.
-    ramp_finish = STEPS * schedule(rec["ramp"]["funding_externals"])["step_seconds"] * duration / DURATION
+    planned = schedule(rec["ramp"]["funding_externals"], plan["duration"], plan["steps"])
+    ramp_finish = plan["steps"] * planned["step_seconds"] * duration / plan["duration"]
     while True:
         now = mono()
         if now >= cutoff:
@@ -538,7 +559,10 @@ def main(argv=None) -> int:
     ap.add_argument("--out", type=Path, required=True, help="a new directory")
     ap.add_argument("--inventory", type=Path, required=True, help="the host inventory (as for t1-observe.py)")
     ap.add_argument("--unit-dir", type=Path, default=Path.home() / ".config/systemd/user")
+    ap.add_argument("--calibrate", action="store_true",
+                    help="the one-hour, one-step calibration run instead of the 72 h T1 run")
     a = ap.parse_args(argv)
+    plan = run_plan(a.calibrate)
     # Children run with other working directories (the ramp in the tos checkout, the reads in this directory), so
     # every path handed to them, and the journal path the tail watches, must be absolute (bot review on #82).
     a.out, a.status, a.record, a.inventory = (p.resolve() for p in (a.out, a.status, a.record, a.inventory))
@@ -555,14 +579,14 @@ def main(argv=None) -> int:
         print(f"refusing to start: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
     packet = a.out / "read-packet.json"
-    packet.write_text(json.dumps(read_packet(rec, a.out)))
+    packet.write_text(json.dumps(read_packet(rec, a.out, plan)))
 
     def launch(name: str) -> subprocess.Popen:
         if name == "ramp":
-            return spawn(ramp_argv(rec, a.out), a.out / "ramp.log", cwd=rec["tos_checkout"])
+            return spawn(ramp_argv(rec, a.out, plan), a.out / "ramp.log", cwd=rec["tos_checkout"])
         return spawn([sys.executable, str(HERE / "sustained_read_load.py"), "--packet", str(packet),
                       "--output", str(a.out / "reads")], a.out / "reads.log", cwd=str(HERE))
-    return supervise(rec, a.status, a.out, launch)
+    return supervise(rec, a.status, a.out, launch, plan=plan)
 
 
 if __name__ == "__main__":
