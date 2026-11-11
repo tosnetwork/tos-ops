@@ -516,7 +516,7 @@ class Clock:
         self.t += s
 
 
-def run_supervise(tmp_path, st_fn, launch=None, duration=60, clock=None):
+def run_supervise(tmp_path, st_fn, launch=None, duration=60, clock=None, plan=None):
     clock = clock or Clock()
     out = tmp_path / "run"
     (out / "ramp").mkdir(parents=True)
@@ -528,7 +528,7 @@ def run_supervise(tmp_path, st_fn, launch=None, duration=60, clock=None):
     mono()  # the observer has published before the supervisor starts
     launch = launch or (lambda name: tl.spawn(["sleep", "300"], tmp_path / f"{name}.log"))
     rc = tl.supervise(record(), status_path, out, launch, mono=mono, wall=lambda: 0.0, sleep=clock.sleep,
-                      boot=lambda: BOOT, duration=duration)
+                      boot=lambda: BOOT, duration=duration, plan=plan)
     rows = [json.loads(x) for x in (out / "load.jsonl").read_text().splitlines()]
     return rc, rows
 
@@ -654,3 +654,102 @@ def test_undelivered_actions_in_the_journal_stop_the_run(tmp_path):
         return status(now)
     rc, rows = run_supervise(tmp_path, st_fn, duration=600)
     assert rc == 1 and any("undelivered for" in r for r in rows[1]["reasons"])
+
+
+# ---------------------------------------------------------------- the calibration run (--calibrate)
+
+
+def test_the_t1_defaults_are_unchanged():
+    assert tl.run_plan() == tl.run_plan(False) == {"mode": "t1", "duration": 259_200, "steps": 3}
+    assert tl.DURATION == 259_200 and tl.STEPS == 3
+    assert tl.schedule(2) == tl.schedule(2, tl.DURATION, tl.STEPS)
+    assert tl.read_packet(record(), tl.Path("/o"))["duration_seconds"] == tl.DURATION
+    assert "--steps 3" in " ".join(tl.ramp_argv(record(), tl.Path("/o")))
+
+
+def test_the_calibration_schedule_fits_in_one_hour():
+    plan = tl.run_plan(True)
+    assert plan == {"mode": "calibration", "duration": 3600, "steps": 1}
+    for fx in (1, 2, 8):
+        s = tl.schedule(fx, plan["duration"], plan["steps"])
+        prep, transition, tail = (fx + 1) * 120, 2 * 120 + 120, 120 + 2 * 60 + 30 + 120  # computed independently
+        assert (s["prep"], s["transition"], s["tail"]) == (prep, transition, tail)
+        assert prep + 1 * (s["step_seconds"] + transition) + tail <= 3600 - 600
+        assert s["step_seconds"] == (3600 - prep - tail - 600) - transition > 0
+    assert tl.schedule(2, 3600, 1)["step_seconds"] == 1890
+
+
+def test_the_calibration_ramp_runs_one_step_of_the_computed_length(tmp_path):
+    s = " ".join(tl.ramp_argv(record(), tmp_path, tl.run_plan(True)))
+    assert "--steps 1 " in s and "--step-seconds 1890 " in s
+    for part in ("--start-rate 2", "--factor 1", "--layout-repeats 0", "--max-cost 200", "--max-transfers 530000"):
+        assert part in s, part  # everything else is the T1 shape
+
+
+def test_the_calibration_read_packet_lasts_one_hour(tmp_path):
+    p = tl.read_packet(record(), tmp_path, tl.run_plan(True))
+    assert p["duration_seconds"] == 3600 and p["profile"] == "t1" and p["requests_per_second"] == 8
+
+
+def test_a_calibration_run_ends_cleanly_when_its_ramp_finishes_then_at_the_one_hour_cutoff(tmp_path):
+    clock = Clock()
+    plan = tl.run_plan(True)
+    s = tl.schedule(2, plan["duration"], plan["steps"])
+    # the ramp exits 0 at its own natural end (its whole budget), well after one step and before the cutoff
+    rc, rows = run_supervise(tmp_path, lambda now: status(now), launch=launcher(tmp_path, clock, 1000 + s["ramp_budget"]),
+                             duration=None, clock=clock, plan=plan)
+    kinds = [r["kind"] for r in rows]
+    assert rc == 0 and kinds == ["start", "ramp_done", "cutoff", "terminated", "end"], rows
+    assert rows[0]["mode"] == "calibration" and rows[0]["cutoff_in_s"] == 3600
+    assert rows[1]["elapsed_s"] >= 1890 and 3600 <= rows[2]["elapsed_s"] < 3600 + tl.TICK + 1
+
+
+def test_a_calibration_ramp_that_exits_before_its_one_step_is_a_stop(tmp_path):
+    clock = Clock()
+    rc, rows = run_supervise(tmp_path, lambda now: status(now), launch=launcher(tmp_path, clock, 1000 + 1800),
+                             duration=None, clock=clock, plan=tl.run_plan(True))
+    assert rc == 1 and any("ramp exited on its own with rc 0" in r for r in rows[1]["reasons"])
+
+
+def test_a_t1_start_row_names_its_mode(tmp_path):
+    rc, rows = run_supervise(tmp_path, lambda now: status(now, blind=True if now > 1010 else False))
+    assert rows[0]["kind"] == "start" and rows[0]["mode"] == "t1" and rows[0]["cutoff_in_s"] == 60
+
+
+def test_main_hands_the_calibration_plan_to_every_part(tmp_path, monkeypatch):
+    rec = record()
+    seen = {}
+
+    class Sib:
+        T1_ENDPOINTS = rec["ramp"]["rpc"]
+
+        @staticmethod
+        def tunnel_inventory(unit_dir, inventory):
+            return dict(zip(tl.HOSTS, rec["ramp"]["rpc"]))
+
+    monkeypatch.setattr(tl, "load_record", lambda path, sha: rec)
+    monkeypatch.setattr(tl, "check_inputs", lambda r: None)
+    monkeypatch.setattr(tl, "sibling", lambda name: Sib)
+    monkeypatch.setattr(tl, "check_containment", lambda cgroup, props: None)
+    monkeypatch.setattr(tl, "unit_props", lambda: {})
+    monkeypatch.setattr(tl, "check_wallet_locks", lambda d: None)
+    monkeypatch.setattr(tl, "spawn", lambda argv, log, cwd=None: seen.setdefault("argv", argv))
+
+    def fake_supervise(r, status, out, launch, plan=None):
+        seen["plan"] = plan
+        launch("ramp")
+        return 0
+    monkeypatch.setattr(tl, "supervise", fake_supervise)
+    inv = tmp_path / "inv.json"
+    inv.write_text("{}")
+    out = tmp_path / "out"
+    args = ["--record", str(tmp_path / "r.json"), "--record-sha256", "00", "--status", str(tmp_path / "s.json"),
+            "--out", str(out), "--inventory", str(inv)]
+    assert tl.main(args + ["--calibrate"]) == 0
+    assert seen["plan"] == tl.run_plan(True)
+    assert json.loads((out / "read-packet.json").read_text())["duration_seconds"] == 3600
+    s = " ".join(seen["argv"])
+    assert "--steps 1 " in s and "--step-seconds 1890 " in s
+    seen.clear()
+    assert tl.main(args[:-4] + ["--out", str(tmp_path / "out2"), "--inventory", str(inv)]) == 0
+    assert seen["plan"] == tl.run_plan(False) and "--steps 3 " in " ".join(seen["argv"])
