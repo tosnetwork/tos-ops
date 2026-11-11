@@ -80,6 +80,10 @@ MUTANTS = [
     (C, "K24 answers from validators", 'lambda r: all(HOST(h) for h in r["answers"])', "lambda r: True"),
     (J, "O3 readings of the pinned wallet", '    readings = [r for r in readings if r["address"] == pinned[r["operator"]]]\n',
      ""),
+    (C, "K25 clock bounds non-negative", '"best": null_or(shape({"offset": NUM, "bound": lambda v: NUM(v) and v >= 0})),',
+     '"best": null_or(shape({"offset": NUM, "bound": NUM})),'),
+    (C, "K26 boundary sources are the four", '"sources": lambda v: isinstance(v, list) and sorted(v) == sorted(HOSTS),',
+     '"sources": list_of(STR),'),
     # §5.1
     (J, "G1 stall limit", 'if gap > j["max_chain_gap_s"]:', "if False:"),
     (J, "G2 progress is a new maximum", 'if r["id"][2] > top:', "if True:"),

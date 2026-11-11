@@ -164,7 +164,9 @@ SCHEMAS: dict[str, dict[str, Check]] = {
     "safety/safety_line": {**OBS_BASE, "kind": one_of("safety_line"), "file": STR, "line": STR},
     # clock.jsonl (:499-500)
     "clock": {"ts": NUM, "host": HOST, "verdict": one_of("ok", "skewed", "uncertain", "unmeasured"),
-              "best": null_or(shape({"offset": NUM, "bound": NUM})), "tries": list_of(lambda x: isinstance(x, dict)),
+              "best": null_or(shape({"offset": NUM, "bound": lambda v: NUM(v) and v >= 0})),
+              "tries": list_of(either(shape({"offset": NUM, "bound": lambda v: NUM(v) and v >= 0}),
+                                      shape({"error": STR}))),
               "limit": NUM},
     # chain.jsonl (:519-568)
     "chain/head": {"ts": NUM, "kind": one_of("head"), "host": HOST, "id": HEAD_ID, "gen_utime": NAT},
@@ -183,7 +185,8 @@ SCHEMAS: dict[str, dict[str, Check]] = {
                    "error": STR},
     # t1-boundaries.py (:165-187)
     "boundaries/checked": {"ts": NUM, "boundary": NAT, "outcome": one_of("checked"), "dir": STR,
-                           "sources": list_of(STR), "collect_exit": exit_code, "verify_exit": exit_code,
+                           "sources": lambda v: isinstance(v, list) and sorted(v) == sorted(HOSTS),
+                           "collect_exit": exit_code, "verify_exit": exit_code,
                            "keys_exit": exit_code, "handover_report": either(lambda v: isinstance(v, dict), STR),
                            "keys_verdict": either(lambda v: isinstance(v, dict), STR), "ended": NUM},
     "boundaries/missed": {"ts": NUM, "boundary": NAT, "outcome": one_of("missed"), "reason": STR},

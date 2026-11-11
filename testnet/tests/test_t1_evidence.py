@@ -373,3 +373,21 @@ def test_a_balance_from_a_single_source_is_a_violation(run):
     edit(run.root / FILES["fees"], lambda rs: [dict(r, answers={"node-1": r["balance_nano"]}) for r in rs])
     c = run()["criteria"]["5.8 operators"]
     assert c["status"] != "PASS" and any("quorum" in x for x in c["contract_violations"]["fees"])
+
+
+
+# ---------------------------------------------------------------- codex contract review r2
+
+
+def test_a_negative_clock_bound_is_a_violation(run):
+    hidden = {"offset": 1000.0, "bound": -1001.0}
+    edit(run.root / FILES["clock"], lambda rs: [dict(r, best=hidden, tries=[hidden]) for r in rs])
+    c = run()["criteria"]["collector clock"]
+    assert c["status"] != "PASS" and "clock" in c["contract_violations"]
+
+
+@pytest.mark.parametrize("sources", [[], ["node-1", "node-2", "node-3"], ["node-1", "node-1", "node-2", "node-3"]])
+def test_a_checked_boundary_must_name_the_four_validators(run, sources):
+    edit(run.root / FILES["boundaries"], lambda rs: [dict(r, sources=sources) for r in rs])
+    b = run()["criteria"]["5.1 handovers and key gate"]
+    assert b["status"] != "PASS" and "boundaries" in b["contract_violations"]
