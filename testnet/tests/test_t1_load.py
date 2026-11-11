@@ -27,6 +27,7 @@ def record(**over):
         "tos_checkout": "/x/tos", "tos_rev": "4fb9ee70330e6247f2e0bc766a9ac5638b42ce58",
         "signer": "/x/signer", "signer_sha256": "00" * 32, "key_file": "/x/key.json", "auth_tag": "ab" * 32,
         "ramp": {"batch": 4, "wallets": 40, "wallet_funding": 5, "max_cost": 200, "max_transfers": 530000,
+                 "funding_externals": 2,
                  "rpc": [f"http://127.0.0.1:{p}/jsonRPC" for p in (18081, 38081, 28081, 48084)]},
         "reads": {"address": "-1:" + "1e" * 32, "network_deadline_seconds": 3.0, "window_seconds": 600},
         "floors": {"mem_available_bytes": 2 * GiB, "disk_free_bytes": 20 * GiB, "disk_free_inodes": 100000},
@@ -128,7 +129,7 @@ def test_inputs_are_checked_against_the_record(tmp_path):
 def test_the_ramp_arguments_carry_the_t1_shape(tmp_path):
     argv = tl.ramp_argv(record(), tmp_path)
     s = " ".join(argv)
-    for part in ("--start-rate 2", "--factor 1", "--steps 3", "--step-seconds 86040", "--layout-repeats 0",
+    for part in ("--start-rate 2", "--factor 1", "--steps 3", f"--step-seconds {tl.schedule(2)['step_seconds']}", "--layout-repeats 0",
                  "--max-cost 200", "--max-transfers 530000", "--batch 4", "--wallets 40"):
         assert part in s, part
     assert argv.count("--rpc") == 4 and str(tmp_path / "ramp") in argv
@@ -293,6 +294,22 @@ def test_the_snapshot_needs_a_complete_row_per_host():
     st["hosts"]["node-2"] = host_row(100, complete=False)
     with pytest.raises(tl.Refuse, match="node-2"):
         tl.host_snapshot(st)
+
+
+@pytest.mark.parametrize("over", [
+    {"boot_id": None}, {"boot_id": ""}, {"oom_kill": None}, {"oom_kill": True},
+    {"unit": {"main_pid": None, "n_restarts": 0, "active_state": "active"}},
+    {"unit": {"main_pid": 0, "n_restarts": 0, "active_state": "active"}},
+    {"unit": {"main_pid": 10, "active_state": "active"}},
+])
+def test_missing_identity_fields_never_snapshot_or_compare_equal(over):
+    # codex r2: missing fields snapshotted as None would match later missing fields and hide a restart.
+    st = status(100)
+    st["hosts"]["node-1"] = host_row(100, **over)
+    with pytest.raises(tl.Refuse, match="no valid MainPID"):
+        tl.host_snapshot(st)
+    reasons = tl.status_reasons(st, SNAP, record(), 100, BOOT)
+    assert any(r.startswith("node-1") and "unreadable" in r for r in reasons), reasons
 
 
 # ---------------------------------------------------------------- the journal tail
@@ -521,13 +538,28 @@ def launcher(tmp_path, clock, ramp_at, rc=0):
 
 
 def test_the_schedule_fits_exactly_in_72_hours():
-    assert tl.STEPS * (tl.STEP_SECONDS + tl.DRAIN_ALLOWANCE) == tl.DURATION
+    # codex r2: preparation, every transition, the final tail and a margin all fit before the cutoff.
+    for fx in (1, 2, 8):
+        s = tl.schedule(fx)
+        # the ramp's own budget (bench/t4/ramp.py fee_horizon) with the pinned timing, computed independently
+        prep, transition, tail = (fx + 1) * 120, 2 * 120 + 120, 120 + 2 * 60 + 30 + 120
+        assert (s["prep"], s["transition"], s["tail"]) == (prep, transition, tail)
+        assert prep + tl.STEPS * (s["step_seconds"] + transition) + tail <= tl.DURATION - 600
+        assert s["slack"] >= tl.MARGIN and 0 < s["step_seconds"] <= 86_400
+    s = tl.schedule(2)
     argv = " ".join(tl.ramp_argv(record(), tl.Path("/o")))
-    assert f"--steps {tl.STEPS}" in argv and f"--step-seconds {tl.STEP_SECONDS}" in argv
+    assert f"--steps {tl.STEPS}" in argv and f"--step-seconds {s['step_seconds']}" in argv
+    for k, v in tl.RAMP_TIMING.items():
+        assert f"--{k.replace('_', '-')} {v}" in argv  # the budget's timing is the one the ramp runs with
+
+
+def test_no_step_length_fits_a_too_short_run():
+    with pytest.raises(tl.Refuse, match="no step length"):
+        tl.schedule(1, duration=1000)
 
 
 SCALED = 2400  # a fake run long enough that the ramp's scaled finish lies more than one tick before the cutoff
-FINISH = 1000 + tl.STEPS * tl.STEP_SECONDS * SCALED / tl.DURATION + 1
+FINISH = 1000 + tl.STEPS * tl.schedule(2)["step_seconds"] * SCALED / tl.DURATION + 1
 
 
 def test_a_clean_run_ends_when_the_ramp_finishes_its_schedule_then_at_the_cutoff(tmp_path):

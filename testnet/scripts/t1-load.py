@@ -48,13 +48,12 @@ PR_SET_PDEATHSIG = 1
 TICK = 5.0
 TERM_GRACE = 10.0
 DURATION = 259_200  # T1-PLAN: 72 h of signing
-# The ramp caps a step at 86,400 s, and each step transition and the final drain spend up to 2 × drain + finality
-# wait (2·120 + 120 = 360 s). Three steps of 86,040 s plus three such allowances end exactly at 72 h, so the ramp
-# drains its last transfers itself before the cutoff (T1-PLAN §5.7: zero unresolved after the declared drain).
-STEP_SECONDS = 86_040
+# The ramp's timing, pinned on its command line so that the budget below is the one it runs with. Its own fee
+# horizon (bench/t4/ramp.py fee_horizon) bounds a run by: funding = (funding externals + 1) × deploy_wait; each
+# step = step_seconds + 2 × drain + finality_wait; the end = drain + 2 × lifetime + deadline_grace + finality_wait.
+RAMP_TIMING = {"deploy_wait": 120, "drain": 120, "finality_wait": 120, "lifetime": 60, "deadline_grace": 30}
 STEPS = 3
-DRAIN_ALLOWANCE = 360
-assert STEPS * (STEP_SECONDS + DRAIN_ALLOWANCE) == DURATION
+MARGIN = 600  # scheduling slack before the cutoff
 ROW_MAX_AGE = 180.0  # a host's latest resource row older than this stops the run
 DATA_PATHS = ("/var/lib/tos/validator", "/var/log/tos")  # every one must be reported, as in t1-observe.py
 UNIT_NAME = "t1-load.service"
@@ -66,11 +65,30 @@ def finite(v) -> bool:
 
 def positive(v) -> bool:
     return finite(v) and v > 0
+
+
+def schedule(funding_externals: int, duration: int = DURATION) -> dict:
+    """The step length that lets the ramp fund, run three steps, drain and finish before the cutoff.
+
+    T1-PLAN §5.7 needs zero unresolved transfers after the declared drain, so the ramp must end by itself, never
+    be cut off: preparation + 3 × (step + transition) + the final tail + MARGIN ≤ duration."""
+    t = RAMP_TIMING
+    prep = (funding_externals + 1) * t["deploy_wait"]
+    transition = 2 * t["drain"] + t["finality_wait"]
+    tail = t["drain"] + 2 * t["lifetime"] + t["deadline_grace"] + t["finality_wait"]
+    step = (duration - prep - tail - MARGIN) // STEPS - transition
+    if step <= 0 or step > 86_400:
+        raise Refuse(f"no step length fits: {step}")
+    total = prep + STEPS * (step + transition) + tail
+    return {"step_seconds": int(step), "prep": prep, "transition": transition, "tail": tail,
+            "ramp_budget": total, "slack": duration - total}
+
+
 REQUIRED = {
     "tos_checkout": str, "tos_rev": str, "signer": str, "signer_sha256": str, "key_file": str, "auth_tag": str,
     "ramp": dict, "reads": dict, "floors": dict, "unresolved": dict, "status_stale_s": (int, float),
 }
-RAMP_REQUIRED = ("batch", "wallets", "wallet_funding", "max_cost", "max_transfers", "rpc")
+RAMP_REQUIRED = ("batch", "wallets", "wallet_funding", "max_cost", "max_transfers", "funding_externals", "rpc")
 READS_REQUIRED = ("address", "network_deadline_seconds", "window_seconds")
 FLOORS_REQUIRED = ("mem_available_bytes", "disk_free_bytes", "disk_free_inodes")
 UNRESOLVED_REQUIRED = ("max_age_s", "max_count")
@@ -107,6 +125,9 @@ def load_record(path: Path, expected_sha: str) -> dict:
         for k in keys:
             if rec[section].get(k) in (None, "", []):
                 raise Refuse(f"acceptance record lacks {section}.{k}")
+    fx = rec["ramp"]["funding_externals"]
+    if type(fx) is not int or not 1 <= fx <= 8:
+        raise Refuse(f"ramp.funding_externals must be an integer in [1, 8], not {fx!r}")
     if not (isinstance(rec["ramp"]["rpc"], list) and len(rec["ramp"]["rpc"]) == 4):
         raise Refuse("ramp.rpc must name the four validator tunnels")
     numbers = [("status_stale_s", rec["status_stale_s"])]
@@ -184,11 +205,16 @@ def check_inputs(rec: dict, run=subprocess.run) -> None:
 
 def ramp_argv(rec: dict, out: Path) -> list[str]:
     r = rec["ramp"]
+    s = schedule(r["funding_externals"])
+    t = RAMP_TIMING
     argv = [sys.executable, str(Path(rec["tos_checkout"]) / "bench" / "run_t4_ramp.py"),
             "--out", str(out / "ramp"), "--key-file", rec["key_file"], "--signer", rec["signer"],
             "--auth-tag", rec["auth_tag"], "--build", str(Path(rec["tos_checkout"]) / "build"),
             "--wallets", str(r["wallets"]), "--batch", str(r["batch"]),
-            "--start-rate", "2", "--factor", "1", "--steps", str(STEPS), "--step-seconds", str(STEP_SECONDS),
+            "--start-rate", "2", "--factor", "1", "--steps", str(STEPS), "--step-seconds", str(s["step_seconds"]),
+            "--deploy-wait", str(t["deploy_wait"]), "--drain", str(t["drain"]),
+            "--finality-wait", str(t["finality_wait"]), "--lifetime", str(t["lifetime"]),
+            "--deadline-grace", str(t["deadline_grace"]),
             "--layout-repeats", "0", "--tolerance", "0.5", "--p95-limit", "600",
             "--wallet-funding", str(r["wallet_funding"]), "--max-cost", str(r["max_cost"]),
             "--max-transfers", str(r["max_transfers"]), "--rpc-share", "0.25"]
@@ -215,8 +241,25 @@ def host_snapshot(st: dict) -> dict:
         row = (st.get("hosts") or {}).get(h)
         if not (isinstance(row, dict) and row.get("complete") is True and isinstance(row.get("unit"), dict)):
             raise Refuse(f"{h}: no complete resource row to snapshot")
-        snap[h] = (row["unit"].get("main_pid"), row["unit"].get("n_restarts"), row.get("boot_id"), row.get("oom_kill"))
+        ident = identity(row)
+        if ident is None:
+            raise Refuse(f"{h}: the resource row has no valid MainPID, NRestarts, boot id and OOM count")
+        snap[h] = ident
     return snap
+
+
+def count(v) -> bool:
+    return type(v) is int and v >= 0
+
+
+def identity(row: dict):
+    """(MainPID, NRestarts, boot id, OOM count) when every field is valid, else None: a missing field can never
+    compare equal to an earlier missing field (codex r2)."""
+    unit = row.get("unit") if isinstance(row.get("unit"), dict) else {}
+    pid, restarts, boot, oom = unit.get("main_pid"), unit.get("n_restarts"), row.get("boot_id"), row.get("oom_kill")
+    if count(pid) and pid > 0 and count(restarts) and isinstance(boot, str) and boot and count(oom):
+        return (pid, restarts, boot, oom)
+    return None
 
 
 def status_reasons(st, snapshot: dict, rec: dict, now_mono: float, boot_id: str) -> list[str]:
@@ -263,8 +306,10 @@ def host_reasons(h: str, row, snapshot: dict, floors: dict, now_mono: float) -> 
     if not isinstance(unit, dict) or unit.get("active_state") != "active":
         out.append(f"{h}: validator {unit.get('active_state') if isinstance(unit, dict) else 'unit unreadable'}")
     else:
-        now_id = (unit.get("main_pid"), unit.get("n_restarts"), row.get("boot_id"), row.get("oom_kill"))
-        if now_id != snapshot[h]:
+        now_id = identity(row)
+        if now_id is None:
+            out.append(f"{h}: MainPID, NRestarts, boot id or OOM count unreadable")
+        elif now_id != snapshot[h]:
             out.append(f"{h}: restart, reboot or OOM since the start")
     if not (isinstance(mem, dict) and finite(mem.get("MemAvailable"))) or \
             mem["MemAvailable"] < floors["mem_available_bytes"]:
@@ -444,7 +489,7 @@ def supervise(rec: dict, status_path: Path, out: Path, launch: Callable[[str], s
     ramp_done = False
     # The ramp finishing its whole schedule (exit 0, no earlier than its last step's end) is the normal end of
     # writing: it has drained its last transfers itself. Monitoring and the reads continue until the cutoff.
-    ramp_finish = STEPS * STEP_SECONDS * duration / DURATION
+    ramp_finish = STEPS * schedule(rec["ramp"]["funding_externals"])["step_seconds"] * duration / DURATION
     while True:
         now = mono()
         if now >= cutoff:
