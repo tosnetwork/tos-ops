@@ -69,7 +69,7 @@ def build(root: Path, *, t0: float, duration: int, first_boundary: float, period
             r = rec(s, "resources/complete", ts=float(t), host=h, sent=t - 0.6, received=float(t),
                     sample_clock=t - 0.1)
             r["unit"].update(main_pid=4242, n_restarts=0, active_state="active")
-            r["boot_id"] = f"boot-{h}"
+            r["boot_id"] = f"00000000-0000-4000-8000-00000000000{HOSTS.index(h) + 1}"
             r["oom_kill"] = 0
             r["proc"]["RssAnon"] = 2 * GiB + (k % 120) * 1000
             r["mem"]["MemAvailable"] = 8 * GiB

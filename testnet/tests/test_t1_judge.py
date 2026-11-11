@@ -32,7 +32,8 @@ JUDGE = {"max_chain_gap_s": 60, "head_series_gap_s": 45, "ids_series_gap_s": 180
          "read_window_s": 600, "read_deadline_s": 3, "read_completed_fraction": 0.9, "read_error_fraction_max": 0.01,
          "write_start_max_s": 7200, "write_end_slack_s": 3600, "write_hourly_floor_fraction": 0.85,
          "backlog_max_actions": 50, "max_cost_nano": 200 * 10**9, "operator_floor_nano": 20 * 10**9,
-         "first_boundary": FIRST, "period": PERIOD, "operators": list(tj.HOSTS)}
+         "first_boundary": FIRST, "period": PERIOD,
+         "operators": {h: f"-1:{i:064x}" for i, h in enumerate(tj.HOSTS, 1)}}
 ENDPOINTS = [f"http://127.0.0.1:{p}/jsonRPC" for p in (18081, 38081, 28081, 48084)]
 
 
@@ -47,7 +48,7 @@ def full_id(seq, root="R" * 43 + "="):
     return t1_fixture.head_id(seq, root)
 
 
-OPERATORS = {h: f"-1:{i:064x}" for i, h in enumerate(tj.HOSTS, 1)}
+OPERATORS = JUDGE["operators"]
 
 
 def build(root):
@@ -185,7 +186,7 @@ def test_a_stall_fails(run):
 
 def test_memory_growth_over_the_bound_fails(run):
     edit(run.root / "observe/resources.jsonl",
-         lambda rs: [dict(r, proc={"RssAnon": r["proc"]["RssAnon"] + int((r["ts"] - T0) * 4000)})
+         lambda rs: [dict(r, proc=dict(r["proc"], RssAnon=r["proc"]["RssAnon"] + int((r["ts"] - T0) * 4000)))
                      if r["host"] == "node-4" else r for r in rs])
     assert status(run, "5.3 bounded memory") == "FAIL"
 
@@ -257,7 +258,7 @@ def test_missing_common_height_ids_are_not_a_pass(run):
 
 def test_a_stored_agree_flag_is_not_trusted(run):
     edit(run.root / "observe/chain.jsonl",
-         lambda rs: [dict(r, ids={**r["ids"], "node-3": full_id(r["seqno"], root="1" * 64)})
+         lambda rs: [dict(r, ids={**r["ids"], "node-3": full_id(r["seqno"], root="Q" * 43 + "=")})
                      if r.get("kind") == "ids" and T0 + 9000 <= r["ts"] <= T0 + 9400 else r for r in rs])
     assert status(run, "5.2 no restart, OOM or divergence") == "FAIL"
 
@@ -288,7 +289,7 @@ def test_growth_at_the_same_session_phase_fails_although_term_medians_barely_mov
         off = r["ts"] - FIRST
         term, pos = int(off // PERIOD), (off % PERIOD) / PERIOD
         if r["host"] == "node-2" and pos >= 0.75 and term >= 0:
-            return dict(r, proc={"RssAnon": r["proc"]["RssAnon"] + term * 60 * (1 << 20)})
+            return dict(r, proc=dict(r["proc"], RssAnon=r["proc"]["RssAnon"] + term * 60 * (1 << 20)))
         return r
     edit(run.root / "observe/resources.jsonl", lambda rs: [grow(r) for r in rs])
     assert status(run, "5.3 bounded memory") == "FAIL"
@@ -446,13 +447,14 @@ def test_disk_growth_over_the_per_block_bound_fails(run):
 
 def test_an_operator_below_the_floor_fails(run):
     edit(run.root / "observe/fees.jsonl", lambda rs: rs + [dict(next(r for r in rs if r["operator"] == "node-3"),
-                                                                  ts=T0 + 7000, balance_nano=5 * 10**9)])
+                                                                  ts=T0 + 7000, balance_nano=5 * 10**9,
+                                                                  answers={h: 5 * 10**9 for h in tj.HOSTS})])
     assert status(run, "5.8 operators") == "FAIL"
 
 
 def test_a_constant_rss_above_the_absolute_bound_fails(run):
     edit(run.root / "observe/resources.jsonl",
-         lambda rs: [dict(r, proc={"RssAnon": 7 * GiB}) if r["host"] == "node-1" else r for r in rs])
+         lambda rs: [dict(r, proc=dict(r["proc"], RssAnon=7 * GiB)) if r["host"] == "node-1" else r for r in rs])
     assert status(run, "5.3 bounded memory") == "FAIL"
 
 

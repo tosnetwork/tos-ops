@@ -17,14 +17,22 @@ A change to any producer pin needs the samples re-captured and this table re-che
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any, Callable
 
 HOSTS = ("node-1", "node-2", "node-3", "node-4")
 DATA_PATHS = ("/var/lib/tos/validator", "/var/log/tos")
+# The observer's own constants (t1-observe.py; a test keeps these equal).
+SHARD = "-9223372036854775808"
+BALANCE_QUORUM = 2
+CLOCK_LIMIT = 2.0
+UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+UNIT_STATES = {"active", "activating", "deactivating", "inactive", "failed", "reloading"}
 Check = Callable[[Any], bool]
 
 
@@ -112,20 +120,40 @@ def log_file(e) -> bool:
     return LOG_FILE_ERROR(e)
 
 
-HEAD_ID = lambda v: (isinstance(v, list) and len(v) == 5 and INT(v[0]) and NAT(v[2])  # noqa: E731
-                     and TEXT(v[3]) and TEXT(v[4]))
+def HASH32(v) -> bool:
+    """32 bytes of base64, as the observer's hash32 (t1-observe.py:505-511)."""
+    if not isinstance(v, str):
+        return False
+    try:
+        return len(base64.b64decode(v, validate=True)) == 32
+    except ValueError:
+        return False
+
+
+def HEAD_ID(v) -> bool:
+    """A complete masterchain block id [workchain, shard, seqno, root_hash, file_hash] (t1-observe.py:239-246, 527)."""
+    return (isinstance(v, list) and len(v) == 5 and v[0] == -1 and type(v[0]) is int and v[1] == SHARD
+            and NAT(v[2]) and HASH32(v[3]) and HASH32(v[4]))
+
+
 DISK = shape({"free_bytes": NAT, "size_bytes": NAT, "free_inodes": NAT, "total_inodes": NAT})
+UNIT = shape({"main_pid": NAT, "n_restarts": NAT, "active_state": lambda v: v in UNIT_STATES})
+MEM = shape({"MemTotal": NAT, "MemAvailable": NAT, "SwapTotal": NAT, "SwapFree": NAT})
+PROC = shape({"RssAnon": NAT, "VmRSS": NAT, "VmSwap": NAT, "Threads": NAT, "fds": NAT})
+BOOT_ID = lambda v: isinstance(v, str) and bool(UUID.match(v))  # noqa: E731
+COMPLETE_BASE = {**{"ts": NUM, "host": HOST, "sent": NUM, "received": NUM}, "complete": lambda v: v is True,
+                 "missing": list_of(STR), "sample_clock": NUM, "mem": MEM, "oom_kill": NAT, "boot_id": BOOT_ID,
+                 "disks": shape({p: DISK for p in DATA_PATHS})}
 
 SCHEMAS: dict[str, dict[str, Check]] = {
     # t1-observe.py resources: a probe that failed (:364), an incomplete report and a complete one (:374-376).
     "resources/error": {**OBS_BASE, "error": STR},
     "resources/incomplete": {**OBS_BASE, "complete": lambda v: v is False, "missing": list_of(STR)},
-    "resources/complete": {
-        **OBS_BASE, "complete": lambda v: v is True, "missing": list_of(STR), "sample_clock": NUM,
-        "unit": shape({"main_pid": INT, "n_restarts": NAT, "active_state": STR}),
-        "proc": shape({"RssAnon": NAT}), "mem": shape({"MemAvailable": NAT}), "oom_kill": NAT, "boot_id": TEXT,
-        "disks": shape({p: DISK for p in DATA_PATHS}),
-    },
+    # resource_problems() (t1-observe.py:166-194): an active unit needs a main pid and process metrics; an
+    # inactive one is a complete observation without them (proc is then "no main pid", t1_probe.py:63-65).
+    "resources/complete": {**COMPLETE_BASE, "unit": UNIT, "proc": PROC},
+    "resources/complete-inactive": {**COMPLETE_BASE, "unit": UNIT,
+                                    "proc": either(lambda v: isinstance(v, dict), STR)},
     # cache.jsonl (:368, :389, :403-406)
     "cache/error": {**OBS_BASE, "kind": one_of("error"), "error": STR},
     "cache/read": {**OBS_BASE, "kind": one_of("read"), "baseline": BOOL, "files": dict_of(log_file),
@@ -218,6 +246,35 @@ SCHEMAS: dict[str, dict[str, Check]] = {
 }
 
 
+def clock_verdict(best, limit: float) -> str:
+    """The observer's verdict from its best try (t1-observe.py:481-488)."""
+    if best is None:
+        return "unmeasured"
+    if -limit <= best["offset"] - best["bound"] and best["offset"] + best["bound"] <= limit:
+        return "ok"
+    if abs(best["offset"]) - best["bound"] > limit:
+        return "skewed"
+    return "uncertain"
+
+
+# Rules across fields: a stored summary must follow from the measurements it summarises.
+RULES: dict[str, list[tuple[str, Callable[[dict], bool]]]] = {
+    "resources/complete": [("an active unit has a main pid", lambda r: r["unit"]["main_pid"] > 0)],
+    "resources/complete-inactive": [("an inactive unit", lambda r: r["unit"]["active_state"] != "active")],
+    "clock": [("the limit is the observer's", lambda r: r["limit"] == CLOCK_LIMIT),
+              ("the verdict follows from the best try", lambda r: r["verdict"] == clock_verdict(r["best"], r["limit"])),
+              ("best is the narrowest measured try", lambda r: r["best"] is None or (
+                  r["best"] in r["tries"] and all(t["bound"] >= r["best"]["bound"] for t in r["tries"] if "bound" in t)))],
+    "chain/ids": [("every id is at the common height", lambda r: all(v[2] == r["seqno"] for v in r["ids"].values()))],
+    "fees/reading": [("a quorum of sources answered", lambda r: len(r["answers"]) >= BALANCE_QUORUM),
+                     ("the balance is the sources' minimum", lambda r: r["balance_nano"] == min(r["answers"].values())),
+                     ("disagree follows from the answers",
+                      lambda r: r["disagree"] == (len(set(r["answers"].values())) > 1)),
+                     ("answers come from validators", lambda r: all(HOST(h) for h in r["answers"]))],
+    "fees/error": [("fewer than a quorum answered", lambda r: len(r["answers"]) < BALANCE_QUORUM)],
+}
+
+
 # ---------------------------------------------------------------- classification
 
 
@@ -227,7 +284,11 @@ def classify(file: str, r: dict) -> str | None:
     if file == "resources":
         if "error" in r and "complete" not in r:
             return "resources/error"
-        return "resources/complete" if r.get("complete") is True else "resources/incomplete"
+        if r.get("complete") is not True:
+            return "resources/incomplete"
+        u = r.get("unit")
+        return "resources/complete" if isinstance(u, dict) and u.get("active_state") == "active" \
+            else "resources/complete-inactive"
     if file == "cache":
         return {"error": "cache/error", "read": "cache/read", "coverage_gap": "cache/coverage_gap"}.get(kind)
     if file == "safety":
@@ -286,10 +347,14 @@ class Evidence:
         return out
 
 
+class DuplicateMembers(ValueError):
+    """A complete JSON object that names a member twice: a contract violation, never a torn write."""
+
+
 def _no_duplicate_keys(pairs):
     keys = [k for k, _ in pairs]
     if len(keys) != len(set(keys)):
-        raise ValueError(f"duplicate member names {sorted({k for k in keys if keys.count(k) > 1})}")
+        raise DuplicateMembers(f"duplicate member names {sorted({k for k in keys if keys.count(k) > 1})}")
     return dict(pairs)
 
 
@@ -307,9 +372,12 @@ def jsonl(path: Path, ev: Evidence, file: str) -> list[dict]:
             continue
         try:
             r = parse(raw)
+        except DuplicateMembers as exc:  # complete JSON: always a violation, also on the last line
+            ev.violate(file, f"line {i + 1}: {exc}")
+            continue
         except ValueError as exc:
             if i == len(lines) - 1:
-                continue
+                continue  # a torn final line: the writer was killed mid-line
             ev.violate(file, f"line {i + 1}: {exc}")
             continue
         if not isinstance(r, dict):
@@ -326,6 +394,10 @@ def check(ev: Evidence, file: str, name: str | None, r: dict, where: str) -> boo
     bad = [k for k, c in SCHEMAS[name].items() if k not in r or not c(r[k])]
     if bad:
         ev.violate(file, f"{where}: {name} with missing or invalid {bad}")
+        return False
+    broken = [why for why, rule in RULES.get(name, []) if not rule(r)]
+    if broken:
+        ev.violate(file, f"{where}: {name} contradicts itself: {broken}")
         return False
     ev.rows.setdefault(file, []).append((name, r))
     return True

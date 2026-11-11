@@ -46,7 +46,8 @@ def test_every_schema_has_a_sample_and_every_sample_satisfies_its_schema():
         "boundaries/interrupted", "boundaries/missed", "boundaries/planned", "boundaries/schedule_mismatch",
         "boundaries/term_error", "cache/coverage_gap", "cache/error", "chain/cadence_miss", "chain/head_error",
         "chain/regression", "fees/error", "journal/expired", "journal/unknown", "load/alarm", "load/refused",
-        "load/stop", "resources/error", "resources/incomplete", "safety/safety_line"}
+        "load/stop", "resources/complete-inactive", "resources/error", "resources/incomplete",
+        "safety/safety_line"}
 
 
 def test_the_nullable_fields_are_exactly_the_producers():
@@ -284,3 +285,84 @@ def test_a_result_count_that_does_not_match_the_journal_is_a_violation(run):
     p.write_text(json.dumps(dict(json.loads(p.read_text()), completed=1)))
     r = run()["criteria"]["5.6 reads"]
     assert r["status"] != "PASS" and any("completed" in x for x in r["contract_violations"]["reads"])
+
+
+# ---------------------------------------------------------------- codex contract review r1
+
+
+def test_the_contract_constants_are_the_observers():
+    s = importlib.util.spec_from_file_location("t1_observe_consts", SCRIPTS / "t1-observe.py")
+    obs = importlib.util.module_from_spec(s)
+    s.loader.exec_module(obs)
+    assert (E.SHARD, E.BALANCE_QUORUM, E.CLOCK_LIMIT, E.UUID.pattern, E.UNIT_STATES) == \
+        (obs.SHARD, obs.BALANCE_QUORUM, obs.CLOCK_LIMIT, obs.UUID.pattern, obs.UNIT_STATES)
+
+
+def test_a_duplicate_key_record_on_the_last_line_is_a_violation_not_a_torn_write(run):
+    row = ('{"ts": %s, "host": "node-2", "sent": %s, "received": %s, "kind": "safety_line", "file": "node.log", '
+           '"line": "ok", "line": "MISBEHAVIOR"}' % (T0 + 50, T0 + 49, T0 + 50))
+    (run.root / "observe/safety.jsonl").write_text(row)  # no trailing newline
+    s = run()["criteria"]["5.5 no safety line"]
+    assert s["status"] != "PASS" and "safety" in s["contract_violations"]
+
+
+def test_an_inactive_unit_is_a_valid_observation_and_fails(run):
+    def stop(r):
+        if r["host"] != "node-2" or not T0 + 50_000 <= r["ts"] <= T0 + 50_600:
+            return r
+        return dict(r, unit=dict(r["unit"], active_state="inactive", main_pid=0), proc="no main pid")
+    edit(run.root / FILES["resources"], lambda rs: [stop(r) for r in rs])
+    v = run()
+    c = v["criteria"]["5.2 no restart, OOM or divergence"]
+    assert c["status"] == "FAIL" and "contract_violations" not in c
+    assert "contract_violations" not in v["criteria"]["5.3 bounded memory"]
+
+
+def test_a_clock_verdict_its_measurements_contradict_is_a_violation(run):
+    edit(run.root / FILES["clock"], lambda rs: [dict(r, best={"offset": 1000.0, "bound": 0.1},
+                                                     tries=[{"offset": 1000.0, "bound": 0.1}]) for r in rs])
+    c = run()["criteria"]["collector clock"]
+    assert c["status"] != "PASS" and "clock" in c["contract_violations"]
+
+
+def test_a_balance_its_source_answers_contradict_is_a_violation(run):
+    edit(run.root / FILES["fees"], lambda rs: [dict(r, answers={h: 1 for h in r["answers"]}) for r in rs])
+    c = run()["criteria"]["5.8 operators"]
+    assert c["status"] != "PASS" and "fees" in c["contract_violations"]
+
+
+def test_a_reading_of_another_wallet_does_not_count_for_the_operator(run):
+    edit(run.root / FILES["fees"], lambda rs: [dict(r, address="-1:" + "f" * 64) if r["operator"] == "node-3" else r
+                                               for r in rs])
+    c = run()["criteria"]["5.8 operators"]
+    assert c["status"] == "INCONCLUSIVE" and "node-3" in c["operators_without_readings"] \
+        and "contract_violations" not in c
+
+
+def test_block_ids_with_invalid_hashes_are_a_violation(run):
+    edit(run.root / FILES["chain"], lambda rs: [dict(r, id=r["id"][:3] + ["not-a-hash", "not-a-hash"])
+                                                if r["kind"] == "head" else r for r in rs])
+    c = run()["criteria"]["5.1 no stall"]
+    assert c["status"] != "PASS" and "chain" in c["contract_violations"]
+
+
+def test_ids_off_the_common_height_are_a_violation(run):
+    def shift(r):
+        if r["kind"] != "ids":
+            return r
+        ids = dict(r["ids"])
+        ids["node-4"] = ids["node-4"][:2] + [r["seqno"] + 1] + ids["node-4"][3:]
+        return dict(r, ids=ids)
+    edit(run.root / FILES["chain"], lambda rs: [shift(r) for r in rs])
+    assert "chain" in run()["criteria"]["5.2 no restart, OOM or divergence"]["contract_violations"]
+
+
+def test_a_disagree_flag_its_answers_contradict_is_a_violation(run):
+    edit(run.root / FILES["fees"], lambda rs: [dict(r, disagree=True) for r in rs])
+    assert "fees" in run()["criteria"]["5.8 operators"]["contract_violations"]
+
+
+def test_an_answer_from_a_host_that_is_not_a_validator_is_a_violation(run):
+    edit(run.root / FILES["fees"], lambda rs: [dict(r, answers={**r["answers"], "node-dht": r["balance_nano"]})
+                                               for r in rs])
+    assert "fees" in run()["criteria"]["5.8 operators"]["contract_violations"]

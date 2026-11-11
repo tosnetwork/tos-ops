@@ -119,8 +119,10 @@ def load_record(path: Path, sha: str) -> dict:
         if not finite(judge.get(key)) or judge[key] <= 0:
             raise Refuse(f"acceptance record judge.{key} must be a finite number > 0 ({why})")
     ops = judge.get("operators")
-    if not (isinstance(ops, list) and ops and all(isinstance(o, str) and o for o in ops) and len(set(ops)) == len(ops)):
-        raise Refuse("acceptance record judge.operators must list every pinned operator")
+    if not (isinstance(ops, dict) and sorted(ops) == sorted(HOSTS)
+            and all(isinstance(a, str) and a.startswith("-1:") and len(a) == 67 for a in ops.values())
+            and len(set(ops.values())) == len(ops)):
+        raise Refuse("acceptance record judge.operators must map every validator to its pinned operator wallet")
     return judge
 
 
@@ -255,9 +257,10 @@ def judge_boundaries(ev: E.Evidence, t0: float, t1: float, j: dict) -> dict:
 
 
 def resource_rows(ev: E.Evidence, t0: float, t1: float) -> dict[str, list[dict]]:
-    """Each host's complete resource rows in the window (incomplete and failed probes only count as gaps)."""
+    """Each host's complete resource rows in the window, active or not (incomplete and failed probes only count as
+    gaps)."""
     out = {h: [] for h in HOSTS}
-    for r in inside(ev.of("resources", "resources/complete"), t0, t1):
+    for r in inside(ev.of("resources", "resources/complete", "resources/complete-inactive"), t0, t1):
         out[r["host"]].append(r)
     return out
 
@@ -304,7 +307,9 @@ def judge_memory(res: dict, t0: float, t1: float, j: dict) -> dict:
     period, k, phases = j["period"], int(j["rolling_terms"]), int(j["phases_per_term"])
     phase_len = period / phases
     over, growth, floor_breach, incomplete = [], {}, [], []
-    for h, complete in res.items():
+    for h, rows_h in res.items():
+        # process memory exists only while the unit is active; an inactive unit already fails §5.2
+        complete = [r for r in rows_h if r["unit"]["active_state"] == "active"]
         if not complete:
             incomplete.append(h)
             continue
@@ -530,14 +535,18 @@ def judge_writes(ev: E.Evidence, t0: float, t1: float, j: dict) -> dict:
 def judge_operators(ev: E.Evidence, t0: float, t1: float, j: dict) -> dict:
     """§5.8, as scoped by 13.493: every pinned operator's balance is observed throughout the run and never below the
     floor. Per-transaction fee accounting is the fee watch's job, not the judge's (13.493)."""
+    pinned = j["operators"]
     readings = inside(ev.of("fees", "fees/reading"), t0, t1)
+    # a reading counts only for the wallet the record pins to that operator
+    foreign = [(r["operator"], r["address"]) for r in readings if r["address"] != pinned[r["operator"]]]
+    readings = [r for r in readings if r["address"] == pinned[r["operator"]]]
     low = sorted({r["operator"] for r in readings if r["balance_nano"] < j["operator_floor_nano"]})
     if low:
         return result(FAIL, below_floor=low)
-    gaps = {o: max_gap([r["ts"] for r in readings if r["operator"] == o], t0, t1) for o in j["operators"]}
+    gaps = {o: max_gap([r["ts"] for r in readings if r["operator"] == o], t0, t1) for o in pinned}
     thin = [o for o, g in gaps.items() if g > j["fees_series_gap_s"]]
-    if thin:
-        return result(INCONCLUSIVE, operators_without_readings=thin)
+    if thin or foreign:
+        return result(INCONCLUSIVE, operators_without_readings=thin, unpinned_addresses=sorted(set(foreign))[:4])
     return result(PASS, readings=len(readings))
 
 

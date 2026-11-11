@@ -28,7 +28,8 @@ MUTANTS = [
     # the record
     (J, "R1 record hash", "if hashlib.sha256(path.read_bytes()).hexdigest() != sha:", "if False:"),
     (J, "R2 thresholds required", "if not finite(judge.get(key)) or judge[key] <= 0:", "if False:"),
-    (J, "R3 operators pinned", 'raise Refuse("acceptance record judge.operators must list every pinned operator")',
+    (J, "R3 operators pinned",
+     'raise Refuse("acceptance record judge.operators must map every validator to its pinned operator wallet")',
      "pass"),
     (J, "R4 only a T1 run is judged", 'if s["mode"] != "t1" or s["cutoff_in_s"] != DURATION:', "if False:"),
     (J, "T1 torn tail only", "            if i == len(lines) - 1:\n                continue\n            raise",
@@ -45,7 +46,8 @@ MUTANTS = [
      "            if False:\n                ev.missing.append(file)"),
     (C, "K5 duplicate member names", "    if len(keys) != len(set(keys)):", "    if False:"),
     (C, "K6 torn interior line",
-     "            if i == len(lines) - 1:\n                continue\n            ev.violate(file, f\"line {i + 1}: {exc}\")",
+     "            if i == len(lines) - 1:\n                continue  # a torn final line: the writer was killed mid-line\n"
+     "            ev.violate(file, f\"line {i + 1}: {exc}\")",
      "            continue"),
     (C, "K7 events need an attempt", '        elif t in ("sent", "delivered", "expired", "unknown"):\n'
      '            if r.get("id") not in roles:', '        elif t in ("sent", "delivered", "expired", "unknown"):\n'
@@ -62,6 +64,22 @@ MUTANTS = [
      'name = "journal/observed/transfer"'),
     (C, "K15 attempt roles", 'name = f"journal/attempt/{role}" if role in ("transfer", "funding") else None',
      'name = "journal/attempt/transfer"'),
+    (C, "K16 clock verdict recomputed", 'lambda r: r["verdict"] == clock_verdict(r["best"], r["limit"])',
+     "lambda r: True"),
+    (C, "K17 balance is the minimum", 'lambda r: r["balance_nano"] == min(r["answers"].values())', "lambda r: True"),
+    (C, "K18 balance quorum", 'lambda r: len(r["answers"]) >= BALANCE_QUORUM)', "lambda r: True)"),
+    (C, "K19 ids at the common height", 'lambda r: all(v[2] == r["seqno"] for v in r["ids"].values())',
+     "lambda r: True"),
+    (C, "K20 32-byte hashes", "return len(base64.b64decode(v, validate=True)) == 32", "return True"),
+    (C, "K21 duplicate keys on the last line",
+     '        except DuplicateMembers as exc:  # complete JSON: always a violation, also on the last line\n'
+     '            ev.violate(file, f"line {i + 1}: {exc}")\n            continue\n', ""),
+    (C, "K22 inactive units have their own schema", 'u.get("active_state") == "active" \\', "True \\"),
+    (C, "K23 disagree recomputed", 'lambda r: r["disagree"] == (len(set(r["answers"].values())) > 1)',
+     "lambda r: True"),
+    (C, "K24 answers from validators", 'lambda r: all(HOST(h) for h in r["answers"])', "lambda r: True"),
+    (J, "O3 readings of the pinned wallet", '    readings = [r for r in readings if r["address"] == pinned[r["operator"]]]\n',
+     ""),
     # §5.1
     (J, "G1 stall limit", 'if gap > j["max_chain_gap_s"]:', "if False:"),
     (J, "G2 progress is a new maximum", 'if r["id"][2] > top:', "if True:"),
@@ -127,7 +145,7 @@ MUTANTS = [
     (J, "W17 fee cap", 'or fees > j["max_cost_nano"]', ""),
     # §5.8
     (J, "O1 operator floor", "    if low:\n        return result(FAIL", "    if False:\n        return result(FAIL"),
-    (J, "O2 every operator covered", "    if thin:", "    if False:"),
+    (J, "O2 every operator covered", "    if thin or foreign:", "    if foreign:"),
     # run completed
     (J, "V1 stops fail", "    if stops:\n        return result(FAIL", "    if False:\n        return result(FAIL"),
     (J, "V2 a clean end", 'if len(end) != 1 or end[0]["result"] != "cutoff" or kinds[-1] != "end":',
