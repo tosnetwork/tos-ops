@@ -204,6 +204,7 @@ def test_a_held_wallet_lock_refuses_the_start(tmp_path):
 @pytest.mark.parametrize("path,value", [
     (("floors", "mem_available_bytes"), 0), (("floors", "disk_free_bytes"), float("nan")),
     (("unresolved", "max_age_s"), -1), (("ramp", "max_cost"), "200"), (("status_stale_s",), float("inf")),
+    (("ramp", "funding_externals"), 9), (("ramp", "funding_externals"), 1.5), (("ramp", "funding_externals"), 0),
     (("reads", "network_deadline_seconds"), 0),
 ])
 def test_a_record_threshold_must_be_finite_and_positive(tmp_path, path, value):
