@@ -343,7 +343,7 @@ def jline(**rec):
 
 def test_undelivered_actions_are_tracked_until_delivered(tmp_path):
     j = tmp_path / "journal.jsonl"
-    j.write_bytes(jline(type="attempt", id="a1", actions=[{}, {}]) + jline(type="observed", id="a1"))
+    j.write_bytes(jline(type="attempt", role="transfer", id="a1", actions=[{}, {}]) + jline(type="observed", id="a1"))
     t = tl.JournalTail(j)
     t.poll(10.0)
     assert set(t.pending) == {("a1", 0), ("a1", 1)}
@@ -353,9 +353,33 @@ def test_undelivered_actions_are_tracked_until_delivered(tmp_path):
     assert set(t.pending) == {("a1", 1)}
 
 
+def test_a_funding_external_is_never_pending(tmp_path):
+    # the bench wallet's funding external is observed but never delivered (ramp.py journals deliveries for
+    # load-wallet transfers only): it must not count as backlog, however long it stays
+    j = tmp_path / "journal.jsonl"
+    j.write_bytes(jline(type="attempt", role="funding", id="funding:bench:0", actions=[{}] * 8)
+                  + jline(type="observed", id="funding:bench:0", verdict="executed", problems=[]))
+    t = tl.JournalTail(j)
+    t.poll(10.0)
+    assert t.pending == {} and t.reasons(10_000.0, {"max_age_s": 600, "max_count": 1200}) == []
+
+
+def test_transfers_are_tracked_beside_a_funding_external(tmp_path):
+    j = tmp_path / "journal.jsonl"
+    j.write_bytes(jline(type="attempt", role="funding", id="funding:bench:0", actions=[{}] * 8)
+                  + jline(type="observed", id="funding:bench:0", verdict="executed", problems=[])
+                  + jline(type="attempt", role="transfer", id="transfer:0:0", actions=[{}, {}])
+                  + jline(type="observed", id="transfer:0:0", failure=[None, None]))
+    t = tl.JournalTail(j)
+    t.poll(10.0)
+    assert set(t.pending) == {("transfer:0:0", 0), ("transfer:0:0", 1)}
+    assert t.reasons(700.0, {"max_age_s": 600, "max_count": 1200}) == \
+        ["an action undelivered for 690 s (limit 600 s)"]
+
+
 def test_a_failed_external_has_no_pending_actions(tmp_path):
     j = tmp_path / "journal.jsonl"
-    j.write_bytes(jline(type="attempt", id="a1", actions=[{}]) + jline(type="observed", id="a1", failure="exit 37"))
+    j.write_bytes(jline(type="attempt", role="transfer", id="a1", actions=[{}]) + jline(type="observed", id="a1", failure="exit 37"))
     t = tl.JournalTail(j)
     t.poll(1.0)
     assert t.pending == {}
@@ -363,7 +387,7 @@ def test_a_failed_external_has_no_pending_actions(tmp_path):
 
 def test_a_torn_last_line_waits_for_its_end(tmp_path):
     j = tmp_path / "journal.jsonl"
-    full = jline(type="attempt", id="a1", actions=[{}]) + jline(type="observed", id="a1")
+    full = jline(type="attempt", role="transfer", id="a1", actions=[{}]) + jline(type="observed", id="a1")
     j.write_bytes(full[:-5])
     t = tl.JournalTail(j)
     t.poll(1.0)
@@ -377,7 +401,7 @@ def test_a_torn_last_line_waits_for_its_end(tmp_path):
 def test_producer_shaped_records_with_per_action_failures(tmp_path):
     # codex r1 §1: the ramp writes `failure` per action (ledger.External.failure), [None, ...] when all were sent.
     j = tmp_path / "journal.jsonl"
-    j.write_bytes(jline(type="attempt", id="a1", actions=[{}, {}, {}])
+    j.write_bytes(jline(type="attempt", role="transfer", id="a1", actions=[{}, {}, {}])
                   + jline(type="observed", id="a1", tx="t", tx_mc=5, utime=7, fee=1,
                           failure=[None, "action skipped", None]))
     t = tl.JournalTail(j)
@@ -387,7 +411,7 @@ def test_producer_shaped_records_with_per_action_failures(tmp_path):
 
 def test_a_whole_external_failure_has_no_pending_actions(tmp_path):
     j = tmp_path / "journal.jsonl"
-    j.write_bytes(jline(type="attempt", id="a1", actions=[{}, {}])
+    j.write_bytes(jline(type="attempt", role="transfer", id="a1", actions=[{}, {}])
                   + jline(type="observed", id="a1", failure=["exit 37", "exit 37"]))
     t = tl.JournalTail(j)
     t.poll(1.0)
@@ -397,7 +421,7 @@ def test_a_whole_external_failure_has_no_pending_actions(tmp_path):
 def test_a_delivery_journaled_before_its_observed_record_is_not_resurrected(tmp_path):
     # codex r1 §1: the follower can journal `delivered` before `observed` (ramp.py:757–759).
     j = tmp_path / "journal.jsonl"
-    j.write_bytes(jline(type="attempt", id="a1", actions=[{}, {}])
+    j.write_bytes(jline(type="attempt", role="transfer", id="a1", actions=[{}, {}])
                   + jline(type="delivered", id="a1", action=0, receipt_failure=None))
     t = tl.JournalTail(j)
     t.poll(1.0)
@@ -412,10 +436,10 @@ def test_tail_state_stays_bounded(tmp_path):
     t = tl.JournalTail(j)
     for i in range(200):
         with j.open("ab") as fh:
-            fh.write(jline(type="attempt", id=f"a{i}", actions=[{}]) + jline(type="observed", id=f"a{i}", failure=[None])
+            fh.write(jline(type="attempt", role="transfer", id=f"a{i}", actions=[{}]) + jline(type="observed", id=f"a{i}", failure=[None])
                      + jline(type="delivered", id=f"a{i}", action=0, receipt_failure=None))
     with j.open("ab") as fh:
-        fh.write(jline(type="attempt", id="x", actions=[{}]) + jline(type="expired", id="x"))
+        fh.write(jline(type="attempt", role="transfer", id="x", actions=[{}]) + jline(type="expired", id="x"))
     t.poll(1.0)
     assert t.pending == {} and t.actions == {} and t.early == set()
 
@@ -427,7 +451,7 @@ def test_repeated_sends_with_withheld_deliveries_hit_the_limits(tmp_path):
     lim = {"max_age_s": 300, "max_count": 5}
     for i in range(6):
         with j.open("ab") as fh:
-            fh.write(jline(type="attempt", id=f"a{i}", actions=[{}]) + jline(type="observed", id=f"a{i}"))
+            fh.write(jline(type="attempt", role="transfer", id=f"a{i}", actions=[{}]) + jline(type="observed", id=f"a{i}"))
         t.poll(float(i))
     assert any("undelivered actions" in r for r in t.reasons(6.0, lim))
     assert t.reasons(6.0, {"max_age_s": 300, "max_count": 10}) == []
@@ -650,7 +674,7 @@ def test_undelivered_actions_in_the_journal_stop_the_run(tmp_path):
         if now > 1010:
             j = tmp_path / "run" / "ramp" / "journal.jsonl"
             if not j.exists():
-                j.write_bytes(jline(type="attempt", id="a1", actions=[{}]) + jline(type="observed", id="a1"))
+                j.write_bytes(jline(type="attempt", role="transfer", id="a1", actions=[{}]) + jline(type="observed", id="a1"))
         return status(now)
     rc, rows = run_supervise(tmp_path, st_fn, duration=600)
     assert rc == 1 and any("undelivered for" in r for r in rows[1]["reasons"])

@@ -344,7 +344,10 @@ def host_reasons(h: str, row, snapshot: dict, floors: dict, now_mono: float) -> 
 
 
 class JournalTail:
-    """Follows the ramp's journal.jsonl and keeps every action of an executed external without a delivery."""
+    """Follows the ramp's journal.jsonl and keeps every action of an executed transfer external without a delivery.
+
+    Only transfers are tracked: the ramp journals `delivered` for load-wallet transfers alone (ramp.py:837-847), so
+    the bench wallet's funding externals (role "funding") never get a delivery and must not count as backlog."""
 
     def __init__(self, path: Path):
         self.path, self.offset, self.partial = path, 0, b""
@@ -369,7 +372,7 @@ class JournalTail:
                 continue
             rec = json.loads(raw)
             kind, aid = rec.get("type"), rec.get("id")
-            if kind == "attempt":
+            if kind == "attempt" and rec.get("role") == "transfer":
                 self.actions[aid] = len(rec.get("actions") or [])
             elif kind == "observed":
                 n = self.actions.pop(aid, 0)
