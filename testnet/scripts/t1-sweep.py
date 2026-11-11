@@ -137,8 +137,9 @@ def settle_sweep(sender_tx, sender: str, dest: str, balance_before: int, recipie
                  after: list[int]) -> dict[str, Any]:
     """Why a settled sender transaction is or is not an exact sweep (problems empty when it is).
 
-    ``sender_tx`` is the sender's transaction (t2check.Tx), ``recipient`` the destination's transactions read on
-    each RPC since the sweep was signed, ``after`` the sender's balance on each RPC after the sweep."""
+    ``sender_tx`` is the sender's transaction (t2check.Tx), ``recipient`` the destination's transactions
+    (journal.AccountTx: the transaction and its utime) read on each RPC since the sweep was signed, ``after`` the
+    sender's balance on each RPC after the sweep."""
     problems: list[str] = []
     out = [m for m in sender_tx.out_msgs if m.kind == "internal" and m.source == sender]
     if len(out) != 1 or out[0].destination != dest:
@@ -159,17 +160,18 @@ def settle_sweep(sender_tx, sender: str, dest: str, balance_before: int, recipie
         problems.append(f"the wallet still holds {after} after the sweep")
     receipts = []
     for i, txs in enumerate(recipient):
-        found = [t for t in txs if t.in_msg is not None and t.in_msg.kind == "internal" and t.in_msg.hash == msg.hash]
+        found = [a for a in txs if a.tx.in_msg is not None and a.tx.in_msg.kind == "internal"
+                 and a.tx.in_msg.hash == msg.hash]
         if len(found) != 1:
             problems.append(f"rpc {i}: {len(found)} destination transactions import the swept message")
             continue
-        t = found[0]
+        t = found[0].tx
         if t.aborted or t.phase_failure is not None or t.in_msg.bounced or t.in_msg.value != msg.value \
                 or t.account != dest:
             problems.append(f"rpc {i}: the destination transaction did not credit the message as sent: "
                             f"aborted={t.aborted} phase={t.phase_failure} value={t.in_msg.value}")
             continue
-        receipts.append({"tx": t.hash, "lt": t.lt, "utime": getattr(t, "utime", None)})
+        receipts.append({"tx": t.hash, "lt": t.lt, "utime": found[0].utime, "block": list(t.block)})
     return {"problems": problems, "value": msg.value, "message": msg.hash, "fee": fee, "receipts": receipts}
 
 
@@ -209,6 +211,9 @@ class LiveChain:
     async def now(self):
         return await self.remote.now()
 
+    async def mc_seqno(self):
+        return int((await self.rpcs[0].call("getMasterchainInfo"))["last"]["seqno"])
+
     async def fee_config(self):
         return await self.remote.fee_config(0)
 
@@ -224,7 +229,7 @@ class LiveChain:
             txs, complete = await self.m.jr.account_transactions(r, address, since)
             if not complete:
                 raise Stop(f"the destination's history since {since} is not complete on {r}")
-            out.append([t.tx for t in txs])
+            out.append(txs)
         return out
 
 
@@ -299,9 +304,76 @@ async def sweep_one(m, chain: Chain, journal, signer, w, seed, s: Sweep, dest: s
     if proof["problems"]:
         raise Stop(f"wallet {s.index}: the sweep executed but is not exact: {proof['problems']}")
     r = proof["receipts"][0]
-    journal.event("delivered", record["id"], action=0, recipient_tx=r["tx"], recipient_mc=0,
-                  recipient_utime=r["utime"] or 0, receipt_failure=None)
+    journal.event("delivered", record["id"], **receipt_fields(proof))
     return {"id": record["id"], "tx": verdict.found.tx.hash, **proof}
+
+
+def receipt_fields(proof: dict) -> dict:
+    """The delivered record of a proved sweep. The recipient's masterchain block is not read here: it is null,
+    never a made-up number; the transaction, its utime and its shard block come from the destination's history."""
+    r = proof["receipts"][0]
+    return {"action": 0, "recipient_tx": r["tx"], "recipient_lt": r["lt"], "recipient_utime": r["utime"],
+            "recipient_block": r["block"], "recipient_mc": None, "receipt_failure": None,
+            "value": proof["value"], "message": proof["message"], "fee": proof["fee"],
+            "rpcs_proved": len(proof["receipts"])}
+
+
+def run_record(m, bench, wallets, dest: str, mc_start: int) -> dict:
+    """A run record journal.read_journal accepts (version and an integer mc_start), so a registered sweep journal
+    never blocks the registry's reconcile."""
+    return {"type": "run", "version": m.jr.VERSION, "tool": "t1-sweep", "wallet": m.remote.raw(bench.address),
+            "load_wallets": [m.remote.raw(w.address) for w in wallets], "to": dest, "mc_start": mc_start,
+            "deadline_grace": m.jr.DEADLINE_GRACE, "time": time.time()}
+
+
+def observed_tx(m, attempt: dict, observed: dict):
+    """The sender transaction as journaled by settle (Verdict.as_dict), as a t2check.Tx for settle_sweep."""
+    t2 = m.t2check
+    outs = tuple(t2.Msg(hash=o["hash"], kind="internal", source=attempt["sender"], destination=o["destination"],
+                        value=o["value"]) for o in observed.get("out_msgs") or [])
+    return t2.Tx(hash=observed["tx"], account=attempt["sender"], lt=observed["lt"], block=tuple(observed["block"]),
+                 in_msg=None, out_msgs=outs, action_success=True, fee=observed.get("fee"), phase_failure=None)
+
+
+async def recover_receipts(m, chain: Chain, state) -> list[str]:
+    """Before any new signature: every earlier sweep whose sender transaction was observed must have its receipt
+    proved. A journaled `observed` is terminal for the registry's reconcile, so this step, not the reconcile,
+    keeps a sweep from counting as done while its delivery is unproved. Proved receipts are journaled now;
+    returns the sweeps that still cannot be proved (the run refuses while any remain)."""
+    pending = []
+    for path in state.journals():
+        if not path.exists():
+            continue
+        read = m.jr.read_journal(path)
+        if read.run is None or read.run.get("tool") != "t1-sweep":
+            continue
+        if read.errors:
+            pending.append(f"{path}: {read.errors[:3]}")
+            continue
+        late = None
+        for aid, attempt in read.attempts.items():
+            events = read.events.get(aid, [])
+            kinds = [e["type"] for e in events]
+            if attempt.get("role") != "sweep" or "delivered" in kinds:
+                continue
+            obs = next((e for e in events if e["type"] == "observed"), None)
+            if obs is None:
+                continue  # never executed: the reconcile settled it as refused or expired
+            if obs.get("problems"):
+                pending.append(f"{aid}: executed with problems {obs['problems']}")
+                continue
+            dest = attempt["actions"][0]["destination"]
+            after = [int(x.get("balance", -1)) for x in await chain.account(attempt["sender"])]
+            proof = settle_sweep(observed_tx(m, attempt, obs), attempt["sender"], dest, attempt["balance_before"],
+                                 await chain.history(dest, attempt["signed_at"]), after)
+            if proof["problems"]:
+                pending.append(f"{aid}: {proof['problems']}")
+                continue
+            late = late or m.jr.Journal(path, create=False)
+            late.event("delivered", aid, **receipt_fields(proof), proved_later=True)
+        if late is not None:
+            late.close()
+    return pending
 
 
 def check_pins(a, run=subprocess.run) -> None:
@@ -328,6 +400,10 @@ def check_network(rows: list[dict], zero: dict) -> None:
 async def run(a, m, chain: Chain, state, journal, signer, bench, wallets, seeds, code_hash: str, dest: str,
               zero: dict, log=print) -> int:
     check_network(await chain.network(), zero)
+    # Every earlier sweep's receipt is proved (and journaled) before anything new is planned or signed.
+    pending = await recover_receipts(m, chain, state)
+    if pending:
+        raise Refuse(f"earlier sweeps have no proven receipt: {pending}")
     sources = {m.remote.raw(w.address) for w in wallets}
     if dest in sources or dest == "":
         raise Refuse("the destination is one of the swept wallets")
@@ -408,8 +484,7 @@ def main(argv=None) -> int:
             return 2
         a.out.mkdir(parents=True, exist_ok=False)
         journal = m.jr.Journal(a.out / "journal.jsonl")
-        journal.append({"type": "run", "version": 1, "tool": "t1-sweep", "wallet": m.remote.raw(bench.address),
-                        "load_wallets": [m.remote.raw(w.address) for w in wallets], "to": dest, "time": time.time()})
+        journal.append(run_record(m, bench, wallets, dest, asyncio.run(chain.mc_seqno())))
         if a.go:
             state.register(a.out / "journal.jsonl")
         zero = keys.EPOCH6_ZERO_STATE

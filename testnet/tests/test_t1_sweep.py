@@ -96,25 +96,34 @@ class FakeChain:
         if not self.recipient:
             return [[], []]
         t2 = self.m.t2check
-        txs = [t2.Tx(hash=f"b{k:063x}", account=address, lt=6 + k, block=(0, -(1 << 63), 10), in_msg=t2.Msg(
-            hash=msg.hash, kind="internal", source=msg.source, destination=address, value=msg.value),
-            action_success=None, fee=1000, phase_failure=None) for k, (msg, _) in enumerate(self.out.values())]
+        txs = [self.m.jr.AccountTx(tx=t2.Tx(hash=f"b{k:063x}", account=address, lt=6 + k, block=(0, -(1 << 63), 10),
+                                            in_msg=t2.Msg(hash=msg.hash, kind="internal", source=msg.source,
+                                                          destination=address, value=msg.value),
+                                            action_success=None, fee=1000, phase_failure=None),
+                                   utime=1_800_000_003 + k, compute_success=True, raw={})
+               for k, (msg, _) in enumerate(self.out.values())]
         return [txs, txs]
 
 
-def run(env, chain, tmp_path, go=True, monkeypatch=None):
+def run(env, chain, tmp_path, go=True, monkeypatch=None, state=None):
     m, w = env
+    own = state is None
+    state = state or m.jr.WalletState(tmp_path / "state-run", "0:" + "ef" * 32)
     monkeypatch.setattr(m.remote, "external_fee_bound", lambda *a: SimpleNamespace(total=BOUND))
     out = tmp_path / "out"
-    out.mkdir()
+    out.mkdir(parents=True)
     journal = m.jr.Journal(out / "journal.jsonl")
-    journal.append({"type": "run", "version": 1, "tool": "t1-sweep", "wallet": "x", "time": 0})
+    journal.append(tool.run_record(m, w.bench, w.loads, m.remote.raw(w.bench.address), 123))
     chain.journal = out / "journal.jsonl"
     logs = []
     a = SimpleNamespace(go=go, out=out)
     dest = m.remote.raw(w.bench.address)
-    rc = __import__("asyncio").run(tool.run(a, m, chain, None, journal, w.signer, w.bench, w.loads, w.seeds,
-                                             w.loads[0].state_init.code.hash.hex(), dest, ZERO, log=logs.append))
+    try:
+        rc = __import__("asyncio").run(tool.run(a, m, chain, state, journal, w.signer, w.bench, w.loads, w.seeds,
+                                                 w.loads[0].state_init.code.hash.hex(), dest, ZERO, log=logs.append))
+    finally:
+        if own:
+            state.release()
     rows = [json.loads(x) for x in (out / "journal.jsonl").read_text().splitlines()]
     return rc, rows, logs, out
 
@@ -207,9 +216,13 @@ def test_a_destination_among_the_sources_is_refused(env, tmp_path, monkeypatch):
     monkeypatch.setattr(m.remote, "external_fee_bound", lambda *a: SimpleNamespace(total=BOUND))
     chain = FakeChain(m, w, [BAL, BAL])
     a = SimpleNamespace(go=True, out=tmp_path)
-    with pytest.raises(tool.Refuse, match="one of the swept wallets"):
-        __import__("asyncio").run(tool.run(a, m, chain, None, None, w.signer, w.bench, w.loads, w.seeds, "x",
-                                           m.remote.raw(w.loads[1].address), ZERO, log=lambda *_: None))
+    state = m.jr.WalletState(tmp_path / "state-x", "0:" + "ef" * 32)
+    try:
+        with pytest.raises(tool.Refuse, match="one of the swept wallets"):
+            __import__("asyncio").run(tool.run(a, m, chain, state, None, w.signer, w.bench, w.loads, w.seeds, "x",
+                                               m.remote.raw(w.loads[1].address), ZERO, log=lambda *_: None))
+    finally:
+        state.release()
     assert chain.sent == []
 
 
@@ -262,7 +275,7 @@ def _pair(m, sender, dest, *, bounced=False, phase=None, account=None, aborted=F
     r = t2.Tx(hash="e" * 64, account=account or dest, lt=6, block=(0, 0, 2), aborted=aborted,
               in_msg=t2.Msg(hash=msg.hash, kind="internal", source=sender, destination=dest, value=msg.value,
                             bounced=bounced), action_success=None, fee=1, phase_failure=phase)
-    return tx, r
+    return tx, m.jr.AccountTx(tx=r, utime=1_800_000_009, compute_success=phase is None, raw={})
 
 
 def test_a_clean_synthetic_sweep_settles(env):
@@ -307,7 +320,8 @@ def test_a_message_to_another_account_fails_even_when_the_destination_shows_a_cr
     m, w = env
     s_, d_, other = "0:" + "1" * 64, "0:" + "2" * 64, "0:" + "4" * 64
     tx, r = _pair(m, s_, other)
-    r = r.__class__(**{**r.__dict__, "account": d_})
+    r = r.__class__(tx=r.tx.__class__(**{**r.tx.__dict__, "account": d_}), utime=r.utime,
+                    compute_success=True, raw={})
     problems = tool.settle_sweep(tx, s_, d_, BAL, [[r], [r]], [0, 0])["problems"]
     assert any("expected one internal message" in x for x in problems), problems
 
@@ -320,3 +334,120 @@ def test_two_messages_are_not_one_sweep(env):
     tx = tx.__class__(**{**tx.__dict__, "out_msgs": tx.out_msgs + (extra,)})
     problems = tool.settle_sweep(tx, s_, d_, BAL, [[r], [r]], [0, 0])["problems"]
     assert any("expected one internal message" in x for x in problems), problems
+
+
+
+# ---------------------------------------------------------------- the registry and recovery (codex code review r1)
+
+
+def test_a_completed_sweep_journal_reads_cleanly_for_the_ramps_reconcile(env, tmp_path, monkeypatch):
+    # an unsupported run record would block every later ramp or sweep run (finding 1)
+    m, w = env
+    chain = FakeChain(m, w, [BAL, BAL])
+    rc, _, _, out = run(env, chain, tmp_path, monkeypatch=monkeypatch)
+    read = m.jr.read_journal(out / "journal.jsonl")
+    assert rc == 0 and read.errors == [] and read.run["tool"] == "t1-sweep"
+    assert all(read.settled(aid) for aid in read.attempts)
+
+
+def _registry(m, tmp_path, journal):
+    state = m.jr.WalletState(tmp_path / "state", "0:" + "cd" * 32)
+    state.register(journal)
+    return state
+
+
+def _interrupted(env, tmp_path, monkeypatch, recipient):
+    """A first run that stops after the sender transaction was observed and before a receipt was journaled."""
+    m, w = env
+    chain = FakeChain(m, w, [BAL, BAL], recipient=recipient)
+    rc, rows, _, out = run(env, chain, tmp_path, monkeypatch=monkeypatch)
+    return m, w, chain, rc, rows, out
+
+
+def test_a_sweep_interrupted_after_its_sender_was_observed_is_proved_before_anything_else(env, tmp_path, monkeypatch):
+    m, w, chain, rc, rows, out = _interrupted(env, tmp_path, monkeypatch, recipient=False)
+    assert rc == 1 and "observed" in [r["type"] for r in rows] and "delivered" not in [r["type"] for r in rows]
+    state = _registry(m, tmp_path, out / "journal.jsonl")
+    try:
+        chain.recipient = True  # the receipt is now visible
+        pending = __import__("asyncio").run(tool.recover_receipts(m, chain, state))
+    finally:
+        state.release()
+    assert pending == []
+    late = [r for r in m.jr.read_journal(out / "journal.jsonl").events.values() for r in r
+            if r["type"] == "delivered"]
+    assert len(late) == 1 and late[0]["proved_later"] is True and late[0]["recipient_utime"] > 0
+
+
+def test_a_sweep_whose_receipt_cannot_be_proved_blocks_every_later_run(env, tmp_path, monkeypatch):
+    # finding 2: the registry's reconcile alone calls this journal clean; the sweep's own recovery must not
+    m, w, chain, rc, rows, out = _interrupted(env, tmp_path, monkeypatch, recipient=False)
+    state = _registry(m, tmp_path, out / "journal.jsonl")
+    try:
+        pending = __import__("asyncio").run(tool.recover_receipts(m, chain, state))
+    finally:
+        state.release()
+    assert len(pending) == 1 and "destination transactions import" in pending[0]
+    assert "delivered" not in [r["type"] for r in [__import__("json").loads(x) for x in
+                                                    (out / "journal.jsonl").read_text().splitlines()]]
+
+
+def test_recovery_ignores_ramp_journals_and_proved_sweeps(env, tmp_path, monkeypatch):
+    m, w = env
+    chain = FakeChain(m, w, [BAL, BAL])
+    _, _, _, out = run(env, chain, tmp_path, monkeypatch=monkeypatch)
+    ramp = tmp_path / "ramp.jsonl"
+    j = m.jr.Journal(ramp)
+    j.append({"type": "run", "version": 1, "tool": "t4-ramp", "wallet": "x", "mc_start": 1, "time": 0})
+    j.close()
+    before = (out / "journal.jsonl").read_text()
+    state = _registry(m, tmp_path, out / "journal.jsonl")
+    state.register(ramp)
+    try:
+        assert __import__("asyncio").run(tool.recover_receipts(m, chain, state)) == []
+    finally:
+        state.release()
+    assert (out / "journal.jsonl").read_text() == before, "a proved sweep was proved again"
+
+
+def test_the_delivered_record_carries_real_coordinates_or_null(env, tmp_path, monkeypatch):
+    # finding 3: no made-up zero coordinates
+    m, w = env
+    chain = FakeChain(m, w, [BAL, BAL])
+    _, rows, _, _ = run(env, chain, tmp_path, monkeypatch=monkeypatch)
+    for d in (r for r in rows if r["type"] == "delivered"):
+        assert d["recipient_mc"] is None and d["recipient_utime"] >= 1_800_000_003
+        assert d["recipient_block"] == [0, -(1 << 63), 10] and d["rpcs_proved"] == 2
+
+
+
+def test_a_later_run_refuses_while_an_earlier_receipt_is_unproved(env, tmp_path, monkeypatch):
+    # the whole point of finding 2: a second run must not plan, sign or report done
+    m, w, chain, rc, rows, out = _interrupted(env, tmp_path, monkeypatch, recipient=False)
+    state = _registry(m, tmp_path, out / "journal.jsonl")
+    sent_before = len(chain.sent)
+    try:
+        with pytest.raises(tool.Refuse, match="no proven receipt"):
+            run(env, chain, tmp_path / "second", monkeypatch=monkeypatch, state=state)
+    finally:
+        state.release()
+    assert len(chain.sent) == sent_before
+
+
+def test_a_sweep_observed_with_problems_is_never_counted(env, tmp_path, monkeypatch):
+    m, w, chain, rc, rows, out = _interrupted(env, tmp_path, monkeypatch, recipient=False)
+    lines = (out / "journal.jsonl").read_text().splitlines()
+    rewritten = []
+    for x in lines:
+        r = __import__("json").loads(x)
+        if r["type"] == "observed":
+            r["problems"] = ["action phase did not succeed"]
+        rewritten.append(__import__("json").dumps(r, sort_keys=True, separators=(",", ":")))
+    (out / "journal.jsonl").write_text("\n".join(rewritten) + "\n")
+    chain.recipient = True
+    state = _registry(m, tmp_path, out / "journal.jsonl")
+    try:
+        pending = __import__("asyncio").run(tool.recover_receipts(m, chain, state))
+    finally:
+        state.release()
+    assert len(pending) == 1 and "executed with problems" in pending[0]

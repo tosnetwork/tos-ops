@@ -86,13 +86,15 @@ class World:
         self.loads = [m.ramp.load_wallet(self.code, 2, self.auth, i, pk, self.key.rescue_public_key)
                       for i, pk in enumerate(pks)]
 
-    def account(self, wallet, balance: int) -> str:
-        """The base64 ShardAccount of an active ``wallet`` (its StateInit as derived) holding ``balance``."""
+    def account(self, wallet, balance: int, cells: int = 0, bits: int = 0, age: int = 10) -> str:
+        """The base64 ShardAccount of an active ``wallet`` (its StateInit as derived) holding ``balance``, with
+        ``cells``/``bits`` of storage used and storage last paid ``age`` seconds ago."""
         from pytosiq_core.tlb.account import (Account, AccountState, AccountStorage, ShardAccount,
                                               StorageExtraInfo, StorageInfo, StorageUsed)
         from pytosiq_core.tlb.transaction import CurrencyCollection
         acct = Account(wallet.address,
-                       StorageInfo(StorageUsed(0, 0), StorageExtraInfo("storage_extra_none"), self.now - 10, None),
+                       StorageInfo(StorageUsed(cells, bits), StorageExtraInfo("storage_extra_none"),
+                                   self.now - age, None),
                        AccountStorage(1001, CurrencyCollection(balance),
                                       AccountState("account_active", state_init=wallet.state_init)))
         return base64.b64encode(ShardAccount(acct, bytes(32), 1000).serialize().to_boc()).decode()
@@ -125,7 +127,8 @@ def parse(m, out: dict, account: str) -> dict:
     action_ok = d.action.success if d.action is not None else None
     after = ShardAccount.deserialize(Cell.one_from_boc(base64.b64decode(out["shard_account"])).begin_parse())
     summary = t2.Tx(hash=cell.hash.hex(), account=account,
-                    lt=tx.lt, block=None, in_msg=msg(tx.in_msg) if tx.in_msg else None,
+                    # emulated: no block contains it (seqno 0 marks that; never a chain block)
+                    lt=tx.lt, block=(0, -(1 << 63), 0), in_msg=msg(tx.in_msg) if tx.in_msg else None,
                     out_msgs=tuple(msg(x) for x in tx.out_msgs), aborted=bool(d.aborted),
                     action_success=action_ok, fee=tx.total_fees.tomis,
                     phase_failure=None if (compute_ok and not d.aborted) else "compute phase did not succeed")

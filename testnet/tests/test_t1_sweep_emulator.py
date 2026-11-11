@@ -38,13 +38,15 @@ def sweep(world, balance, mode=tool.SEND_ALL, nonce=0, index=0):
 
 
 def credit(world, sender_out):
-    """The bench wallet receiving the swept message, executed by its own code."""
+    """The bench wallet receiving the swept message, executed by its own code; tx is a journal.AccountTx."""
     m, w, emu = world
     p = E.parse(m, sender_out, m.remote.raw(w.loads[0].address))
     msg = p["raw"].out_msgs[0]
     out = emu.run(w.account(w.bench, 10**9), msg)
     assert out["success"], out
-    return E.parse(m, out, m.remote.raw(w.bench.address))
+    r = E.parse(m, out, m.remote.raw(w.bench.address))
+    r["account_tx"] = m.jr.AccountTx(tx=r["tx"], utime=w.now, compute_success=r["tx"].phase_failure is None, raw={})
+    return r
 
 
 def test_mode_130_sends_the_whole_balance_and_the_recipient_is_credited(world):
@@ -62,7 +64,7 @@ def test_mode_130_sends_the_whole_balance_and_the_recipient_is_credited(world):
     r = credit(world, out)
     assert r["tx"].in_msg.value == tx.out_msgs[0].value and r["tx"].phase_failure is None
     proof = tool.settle_sweep(tx, m.remote.raw(w.loads[0].address), m.remote.raw(w.bench.address), BAL,
-                              [[r["tx"]], [r["tx"]]], [0, 0])
+                              [[r["account_tx"]], [r["account_tx"]]], [0, 0])
     assert proof["problems"] == [] and proof["value"] == tx.out_msgs[0].value and len(proof["receipts"]) == 2
 
 
@@ -120,8 +122,9 @@ def test_a_recipient_credit_of_another_value_fails_the_check(world):
     m, w, _ = world
     out = sweep(world, BAL)
     p = E.parse(m, out, m.remote.raw(w.loads[0].address))
-    r = credit(world, out)["tx"]
-    wrong = r.__class__(**{**r.__dict__, "in_msg": r.in_msg.__class__(**{**r.in_msg.__dict__, "value": 1})})
+    r = credit(world, out)["account_tx"]
+    bad = r.tx.__class__(**{**r.tx.__dict__, "in_msg": r.tx.in_msg.__class__(**{**r.tx.in_msg.__dict__, "value": 1})})
+    wrong = m.jr.AccountTx(tx=bad, utime=r.utime, compute_success=True, raw={})
     proof = tool.settle_sweep(p["tx"], m.remote.raw(w.loads[0].address), m.remote.raw(w.bench.address), BAL,
                               [[wrong], [r]], [0, 0])
     assert any("did not credit" in x for x in proof["problems"])
@@ -131,8 +134,27 @@ def test_a_balance_that_does_not_add_up_fails_the_check(world):
     m, w, _ = world
     out = sweep(world, BAL)
     p = E.parse(m, out, m.remote.raw(w.loads[0].address))
-    r = credit(world, out)["tx"]
+    r = credit(world, out)["account_tx"]
     # claim the wallet held 1 TOS more than it did: the difference is not a forwarding fee
     proof = tool.settle_sweep(p["tx"], m.remote.raw(w.loads[0].address), m.remote.raw(w.bench.address),
                               BAL + 10**9, [[r], [r]], [0, 0])
     assert any("not a forwarding fee" in x for x in proof["problems"])
+
+
+def test_an_aged_wallet_with_real_storage_is_swept_exactly(world):
+    # codex code review r1: the storage used of a live T1 load wallet (43 cells, 23,350 bits) and three days of
+    # unpaid storage; the storage fee joins the transaction's total fees and the equation still holds exactly
+    m, w, emu = world
+    out = emu.run(w.account(w.loads[0], BAL, cells=43, bits=23_350, age=3 * 86_400),
+                  w.sweep_external(0, 0, w.bench.address, tool.SEND_ALL))
+    assert out["success"], out
+    p = E.parse(m, out, m.remote.raw(w.loads[0].address))
+    tx = p["tx"]
+    fresh = E.parse(m, sweep(world, BAL), m.remote.raw(w.loads[0].address))["tx"]
+    assert tx.fee > fresh.fee, "three days of storage must cost something"
+    fwd = p["raw"].out_msgs[0].info.fwd_fee
+    assert BAL - tx.out_msgs[0].value - tx.fee == fwd and p["balance_after"] == 0
+    r = credit(world, out)["account_tx"]
+    proof = tool.settle_sweep(tx, m.remote.raw(w.loads[0].address), m.remote.raw(w.bench.address), BAL,
+                              [[r], [r]], [0, 0])
+    assert proof["problems"] == []

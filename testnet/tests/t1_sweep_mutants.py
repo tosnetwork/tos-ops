@@ -54,6 +54,14 @@ MUTANTS = [
     ("S21 skip below the fee bound", "        if st[\"balance\"] <= bound + MIN_LEFT_NANO:", "        if False:"),
     ("S22 dry run by default", "    if not a.go:", "    if False:"),
     ("S23 stop at the first inexact sweep", "            return 1\n        log(json.dumps", "            continue\n        log(json.dumps"),
+    ("S25 unproved receipts block a run", "    if pending:\n        raise Refuse(", "    if False:\n        raise Refuse("),
+    ("S26 an unprovable receipt stays pending", "            if proof[\"problems\"]:\n                pending.append(f\"{aid}: {proof['problems']}\")",
+     "            if False:\n                pending.append(f\"{aid}: {proof['problems']}\")"),
+    ("S27 problems at the sender are never counted", "            if obs.get(\"problems\"):", "            if False:"),
+    ("S28 a proved sweep is not proved again", "            if attempt.get(\"role\") != \"sweep\" or \"delivered\" in kinds:",
+     "            if attempt.get(\"role\") != \"sweep\":"),
+    ("S29 run record readable by the ramp", '"to": dest, "mc_start": mc_start,', '"to": dest,'),
+    ("S30 no made-up masterchain block", '"recipient_mc": None,', '"recipient_mc": 0,'),
     ("S24 delivery recorded", "    journal.event(\"delivered\", record[\"id\"],", "    (lambda *a, **k: None)(\"delivered\", record[\"id\"],"),
 ]
 
