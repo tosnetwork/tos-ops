@@ -205,29 +205,35 @@ async def daemon_transport(url: str, body: bytes, timeout: float) -> tuple[int, 
     answer: asyncio.Future = loop.create_future()
     request = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
 
-    def post() -> None:
-        result, error = None, None
+    def fetch() -> tuple[int, bytes]:
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
-                result = (response.status, response.read())
+                return response.status, response.read()
         except urllib.error.HTTPError as http:
             with http:
-                result = (http.code, http.read())
-        except BaseException as caught:  # handed to the awaiting coroutine, as asyncio.to_thread would
-            error = caught
+                return http.code, http.read()  # a failure reading the error body propagates to post()
 
-        def deliver() -> None:
-            if answer.done():
-                return  # the caller gave up
-            if error is not None:
-                answer.set_exception(error)
-            else:
-                answer.set_result(result)
+    def deliver(result, error) -> None:
+        if answer.done():
+            return  # the caller gave up
+        if error is not None:
+            answer.set_exception(error)
+        else:
+            answer.set_result(result)
 
+    def post() -> None:
+        # every exit of the thread delivers an outcome: a send or a preflight read has no deadline of its own,
+        # so an answer never delivered would hang the run while it holds the wallet lock
+        outcome = (None, RuntimeError("the RPC thread ended without an answer"))
         try:
-            loop.call_soon_threadsafe(deliver)
-        except RuntimeError:
-            pass  # the loop is closed: the caller gave up and returned
+            outcome = (fetch(), None)
+        except BaseException as caught:  # handed to the awaiting coroutine, as asyncio.to_thread would
+            outcome = (None, caught)
+        finally:
+            try:
+                loop.call_soon_threadsafe(deliver, *outcome)
+            except RuntimeError:
+                pass  # the loop is closed: the caller gave up and returned
 
     threading.Thread(target=post, name="t1-sweep-rpc", daemon=True).start()
     return await answer

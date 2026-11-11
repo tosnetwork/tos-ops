@@ -83,6 +83,9 @@ MUTANTS = [
      "        if False:\n            return proof"),
     ("S37 no abbreviated options", "allow_abbrev=False", "allow_abbrev=True"),
     ("S40 a cancelled live read is not joined", "PacedRpc(u, 0.25, transport=daemon_transport)", "PacedRpc(u, 0.25)"),
+    ("S41 every thread exit delivers an outcome", "        finally:\n            try:\n                loop.call_soon_threadsafe",
+     "        if False:\n            try:\n                loop.call_soon_threadsafe"),
+    ("S42 an error body failure is the caller's error", "            outcome = (None, caught)", "            return"),
     ("S24 delivery recorded", "    journal.event(\"delivered\", record[\"id\"],", "    (lambda *a, **k: None)(\"delivered\", record[\"id\"],"),
 ]
 

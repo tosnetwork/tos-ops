@@ -685,3 +685,43 @@ def test_a_live_read_cancelled_at_the_deadline_does_not_hold_the_wallet_lock(env
         server.shutdown()
     assert "no complete read" in proof["problems"][0]
     assert took < 1.5, f"asyncio.run held the wallet lock {took:.1f} s for a cancelled read"
+
+
+def _transport(monkeypatch, urlopen):
+    monkeypatch.setattr(tool.urllib.request, "urlopen", urlopen)
+    aio = __import__("asyncio")
+    return aio.run(aio.wait_for(tool.daemon_transport("http://127.0.0.1:9/", b"{}", 1.0), 5))
+
+
+def _http_error(body_error=None):
+    import io
+    import urllib.error
+
+    class Err(urllib.error.HTTPError):
+        def read(self, *a):
+            if body_error is not None:
+                raise body_error
+            return b"busy"
+
+    return Err("http://127.0.0.1:9/", 503, "unavailable", {}, io.BytesIO(b""))
+
+
+def test_the_daemon_transport_returns_an_http_error_as_its_status(monkeypatch):
+    def urlopen(*a, **k):
+        raise _http_error()
+    assert _transport(monkeypatch, urlopen) == (503, b"busy")
+
+
+def test_a_failure_reading_an_error_body_reaches_the_caller(monkeypatch):
+    # codex r6: an exception inside the HTTPError handler skipped delivery; the caller waited forever
+    def urlopen(*a, **k):
+        raise _http_error(OSError("error body lost"))
+    with pytest.raises(OSError, match="error body lost"):
+        _transport(monkeypatch, urlopen)
+
+
+def test_a_connection_failure_reaches_the_caller(monkeypatch):
+    def urlopen(*a, **k):
+        raise ConnectionRefusedError("refused")
+    with pytest.raises(ConnectionRefusedError):
+        _transport(monkeypatch, urlopen)
