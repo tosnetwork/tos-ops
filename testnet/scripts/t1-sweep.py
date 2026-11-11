@@ -335,12 +335,35 @@ def observed_tx(m, attempt: dict, observed: dict):
                  in_msg=None, out_msgs=outs, action_success=True, fee=observed.get("fee"), phase_failure=None)
 
 
+def sender_execution(read, aid: str, resolution: dict | None):
+    """What is proved about one sweep's sender transaction: its observation (dict), None when the chain or the
+    RPCs proved it never executed, or a reason (str) why neither is proved."""
+    events = read.events.get(aid, [])
+    obs = next((e for e in events if e["type"] == "observed"), None)
+    if obs is not None:
+        return obs
+    sent = read.sent(aid)
+    if sent is not None and sent.get("state") == "refused":
+        return None
+    if any(e["type"] == "expired" for e in events):
+        return None
+    if resolution is None or resolution.get("verdict") == "undetermined":
+        return "its execution is not determined: run again once the registry reconcile resolves it"
+    if resolution.get("verdict") == "not_executed":
+        return None
+    if resolution.get("verdict") != "executed" or not isinstance(resolution.get("tx"), str):
+        return f"an unexpected registry resolution {resolution.get('verdict')!r}"
+    return resolution
+
+
 async def recover_receipts(m, chain: Chain, state) -> list[str]:
-    """Before any new signature: every earlier sweep whose sender transaction was observed must have its receipt
-    proved. A journaled `observed` is terminal for the registry's reconcile, so this step, not the reconcile,
+    """Before any new signature: every earlier sweep must have its receipt proved, unless the chain proved it was
+    never executed. A journaled `observed` is terminal for the registry's reconcile, and an execution the
+    reconcile found itself is recorded only in the registry's resolutions, so this step, not the reconcile,
     keeps a sweep from counting as done while its delivery is unproved. Proved receipts are journaled now;
     returns the sweeps that still cannot be proved (the run refuses while any remain)."""
     pending = []
+    resolved = state.resolved()
     for path in state.journals():
         if not path.exists():
             continue
@@ -356,11 +379,16 @@ async def recover_receipts(m, chain: Chain, state) -> list[str]:
             kinds = [e["type"] for e in events]
             if attempt.get("role") != "sweep" or "delivered" in kinds:
                 continue
-            obs = next((e for e in events if e["type"] == "observed"), None)
+            obs = sender_execution(read, aid, resolved.get((str(path), aid)))
             if obs is None:
-                continue  # never executed: the reconcile settled it as refused or expired
-            if obs.get("problems"):
-                pending.append(f"{aid}: executed with problems {obs['problems']}")
+                continue  # proven never executed: refused by the RPCs, or expired as the chain showed
+            if isinstance(obs, str):
+                pending.append(f"{aid}: {obs}")
+                continue
+            # the predicate remote.settle applies: problems or a second execution are never a sweep
+            if obs.get("problems") or obs.get("duplicates"):
+                pending.append(f"{aid}: executed with problems {obs.get('problems')}, "
+                               f"duplicates {obs.get('duplicates', 0)}")
                 continue
             dest = attempt["actions"][0]["destination"]
             after = [int(x.get("balance", -1)) for x in await chain.account(attempt["sender"])]

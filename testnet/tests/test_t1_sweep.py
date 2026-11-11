@@ -451,3 +451,95 @@ def test_a_sweep_observed_with_problems_is_never_counted(env, tmp_path, monkeypa
     finally:
         state.release()
     assert len(pending) == 1 and "executed with problems" in pending[0]
+
+
+def _without_observed(m, out):
+    """The journal as a crash right after the send leaves it, and the registry resolution the reconcile writes
+    for that execution (its Verdict.as_dict, as WalletState.reconcile records it)."""
+    path = out / "journal.jsonl"
+    rows = [json.loads(x) for x in path.read_text().splitlines()]
+    obs = next(r for r in rows if r["type"] == "observed")
+    kept = [r for r in rows if r["type"] not in ("observed", "delivered", "end")]
+    path.write_text("".join(json.dumps(r, sort_keys=True, separators=(",", ":")) + "\n" for r in kept))
+    verdict = {k: v for k, v in obs.items() if k not in ("type", "id", "time")}
+    return obs["id"], verdict
+
+
+def _resolve(m, state, journal, aid, verdict):
+    w = m.jr.Journal(state.dir / "resolved", create=False, types=m.jr.STATE_TYPES)
+    try:
+        w.append({"type": "resolved", "time": 0, "journal": str(journal), "id": aid, "external": "x",
+                  "journaled": "accepted", **verdict})
+    finally:
+        w.close()
+
+
+def _recover(m, chain, state):
+    return __import__("asyncio").run(tool.recover_receipts(m, chain, state))
+
+
+def test_an_execution_found_only_by_the_registry_reconcile_still_needs_its_receipt(env, tmp_path, monkeypatch):
+    # codex r2 finding 1: a crash before `observed`; the reconcile records the execution only in its resolutions
+    m, w, chain, rc, rows, out = _interrupted(env, tmp_path, monkeypatch, recipient=False)
+    aid, verdict = _without_observed(m, out)
+    assert verdict["verdict"] == "executed"
+    state = _registry(m, tmp_path, out / "journal.jsonl")
+    try:
+        _resolve(m, state, out / "journal.jsonl", aid, verdict)
+        pending = _recover(m, chain, state)
+        assert len(pending) == 1 and "destination transactions import" in pending[0]
+        chain.recipient = True
+        assert _recover(m, chain, state) == []
+    finally:
+        state.release()
+    late = [e for e in m.jr.read_journal(out / "journal.jsonl").events[aid] if e["type"] == "delivered"]
+    assert len(late) == 1 and late[0]["proved_later"] is True
+
+
+def test_a_sweep_with_no_observation_and_no_resolution_is_never_assumed_unexecuted(env, tmp_path, monkeypatch):
+    m, w, chain, rc, rows, out = _interrupted(env, tmp_path, monkeypatch, recipient=True)
+    aid, verdict = _without_observed(m, out)
+    state = _registry(m, tmp_path, out / "journal.jsonl")
+    try:
+        pending = _recover(m, chain, state)
+        # both wallets were swept; neither observation survives the crash
+        assert len(pending) == 2 and all("not determined" in p for p in pending)
+        _resolve(m, state, out / "journal.jsonl", aid, {"verdict": "undetermined", "reason": "x", "chain_now": 1})
+        assert "not determined" in _recover(m, chain, state)[0]
+    finally:
+        state.release()
+
+
+def test_a_sweep_the_chain_proved_unexecuted_needs_no_receipt(env, tmp_path, monkeypatch):
+    m, w, chain, rc, rows, out = _interrupted(env, tmp_path, monkeypatch, recipient=False)
+    aid, verdict = _without_observed(m, out)
+    state = _registry(m, tmp_path, out / "journal.jsonl")
+    try:
+        _resolve(m, state, out / "journal.jsonl", aid, {"verdict": "not_executed", "reason": None, "chain_now": 1})
+        assert _recover(m, chain, state) == []
+    finally:
+        state.release()
+
+
+@pytest.mark.parametrize("where", ["journal", "registry"])
+def test_a_sweep_executed_twice_is_never_counted(env, tmp_path, monkeypatch, where):
+    # codex r2 finding 2: remote.settle refuses duplicates; recovery must too, whatever recorded the execution
+    m, w, chain, rc, rows, out = _interrupted(env, tmp_path, monkeypatch, recipient=False)
+    chain.recipient = True
+    path = out / "journal.jsonl"
+    state = _registry(m, tmp_path, path)
+    try:
+        if where == "journal":
+            lines = [json.loads(x) for x in path.read_text().splitlines()]
+            for r in lines:
+                if r["type"] == "observed":
+                    r["problems"], r["duplicates"] = [], 1
+            path.write_text("".join(json.dumps(r, sort_keys=True, separators=(",", ":")) + "\n" for r in lines))
+        else:
+            aid, verdict = _without_observed(m, out)
+            _resolve(m, state, path, aid, {**verdict, "problems": [], "duplicates": 1})
+        pending = _recover(m, chain, state)
+    finally:
+        state.release()
+    assert len(pending) == 1 and "duplicates 1" in pending[0]
+    assert "delivered" not in [json.loads(x)["type"] for x in path.read_text().splitlines()]
