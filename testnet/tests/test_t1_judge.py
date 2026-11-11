@@ -65,7 +65,9 @@ def build(root):
                         "mem": {"MemAvailable": 8 * GiB},
                         "disks": {p: {"free_bytes": 60 * GiB - k * 1000, "free_inodes": 5_000_000}
                                   for p in tj.DATA_PATHS}})
-            cache.append({"ts": float(t), "host": h, "kind": "read", "baseline": k == 0})
+            cache.append({"ts": float(t), "host": h, "kind": "read", "baseline": k == 0,
+                          "files": {"1:2": {"name": "node.log", "status": "read", "behind": 0},
+                                    "1:3": {"name": "node.log.1", "status": "read", "behind": 0}}})
     jsonl(obs / "resources.jsonl", res)
     jsonl(obs / "cache.jsonl", cache)
     jsonl(obs / "clock.jsonl", [{"ts": T0 + 3600 * i, "host": h, "verdict": "ok"} for i in range(73) for h in tj.HOSTS])
@@ -97,7 +99,8 @@ def build(root):
     reads = load / "reads"
     reads.mkdir(parents=True)
     (reads / "CONTEXT.json").write_text(json.dumps({"packet": {"duration_seconds": tj.DURATION, "window_seconds": 600,
-                                                               "requests_per_second": READ},
+                                                               "requests_per_second": READ,
+                                                               "endpoints": list(ENDPOINTS)},
                                                     "started_monotonic_seconds": 0.0}))
     reqs = []
     for i in range(tj.DURATION // 600):
@@ -511,3 +514,124 @@ def test_a_torn_last_journal_line_is_dropped_and_other_bad_lines_are_errors(tmp_
     p.write_text('{"a": 1}\nnot json\n{"b": 2}\n')
     with pytest.raises(ValueError):
         tj.rows(p)
+
+
+# ---------------------------------------------------------------- codex r2: evidence that must not pass
+
+
+def test_the_judge_pins_equal_the_observer_and_the_read_client():
+    s = importlib.util.spec_from_file_location("t1_observe_pins", SCRIPTS / "t1-observe.py")
+    obs = importlib.util.module_from_spec(s)
+    s.loader.exec_module(obs)
+    assert (tj.LOG_LAG_BYTES, tj.ACTIVE_LOG, tj.LOG_READ_STATUSES) == \
+        (obs.LOG_LAG_BYTES, obs.ACTIVE_LOG, obs.READ_STATUSES)
+    s = importlib.util.spec_from_file_location("read_client_pins", SCRIPTS / "read_client.py")
+    rc = importlib.util.module_from_spec(s)
+    s.loader.exec_module(rc)
+    assert tuple(rc.T1_ENDPOINTS) == tj.T1_READ_ENDPOINTS == tuple(ENDPOINTS)
+
+
+def test_backlogged_log_reads_are_no_safety_coverage(run):
+    def lag(r):
+        if r.get("kind") != "read" or r["host"] != "node-3":
+            return r
+        return dict(r, files={k: dict(e, behind=2 * 1024 * 1024) if e["name"] == "node.log" else e
+                              for k, e in r["files"].items()})
+    edit(run.root / "observe/cache.jsonl", lambda rs: [lag(r) for r in rs])
+    s = run()["criteria"]["5.5 no safety line"]
+    assert s["status"] == "INCONCLUSIVE" and s["uncovered_hosts"] == ["node-3"] and s["coverage_gaps"] == 0
+
+
+def test_reads_that_skip_the_active_log_are_no_safety_coverage(run):
+    def skip(r):
+        if r.get("kind") != "read" or r["host"] != "node-2":
+            return r
+        return dict(r, files={k: e for k, e in r["files"].items() if e["name"] != "node.log"})
+    edit(run.root / "observe/cache.jsonl", lambda rs: [skip(r) for r in rs])
+    s = run()["criteria"]["5.5 no safety line"]
+    assert s["status"] == "INCONCLUSIVE" and s["uncovered_hosts"] == ["node-2"]
+
+
+def test_a_funding_record_without_its_fee_is_inconclusive_not_zero(run):
+    edit(run.root / "load/ramp/journal.jsonl", lambda rs: rs + [
+        {"type": "attempt", "id": "f0", "role": "fund", "signed_at": T0 + 10, "actions": [{}]},
+        {"type": "observed", "id": "f0", "utime": T0 + 12, "failure": [None]}])
+    w = run()["criteria"]["5.7 writes"]
+    assert w["status"] == "INCONCLUSIVE" and w["first_malformed"] == ["f0"] and not w["unresolved_actions"]
+
+
+def test_a_transfer_without_its_signing_time_is_inconclusive(run):
+    edit(run.root / "load/ramp/journal.jsonl",
+         lambda rs: [{k: v for k, v in r.items() if k != "signed_at"} if r.get("id") == "a500" and
+                     r["type"] == "attempt" else r for r in rs])
+    w = run()["criteria"]["5.7 writes"]
+    assert w["status"] == "INCONCLUSIVE" and w["first_malformed"] == ["a500"]
+
+
+@pytest.mark.parametrize("field", ["utime", "fee", "failure"])
+def test_an_observed_transfer_missing_a_field_never_counts(run, field):
+    edit(run.root / "load/ramp/journal.jsonl",
+         lambda rs: [{k: v for k, v in r.items() if k != field} if r["type"] == "observed" else r for r in rs])
+    assert status(run, "5.7 writes") == "FAIL"
+
+
+def test_a_receipt_after_the_cutoff_does_not_resolve_an_action(run):
+    def late(rs):
+        last = [r for r in rs if r["type"] == "delivered"][-1]
+        return [dict(r, recipient_utime=END + 11 * 86400) if r is last else r for r in rs]
+    edit(run.root / "load/ramp/journal.jsonl", late)
+    w = run()["criteria"]["5.7 writes"]
+    assert w["status"] == "FAIL" and w["unresolved_actions"] == 1 and not w["short_hours"]
+
+
+def test_a_receipt_before_its_execution_does_not_resolve_an_action(run):
+    edit(run.root / "load/ramp/journal.jsonl",
+         lambda rs: [dict(r, recipient_utime=r["recipient_utime"] - 10) if r["type"] == "delivered" and
+                     r["id"] == "a700" else r for r in rs])
+    w = run()["criteria"]["5.7 writes"]
+    assert w["status"] == "FAIL" and w["unresolved_actions"] == 1 and not w["short_hours"]
+
+
+def test_a_read_from_a_foreign_endpoint_is_inconclusive(run):
+    edit(run.root / "load/reads/requests.jsonl", lambda rs: rs + [dict(rs[0], endpoint="http://198.51.100.7/x")])
+    r = run()["criteria"]["5.6 reads"]
+    assert r["status"] == "INCONCLUSIVE" and r["foreign_endpoint_rows"] == 1
+
+
+def test_reads_from_four_unrelated_endpoints_do_not_pass(run):
+    edit(run.root / "load/reads/requests.jsonl",
+         lambda rs: [dict(r, endpoint=f"http://other-{ENDPOINTS.index(r['endpoint'])}/") for r in rs])
+    assert status(run, "5.6 reads") != "PASS"
+
+
+def test_a_read_packet_with_other_endpoints_is_inconclusive(run):
+    p = run.root / "load/reads/CONTEXT.json"
+    c = json.loads(p.read_text())
+    c["packet"]["endpoints"] = [f"http://other-{i}/" for i in range(4)]
+    p.write_text(json.dumps(c))
+    r = run()["criteria"]["5.6 reads"]
+    assert r["status"] == "INCONCLUSIVE" and "pinned T1 inventory" in r["reason"]
+
+
+def test_termination_without_the_ramp_is_inconclusive(run):
+    edit(run.root / "load/load.jsonl",
+         lambda rs: [dict(r, children={"reads": {"rc": 0, "group_alive": False}}) if r["kind"] == "terminated"
+                     else r for r in rs])
+    c = run()["criteria"]["run completed"]
+    assert c["status"] == "INCONCLUSIVE" and any("both children" in p for p in c["problems"])
+
+
+def test_a_lifecycle_out_of_order_is_inconclusive(run):
+    def reorder(rs):
+        k = {r["kind"]: r for r in rs}
+        return [k["start"], k["terminated"], k["ramp_done"], k["cutoff"], k["end"]]
+    edit(run.root / "load/load.jsonl", reorder)
+    c = run()["criteria"]["run completed"]
+    assert c["status"] == "INCONCLUSIVE" and c["problems"] == ["the lifecycle is out of order or its times go back"]
+
+
+def test_a_lifecycle_whose_times_go_back_is_inconclusive(run):
+    edit(run.root / "load/load.jsonl",
+         lambda rs: [dict(r, ts=END - 5000) if r["kind"] == "terminated" else r for r in rs])
+    c = run()["criteria"]["run completed"]
+    assert c["status"] == "INCONCLUSIVE" and c["problems"] == ["the lifecycle is out of order or its times go back"]

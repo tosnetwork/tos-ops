@@ -34,6 +34,15 @@ DURATION = 259_200
 DECLARED_RATE = 2  # transfers/s (T1-PLAN §3.2)
 READ_RATE = 8  # scheduled read requests/s (T1-PLAN §3.1)
 READ_ENDPOINTS = 4
+# The pinned T1 read inventory (read_client.T1_ENDPOINTS; a test keeps the two equal).
+T1_READ_ENDPOINTS = ("http://127.0.0.1:18081/jsonRPC", "http://127.0.0.1:38081/jsonRPC",
+                     "http://127.0.0.1:28081/jsonRPC", "http://127.0.0.1:48084/jsonRPC")
+# The observer's own coverage rule for a log read (t1-observe.py; a test keeps these equal): the active log was
+# read this round and no read file is more than LOG_LAG_BYTES behind.
+LOG_LAG_BYTES = 1024 * 1024
+ACTIVE_LOG = "node.log"
+LOG_READ_STATUSES = ("baseline", "read", "new", "shrunk", "rewritten", "over_cap")
+CHILDREN = ("ramp", "reads")
 READ_METHODS = ("getMasterchainInfo", "getAddressInformation", "getTransactions")
 PASS, FAIL, INCONCLUSIVE = "PASS", "FAIL", "INCONCLUSIVE"
 JUDGE_REQUIRED = {
@@ -152,11 +161,18 @@ def judge_completion(log: list[dict], t0: float, t1: float) -> dict:
     if len(cutoff) != 1 or cutoff[0].get("reasons") not in ([], None) or not finite(cutoff[0].get("ts")) \
             or cutoff[0]["ts"] < t1 - 60:
         problems.append("no single cutoff row at the full duration")
-    if len(term) != 1 or not isinstance(term[0].get("children"), dict) or not term[0]["children"] or any(
-            c.get("group_alive") is not False for c in term[0]["children"].values()):
-        problems.append("termination of every child is not confirmed")
+    if len(term) != 1 or not isinstance(term[0].get("children"), dict) \
+            or sorted(term[0]["children"]) != sorted(CHILDREN) or any(
+            not isinstance(c, dict) or c.get("group_alive") is not False for c in term[0]["children"].values()):
+        problems.append("termination of both children (ramp and reads) is not confirmed")
     if len(end) != 1 or end[0].get("result") != "cutoff" or kinds[-1] != "end":
         problems.append("the run has no clean end")
+    # The lifecycle in order, with wall times that never go back: start, ramp_done, cutoff, terminated, end.
+    order = [k for k in kinds if k in ("start", "ramp_done", "cutoff", "terminated", "end")]
+    times = [r.get("ts") for r in log if r.get("kind") in ("start", "ramp_done", "cutoff", "terminated", "end")]
+    if order != ["start", "ramp_done", "cutoff", "terminated", "end"] or not all(finite(t) for t in times) \
+            or any(b < a for a, b in zip(times, times[1:])):
+        problems.append("the lifecycle is out of order or its times go back")
     if problems:
         return result(INCONCLUSIVE, problems=problems)
     return result(PASS)
@@ -357,15 +373,26 @@ def judge_disk(res: dict, heads: list[dict], j: dict) -> dict:
 # ---------------------------------------------------------------- §5.5 safety, with positive coverage
 
 
+def log_read_covers(files) -> bool:
+    if not isinstance(files, dict) or not files:
+        return False
+    read = [e for e in files.values() if isinstance(e, dict) and e.get("status") in LOG_READ_STATUSES]
+    if not any(e.get("name") == ACTIVE_LOG for e in read):
+        return False
+    behind = [e.get("behind", 0) for e in read]
+    return all(type(b) is int and 0 <= b <= LOG_LAG_BYTES for b in behind)
+
+
 def judge_safety(obs: Path, t0: float, t1: float, j: dict) -> dict:
     hits = [r for r in rows(obs / "safety.jsonl") if r.get("kind") == "safety_line"]
     cache = rows(obs / "cache.jsonl")
     gaps = [r for r in cache if r.get("kind") == "coverage_gap" and finite(r.get("ts")) and t0 <= r["ts"] <= t1]
     if hits:
         return result(FAIL, safety_lines=len(hits), first=hits[0].get("line"))
-    # Coverage must be positive: every host's logs read (non-baseline) throughout the window.
+    # Coverage must be positive: every host's logs read (non-baseline) throughout the window, each read meeting the
+    # observer's own rule (the active log read, no read file more than LOG_LAG_BYTES behind).
     reads = {h: [r["ts"] for r in cache if r.get("kind") == "read" and r.get("host") == h and r.get("baseline") is False
-                 and finite(r.get("ts"))] for h in HOSTS}
+                 and finite(r.get("ts")) and log_read_covers(r.get("files"))] for h in HOSTS}
     uncovered = [h for h, ts in reads.items() if max_gap(ts, t0, t1) > j["logs_series_gap_s"]]
     if gaps or uncovered:
         return result(INCONCLUSIVE, coverage_gaps=len(gaps), uncovered_hosts=uncovered)
@@ -401,7 +428,10 @@ def judge_reads(load_dir: Path, j: dict) -> dict:
     n = DURATION // int(width)
     scheduled = READ_RATE * width
     win = [{"ok": 0, "errors": 0, "lat": [], "endpoints": set(), "methods": set()} for _ in range(n)]
-    bad_rows = 0
+    bad_rows, foreign = 0, 0
+    if sorted(packet.get("endpoints") or []) != sorted(T1_READ_ENDPOINTS):
+        return result(INCONCLUSIVE, reason="the read packet's endpoints are not the pinned T1 inventory",
+                      endpoints=packet.get("endpoints"))
     path = reads / "requests.jsonl"
     if not path.exists():
         return result(INCONCLUSIVE, reason="no request records")
@@ -415,6 +445,9 @@ def judge_reads(load_dir: Path, j: dict) -> dict:
             off = r.get("offered_monotonic_seconds")
             if not (finite(off) and finite(r.get("latency_seconds"))):
                 bad_rows += 1
+                continue
+            if r.get("endpoint") not in T1_READ_ENDPOINTS:
+                foreign += 1
                 continue
             i = int((off - started) // width)
             if not 0 <= i < n:
@@ -439,9 +472,9 @@ def judge_reads(load_dir: Path, j: dict) -> dict:
         return result(FAIL, failed_windows=failed[:20], windows=n, scheduled_per_window=scheduled)
     latest = reads / "LATEST.json"
     lag = json.loads(latest.read_text()).get("not_offered_capacity") if latest.exists() else None
-    if lag is None or lag or bad_rows:
-        return result(INCONCLUSIVE, reason="scheduling lag, unreadable rows or no final read status",
-                      not_offered=lag, bad_rows=bad_rows)
+    if lag is None or lag or bad_rows or foreign:
+        return result(INCONCLUSIVE, reason="scheduling lag, unreadable or foreign-endpoint rows, or no final read "
+                      "status", not_offered=lag, bad_rows=bad_rows, foreign_endpoint_rows=foreign)
     return result(PASS, windows=n)
 
 
@@ -464,7 +497,7 @@ def journal(load_dir: Path):
     return attempts, observed, delivered, conflicts
 
 
-def valid_delivery(d: dict, a: dict, o) -> bool:
+def valid_delivery(d: dict, a: dict, o, t1: float) -> bool:
     """A delivery counts only with every producer field valid: an action index of its own attempt, the sender's
     action sent, a recipient transaction, a finite recipient time, and receipt_failure present and None."""
     n = len(a.get("actions") or [])
@@ -475,11 +508,26 @@ def valid_delivery(d: dict, a: dict, o) -> bool:
         return False
     if not (isinstance(d.get("recipient_tx"), str) and d["recipient_tx"]) or not finite(d.get("recipient_utime")):
         return False
-    if not isinstance(o, dict):
+    if not valid_observed(o, n):
         return False
-    fail = o.get("failure")
+    # Chronology: delivered no earlier than the sender's execution and no later than the cutoff (the ramp has
+    # drained before it), so a receipt from outside the run never resolves an action.
+    if not o["utime"] <= d["recipient_utime"] <= t1:
+        return False
+    fail = o["failure"]
     per = fail if isinstance(fail, list) else [fail] * n
-    return i < len(per) and per[i] is None
+    return per[i] is None
+
+
+def valid_observed(o, n: int) -> bool:
+    """The ramp's observed record carries every field the judge reads: a finite execution time, the fee as a
+    non-negative integer, and failure present, either None or one entry per action."""
+    if not isinstance(o, dict) or not finite(o.get("utime")):
+        return False
+    if type(o.get("fee")) is not int or o["fee"] < 0 or "failure" not in o:
+        return False
+    fail = o["failure"]
+    return fail is None or (isinstance(fail, list) and len(fail) == n)
 
 
 def judge_writes(load_dir: Path, t0: float, t1: float, j: dict) -> dict:
@@ -490,15 +538,19 @@ def judge_writes(load_dir: Path, t0: float, t1: float, j: dict) -> dict:
     # The write windows come from the frozen schedule, never from the surviving signatures.
     w0, w1 = t0 + j["write_start_max_s"], t1 - j["write_end_slack_s"]
     signed = [a.get("signed_at") for a in transfers.values() if finite(a.get("signed_at"))]
+    # Evidence the judge reads must be complete: a missing field never becomes zero or success.
+    malformed = [aid for aid, a in transfers.items() if not finite(a.get("signed_at"))]
+    malformed += [aid for aid, o in observed.items()
+                  if not valid_observed(o, len((attempts.get(aid) or {}).get("actions") or []))]
     good, by_hour, done_at, exec_at = 0, {}, {}, {}
     for aid, a in transfers.items():
         o = observed.get(aid)
-        if isinstance(o, dict) and finite(o.get("utime")):
+        if valid_observed(o, len(a.get("actions") or [])):
             for i in range(len(a.get("actions") or [])):
                 exec_at[(aid, i)] = o["utime"]
     for (aid, i), d in delivered.items():
         a = transfers.get(aid)
-        if a is None or not valid_delivery(d, a, observed.get(aid)):
+        if a is None or not valid_delivery(d, a, observed.get(aid), t1):
             continue
         good += 1
         done_at[(aid, i)] = d["recipient_utime"]
@@ -515,15 +567,17 @@ def judge_writes(load_dir: Path, t0: float, t1: float, j: dict) -> dict:
         peak = max(peak, outstanding)
     total_actions = sum(len(a.get("actions") or []) for a in transfers.values())
     unresolved = total_actions - good
-    fees = sum(o.get("fee") for o in observed.values() if finite(o.get("fee")))
+    fees = sum(o["fee"] for o in observed.values() if isinstance(o, dict) and type(o.get("fee")) is int)
     late_start = min(signed, default=t1) > w0
     early_end = max(signed, default=t0) < w1
     facts = dict(delivered=good, hours=hours, hourly_floor=floor, short_hours=short[:20], backlog_peak=peak,
                  unresolved_actions=unresolved, fees_nano=fees, conflicting_receipts=conflicts,
-                 first_signed_late=late_start, last_signed_early=early_end)
+                 first_signed_late=late_start, last_signed_early=early_end, malformed_records=len(malformed))
     if short or late_start or early_end or peak > j["backlog_max_actions"] or fees > j["max_cost_nano"] \
             or unresolved or conflicts:
         return result(FAIL, **facts)
+    if malformed:
+        return result(INCONCLUSIVE, first_malformed=malformed[:5], **facts)
     return result(PASS, **facts)
 
 
