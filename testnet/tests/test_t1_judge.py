@@ -351,6 +351,23 @@ def test_a_late_first_transfer_fails_with_no_hour_short(run):
     assert w["status"] == "FAIL" and w["first_signed_late"] and not w["short_hours"]
 
 
+def test_an_early_last_transfer_fails_with_no_hour_short(run):
+    # Signing stops 100 s before the window's end: every hour still meets its floor, so only the end check
+    # can fail this run.
+    w1 = END - JUDGE["write_end_slack_s"]
+    gone = set()
+
+    def drop(rs):
+        for r in rs:
+            if r["type"] == "attempt" and r["signed_at"] >= w1 - 100:
+                gone.add(r["id"])
+        return [r for r in rs if r["id"] not in gone]
+    edit(run.root / "load/ramp/journal.jsonl", drop)
+    w = run()["criteria"]["5.7 writes"]
+    assert w["status"] == "FAIL" and w["last_signed_early"] and not w["short_hours"] \
+        and not w["first_signed_late"] and not w["unresolved_actions"]
+
+
 def test_one_head_series_with_a_gap_is_inconclusive_while_the_chain_advances(run):
     lo, hi = T0 + 40_000, T0 + 40_050
     edit(run.root / "observe/chain.jsonl",
