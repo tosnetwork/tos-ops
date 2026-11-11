@@ -130,6 +130,8 @@ def test_a_missing_file_is_never_a_pass(run, file):
     assert v["verdict"] != "PASS"
     for c in dependents(file):
         assert v["criteria"][c]["status"] != "PASS", c
+        # the absence itself is reported, not only its consequences
+        assert file in v["criteria"][c]["contract_violations"].get("missing_files", []), c
 
 
 def test_a_missing_load_log_refuses(run):
@@ -256,3 +258,29 @@ def test_funding_records_in_their_producer_shape_pass(run):
     fund = [r for r in rs if r["type"] == "observed" and r["id"].startswith("funding")]
     assert fund and "failure" not in fund[0] and "problems" in fund[0]
     assert run()["criteria"]["5.7 writes"]["status"] == "PASS"
+
+
+def test_an_observed_record_of_no_attempt_is_a_violation(run):
+    edit(run.root / FILES["journal"], lambda rs: rs + [dict(next(r for r in rs if r["type"] == "observed" and
+                                                                r["id"].startswith("transfer")),
+                                                           id="transfer:9:999999")])
+    w = run()["criteria"]["5.7 writes"]
+    assert w["status"] != "PASS" and any("no attempt" in x for x in w["contract_violations"]["journal"])
+
+
+def test_a_read_record_changed_after_the_result_is_a_violation(run):
+    # same row count, one value changed: only the hash can tell
+    p = run.root / FILES["reads/requests.jsonl"]
+    lines = p.read_bytes().splitlines(keepends=True)
+    lines[7] = lines[7].replace(b'"latency_seconds": 0.05', b'"latency_seconds": 0.06')
+    p.write_bytes(b"".join(lines))
+    r = run()["criteria"]["5.6 reads"]
+    assert r["status"] != "PASS" and any("hash" in x for x in r["contract_violations"]["reads"])
+
+
+def test_a_result_count_that_does_not_match_the_journal_is_a_violation(run):
+    # the hash is right, the count is not: only the count check can tell
+    p = run.root / FILES["reads/RESULT.json"]
+    p.write_text(json.dumps(dict(json.loads(p.read_text()), completed=1)))
+    r = run()["criteria"]["5.6 reads"]
+    assert r["status"] != "PASS" and any("completed" in x for x in r["contract_violations"]["reads"])

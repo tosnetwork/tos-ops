@@ -99,8 +99,8 @@ MUTANTS = [
     (J, "Q1 packet matches the record", ') != \\\n            (DURATION, width, READ_RATE):', ") != (DURATION, width, READ_RATE) and False:"),
     (J, "Q2 completed fraction", 'if (w["ok"] < j["read_completed_fraction"] * scheduled', "if (False"),
     (J, "Q3 coverage", 'or len(w["endpoints"]) < READ_ENDPOINTS or not set(READ_METHODS) <= w["methods"]):', "):"),
-    (J, "Q4 final result required", 'if res is None or res["not_offered_capacity"] or res["windows"] != n or foreign:',
-     'if res is not None and (res["not_offered_capacity"] or res["windows"] != n or foreign):'),
+    # (No mutant for `res is None` in judge_reads: a missing or invalid RESULT.json is always a contract violation
+    # of reads/RESULT.json, which K3/K4 cover; the None test only keeps the code from indexing None.)
     (J, "Q5 foreign endpoint rows", '        if r["endpoint"] not in T1_READ_ENDPOINTS:\n            foreign += 1\n'
      "            continue\n", ""),
     (J, "Q6 packet endpoints pinned", 'if sorted(packet["endpoints"]) != sorted(T1_READ_ENDPOINTS):', "if False:"),
@@ -109,7 +109,8 @@ MUTANTS = [
     (J, "W1 transfers only", 'if a["role"] == "transfer"}', "}"),
     (J, "W2 receipt failure", 'if d["receipt_failure"] is not None or o["failure"][i] is not None \\',
      'if o["failure"][i] is not None \\'),
-    (J, "W3 action index", "if not 0 <= i < n or len(o[\"failure\"]) != n:", "if i >= n or len(o[\"failure\"]) != n:"),
+    # the schema already makes the index a natural number; the judge must bound it by the attempt's actions
+    (J, "W3 action index", "if not 0 <= i < n or len(o[\"failure\"]) != n:", "if len(o[\"failure\"]) != n:"),
     (J, "W5 hourly floor", "    if short or late_start", "    if late_start"),
     (J, "W6 schedule window", 'w0, w1 = t0 + j["write_start_max_s"], t1 - j["write_end_slack_s"]',
      "w0, w1 = min(signed), max(signed)"),

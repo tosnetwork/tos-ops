@@ -267,9 +267,19 @@ def test_missing_clock_verdicts_are_inconclusive(run):
     assert status(run, "collector clock") == "INCONCLUSIVE"
 
 
+def test_a_host_without_regular_ok_clock_verdicts_is_inconclusive(run):
+    # valid rows, so only the coverage rule can catch it: node-3 has no ok verdict after the first day
+    edit(run.root / "observe/clock.jsonl",
+         lambda rs: [r for r in rs if not (r["host"] == "node-3" and r["ts"] > T0 + 86_400)])
+    c = run()["criteria"]["collector clock"]
+    assert c["status"] == "INCONCLUSIVE" and "contract_violations" not in c
+
+
 def test_one_operator_reading_is_not_coverage(run):
-    jsonl(run.root / "observe/fees.jsonl", [{"ts": T0 + 600, "operator": "node-1", "balance_nano": 90 * 10**9}])
-    assert status(run, "5.8 operators") == "INCONCLUSIVE"
+    # valid producer rows for node-1 only: the other operators have no readings
+    edit(run.root / "observe/fees.jsonl", lambda rs: [r for r in rs if r["operator"] == "node-1"][:1])
+    c = run()["criteria"]["5.8 operators"]
+    assert c["status"] == "INCONCLUSIVE" and "contract_violations" not in c
 
 
 def test_growth_at_the_same_session_phase_fails_although_term_medians_barely_move(run):
@@ -402,8 +412,10 @@ def test_a_late_first_or_early_last_transfer_fails(run):
 
 def test_a_missed_boundary_is_inconclusive_and_a_failed_one_fails(run):
     edit(run.root / "observe/boundaries.jsonl",
-         lambda rs: [dict(r, outcome="missed") if r["boundary"] == FIRST + 3 * PERIOD else r for r in rs])
-    assert status(run, "5.1 handovers and key gate") == "INCONCLUSIVE"
+         lambda rs: [{"ts": r["ts"], "boundary": r["boundary"], "outcome": "missed", "reason": "no slot"}
+                     if r["boundary"] == FIRST + 3 * PERIOD else r for r in rs])
+    b = run()["criteria"]["5.1 handovers and key gate"]
+    assert b["status"] == "INCONCLUSIVE" and b["unchecked"] == [FIRST + 3 * PERIOD] and "contract_violations" not in b
     edit(run.root / "observe/boundaries.jsonl",
          lambda rs: [dict(r, outcome="checked", keys_exit=1) if r["boundary"] == FIRST + 4 * PERIOD else r
                      for r in rs])
@@ -553,7 +565,7 @@ def test_an_observed_transfer_missing_a_field_never_counts(run, field):
 def test_a_receipt_after_the_cutoff_does_not_resolve_an_action(run):
     def late(rs):
         last = [r for r in rs if r["type"] == "delivered"][-1]
-        return [dict(r, recipient_utime=END + 11 * 86400) if r is last else r for r in rs]
+        return [dict(r, recipient_utime=int(END) + 11 * 86400) if r is last else r for r in rs]
     edit(run.root / "load/ramp/journal.jsonl", late)
     w = run()["criteria"]["5.7 writes"]
     assert w["status"] == "FAIL" and w["unresolved_actions"] == 1 and not w["short_hours"]
@@ -611,3 +623,26 @@ def test_a_lifecycle_whose_times_go_back_is_inconclusive(run):
          lambda rs: [dict(r, ts=END - 5000) if r["kind"] == "terminated" else r for r in rs])
     c = run()["criteria"]["run completed"]
     assert c["status"] == "INCONCLUSIVE" and c["problems"] == ["the lifecycle is out of order or its times go back"]
+
+
+# ---------------------------------------------------------------- isolated controls for the contract re-scope
+
+
+def test_a_spend_over_the_cap_fails(run):
+    w = run(dict(JUDGE, max_cost_nano=10**9))["criteria"]["5.7 writes"]
+    assert w["status"] == "FAIL" and w["fees_nano"] > 10**9 and not w["unresolved_actions"] and not w["short_hours"]
+
+
+def test_a_delivery_of_an_action_its_attempt_does_not_have_is_inconclusive(run):
+    edit(run.root / "load/ramp/journal.jsonl",
+         lambda rs: rs + [dict(next(r for r in rs if r["type"] == "delivered" and r["id"] == "transfer:3:40"),
+                               action=3)])
+    w = run()["criteria"]["5.7 writes"]
+    assert w["status"] == "INCONCLUSIVE" and w["bad_action_index"] == 1 and "contract_violations" not in w
+
+
+def test_a_read_slot_not_offered_is_inconclusive(run):
+    p = run.root / "load/reads/RESULT.json"
+    p.write_text(json.dumps(dict(json.loads(p.read_text()), not_offered_capacity=5)))
+    r = run()["criteria"]["5.6 reads"]
+    assert r["status"] == "INCONCLUSIVE" and r["not_offered"] == 5 and "contract_violations" not in r
