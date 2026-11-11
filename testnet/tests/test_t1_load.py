@@ -1,6 +1,5 @@
 """Tests for t1-load.py. Children are real `sleep` processes where containment matters; nothing reaches a host."""
 
-import copy
 import hashlib
 import importlib.util
 import json
@@ -10,7 +9,6 @@ import subprocess
 import sys
 import textwrap
 import time
-from types import SimpleNamespace
 
 import pytest
 from conftest import SCRIPTS
@@ -280,11 +278,16 @@ def test_a_child_dies_with_its_supervisor(tmp_path):
 
 
 def test_terminate_confirms_that_every_group_is_gone(tmp_path):
+    stubborn = "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); print('ready', flush=True); time.sleep(300)"
     children = {"a": tl.spawn(["sleep", "300"], tmp_path / "a.log"),
-                "b": tl.spawn(["sh", "-c", "trap '' TERM; sleep 300"], tmp_path / "b.log")}
+                "b": tl.spawn([sys.executable, "-c", stubborn], tmp_path / "b.log")}
+    for _ in range(100):  # wait until the SIGTERM handler is installed
+        if "ready" in (tmp_path / "b.log").read_text():
+            break
+        time.sleep(0.05)
     result = tl.terminate(children)
     assert all(not r["group_alive"] for r in result.values())
-    assert result["a"]["rc"] == -signal.SIGTERM and result["b"]["rc"] in (-signal.SIGKILL, -signal.SIGTERM)
+    assert result["a"]["rc"] == -signal.SIGTERM and result["b"]["rc"] == -signal.SIGKILL
 
 
 # ---------------------------------------------------------------- the supervision loop
