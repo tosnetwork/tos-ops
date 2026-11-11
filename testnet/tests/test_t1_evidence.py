@@ -408,3 +408,20 @@ def test_best_must_be_a_measured_try(run):
     edit(run.root / FILES["clock"], lambda rs: [dict(r, best=failed, tries=r["tries"] + [failed]) for r in rs])
     c = run()["criteria"]["collector clock"]
     assert c["status"] != "PASS" and "clock" in c["contract_violations"]
+
+
+
+def test_a_measured_try_that_also_claims_an_error_is_a_violation(run):
+    # a valid measurement with an error key, among the tries; best is untouched, so only the measured variant's
+    # exclusion of error can catch it
+    edit(run.root / FILES["clock"],
+         lambda rs: [dict(r, tries=r["tries"] + [{"offset": 0.1, "bound": 9.0, "error": "timeout"}]) for r in rs])
+    assert "clock" in run()["criteria"]["collector clock"]["contract_violations"]
+
+
+def test_a_failed_try_that_carries_a_measurement_is_a_violation(run):
+    # an error try with a negative bound among the tries; best is a valid measured try, so only the failed
+    # variant's exclusion of offset and bound can catch it
+    edit(run.root / FILES["clock"],
+         lambda rs: [dict(r, tries=r["tries"] + [{"error": "timeout", "offset": 5.0, "bound": -9.0}]) for r in rs])
+    assert "clock" in run()["criteria"]["collector clock"]["contract_violations"]
