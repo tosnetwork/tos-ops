@@ -13,7 +13,12 @@ process; run this under a systemd unit with KillMode=control-group and Restart=n
 signal is armed. Children write stdout/stderr to files, never to a pipe. The launch is:
 
   systemd-run --user --unit=t1-load -p KillMode=control-group -p Restart=no -p StandardOutput=file:OUT.log \
-      -p StandardError=file:OUT.log /usr/bin/python3 -I t1-load.py --record R --record-sha256 H --status S --out O
+      -p StandardError=file:OUT.log /usr/bin/python3 -I t1-load.py --record R --record-sha256 H --status S \
+      --inventory INVENTORY --out O
+
+It refuses to start outside that unit (its cgroup and KillMode/Restart are checked), and while any ramp wallet
+lock is held. Within the unit, systemd kills grandchildren (the ramp's signer) with the cgroup; a stop's
+SIGTERM/SIGKILL reaches them through the process group.
 
 Every decision is a line in OUT/load.jsonl: start, each stop reason, the termination check and the end.
 Exit status: 0 when the run ended at the cutoff with no stop condition, 1 when it was stopped, 2 when it refused
@@ -24,8 +29,11 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import fcntl
 import hashlib
+import importlib.util
 import json
+import math
 import os
 import signal
 import subprocess
@@ -40,7 +48,24 @@ PR_SET_PDEATHSIG = 1
 TICK = 5.0
 TERM_GRACE = 10.0
 DURATION = 259_200  # T1-PLAN: 72 h of signing
+# The ramp caps a step at 86,400 s, and each step transition and the final drain spend up to 2 × drain + finality
+# wait (2·120 + 120 = 360 s). Three steps of 86,040 s plus three such allowances end exactly at 72 h, so the ramp
+# drains its last transfers itself before the cutoff (T1-PLAN §5.7: zero unresolved after the declared drain).
+STEP_SECONDS = 86_040
+STEPS = 3
+DRAIN_ALLOWANCE = 360
+assert STEPS * (STEP_SECONDS + DRAIN_ALLOWANCE) == DURATION
 ROW_MAX_AGE = 180.0  # a host's latest resource row older than this stops the run
+DATA_PATHS = ("/var/lib/tos/validator", "/var/log/tos")  # every one must be reported, as in t1-observe.py
+UNIT_NAME = "t1-load.service"
+
+
+def finite(v) -> bool:
+    return type(v) in (int, float) and math.isfinite(v)
+
+
+def positive(v) -> bool:
+    return finite(v) and v > 0
 REQUIRED = {
     "tos_checkout": str, "tos_rev": str, "signer": str, "signer_sha256": str, "key_file": str, "auth_tag": str,
     "ramp": dict, "reads": dict, "floors": dict, "unresolved": dict, "status_stale_s": (int, float),
@@ -84,7 +109,65 @@ def load_record(path: Path, expected_sha: str) -> dict:
                 raise Refuse(f"acceptance record lacks {section}.{k}")
     if not (isinstance(rec["ramp"]["rpc"], list) and len(rec["ramp"]["rpc"]) == 4):
         raise Refuse("ramp.rpc must name the four validator tunnels")
+    numbers = [("status_stale_s", rec["status_stale_s"])]
+    numbers += [(f"floors.{k}", rec["floors"][k]) for k in FLOORS_REQUIRED]
+    numbers += [(f"unresolved.{k}", rec["unresolved"][k]) for k in UNRESOLVED_REQUIRED]
+    numbers += [(f"ramp.{k}", rec["ramp"][k]) for k in RAMP_REQUIRED if k != "rpc"]
+    numbers += [("reads.network_deadline_seconds", rec["reads"]["network_deadline_seconds"]),
+                ("reads.window_seconds", rec["reads"]["window_seconds"])]
+    for name, v in numbers:
+        if not positive(v):
+            raise Refuse(f"acceptance record {name} must be a finite number > 0, not {v!r}")
     return rec
+
+
+def check_inventory(rec: dict, urls: dict[str, str], read_endpoints: list[str]) -> None:
+    """Writes and reads must both go to the four inventory-bound validator tunnels, one per host."""
+    want = [urls.get(h) for h in HOSTS]
+    if None in want or len(set(want)) != len(HOSTS):
+        raise Refuse(f"the tunnel inventory does not give one distinct tunnel per validator: {urls}")
+    if rec["ramp"]["rpc"] != want:
+        raise Refuse(f"ramp.rpc {rec['ramp']['rpc']} is not the inventory's tunnels {want}")
+    if read_endpoints != want:
+        raise Refuse(f"the read profile's endpoints {read_endpoints} are not the inventory's tunnels {want}")
+
+
+def check_containment(cgroup: str, props: dict[str, str]) -> None:
+    """The supervisor must run in its own systemd unit, which kills the whole cgroup (grandchildren too) when the
+    supervisor dies and never restarts it."""
+    if not any(line.rstrip().endswith("/" + UNIT_NAME) for line in cgroup.splitlines()):
+        raise Refuse(f"not running inside {UNIT_NAME} (see the launch line in the docstring)")
+    if props.get("KillMode") != "control-group" or props.get("Restart") != "no":
+        raise Refuse(f"{UNIT_NAME} must have KillMode=control-group and Restart=no, not {props}")
+
+
+def check_wallet_locks(state_dir: Path) -> None:
+    """Refuse while any wallet lock under the ramp's state dir is held: an earlier submitter is still alive."""
+    if not state_dir.exists():
+        return
+    for lock in sorted(state_dir.glob("*/lock")):
+        fd = os.open(lock, os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except BlockingIOError as exc:
+            raise Refuse(f"{lock} is held by a running process") from exc
+        finally:
+            os.close(fd)
+
+
+def unit_props(run=subprocess.run) -> dict[str, str]:
+    out = run(["systemctl", "--user", "show", "-p", "KillMode", "-p", "Restart", UNIT_NAME], capture_output=True,
+              text=True, timeout=30, check=False).stdout
+    return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+
+
+def sibling(name: str):
+    """Load a sibling script by path: `python3 -I` leaves the script directory off sys.path."""
+    spec = importlib.util.spec_from_file_location(name.replace("-", "_"), HERE / f"{name}.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def check_inputs(rec: dict, run=subprocess.run) -> None:
@@ -105,7 +188,7 @@ def ramp_argv(rec: dict, out: Path) -> list[str]:
             "--out", str(out / "ramp"), "--key-file", rec["key_file"], "--signer", rec["signer"],
             "--auth-tag", rec["auth_tag"], "--build", str(Path(rec["tos_checkout"]) / "build"),
             "--wallets", str(r["wallets"]), "--batch", str(r["batch"]),
-            "--start-rate", "2", "--factor", "1", "--steps", "3", "--step-seconds", "86400",
+            "--start-rate", "2", "--factor", "1", "--steps", str(STEPS), "--step-seconds", str(STEP_SECONDS),
             "--layout-repeats", "0", "--tolerance", "0.5", "--p95-limit", "600",
             "--wallet-funding", str(r["wallet_funding"]), "--max-cost", str(r["max_cost"]),
             "--max-transfers", str(r["max_transfers"]), "--rpc-share", "0.25"]
@@ -115,7 +198,7 @@ def ramp_argv(rec: dict, out: Path) -> list[str]:
 
 
 def read_packet(rec: dict, out: Path) -> dict:
-    import read_client  # the endpoint pins live there
+    read_client = sibling("read_client")  # the endpoint pins live there
     r = rec["reads"]
     return {"profile": "t1", "duration_seconds": DURATION, "requests_per_second": 8,
             "window_seconds": r["window_seconds"], "endpoints": list(read_client.T1_ENDPOINTS),
@@ -149,39 +232,49 @@ def status_reasons(st, snapshot: dict, rec: dict, now_mono: float, boot_id: str)
         return out
     if st["coordinator_boot_id"] != boot_id:
         return ["status comes from another boot"]
-    if type(st["updated_mono"]) not in (int, float) or now_mono - st["updated_mono"] > rec["status_stale_s"]:
+    if not finite(st["updated_mono"]) or now_mono - st["updated_mono"] > rec["status_stale_s"]:
         out.append("status is stale")
     if st["blind"] is not False:
         out.append(f"blind: {st.get('reasons')}")
-    if len(st["stalled_hosts"]) >= 3:
+    if not isinstance(st["stalled_hosts"], list) or len(st["stalled_hosts"]) >= 3:
         out.append(f"stall on {st['stalled_hosts']}")
-    if st["safety_hits"] != 0:
+    if st["safety_hits"] != 0 or type(st["safety_hits"]) is not int:
         out.append(f"safety lines: {st['safety_hits']}")
-    if st["coverage_gaps"] != 0:
+    if st["coverage_gaps"] != 0 or type(st["coverage_gaps"]) is not int:
         out.append(f"log coverage gaps: {st['coverage_gaps']}")
-    if st["operators_low"]:
+    if st["operators_low"] != []:
         out.append(f"operators below the floor: {st['operators_low']}")
-    floors = rec["floors"]
+    hosts = st["hosts"] if isinstance(st["hosts"], dict) else {}
     for h in HOSTS:
-        row = st["hosts"].get(h)
-        if not isinstance(row, dict):
-            out.append(f"{h}: no resource row")
-            continue
-        if row.get("complete") is not True:
-            out.append(f"{h}: latest resource row incomplete: {row.get('missing') or row.get('error')}")
-            continue
-        if type(row.get("received_mono")) not in (int, float) or now_mono - row["received_mono"] > ROW_MAX_AGE:
-            out.append(f"{h}: latest resource row too old")
-        unit = row["unit"]
-        if unit.get("active_state") != "active":
-            out.append(f"{h}: validator {unit.get('active_state')}")
-        if (unit.get("main_pid"), unit.get("n_restarts"), row.get("boot_id"), row.get("oom_kill")) != snapshot[h]:
+        out += host_reasons(h, hosts.get(h), snapshot, rec["floors"], now_mono)
+    return out
+
+
+def host_reasons(h: str, row, snapshot: dict, floors: dict, now_mono: float) -> list[str]:
+    """Every field is validated on its own: a NaN, a missing key or a missing data path is a stop, never a pass."""
+    if not isinstance(row, dict):
+        return [f"{h}: no resource row"]
+    if row.get("complete") is not True:
+        return [f"{h}: latest resource row incomplete: {row.get('missing') or row.get('error')}"]
+    out = []
+    if not finite(row.get("received_mono")) or now_mono - row["received_mono"] > ROW_MAX_AGE:
+        out.append(f"{h}: latest resource row too old")
+    unit, mem, disks = row.get("unit"), row.get("mem"), row.get("disks")
+    if not isinstance(unit, dict) or unit.get("active_state") != "active":
+        out.append(f"{h}: validator {unit.get('active_state') if isinstance(unit, dict) else 'unit unreadable'}")
+    else:
+        now_id = (unit.get("main_pid"), unit.get("n_restarts"), row.get("boot_id"), row.get("oom_kill"))
+        if now_id != snapshot[h]:
             out.append(f"{h}: restart, reboot or OOM since the start")
-        if row["mem"]["MemAvailable"] < floors["mem_available_bytes"]:
-            out.append(f"{h}: MemAvailable below the floor")
-        for path, d in row["disks"].items():
-            if d["free_bytes"] < floors["disk_free_bytes"] or d["free_inodes"] < floors["disk_free_inodes"]:
-                out.append(f"{h}: {path} below the disk floor")
+    if not (isinstance(mem, dict) and finite(mem.get("MemAvailable"))) or \
+            mem["MemAvailable"] < floors["mem_available_bytes"]:
+        out.append(f"{h}: MemAvailable below the floor or unreadable")
+    for path in DATA_PATHS:
+        d = disks.get(path) if isinstance(disks, dict) else None
+        if not (isinstance(d, dict) and finite(d.get("free_bytes")) and finite(d.get("free_inodes"))):
+            out.append(f"{h}: {path} unreadable")
+        elif d["free_bytes"] < floors["disk_free_bytes"] or d["free_inodes"] < floors["disk_free_inodes"]:
+            out.append(f"{h}: {path} below the disk floor")
     return out
 
 
@@ -193,8 +286,11 @@ class JournalTail:
 
     def __init__(self, path: Path):
         self.path, self.offset, self.partial = path, 0, b""
-        self.actions: dict[str, int] = {}  # attempt id -> number of actions
+        self.actions: dict[str, int] = {}  # attempt id -> number of actions, until its external is observed
         self.pending: dict[tuple[str, int], float] = {}  # (attempt id, action) -> when its sender was observed
+        # A delivery the follower journaled before its external's `observed` record (it can, ramp.py:757–759):
+        # kept until that record arrives, so the action is not counted as pending afterwards.
+        self.early: set[tuple[str, int]] = set()
 
     def poll(self, now: float) -> None:
         if not self.path.exists():
@@ -213,11 +309,24 @@ class JournalTail:
             kind, aid = rec.get("type"), rec.get("id")
             if kind == "attempt":
                 self.actions[aid] = len(rec.get("actions") or [])
-            elif kind == "observed" and not rec.get("failure"):
-                for i in range(self.actions.get(aid, 0)):
-                    self.pending.setdefault((aid, i), now)
+            elif kind == "observed":
+                n = self.actions.pop(aid, 0)
+                # `failure` is per action (ledger.External.failure: None where the action was sent); a scalar
+                # failure, if any, applies to every action.
+                fail = rec.get("failure")
+                per = fail if isinstance(fail, list) else [fail] * n
+                for i in range(n):
+                    key = (aid, i)
+                    if key in self.early:
+                        self.early.discard(key)
+                    elif i >= len(per) or per[i] is None:
+                        self.pending.setdefault(key, now)
             elif kind == "delivered":
-                self.pending.pop((aid, rec.get("action")), None)
+                key = (aid, rec.get("action"))
+                if self.pending.pop(key, None) is None and aid in self.actions:
+                    self.early.add(key)
+            elif kind in ("expired", "unknown"):
+                self.actions.pop(aid, None)
 
     def reasons(self, now: float, limits: dict) -> list[str]:
         out = []
@@ -332,13 +441,23 @@ def supervise(rec: dict, status_path: Path, out: Path, launch: Callable[[str], s
         return 1
     tail = JournalTail(out / "ramp" / "journal.jsonl")
     reasons: list[str] = []
+    ramp_done = False
+    # The ramp finishing its whole schedule (exit 0, no earlier than its last step's end) is the normal end of
+    # writing: it has drained its last transfers itself. Monitoring and the reads continue until the cutoff.
+    ramp_finish = STEPS * STEP_SECONDS * duration / DURATION
     while True:
         now = mono()
         if now >= cutoff:
             break
         for name, p in children.items():
+            if name == "ramp" and ramp_done:
+                continue
             if p.poll() is not None:
-                reasons.append(f"{name} exited on its own with rc {p.returncode}")
+                if name == "ramp" and p.returncode == 0 and now - start >= ramp_finish:
+                    ramp_done = True
+                    append(log, {"ts": wall(), "kind": "ramp_done", "elapsed_s": now - start})
+                else:
+                    reasons.append(f"{name} exited on its own with rc {p.returncode}")
         try:
             tail.poll(now)
         except ValueError as exc:
@@ -349,6 +468,9 @@ def supervise(rec: dict, status_path: Path, out: Path, launch: Callable[[str], s
             break
         sleep(TICK)
     kind = "stop" if reasons else "cutoff"
+    if kind == "cutoff" and not ramp_done:
+        reasons = ["the ramp had not finished its schedule at the cutoff"]
+        kind = "stop"
     append(log, {"ts": wall(), "kind": kind, "reasons": reasons, "elapsed_s": mono() - start,
                  "undelivered": len(tail.pending)})
     result = terminate(children, sleep)
@@ -366,13 +488,20 @@ def main(argv=None) -> int:
     ap.add_argument("--record-sha256", required=True)
     ap.add_argument("--status", type=Path, required=True, help="the observer's status.json (t1-observe.py)")
     ap.add_argument("--out", type=Path, required=True, help="a new directory")
+    ap.add_argument("--inventory", type=Path, required=True, help="the host inventory (as for t1-observe.py)")
+    ap.add_argument("--unit-dir", type=Path, default=Path.home() / ".config/systemd/user")
     a = ap.parse_args(argv)
     try:
         rec = load_record(a.record, a.record_sha256)
         check_inputs(rec)
+        urls = sibling("check-validator-keys").tunnel_inventory(a.unit_dir, json.loads(a.inventory.read_text()))
+        check_inventory(rec, urls, list(sibling("read_client").T1_ENDPOINTS))
+        check_containment(Path("/proc/self/cgroup").read_text(), unit_props())
+        key = Path(rec["key_file"])
+        check_wallet_locks(key.parent / (key.name + ".state"))  # the ramp's default state dir
         a.out.mkdir(parents=True, exist_ok=False)
-    except (Refuse, OSError, ValueError) as exc:
-        print(f"refusing to start: {exc}", file=sys.stderr)
+    except Exception as exc:  # any failed precondition refuses the start; nothing has been launched yet
+        print(f"refusing to start: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
     packet = a.out / "read-packet.json"
     packet.write_text(json.dumps(read_packet(rec, a.out)))
