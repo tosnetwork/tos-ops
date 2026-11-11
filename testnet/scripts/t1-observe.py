@@ -290,6 +290,10 @@ class Observer:
         self.counts = {"safety_hits": self.count_rows("safety", "safety_line"),
                        "coverage_gaps": self.count_rows("cache", "coverage_gap")}
         self.log_behind: dict[str, int] = {}
+        # The latest resource row of each host as observed, complete or not, with its monotonic receipt time:
+        # the load runner's per-host stop rules read this, so a failed or partial probe is never hidden behind an
+        # earlier complete row.
+        self.latest_host: dict[str, dict] = {}
         self.operators = dict(operators or {})  # name -> address of each operator wallet (public)
         self.balances: dict[str, dict] = {}
         self.sinks["fees"] = Sink(out / "fees.jsonl")
@@ -298,6 +302,10 @@ class Observer:
         self.cursors = {h.name: self.load_cursors(h.name) for h in self.hosts}
         self.heads: dict[str, dict] = {}
         self.clock_verdict: dict[str, dict] = {}
+
+    def publish_host(self, host: str, row: dict) -> None:
+        with self.lock:
+            self.latest_host[host] = {**row, "received_mono": self.mono()}
 
     def count_rows(self, sink: str, kind: str) -> int:
         path = self.out / f"{sink}.jsonl"
@@ -358,13 +366,15 @@ class Observer:
             error = error or "report is not an object"
             self.sinks["resources"].write({**base, "error": error})
             self.sinks["cache"].write({**base, "kind": "error", "error": error})
+            self.publish_host(host.name, {**base, "complete": False, "missing": ["probe"], "error": error})
             return
         missing = resource_problems(report)
         if finite(report.get("sample_clock")) and not sent - SKEW <= report["sample_clock"] <= received + SKEW:
             missing.append("sample_clock outside the call")
-        self.sinks["resources"].write({
-            **base, "complete": not missing, "missing": missing, "sample_clock": report.get("sample_clock"),
-            **{k: report.get(k) for k in ("unit", "proc", "mem", "oom_kill", "boot_id", "disks")}})
+        row = {**base, "complete": not missing, "missing": missing, "sample_clock": report.get("sample_clock"),
+               **{k: report.get(k) for k in ("unit", "proc", "mem", "oom_kill", "boot_id", "disks")}}
+        self.sinks["resources"].write(row)
+        self.publish_host(host.name, row)
         if not missing:
             self.fresh.good(f"resources:{host.name}")
         self.cache_part(host.name, cur, report, base, received)
@@ -602,6 +612,7 @@ class Observer:
             counts = dict(self.counts)
             balances = {o: dict(v) for o, v in self.balances.items()}
             log_behind = dict(self.log_behind)
+            hosts = {h: dict(v) for h, v in self.latest_host.items()}
             clock = {h: dict(self.clock_verdict.get(h, {"verdict": "unmeasured"})) for h in names}
             chain = {h: {"seqno": v["id"][2], "max_seqno": v["max_seqno"], "head_age_s": now_m - v["advanced_mono"]}
                      for h, v in self.heads.items()}
@@ -610,7 +621,7 @@ class Observer:
         stalled = sorted(h for h, v in chain.items() if v["head_age_s"] > STALL)
         return {"blind": bool(reasons), "reasons": reasons, "chain": chain, "stalled_hosts": stalled,
                 "clock": clock, "baselined": baselined, "cache_series": self.cache_series, **counts,
-                "operators": balances, "log_behind": log_behind,
+                "operators": balances, "log_behind": log_behind, "hosts": hosts,
                 "operators_low": sorted(o for o, v in balances.items() if v["balance_nano"] < OPERATOR_FLOOR_NANO),
                 "updated": self.wall(), "updated_mono": now_m, "coordinator_boot_id": coordinator_boot_id()}
 

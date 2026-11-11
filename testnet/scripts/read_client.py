@@ -5,12 +5,25 @@ import base64
 import json
 import time
 
+# The two R2 sources, then the four validator tunnels of the T1 profile (node-1..4, inventory-bound).
+T1_ENDPOINTS = {
+    "http://127.0.0.1:18081/jsonRPC": 18081,
+    "http://127.0.0.1:38081/jsonRPC": 38081,
+    "http://127.0.0.1:28081/jsonRPC": 28081,
+    "http://127.0.0.1:48084/jsonRPC": 48084,
+}
 ENDPOINTS = {
     "http://127.0.0.1:48081/jsonRPC": 48081,
     "http://127.0.0.1:48083/jsonRPC": 48083,
 }
+
+
+def port_of(endpoint):
+    """The loopback port of an approved endpoint (R2 or T1), or None."""
+    return ENDPOINTS.get(endpoint, T1_ENDPOINTS.get(endpoint))
 LIMIT = 1048576
 NETWORK_DEADLINE_SECONDS = 2.5
+DEADLINE_BOUNDS = (0.5, 10.0)  # a calibrated per-request deadline must lie inside these
 
 
 class ProtocolError(RuntimeError):
@@ -91,11 +104,13 @@ async def exchange(port, payload):
         writer.close()
 
 
-def request(endpoint, method, address):
+def request(endpoint, method, address, deadline=NETWORK_DEADLINE_SECONDS):
     started = time.monotonic()
     error, size = None, 0
     try:
-        if endpoint not in ENDPOINTS or method not in (
+        if not (type(deadline) in (int, float) and DEADLINE_BOUNDS[0] <= deadline <= DEADLINE_BOUNDS[1]):
+            raise ProtocolError("deadline bound")
+        if port_of(endpoint) is None or method not in (
             "getMasterchainInfo",
             "getAddressInformation",
             "getTransactions",
@@ -110,7 +125,7 @@ def request(endpoint, method, address):
 
         async def bounded():
             return await asyncio.wait_for(
-                exchange(ENDPOINTS[endpoint], payload), timeout=NETWORK_DEADLINE_SECONDS
+                exchange(port_of(endpoint), payload), timeout=deadline
             )
 
         raw = asyncio.run(bounded())
