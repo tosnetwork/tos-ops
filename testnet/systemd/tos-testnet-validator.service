@@ -39,7 +39,7 @@ ExecStart=/usr/local/bin/validator-engine \
   --log-rotate-mb 15 --log-keep-files 5 \
   --session-logs /var/log/tos/validator/session-stats \
   -t 16 \
-  --state-ttl 3600 --archive-ttl 86400 \
+  --state-ttl 86400 --archive-ttl 86400 \
   --celldb-cache-size 1073741824 --celldb-cache-min-size 1073741824 \
   --json-rpc-address 127.0.0.1:8081 --json-rpc-without-wallet-index \
   --exporter-address 127.0.0.1:9100

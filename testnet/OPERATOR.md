@@ -434,8 +434,8 @@ rollout.
 (it holds its own RocksDB index; monitor resident memory, cursor lag and disk).
 The index replays from masterchain block 1, so the full node must hold the
 complete block archive from block 1: activate it with `--genesis` before or at
-the epoch start. The supplied full-node template keeps the archive for 7 days
-(`--archive-ttl 604800`): an index started, or rebuilt, after the oldest blocks
+the epoch start. The supplied full-node template keeps the archive for 30 days
+(`--archive-ttl 2592000`, as upstream mytonctrl's liteserver mode): an index started, or rebuilt, after the oldest blocks
 were pruned pauses at its cursor and never catches up. Start the index while the
 whole archive is still on the host; a longer retention is a reviewed template
 change, not a host edit.

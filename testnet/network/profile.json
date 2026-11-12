@@ -111,10 +111,10 @@
     "rpc_note": "The rpc role (a full node host that also runs tos-wallet-index and tos-rpc): tos-rpc listens on rpc_http_loopback for the operator's TLS reverse proxy, the index on wallet_index_loopback for tos-rpc only (not the index's default 8081, which the full node's operator JSON-RPC holds). Neither is opened in the host firewall; tos-rpc's write backend is the full node's json_rpc_loopback."
   },
   "retention": {
-    "note": "Validator consensus databases are deleted only behind the GC checkpoint, which never passes the last key block, state_ttl or the persistent-state serializer (production/Production-Node.md, 'The GC floor'). With a 4 h term a validator normally keeps under 5 h of them, about 30 GB at the first epoch's 145 GB a day, and up to about 10 h (60 GB) when a key block opens a new 2^17 s persistent-state period and the serializer waits up to 6 h.",
-    "validator": {"state_ttl": 3600, "archive_ttl": 86400},
+    "note": "Retention follows upstream TON's validator settings (mytonctrl validator mode and the upstream docker image: state_ttl 86400, archive_ttl 86400; mytonctrl liteserver mode: archive_ttl 2592000). Validator consensus databases are deleted only behind the GC checkpoint, which never passes the last key block, state_ttl or the persistent-state serializer (tos doc/Validator.md, 'Retired consensus databases'). With state_ttl 86400 a validator keeps about 24 h of them, up to about 30 h when a key block opens a new 2^17 s persistent-state period and the serializer waits up to 6 h. That is about 14-17 GB at the epoch-6 rate measured during T1 (about 0.56 GB/h, 2026-11-11). At the first epoch's 145 GB a day it would be 145-180 GB, more than a 98 GiB testnet disk, so watch free disk under heavy load. The earlier 3,600 s state_ttl kept under 5 h of them.",
+    "validator": {"state_ttl": 86400, "archive_ttl": 86400},
     "validator_logs": {"rotate_mb": 15, "keep_files": 5, "session_stats_max_mb": 512, "max_total_mb": 2048, "note": "Owner decision 2026-10-12: at most 2 GB of logs per validator (memo EPOCH-1-FINDINGS.md, E1-05). One file per engine thread (threads + 1 files), each with keep_files rotated copies, plus the session stats file, which the engine rotates at 256 MiB keeping one .old. About an hour of history at the first epoch's volume."},
-    "fullnode": {"state_ttl": 86400, "archive_ttl": 604800}
+    "fullnode": {"state_ttl": 86400, "archive_ttl": 2592000}
   },
   "elections": {
     "note": "What testnet-elections.py onboard moves for each genesis validator. The staking account, and so the validator id genesis records, is a single-nominator pool whose owner is an offline wallet on the coordinator and whose validator is the operator wallet on the host. The stake principal never passes through the operator wallet: the bootstrap wallet funds the owner (pool_tos + pool_owner_reserve_tos), the owner sends pool_tos to the pool, and the operator wallet gets only fee money (the pool deployment, and for every election the stake order's fees and a recovery message). The bootstrap wallet holds 80,151 TOS (memo STATUS 13.155/13.254, BOOTSTRAP-AMOUNT.md): four validators at 10 + 20,015 = 20,025 use 80,100 and leave 51 for its own transfer fees, the 50 TOS margin and whole-TOS rounding. Once ConfigParam 34 and 32 are both elected sets holding the four stakes, `sweep` sends what is left (send mode 160) to the ConfigParam 5 blackhole and deletes the wallet; after that operator fee money and load funding come from the pool owners (`top-up`, `load --funding-owner`), never from the bootstrap wallet. Each pool holds two fixed stakes of 10,002 (the Elector subtracts 1 TOS before it compares with the 10,000 minimum), for the first and the overlapping second election.",
@@ -143,7 +143,7 @@
     "architectures": ["x86_64", "aarch64"],
     "roles": {
       "validator": {"min_cpus": 4, "min_memory_gib": 11, "min_disk_free_gib": 60},
-      "fullnode": {"min_cpus": 4, "min_memory_gib": 7, "min_disk_free_gib": 60},
+      "fullnode": {"min_cpus": 4, "min_memory_gib": 7, "min_disk_free_gib": 160},
       "dht": {"min_cpus": 2, "min_memory_gib": 3, "min_disk_free_gib": 20}
     }
   }

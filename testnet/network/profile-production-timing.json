@@ -111,9 +111,9 @@
     "rpc_note": "The rpc role (a full node host that also runs tos-wallet-index and tos-rpc): tos-rpc listens on rpc_http_loopback for the operator's TLS reverse proxy, the index on wallet_index_loopback for tos-rpc only (not the index's default 8081, which the full node's operator JSON-RPC holds). Neither is opened in the host firewall; tos-rpc's write backend is the full node's json_rpc_loopback."
   },
   "retention": {
-    "note": "Validator consensus databases are deleted only behind the GC checkpoint, which never passes the last key block, state_ttl or the persistent-state serializer (production/Production-Node.md, 'The GC floor'). With a 4 h term a validator normally keeps under 5 h of them, about 30 GB at the first epoch's 145 GB a day, and up to about 10 h (60 GB) when a key block opens a new 2^17 s persistent-state period and the serializer waits up to 6 h.",
+    "note": "Retention follows upstream TON's validator settings (mytonctrl validator mode and the upstream docker image: state_ttl 86400, archive_ttl 86400; mytonctrl liteserver mode: archive_ttl 2592000). Validator consensus databases are deleted only behind the GC checkpoint, which never passes the last key block, state_ttl or the persistent-state serializer (tos doc/Validator.md, 'Retired consensus databases'). With state_ttl 86400 a validator keeps about 24 h of them, up to about 30 h when a key block opens a new 2^17 s persistent-state period and the serializer waits up to 6 h. That is about 14-17 GB at the epoch-6 rate measured during T1 (about 0.56 GB/h, 2026-11-11). At the first epoch's 145 GB a day it would be 145-180 GB, more than a 98 GiB testnet disk, so watch free disk under heavy load. The earlier 3,600 s state_ttl kept under 5 h of them.",
     "validator": {
-      "state_ttl": 3600,
+      "state_ttl": 86400,
       "archive_ttl": 86400
     },
     "validator_logs": {
@@ -125,7 +125,7 @@
     },
     "fullnode": {
       "state_ttl": 86400,
-      "archive_ttl": 604800
+      "archive_ttl": 2592000
     }
   },
   "elections": {
@@ -172,7 +172,7 @@
       "fullnode": {
         "min_cpus": 4,
         "min_memory_gib": 7,
-        "min_disk_free_gib": 60
+        "min_disk_free_gib": 160
       },
       "dht": {
         "min_cpus": 2,
