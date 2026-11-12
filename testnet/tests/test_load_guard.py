@@ -43,8 +43,11 @@ def files(tmp_path, st):
 
 
 def run(status_path, snap, stop, *extra, now=NOW):
+    def sleep(_):
+        raise AssertionError("--once kept watching")
+
     return lg.main(["--status", str(status_path), "--snapshot", str(snap), "--stop-file", str(stop), *extra],
-                   mono=lambda: now, sleep=lambda s: None)
+                   mono=lambda: now, sleep=sleep)
 
 
 def test_a_healthy_network_is_green_and_writes_the_snapshot(tmp_path):
@@ -109,6 +112,8 @@ def test_the_watch_stops_on_the_first_reason(tmp_path):
         seen.append(1)
         if len(seen) == 3:
             st.write_text(json.dumps(bad))
+        if len(seen) > 10:
+            raise AssertionError("the guard kept watching after a stop condition")
 
     rc = lg.main(["--status", str(st), "--snapshot", str(snap), "--stop-file", str(stop)],
                  mono=lambda: NOW, sleep=sleep)
