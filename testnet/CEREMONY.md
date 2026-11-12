@@ -374,7 +374,11 @@ bootstrap set and 65,536 s terms. Its first key block after genesis would have
 come at T + 34 h. Until then the GC checkpoint could not move, so no state and
 no consensus database was deleted, and at about 145 GB a day the 99 GB disks
 would have filled in 15 hours. That is why this testnet runs a shorter
-schedule and a 3,600 s validator `state_ttl`.
+schedule; it also ran a 3,600 s validator `state_ttl` until the retention was
+aligned with upstream TON (86,400 s, `network/profile.json` `retention`). The
+short schedule's key block every 2 h keeps the GC checkpoint moving; with the
+upstream `state_ttl` it trails the head by about a day, so watch free disk under
+heavy load.
 
 ### 8.1 Onboarding a genesis validator for elections
 

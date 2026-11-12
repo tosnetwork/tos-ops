@@ -169,7 +169,7 @@ for i in 1 2 3 4; do
   {
     echo "#!/usr/bin/env bash"
     echo "echo \$\$ > $(printf '%q' "$WORK/node-$i.pid")"
-    printf 'exec %q -C %q -D %q -l %q --session-logs %q -t 4 --state-ttl 3600 --archive-ttl 86400 --json-rpc-address %q --json-rpc-without-wallet-index --exporter-address %q\n' \
+    printf 'exec %q -C %q -D %q -l %q --session-logs %q -t 4 --state-ttl 86400 --archive-ttl 86400 --json-rpc-address %q --json-rpc-without-wallet-index --exporter-address %q\n' \
       "$TOS_BIN/validator-engine" "$GLOBAL" "$db" "$WORK/log$i/node.log" "$WORK/log$i/session-stats" \
       "127.0.0.1:$(port "$i" 4)" "127.0.0.1:$(port "$i" 5)"
   } > "$WORK/node-$i.start"

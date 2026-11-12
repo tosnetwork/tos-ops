@@ -25,7 +25,7 @@ ExecStart=/usr/local/bin/validator-engine \
   -D /var/lib/tos/fullnode \
   -l /var/log/tos/fullnode/node.log \
   -t 16 \
-  --state-ttl 86400 --archive-ttl 604800 \
+  --state-ttl 86400 --archive-ttl 2592000 \
   --celldb-cache-size 1073741824 --celldb-cache-min-size 1073741824 \
   --json-rpc-address 127.0.0.1:8081 \
   --exporter-address 127.0.0.1:9100
