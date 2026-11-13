@@ -984,6 +984,18 @@ def test_notify_sends_one_progress_message_and_records_it(tmp_path, monkeypatch)
     assert [r["kind"] for r in rows] == ["progress"] and rows[0]["message_id"] == 101
 
 
+def test_notify_sends_a_message_of_the_full_limit_whole(tmp_path, monkeypatch):
+    api = FakeApi()
+    fake_telegram(monkeypatch, api)
+    args, state = notify_files(tmp_path)
+    body = "y" * (relay.PROGRESS_LIMIT - 3) + "END"
+    text = tmp_path / "report.txt"
+    text.write_text(body)
+    assert relay.main(["notify", *args, "--text-file", str(text)]) == 0
+    assert api.sent() == [f"{relay.PREFIX} {body}"]
+    assert len(api.sent()[0]) <= relay.TEXT_LIMIT
+
+
 def test_notify_refuses_an_empty_or_too_long_message(tmp_path, monkeypatch, capsys):
     api = FakeApi()
     fake_telegram(monkeypatch, api)

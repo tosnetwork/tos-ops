@@ -112,7 +112,6 @@ OFFSET = "telegram-offset"
 SILENCE = "silence"
 REMINDER_FIRST = 1800.0  # the first reminder of a key comes 30 min after its alert
 REMINDER_MAX = 43200.0  # the gap doubles after each reminder, up to 12 h
-PROGRESS_LIMIT = 4000  # Telegram allows 4096 characters per message
 ACK_EVERY = 30.0
 # Two missed coordinator beats (one per --interval, 60 s) plus SSH slack. A
 # stopped side is reported at most dead-after + one interval (the check runs
@@ -131,6 +130,9 @@ WATCH_RESTART_DELAY = 30.0
 OUTBOX_LIMIT = 200
 TEXT_LIMIT = 3900
 PREFIX = "TOS testnet"
+# The longest progress message that reaches the chat whole: flush() prefixes PREFIX and a
+# space, and send() cuts the result at TEXT_LIMIT.
+PROGRESS_LIMIT = TEXT_LIMIT - len(PREFIX) - 1
 
 
 def utc(now: float) -> str:
