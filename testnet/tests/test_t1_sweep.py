@@ -725,3 +725,10 @@ def test_a_connection_failure_reaches_the_caller(monkeypatch):
         raise ConnectionRefusedError("refused")
     with pytest.raises(ConnectionRefusedError):
         _transport(monkeypatch, urlopen)
+
+
+@pytest.mark.parametrize("value", ["0", "257", "-1"])
+def test_the_wallet_count_is_bounded(tmp_path, capsys, value):
+    with pytest.raises(SystemExit):
+        tool.main(["--key-file", str(tmp_path / "k"), "--out", str(tmp_path / "o"), "--wallets", value])
+    assert "--wallets must be in [1, 256]" in capsys.readouterr().err

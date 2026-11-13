@@ -60,7 +60,8 @@ SIGNER = Path("/datax/t1/bin/bench-pq-signer")
 SIGNER_SHA256 = "8b5fc20e15e04a25fc7720909a1eb7aa98be3db628da33688973f7e4ed553fb7"
 AUTH_TAG = "99d8ae3469661895b820b4c41b6ad21acc448370e814c68d52ee3a12ae2c407a"
 GLOBAL_ID = 2
-WALLETS = 8
+WALLETS = 8  # the T1 ramp's load wallets; --wallets takes another run's count (T4)
+MAX_WALLETS = 256
 HOSTS = ("node-1", "node-2", "node-3", "node-4")
 SEND_ALL = 130  # 128 carry the remaining balance + 2 ignore errors
 LIFETIME = 60  # seconds a sweep request is valid
@@ -571,7 +572,11 @@ def main(argv=None) -> int:
     ap.add_argument("--tos", type=Path, default=TOS_CHECKOUT)
     ap.add_argument("--signer", type=Path, default=SIGNER)
     ap.add_argument("--go", action="store_true", help="sign and send (default: a dry run)")
+    ap.add_argument("--wallets", type=int, default=WALLETS,
+                    help=f"load wallets 0..N-1 the ramp derived (default {WALLETS}, the T1 run; at most {MAX_WALLETS})")
     a = ap.parse_args(argv)
+    if not 1 <= a.wallets <= MAX_WALLETS:
+        ap.error(f"--wallets must be in [1, {MAX_WALLETS}]")
     try:
         check_pins(a)
         if subprocess.run(["systemctl", "--user", "is-active", "--quiet", "t1-load"], check=False).returncode == 0:
@@ -588,7 +593,7 @@ def main(argv=None) -> int:
         auth = bytes.fromhex(AUTH_TAG)
         bench = m.remote.bench_wallet(code, GLOBAL_ID, auth, key, m.remote.Signer(a.signer, key).public_key())
         signer = m.ramp.BatchSigner(a.signer, 2)
-        seeds = [m.ramp.load_seed(key.seed, bench.address, i) for i in range(WALLETS)]
+        seeds = [m.ramp.load_seed(key.seed, bench.address, i) for i in range(a.wallets)]
         pks = signer.public_keys(seeds)
         wallets = [m.ramp.load_wallet(code, GLOBAL_ID, auth, i, pk, key.rescue_public_key) for i, pk in enumerate(pks)]
         dest = m.remote.raw(bench.address)
