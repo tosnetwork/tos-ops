@@ -7,6 +7,7 @@
                  [--digest-hours 0] [--silence-file PATH] [--remote-dir /var/lib/tos-alert]
   alert-relay.py peer --token-file F --chat-file F [--state-dir /var/lib/tos-alert]
                  [--interval 60] [--dead-after 150] [--silence-file PATH]
+  alert-relay.py notify --token-file F --chat-file F --state-dir DIR [--text-file F|-]
   alert-relay.py silence --until <ISO time | +MINUTES> --reason TEXT
                  [--state-dir DIR | --silence-file PATH]
   alert-relay.py unsilence [--state-dir DIR | --silence-file PATH]
@@ -17,7 +18,8 @@ child without a duration (restarting it 30 s after it exits) and reads its
 stdout. An `ANOMALY` line carries tokens such as `node-1:head_age=155s`; the
 relay keys each one by host and kind (`node-1:head_age`), ignoring the value
 that changes every round. It sends a message when a key first appears, at
-most one reminder per key every 30 minutes while it persists, and a recovery
+most one reminder per key while it persists, the first 30 minutes after the
+alert and each next one twice as late as the last (capped at 12 hours), and a recovery
 message when keys clear (a shorter `ANOMALY` set or a `RECOVERED` line).
 `SUMMARY` lines are not sent unless --digest-hours asks for one digest every
 that many hours. Every --interval seconds it touches the coordinator heartbeat
@@ -108,7 +110,8 @@ ALERTS = "alerts.jsonl"
 ACKS = "acks.jsonl"
 OFFSET = "telegram-offset"
 SILENCE = "silence"
-REMINDER_EVERY = 1800.0
+REMINDER_FIRST = 1800.0  # the first reminder of a key comes 30 min after its alert
+REMINDER_MAX = 43200.0  # the gap doubles after each reminder, up to 12 h
 ACK_EVERY = 30.0
 # Two missed coordinator beats (one per --interval, 60 s) plus SSH slack. A
 # stopped side is reported at most dead-after + one interval (the check runs
@@ -127,6 +130,9 @@ WATCH_RESTART_DELAY = 30.0
 OUTBOX_LIMIT = 200
 TEXT_LIMIT = 3900
 PREFIX = "TOS testnet"
+# The longest progress message that reaches the chat whole: flush() prefixes PREFIX and a
+# space, and send() cuts the result at TEXT_LIMIT.
+PROGRESS_LIMIT = TEXT_LIMIT - len(PREFIX) - 1
 
 
 def utc(now: float) -> str:
@@ -705,13 +711,16 @@ class AnomalyTracker:
     def child_exited(self, status: int, now: float) -> None:
         key = "watch:exited"
         if key not in self.active:
-            self.active[key] = {"since": now, "reminded": now}
+            self._start(key, now)
             self.notifier.alert(
                 "anomaly",
                 [key],
                 f"ALERT watch-testnet.py exited with status {status}; restarting it in "
                 f"{int(WATCH_RESTART_DELAY)} s. No chain observation until it is back.",
             )
+
+    def _start(self, key: str, now: float) -> None:
+        self.active[key] = {"since": now, "reminded": now, "gap": REMINDER_FIRST}
 
     def _clear(self, keys: list[str], now: float, line: str) -> None:
         if not keys:
@@ -739,7 +748,7 @@ class AnomalyTracker:
             self._clear([k for k in self.active if k not in current], now, line)
             new = [k for k in current if k not in self.active]
             for key in new:
-                self.active[key] = {"since": now, "reminded": now}
+                self._start(key, now)
             if new:
                 self.notifier.alert("anomaly", new, f"ALERT new: {' '.join(sorted(new))}\n{line}")
         elif word == "RECOVERED":
@@ -756,11 +765,12 @@ class AnomalyTracker:
                 self.notifier.alert("digest", [], f"digest\n{line}")
 
     def tick(self, now: float) -> None:
-        due = [k for k, v in self.active.items() if now - v["reminded"] >= REMINDER_EVERY]
+        due = [k for k, v in self.active.items() if now - v["reminded"] >= v["gap"]]
         if not due:
             return
         for key in due:
             self.active[key]["reminded"] = now
+            self.active[key]["gap"] = min(self.active[key]["gap"] * 2, REMINDER_MAX)
         oldest = min(self.active[k]["since"] for k in due)
         text = f"REMINDER still active ({int((now - oldest) // 60)} min): {' '.join(sorted(due))}"
         if self.last_line:
@@ -1014,6 +1024,29 @@ def run_peer(args, telegram: Telegram) -> int:
         time.sleep(max(1.0, peer.period() - (time.time() - started)))
 
 
+def run_notify(args) -> int:
+    """One progress message, sent now and recorded in alerts.jsonl as kind "progress".
+
+    A silence applies to it like to any alert (recorded, not sent). alert() sends at
+    once; a message still in the outbox afterwards was not taken by Telegram, and no
+    later cycle would retry it, so the command fails."""
+    raw = sys.stdin.read() if args.text_file == "-" else Path(args.text_file).read_text()
+    text = raw.strip()
+    if not text:
+        raise lib.TestnetError("the progress message is empty")
+    if len(text) > PROGRESS_LIMIT:
+        raise lib.TestnetError(f"the progress message is longer than {PROGRESS_LIMIT} characters")
+    token = read_secret(args.token_file, "token")
+    chat_id = read_secret(args.chat_file, "chat")
+    lib.private_dir(args.state_dir)
+    notifier = Notifier(Telegram(token, chat_id), args.state_dir, args.silence_file)
+    notifier.alert("progress", [], text)  # alert() flushes at once
+    if notifier.outbox:
+        raise lib.TestnetError("Telegram did not take the progress message")
+    print("SENT" if notifier.silenced() is None else "RECORDED (silenced)")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -1036,6 +1069,12 @@ def build_parser() -> argparse.ArgumentParser:
     roles["coordinator"].add_argument("--remote-dir", default=REMOTE_DIR)
     roles["coordinator"].add_argument("--watch-interval", type=float, default=60.0)
     roles["coordinator"].add_argument("--digest-hours", type=float, default=0.0)
+    p = sub.add_parser("notify", help="send one progress message to the chat")
+    p.add_argument("--token-file", type=Path, required=True)
+    p.add_argument("--chat-file", type=Path, required=True)
+    p.add_argument("--state-dir", type=Path, required=True)
+    p.add_argument("--silence-file", type=Path)
+    p.add_argument("--text-file", default="-", help="the message, '-' for stdin")
     for name in ("silence", "unsilence"):
         p = sub.add_parser(name)
         where = p.add_mutually_exclusive_group()
@@ -1087,6 +1126,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.silence_file.unlink(missing_ok=True)
             print(f"UNSILENCED {args.silence_file}")
             return 0
+        if args.command == "notify":
+            return run_notify(args)
         if args.interval < 1 or args.dead_after <= args.interval:
             parser.error("--interval must be at least 1 s and --dead-after above it")
         if args.command == "coordinator" and (args.watch_interval < 1 or args.digest_hours < 0):
