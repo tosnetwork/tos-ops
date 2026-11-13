@@ -1025,9 +1025,9 @@ def run_peer(args, telegram: Telegram) -> int:
 def run_notify(args) -> int:
     """One progress message, sent now and recorded in alerts.jsonl as kind "progress".
 
-    A silence applies to it like to any alert (recorded, not sent). It is sent in the
-    foreground: if Telegram does not take it, the command fails instead of leaving it
-    in an outbox that no later cycle would flush."""
+    A silence applies to it like to any alert (recorded, not sent). alert() sends at
+    once; a message still in the outbox afterwards was not taken by Telegram, and no
+    later cycle would retry it, so the command fails."""
     raw = sys.stdin.read() if args.text_file == "-" else Path(args.text_file).read_text()
     text = raw.strip()
     if not text:
@@ -1038,8 +1038,7 @@ def run_notify(args) -> int:
     chat_id = read_secret(args.chat_file, "chat")
     lib.private_dir(args.state_dir)
     notifier = Notifier(Telegram(token, chat_id), args.state_dir, args.silence_file)
-    notifier.alert("progress", [], text)
-    notifier.flush()
+    notifier.alert("progress", [], text)  # alert() flushes at once
     if notifier.outbox:
         raise lib.TestnetError("Telegram did not take the progress message")
     print("SENT" if notifier.silenced() is None else "RECORDED (silenced)")
