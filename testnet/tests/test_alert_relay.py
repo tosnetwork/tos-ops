@@ -92,7 +92,7 @@ def test_anomaly_keys_ignore_the_changing_value():
     assert keys["node-1:head_age"] == "node-1:head_age=155s"
 
 
-def test_new_key_sends_once_then_one_reminder_per_half_hour(tmp_path):
+def test_new_key_sends_once_then_reminders_back_off(tmp_path):
     api, clock = FakeApi(), Clock()
     tracker = relay.AnomalyTracker(notifier(tmp_path, api, clock))
     tracker.on_line(LINE1, clock.t)
@@ -105,18 +105,54 @@ def test_new_key_sends_once_then_one_reminder_per_half_hour(tmp_path):
     clock.t = T0 + 1799
     tracker.tick(clock.t)
     assert len(api.sent()) == 1
-    clock.t = T0 + 1800
+    clock.t = T0 + 1800  # first reminder 30 min after the alert
     tracker.tick(clock.t)
     assert len(api.sent()) == 2 and api.sent()[1].startswith("TOS testnet REMINDER")
     assert LINE2 in api.sent()[1]
-    clock.t = T0 + 3599
+    clock.t = T0 + 1800 + 3599  # the next gap is 1 h, not 30 min
     tracker.tick(clock.t)
     assert len(api.sent()) == 2
-    clock.t = T0 + 3600
+    clock.t = T0 + 1800 + 3600
     tracker.tick(clock.t)
     assert len(api.sent()) == 3
+    clock.t = T0 + 1800 + 3600 + 7200  # then 2 h
+    tracker.tick(clock.t)
+    assert len(api.sent()) == 4
     kinds = [r["kind"] for r in records(tmp_path)]
-    assert kinds == ["anomaly", "reminder", "reminder"]
+    assert kinds == ["anomaly", "reminder", "reminder", "reminder"]
+
+
+def test_reminder_gaps_double_up_to_twelve_hours(tmp_path):
+    api, clock = FakeApi(), Clock()
+    tracker = relay.AnomalyTracker(notifier(tmp_path, api, clock))
+    tracker.on_line(LINE1, clock.t)
+    sent_at = []
+    for _ in range(4 * 24 * 60):  # four days, one tick a minute
+        clock.t += 60
+        before = len(api.sent())
+        tracker.tick(clock.t)
+        if len(api.sent()) > before:
+            sent_at.append(clock.t)
+    gaps = [b - a for a, b in zip([T0] + sent_at, sent_at)]
+    assert gaps[:6] == [1800, 3600, 7200, 14400, 28800, 43200]
+    assert all(g == 43200 for g in gaps[5:])
+    assert len(sent_at) < 12  # a day-long alert used to remind 48 times a day
+
+
+def test_a_key_that_recovers_and_returns_starts_at_thirty_minutes_again(tmp_path):
+    api, clock = FakeApi(), Clock()
+    tracker = relay.AnomalyTracker(notifier(tmp_path, api, clock))
+    tracker.on_line(LINE1, clock.t)
+    clock.t = T0 + 1800
+    tracker.tick(clock.t)  # first reminder; the gap becomes 1 h
+    tracker.on_line("RECOVERED 2027-01-15T08:31:00 all clear", clock.t + 1)
+    clock.t += 60
+    tracker.on_line(LINE1, clock.t)  # back as a new alert
+    start = clock.t
+    clock.t = start + 1800
+    before = len(api.sent())
+    tracker.tick(clock.t)
+    assert len(api.sent()) == before + 1
 
 
 def test_an_added_key_alerts_only_for_itself(tmp_path):
@@ -918,3 +954,66 @@ def test_scoped_and_global_silences_are_independent(tmp_path):
     n.alert("anomaly", ["node-4:unit"], "node-4")
     n.alert("anomaly", ["node-2:unit"], "node-2")
     assert len(api.sent()) == 2 and "node-2" in api.sent()[-1]
+
+
+def notify_files(tmp_path):
+    token, chat = tmp_path / "token", tmp_path / "chat"
+    for path, value in ((token, TOKEN), (chat, CHAT)):
+        path.write_text(value + "\n")
+        path.chmod(0o600)
+    state = tmp_path / "state"
+    return ["--token-file", str(token), "--chat-file", str(chat), "--state-dir", str(state)], state
+
+
+def fake_telegram(monkeypatch, api):
+    real = relay.Telegram
+    monkeypatch.setattr(
+        relay, "Telegram", lambda token, chat: real(token, chat, opener=api, sleep=lambda _s: None)
+    )
+
+
+def test_notify_sends_one_progress_message_and_records_it(tmp_path, monkeypatch):
+    api = FakeApi()
+    fake_telegram(monkeypatch, api)
+    args, state = notify_files(tmp_path)
+    text = tmp_path / "report.txt"
+    text.write_text("T2 dry run: PASS\nfees 0.3 TOS\n")
+    assert relay.main(["notify", *args, "--text-file", str(text)]) == 0
+    assert api.sent() == ["TOS testnet T2 dry run: PASS\nfees 0.3 TOS"]
+    rows = records(state)
+    assert [r["kind"] for r in rows] == ["progress"] and rows[0]["message_id"] == 101
+
+
+def test_notify_refuses_an_empty_or_too_long_message(tmp_path, monkeypatch, capsys):
+    api = FakeApi()
+    fake_telegram(monkeypatch, api)
+    args, state = notify_files(tmp_path)
+    for body in ("  \n", "x" * (relay.PROGRESS_LIMIT + 1)):
+        text = tmp_path / "report.txt"
+        text.write_text(body)
+        assert relay.main(["notify", *args, "--text-file", str(text)]) == 1
+    assert api.sent() == [] and records(state) == []
+
+
+def test_notify_fails_when_telegram_does_not_take_it(tmp_path, monkeypatch):
+    api = FakeApi()
+    api.fail = 100
+    fake_telegram(monkeypatch, api)
+    args, state = notify_files(tmp_path)
+    text = tmp_path / "report.txt"
+    text.write_text("progress")
+    assert relay.main(["notify", *args, "--text-file", str(text)]) == 1
+    assert api.sent() == []
+
+
+def test_notify_while_silenced_is_recorded_not_sent(tmp_path, monkeypatch):
+    api = FakeApi()
+    fake_telegram(monkeypatch, api)
+    args, state = notify_files(tmp_path)
+    state.mkdir(mode=0o700)
+    relay.write_silence(state / relay.SILENCE, 4_000_000_000.0, "quiet hours")
+    text = tmp_path / "report.txt"
+    text.write_text("progress")
+    assert relay.main(["notify", *args, "--text-file", str(text)]) == 0
+    assert api.sent() == []
+    assert [r["kind"] for r in records(state)] == ["progress"] and records(state)[0]["silenced"]
