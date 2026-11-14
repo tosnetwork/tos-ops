@@ -488,3 +488,183 @@ on-chain privacy acceptance: confirm a deposit, a transfer and a withdrawal
 through the installed service and its cross-node checks. See
 [DEFECTS-20261006.md](DEFECTS-20261006.md) for the defect record and the
 remaining acceptance gates.
+
+## Election test send admission primitive
+
+`local/scripts/election_send_gate.py` is a library for an isolated test's single
+financial producer. It is **not an RPC proxy, native receipt verifier or a fix
+for the production election runner**. It cannot yet be used to run the delayed
+registration money scenario.
+
+The library holds reads and sends closed until a trusted caller supplies a
+context-bound verification result. It serializes a read through response
+publication, fsyncs a global latch before one forwarding callback, and never
+reopens on an acknowledgement, timeout or restart. Exact original-operation
+settlement must be checked by a separately reviewed native verifier before the
+caller authorizes another admission. A previously unused process admission is
+not automatically restored. Process identity is checked before any mutex acquisition,
+so a fork child cannot reuse its parent's admission or block on an inherited lock.
+Storage uncertainty is sticky; corrupt, incomplete,
+foreign-context, shared or oversized journals refuse. The metadata hash chain is
+corruption detection, not protection against the owner rolling storage back.
+
+Each forwarding latch also fsyncs the original message representation hash before
+calling the backend. `forward_once(..., original_message_hash=...)` requires the
+canonical lowercase 32-byte digest. The trusted receipt callback must return
+`original_message_hash` alongside `context`, `operation` and `proof_digest`:
+initial admission uses `None`, later admission must match the last persisted
+message exactly. Another transaction, body hash or unrelated increased seqno is
+not that identity. Metrics expose this public hash for the native controller;
+no signed carrier bytes or credentials are stored by this primitive. A legacy
+latched record without its original identity refuses on load; do not delete it,
+reset it or manufacture a new baseline to migrate an unresolved operation.
+
+The RPC adapter requires a separately reviewed `identify_message(boc)` callback
+for writes. It must decode the bounded original carrier and return its message
+representation hash, not a digest of serialization bytes or an RPC claim. No
+production decoder is supplied here: absent/refused/noncanonical identification
+holds the request without forwarding. Decoder work cannot extend the exchange
+deadline. Synthetic tests supply only explicit fixture identities, not a native
+message-verification claim.
+
+The future adapter/controller must enforce one sole RPC endpoint, one financial
+producer, bounded full HTTP exchanges and no stale in-flight response or task
+reload bypass. Reads already delivered to another signer cannot be revoked by
+this library. Holding Config15 reads also pauses registration renewal; the test
+must prove enough installed horizon and cannot claim uninterrupted renewal while
+an unknown send remains unresolved. The native-confirmation and sole-producer/controller integration requirements
+remain unimplemented; the bounded transport adapter is described below.
+
+The synthetic unit suite covers admission, lost replies, a real subprocess exit,
+restart, file ownership, write/fsync failures, record limits and publication
+serialization. It neither signs transactions nor contacts a node:
+
+```sh
+TOS_ROOT="$TOS_ROOT" "$TOS_ROOT/.venv/bin/python" -m pytest -q local/tests/test_election_send_gate.py
+```
+
+`local/scripts/election_rpc_gate.py` now supplies the serial loopback transport
+adapter for that core. It forwards only the explicit read-method inventory and
+puts `sendBoc` and `sendBocReturnHash` behind the same latch. There is no HTTP
+reset/authorization route or backend retry/failover. Backend replies are bounded
+and checked for the request ID; the core read lock covers backend exchange and
+frontend publication. Malformed requests, protocol failures and deadlines hold
+admission. Refusing an exhausted request budget may close the connection before
+consuming another body; that is a failure, not evidence of settlement.
+
+The adapter accepts only an explicit loopback backend and listener, with a
+16 KiB header limit, 1 MiB request/response bodies, a 100,000-request budget,
+saturating counters and a kernel listen backlog of eight. The normal frontend
+exchange deadline is five seconds and the backend deadline is 2.5 seconds;
+connect/header/body/chunks share those total network I/O deadlines, not per-byte
+timeouts. These checks prevent forwarding after a decoder returns too late; they
+do not preempt the trusted synchronous decoder or receipt verifier. They also do
+not bound filesystem synchronization or waiting for the trusted controller mutex;
+controller integration must bound those separately with its own finite worker and
+lifecycle controls. Error holds
+are scoped to the request admission generation so a late error cannot revoke a
+newly confirmed admission. Read callback failures close admission while still
+holding the gate mutex.
+The server handles one request at a time. It neither establishes native network
+identity nor prevents a different producer using already delivered data.
+
+The native receipt verifier, sole-producer/reload topology and actual CLI
+controller remain missing. This is not an executable financial-test launcher or
+a production runner repair. The additional loopback suite uses synthetic JSON
+only and never a real node, wallet key or signed transaction carrier:
+
+```sh
+TOS_ROOT="$TOS_ROOT" "$TOS_ROOT/.venv/bin/python" -m pytest -q local/tests/test_election_send_gate.py local/tests/test_election_rpc_gate.py
+```
+
+RPC requests also bind the request-start admission generation under the core
+read/forward mutex. A request begun before fresh admission cannot consume that
+new permit, including when its body arrives late. This does not revoke a response
+already delivered to a producer; exclusive producer/controller remains required.
+
+## Read-only native delivery worker
+
+`local/scripts/election_native_receipt.py` supplies a bounded worker for a pinned
+`tosctl wallet receipt`. It is not an admission callback: `DeliveryEvidence`
+retains `business_acceptance=False` and `authorizes_send=False`. The controller
+still needs independently proven Elector business acceptance and its sole
+producer/endpoint/reload controls before constructing any admission verdict.
+No signer, Vault configuration, private journal or signed private carrier is an
+input. Only locally approved public intent, Account preimages, full-genesis
+anchor and lite configuration bytes are accepted.
+
+`verify_delivery` requires pinned CLI, native helper and thermal-watcher programs
+from an operator-owned mode0700 program directory. Programs must be single-link,
+non-writable, executable, owned by the operator or root, and match their reviewed
+SHA-256; the CLI executes through its held descriptor. Ancestors are checked and
+program path/inode/timestamps are checked again after completion. Local owner
+mutation is outside the storage trust model. Public snapshots are created once
+with mode0400 under a new mode0700 artifact directory; an existing directory is
+never automatically reused. The helper's fresh observer watermark is retained
+there and is not a replacement for an unresolved financial journal.
+
+The worker clears inherited environment, fixes Tokio/Rayon workers to two,
+starts a separate process group, and attaches the pinned thermal watcher to that
+group. Watcher liveness is checked for the whole worker lifetime, including after both
+output pipes reach EOF; an observed premature exit or nonzero completion status
+refuses the read. Normal watcher completion after worker exit remains allowed.
+Timeout, oversized output, nonzero
+exit or malformed/foreign output never becomes delivery evidence. Both worker
+and watcher groups are stopped and the direct children reaped, including on
+successful completion. Stdout/stderr are each bounded to64KiB. Stderr is not
+exported; only two fixed refusal categories may be exposed, for targeted tests.
+An otherwise valid report from a nonzero process is still a refusal. Duplicate
+keys, foreign intent hashes and output claiming business/send authority refuse.
+
+Bounds are256MiB per pinned executable (streamed hashing),64KiB JSON,1MiB each
+Account preimage/lite configuration, and at most305seconds of subprocess time
+plus bounded cleanup waits. Preparation/filesystem I/O and total retained
+artifact volume also need the caller's finite CPU/memory/task/runtime/cgroup
+controls; this one-shot library is not an unbounded service or worker pool.
+Caller-supplied thermal policy remains trusted and must implement the approved
+host limits; synthetic tests use a fixture watcher and do not certify sensors.
+The test suite uses fake local workers and contains no native crypto acceptance:
+
+```sh
+TOS_ROOT="$TOS_ROOT" /usr/bin/python3 -m pytest -q local/tests/test_election_native_receipt.py
+```
+
+Native acceptance additionally requires a reviewed real CLI/helper/profile case
+and independent evidence review. Delivery proves one original request reached
+the approved downstream transaction; it neither proves registration acceptance
+nor authorizes another send. Production carrier decoding, business confirmation,
+sole-producer/reload integration and the production Runner fix remain separate.
+
+## Historical Elector registration witness
+
+`election_elector_acceptance.verify_registered_stake` consumes trusted in-process
+`DeliveryEvidence` from the pinned native worker, the exact approved public
+intent, and a public recipient transaction BOC. A raw JSON receipt is not native
+evidence. `StakeApproval` is trusted policy: the operator must previously review
+and bind the actual Elector code's semantics, address, full genesis, query,
+election, factor, public-key Cell hash and ADNL. An RPC-returned code hash is not
+code approval. Code upgrades require another semantics review.
+
+The transaction representation hash must equal the native receipt, and its
+retained incoming Message Cell must match the native delivery hash and approved
+request body/credit. The PQ new-stake fields, successful compute/action phases
+and exactly one positive `0xf374484c` acknowledgement must agree. The decoder
+retains original message identities; reserialization is not an identity check.
+Byte limit is1MiB, cell count4096 (preflight before codec list allocation), graph
+depth64, complete ordinary cells only, generic TOS BOC envelope only. Run under
+the controller's finite service/resource limits, using the reviewed codec on
+`PYTHONPATH`.
+
+The result proves historical registration at that transaction only. It does not
+prove current membership, election, nominator-pool multi-edge routing, or permit
+another send. Missing acknowledgement is UNKNOWN: Elector can store membership
+with query0 or lose a mode2 acknowledgement. No rejection/retry inference is
+provided. The strategy follows upstream elector-code.fc at857b8a5; TOS5439f98
+adds PQ request/member encoding. This module changes no contract or consensus.
+Synthetic TL-B fixtures test parser refusals, not native cryptography or real
+Elector execution. Both actual evidence and independent review remain required:
+
+```sh
+TOS_ROOT="$TOS_ROOT" PYTHONPATH="$TOS_ROOT/test/tostester/src" \
+  python -m pytest -q local/tests/test_election_elector_acceptance.py
+```
