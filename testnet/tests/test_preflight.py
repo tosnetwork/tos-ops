@@ -285,3 +285,108 @@ def test_inventory_validation(tmp_path):
 def test_the_example_inventory_loads():
     hosts = preflight.load_inventory(lib.PROFILE_PATH.parent / "inventory.example.json")
     assert {r for h in hosts for r in h.roles} == {"validator", "dht"}
+    assert all(h.waive == {} for h in hosts)
+
+
+# ---------------------------------------------------------------- per-host floor waivers
+
+REASON = "owner 2026-11-17: small validator host under install-node.sh resources"
+BELOW_FLOOR = {
+    "memory": ("mem_kib", str(int(3.9 * 1048576))),
+    "cpu": ("cpus", "2"),
+    "disk": ("disk_free_kib", str(30 * 1048576)),
+}
+
+
+def waived_host(waive):
+    return preflight.Host(name="v4", address="203.0.113.10", roles=["validator"], waive=waive)
+
+
+@pytest.mark.parametrize("check", sorted(BELOW_FLOOR))
+def test_a_waived_floor_reports_waived_with_its_value_and_reason(check):
+    key, value = BELOW_FLOOR[check]
+    facts = dict(GOOD_FACTS, **{key: value})
+    results = preflight.evaluate_host(waived_host({check: REASON}), facts, PROFILE)
+    result = next(r for r in results if r.check == check)
+    assert result.status == "WAIVED"
+    assert result.detail.endswith(f"; waived: {REASON}")
+    assert "need" in result.detail  # the measured value and the floor stay visible
+    # Only that check is waived: every other check still passes on its own.
+    assert {r.status for r in results if r.check != check} == {"PASS"}
+
+
+@pytest.mark.parametrize("check", sorted(BELOW_FLOOR))
+def test_a_waiver_covers_only_its_own_check(check):
+    others = [c for c in BELOW_FLOOR if c != check]
+    facts = dict(GOOD_FACTS)
+    for other in others:
+        key, value = BELOW_FLOOR[other]
+        facts[key] = value
+    found = statuses(preflight.evaluate_host(waived_host({check: REASON}), facts, PROFILE))
+    assert found[check] == "PASS"
+    assert all(found[other] == "FAIL" for other in others)
+
+
+def test_a_waiver_on_a_passing_check_says_it_was_not_needed():
+    results = preflight.evaluate_host(waived_host({"memory": REASON}), dict(GOOD_FACTS), PROFILE)
+    memory = next(r for r in results if r.check == "memory")
+    assert memory.status == "PASS" and memory.detail.endswith("; waiver not needed")
+
+
+def test_a_waived_cpu_floor_does_not_waive_missing_x86_64_v2():
+    # The cpu check also carries the instruction set the build targets; a waiver
+    # says the host is small, not that a binary built for x86-64-v2 runs on it.
+    facts = dict(GOOD_FACTS, cpus="2", cpu_flags="fpu sse2")
+    result = next(
+        r
+        for r in preflight.evaluate_host(waived_host({"cpu": REASON}), facts, PROFILE)
+        if r.check == "cpu"
+    )
+    assert result.status == "FAIL"
+    assert "missing x86-64-v2 flags" in result.detail
+    assert result.detail.endswith("; not waivable")
+
+
+def test_the_report_counts_waived_checks_and_waived_alone_does_not_fail(tmp_path, monkeypatch):
+    facts = dict(GOOD_FACTS, mem_kib=BELOW_FLOOR["memory"][1])
+    results = preflight.evaluate_host(waived_host({"memory": REASON}), facts, PROFILE)
+    text = preflight.report(results)
+    assert text.splitlines()[0].startswith("WAIVED")
+    assert text.rstrip().endswith("0 failed, 1 waived")
+    assert not any(r.status == "FAIL" for r in results)
+
+
+def write_inventory(tmp_path, waive):
+    path = tmp_path / "inv.json"
+    entry = {"name": "v4", "address": "203.0.113.1", "roles": ["validator"], "waive": waive}
+    path.write_text(json.dumps({"hosts": [entry]}))
+    return path
+
+
+def test_the_inventory_carries_waivers_with_their_reasons(tmp_path):
+    hosts = preflight.load_inventory(write_inventory(tmp_path, {"memory": f"  {REASON} "}))
+    assert hosts[0].waive == {"memory": REASON}
+
+
+@pytest.mark.parametrize(
+    "waive,message",
+    [
+        ({"ufw": REASON}, r"only \['memory', 'cpu', 'disk'\] can be waived, not \['ufw'\]"),
+        ({"time": REASON}, "can be waived, not \\['time'\\]"),
+        ({"os": REASON, "memory": REASON}, "can be waived, not \\['os'\\]"),
+        ({"memory": ""}, "the memory waiver needs a reason"),
+        ({"disk": "   "}, "the disk waiver needs a reason"),
+        ({"cpu": None}, "the cpu waiver needs a reason"),
+        ({"cpu": 4}, "the cpu waiver needs a reason"),
+        (["memory"], "waive must be an object"),
+        ("memory", "waive must be an object"),
+    ],
+)
+def test_the_inventory_refuses_a_bad_waiver(tmp_path, waive, message):
+    with pytest.raises(lib.TestnetError, match=message):
+        preflight.load_inventory(write_inventory(tmp_path, waive))
+
+
+def test_main_refuses_a_bad_waiver_as_a_usage_error(tmp_path, capsys):
+    assert preflight.main(["--inventory", str(write_inventory(tmp_path, {"ssh": REASON}))]) == 2
+    assert "refused:" in capsys.readouterr().err

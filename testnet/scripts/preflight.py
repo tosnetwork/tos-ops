@@ -38,6 +38,15 @@ Inventory (keep it outside the repository; it names real addresses and keys):
     {"name": "node-1", "address": "203.0.113.10", "roles": ["validator", "dht"],
      "ssh_user": "root", "ssh_key": "~/.ssh/testnet.pem", "ssh_port": 22}
   ]}
+
+A host below a role floor can carry a recorded per-host waiver, only for the
+memory, cpu or disk check, each with a non-empty reason naming the decision:
+
+  "waive": {"memory": "owner 2026-11-17: 3.9 GB host, validator capped by install-node.sh resources"}
+
+A waived check that fails reports WAIVED with its measured value and the reason,
+and does not fail the run; one that passes says the waiver was not needed. Every
+other check, and an unknown or reasonless waiver, is refused.
 """
 
 from __future__ import annotations
@@ -52,6 +61,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
+from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import Callable
 
@@ -105,14 +115,37 @@ class Host:
     ssh_user: str = "root"
     ssh_key: str = ""
     ssh_port: int = 22
+    waive: dict[str, str] = dataclass_field(default_factory=dict)
 
 
 @dataclass
 class Result:
     host: str
     check: str
-    status: str  # PASS, WARN or FAIL
+    status: str  # PASS, WARN, WAIVED or FAIL
     detail: str
+
+
+# Only the role floors can be waived, each per host with a recorded reason. A waived
+# floor still reports its measured value; it just does not fail the run.
+WAIVABLE = ("memory", "cpu", "disk")
+
+
+def load_waivers(entry: dict) -> dict[str, str]:
+    waive = entry.get("waive", {})
+    if not isinstance(waive, dict):
+        raise lib.TestnetError(f"{entry.get('name')}: waive must be an object")
+    unknown = sorted(set(waive) - set(WAIVABLE))
+    if unknown:
+        raise lib.TestnetError(
+            f"{entry.get('name')}: only {list(WAIVABLE)} can be waived, not {unknown}"
+        )
+    for check, reason in waive.items():
+        if not isinstance(reason, str) or not reason.strip():
+            raise lib.TestnetError(
+                f"{entry.get('name')}: the {check} waiver needs a reason (who decided it, where)"
+            )
+    return {check: reason.strip() for check, reason in waive.items()}
 
 
 Runner = Callable[[Host, str, int], subprocess.CompletedProcess]
@@ -137,6 +170,7 @@ def load_inventory(path: Path) -> list[Host]:
                 ssh_user=entry.get("ssh_user", "root"),
                 ssh_key=str(Path(entry["ssh_key"]).expanduser()) if entry.get("ssh_key") else "",
                 ssh_port=int(entry.get("ssh_port", 22)),
+                waive=load_waivers(entry),
             )
         )
     if not hosts:
@@ -227,7 +261,16 @@ def evaluate_host(host: Host, facts: dict[str, str], profile: dict) -> list[Resu
     floor = role_floor(host.roles, profile)
     out = []
 
-    def add(check: str, ok: bool, detail: str, warn: bool = False) -> None:
+    def add(check: str, ok: bool, detail: str, warn: bool = False, waivable: bool = True) -> None:
+        reason = host.waive.get(check)
+        if reason is not None and not waivable and not ok:
+            detail += "; not waivable"
+        elif reason is not None:
+            if ok:
+                detail += "; waiver not needed"
+            else:
+                out.append(Result(host.name, check, "WAIVED", f"{detail}; waived: {reason}"))
+                return
         out.append(Result(host.name, check, "PASS" if ok else ("WARN" if warn else "FAIL"), detail))
 
     os_ok = (
@@ -244,10 +287,13 @@ def evaluate_host(host: Host, facts: dict[str, str], profile: dict) -> list[Resu
         missing = [f for f in X86_64_V2 if f not in flags]
         if missing:
             cpu_detail += f"; missing x86-64-v2 flags {missing}"
+        # A cpu waiver covers the CPU count only: a host without the instructions the
+        # build targets cannot run the binaries, whatever was decided about its size.
         add(
             "cpu",
             cpus >= floor["min_cpus"] and not missing,
             cpu_detail + f" (need {floor['min_cpus']})",
+            waivable=not missing,
         )
     else:
         add("cpu", cpus >= floor["min_cpus"], cpu_detail + f" (need {floor['min_cpus']})")
@@ -445,12 +491,15 @@ def run_preflight(
 
 
 def report(results: list[Result]) -> str:
-    order = {"FAIL": 0, "WARN": 1, "PASS": 2}
+    order = {"FAIL": 0, "WAIVED": 1, "WARN": 2, "PASS": 3}
     lines = []
     for r in sorted(results, key=lambda r: (r.host, order[r.status], r.check)):
         lines.append(f"{r.status:4}  {r.host:<12} {r.check:<10} {r.detail}")
     counts = {s: sum(r.status == s for r in results) for s in order}
-    lines.append(f"\n{counts['PASS']} passed, {counts['WARN']} warnings, {counts['FAIL']} failed")
+    summary = f"\n{counts['PASS']} passed, {counts['WARN']} warnings, {counts['FAIL']} failed"
+    if counts["WAIVED"]:
+        summary += f", {counts['WAIVED']} waived"
+    lines.append(summary)
     return "\n".join(lines)
 
 

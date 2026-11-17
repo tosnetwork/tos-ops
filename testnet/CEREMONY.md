@@ -87,6 +87,14 @@ nodes; a port held by `validator-engine` or `dht-server` passes.
 `--accept-new-host-keys` accepts only a first-seen host key; a changed key
 still stops SSH, and must be checked against the provider console first.
 
+A host below a role floor needs a recorded decision, not a lower profile floor:
+give it a per-host `"waive"` entry in the inventory for the `memory`, `cpu` or
+`disk` check, each with the reason and where it was decided. The check then
+reports `WAIVED` with the measured value and the reason, and does not fail the
+run. Nothing else can be waived; a cpu waiver covers the CPU count, never
+missing x86-64-v2 instructions. A validator under a memory waiver is activated
+with lower caches and cgroup limits (section 6).
+
 ## 1. Operator: build and prepare the validator host
 
 Compile the binaries and the operator tool on this host from the ceremony
@@ -293,6 +301,19 @@ sudo /opt/tos-testnet/scripts/install-node.sh activate --role validator \
   --global-config global-config.json --sha256 <PUBLISHED_SHA256> \
   --genesis ./published --genesis-ceremony --validator-id <VALIDATOR_ID>
 ```
+
+On a host under a memory waiver (section 0.5), add the reviewed limits, for
+example `--cache-bytes 268435456 --memory-max 2400M --memory-high 2200M`.
+`--cache-bytes` lowers both RocksDB caches from the unit's 1 GiB (64 MiB at
+least, never above 1 GiB); `--memory-max` and `--memory-high` become the unit's
+cgroup limits, each leaving at least 1 GiB beside the two caches. activate
+writes them as `/etc/systemd/system/tos-testnet-validator.service.d/50-resources.conf`
+and records them in `/etc/tos/validator-resources.json`. It refuses the options
+for any other role or step, refuses values out of range, and refuses an
+existing drop-in that the options do not reproduce. Never edit the drop-in by
+hand. The caches bound only part of the engine's memory: consensus candidates,
+memtables and allocator retention are not cache-bounded, so watch such a node
+for memory pressure and cgroup OOM kills under load.
 
 This installs `/etc/tos/global-config.json` only on a matching digest. It
 places the zero state in `/var/lib/tos/validator/static/` and runs

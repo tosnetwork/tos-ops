@@ -316,6 +316,102 @@ def shielded_pool_record(profile: dict[str, Any]) -> dict[str, Any] | None:
     return record
 
 
+# ---------------------------------------------------------------- validator resources
+
+# install-node.sh activate --role validator --cache-bytes N --memory-max SIZE [--memory-high SIZE]
+# writes these as a drop-in of the validator unit. The unit's defaults are the 1 GiB
+# caches (owner decision 2026-10-15), so a drop-in may only lower them.
+RESOURCE_CACHE_MIN = 64 << 20
+RESOURCE_CACHE_MAX = 1 << 30
+# Each cgroup limit leaves at least this beside the two caches: memtables, the cell
+# cache, consensus candidates and allocator retention are not cache-bounded.
+RESOURCE_HEADROOM = 1 << 30
+RESOURCES_UNIT = "tos-testnet-validator.service"
+RESOURCES_DROP_IN = "50-resources.conf"
+_SIZE_UNITS = {"": 1, "K": 1 << 10, "M": 1 << 20, "G": 1 << 30}
+
+
+def resource_size(value: str, what: str, suffixes: bool = True) -> int:
+    """A positive byte count: decimal digits, optionally with a 1024-based K, M or G."""
+    pattern = r"([1-9][0-9]{0,15})([KMG]?)" if suffixes else r"([1-9][0-9]{0,15})()"
+    match = re.fullmatch(pattern, value) if isinstance(value, str) else None
+    if match is None:
+        form = "bytes or a K/M/G size" if suffixes else "a positive byte count"
+        raise TestnetError(f"{what} must be {form}, not {value!r}")
+    return int(match.group(1)) * _SIZE_UNITS[match.group(2)]
+
+
+def mem_total_bytes(meminfo: str) -> int:
+    match = re.search(r"(?m)^MemTotal:\s+([0-9]+) kB$", meminfo)
+    if match is None:
+        raise TestnetError("MemTotal not found in /proc/meminfo")
+    return int(match.group(1)) * 1024
+
+
+def validator_resources(
+    cache_bytes: str, memory_max: str, memory_high: str | None, mem_total: int
+) -> dict[str, Any]:
+    """The checked values of a validator resources drop-in, or TestnetError."""
+    cache = resource_size(cache_bytes, "--cache-bytes", suffixes=False)
+    if not RESOURCE_CACHE_MIN <= cache <= RESOURCE_CACHE_MAX:
+        raise TestnetError(
+            f"--cache-bytes {cache} is outside {RESOURCE_CACHE_MIN}..{RESOURCE_CACHE_MAX} "
+            "(64 MiB up to the 1 GiB cap)"
+        )
+    floor = 2 * cache + RESOURCE_HEADROOM
+    high = resource_size(memory_high, "--memory-high") if memory_high else None
+    top = resource_size(memory_max, "--memory-max")
+    for what, value in (("--memory-max", top), ("--memory-high", high)):
+        if value is not None and value < floor:
+            raise TestnetError(
+                f"{what} {value} leaves less than 1 GiB beside two caches of {cache} "
+                f"(at least {floor})"
+            )
+    if high is not None and high >= top:
+        raise TestnetError(f"--memory-high {high} must be below --memory-max {top}")
+    if top > mem_total:
+        raise TestnetError(f"--memory-max {top} exceeds this host's MemTotal {mem_total}")
+    return {"cache_bytes": cache, "memory_max_bytes": top, "memory_high_bytes": high}
+
+
+def validator_resources_drop_in(resources: dict[str, Any]) -> str:
+    """The drop-in text: the cgroup limits and both caches, nothing else."""
+    lines = [
+        "# Written by install-node.sh activate --role validator (validator resources).",
+        "# Do not edit by hand; rerun activate with the same or new reviewed values.",
+        "[Service]",
+        f"MemoryMax={resources['memory_max_bytes']}",
+    ]
+    if resources["memory_high_bytes"] is not None:
+        lines.append(f"MemoryHigh={resources['memory_high_bytes']}")
+    lines += [
+        f"Environment=TOS_ROCKSDB_BLOCK_CACHE_SIZE={resources['cache_bytes']}",
+        f"Environment=TOS_CELLDB_CACHE_BYTES={resources['cache_bytes']}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def write_validator_resources(
+    out_dir: str, cache_bytes: str, memory_max: str, memory_high: str, meminfo_path: str
+) -> None:
+    """install-node.sh's helper: write the drop-in and its record into out_dir."""
+    resources = validator_resources(
+        cache_bytes,
+        memory_max,
+        memory_high or None,
+        mem_total_bytes(Path(meminfo_path).read_text()),
+    )
+    text = validator_resources_drop_in(resources)
+    record = {
+        "unit": RESOURCES_UNIT,
+        "drop_in": f"{RESOURCES_UNIT}.d/{RESOURCES_DROP_IN}",
+        "drop_in_sha256": hashlib.sha256(text.encode()).hexdigest(),
+        **resources,
+    }
+    (Path(out_dir) / RESOURCES_DROP_IN).write_text(text)
+    (Path(out_dir) / "validator-resources.json").write_text(json.dumps(record, indent=2) + "\n")
+
+
 def validator_schedule(profile: dict[str, Any]) -> dict[str, int]:
     """The initial set's lifetime and ConfigParam 15, checked against each other.
 

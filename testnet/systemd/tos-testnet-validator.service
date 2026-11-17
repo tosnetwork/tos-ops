@@ -28,8 +28,13 @@ WorkingDirectory=/var/lib/tos/validator
 # it does so even when --celldb-cache-size is smaller unless
 # --celldb-cache-min-size is set too, so both flags carry the cap. The shared
 # block cache of the other databases defaults to 1 GiB; it is set here so the
-# cap does not depend on an engine default.
+# cap does not depend on an engine default. TOS_CELLDB_CACHE_BYTES carries the
+# CellDb value into both flags below. A smaller host lowers both caches (and
+# sets MemoryMax/MemoryHigh) only through the drop-in that
+# `install-node.sh activate --role validator --cache-bytes N --memory-max SIZE`
+# writes (tos-testnet-validator.service.d/50-resources.conf); never by hand.
 Environment=TOS_ROCKSDB_BLOCK_CACHE_SIZE=1073741824
+Environment=TOS_CELLDB_CACHE_BYTES=1073741824
 # JSON-RPC serves only the operator tool on loopback; the wallet index belongs
 # to RPC nodes, so a validator never opens it.
 ExecStart=/usr/local/bin/validator-engine \
@@ -40,7 +45,7 @@ ExecStart=/usr/local/bin/validator-engine \
   --session-logs /var/log/tos/validator/session-stats \
   -t 16 \
   --state-ttl 86400 --archive-ttl 86400 \
-  --celldb-cache-size 1073741824 --celldb-cache-min-size 1073741824 \
+  --celldb-cache-size ${TOS_CELLDB_CACHE_BYTES} --celldb-cache-min-size ${TOS_CELLDB_CACHE_BYTES} \
   --json-rpc-address 127.0.0.1:8081 --json-rpc-without-wallet-index \
   --exporter-address 127.0.0.1:9100
 Restart=on-failure
