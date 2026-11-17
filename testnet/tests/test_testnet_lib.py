@@ -45,12 +45,40 @@ def test_repository_profile_loads():
     assert profile["global_id"]["value"] == 2
     assert lib.confirmed_global_id(profile) == 2
     assert profile["genesis"]["validators"] == 4
-    assert profile["features"]["shielded_pool"] == "restricted-epoch-6-test"
+    assert profile["features"]["shielded_pool"] == "disabled"
+    assert "shielded_pool_record" not in profile["features"]
+    assert lib.shielded_pool_record(profile) is None
     assert profile["features"]["energy"] == "disabled"
 
 
-def test_the_shielded_pool_record_is_bound_to_this_epoch():
-    profile = lib.load_profile()
+EPOCH6_POOL = json.loads((DATA / "profile-epoch6-shielded-pool.json").read_text())
+
+
+def _restricted():
+    """The repository profile carrying epoch 6's AUTH tag and restricted pool record."""
+    profile = copy.deepcopy(lib.load_profile())
+    profile["genesis"]["auth_network_tag"] = copy.deepcopy(EPOCH6_POOL["auth_network_tag"])
+    profile["features"] = copy.deepcopy(EPOCH6_POOL["features"])
+    return profile
+
+
+def test_the_epoch6_record_fixture_loads(tmp_path):
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps(_restricted()))
+    assert lib.shielded_pool_record(lib.load_profile(path))["network"]["epoch"] == 6
+
+
+def test_the_epoch6_record_does_not_carry_over_to_another_epoch(tmp_path):
+    profile = _restricted()
+    profile["genesis"]["auth_network_tag"] = lib.load_profile()["genesis"]["auth_network_tag"]
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps(profile))
+    with pytest.raises(lib.TestnetError, match="AUTH tag"):
+        lib.load_profile(path)
+
+
+def test_the_shielded_pool_record_is_bound_to_its_epoch():
+    profile = _restricted()
     record = lib.shielded_pool_record(profile)
     assert record["network"]["global_id"] == 2
     assert record["network"]["auth_network_tag"] == profile["genesis"]["auth_network_tag"]["value"]
@@ -61,10 +89,6 @@ def test_the_shielded_pool_record_is_bound_to_this_epoch():
     assert record["groth16"]["vk_sha256"] == (
         "49696f52f361817869f68c3ba68d0d5a854737a4133ae4616255ac4a3846778c"
     )
-
-
-def _restricted():
-    return copy.deepcopy(lib.load_profile())
 
 
 def _rec(p):
@@ -183,7 +207,7 @@ def test_both_repository_profiles_load():
     # Every script loads one of these whether or not it touches the pool.
     for name in ("profile.json", "profile-production-timing.json"):
         profile = lib.load_profile(lib.PROFILE_PATH.with_name(name))
-        assert lib.shielded_pool_record(profile)["pool"]["address"].startswith("0:60b33d9d")
+        assert lib.shielded_pool_record(profile) is None
 
 
 @pytest.mark.parametrize("value", [1, 3, 0, True, 2**31, -(2**31) - 1, "2", None])
@@ -1048,10 +1072,10 @@ def test_rpc_never_branches_on_an_ok_field():
 def test_profile_tag_is_sha256_of_its_rule():
     profile = lib.load_profile()
     entry = lib.profile_auth_network_tag(profile)
-    rule = "TOS-AUTH-NETWORK-TAG-v1;network=tos-public-testnet;global_id=2;epoch=6"
+    rule = "TOS-AUTH-NETWORK-TAG-v1;network=tos-public-testnet;global_id=2;epoch=7"
     assert entry["rule"] == rule
     assert entry["tag"] == hashlib.sha256(rule.encode()).digest()
-    assert entry["tag"].hex() == "99d8ae3469661895b820b4c41b6ad21acc448370e814c68d52ee3a12ae2c407a"
+    assert entry["tag"].hex() == "40ab325d9219dff844d803e0343d47fae297ee1ca7a9f6a26890619869f6fc36"
 
 
 @pytest.mark.parametrize(
@@ -1059,7 +1083,7 @@ def test_profile_tag_is_sha256_of_its_rule():
     [
         ({"value": "00" * 32}, "reserved"),
         ({"value": "e3" * 31}, "64 hexadecimal"),
-        ({"campaign_epoch": 7}, "not SHA-256"),
+        ({"campaign_epoch": 8}, "not SHA-256"),
         ({"rule": "something else"}, "not SHA-256"),
         ({"status": "PROPOSED"}, "status"),
         ({"campaign_epoch": True}, "campaign_epoch"),
