@@ -784,8 +784,19 @@ def test_engine_units_cap_rocksdb_caches_at_one_gib():
     ]
     for path in units:
         unit = path.read_text()
-        assert re.findall(r"--celldb-cache-size (\d+)", unit) == [str(gib)], path
-        assert re.findall(r"--celldb-cache-min-size (\d+)", unit) == [str(gib)], path
+        # The testnet validator carries the CellDb value in TOS_CELLDB_CACHE_BYTES, so
+        # the resources drop-in can lower it; its default is still 1 GiB.
+        celldb = re.findall(r"(?m)^Environment=TOS_CELLDB_CACHE_BYTES=(\d+)$", unit)
+        if path == units[0]:
+            assert celldb == [str(gib)], path
+            flag = r"\$\{TOS_CELLDB_CACHE_BYTES\}"
+            assert len(re.findall(rf"--celldb-cache-size {flag}(?:\s|$)", unit)) == 1, path
+            assert len(re.findall(rf"--celldb-cache-min-size {flag}(?:\s|$)", unit)) == 1, path
+            assert not re.findall(r"--celldb-cache(?:-min)?-size \d", unit), path
+        else:
+            assert celldb == [], path
+            assert re.findall(r"--celldb-cache-size (\d+)", unit) == [str(gib)], path
+            assert re.findall(r"--celldb-cache-min-size (\d+)", unit) == [str(gib)], path
         assert re.findall(r"(?m)^Environment=TOS_ROCKSDB_BLOCK_CACHE_SIZE=(\d+)$", unit) == [
             str(gib)
         ], path

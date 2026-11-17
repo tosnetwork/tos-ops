@@ -5,7 +5,20 @@
 #   install-node.sh prepare  --role rpc [--release DIR --rev COMMIT]
 #   install-node.sh activate --role validator|fullnode|rpc|dht --global-config FILE --sha256 HEX
 #                            [--genesis DIR [--genesis-ceremony]] [--validator-id HEX] [--no-start]
+#                            [--cache-bytes N --memory-max SIZE [--memory-high SIZE]]   (validator only)
 #   install-node.sh binaries --role validator|fullnode|rpc|dht --release DIR --rev COMMIT
+#
+# Validator resources (activate --role validator only; for a host below the
+# profile's memory floor, under a recorded preflight waiver): --cache-bytes N
+# lowers both RocksDB caches (CellDb and the shared block cache; 64 MiB up to
+# the 1 GiB cap) and --memory-max/--memory-high set the unit's cgroup limits
+# (SIZE is bytes or a K/M/G suffix, 1024-based). Each limit must leave at least
+# 1 GiB beside the two caches, MemoryHigh must be below MemoryMax, and
+# MemoryMax at most the host's MemTotal. They are written as the drop-in
+# tos-testnet-validator.service.d/50-resources.conf and recorded in
+# /etc/tos/validator-resources.json. Without these options no drop-in is
+# written and the unit's 1 GiB defaults apply. A drop-in already there that the
+# options do not reproduce exactly is refused, never replaced or ignored.
 #
 # The release DIR is what build-node-binaries.sh wrote on this host: each host
 # compiles its own binaries from the pinned tos commit. --rev is that pinned
@@ -88,8 +101,12 @@ profile() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); [d:=d[k
 [ $# -ge 1 ] || die "usage: install-node.sh prepare|activate|binaries --role ROLE ..."
 STEP=$1; shift
 ROLE="" PUBLIC_IP="" RELEASE="" REV="" GLOBAL_CONFIG="" SHA256="" GENESIS="" VALIDATOR_ID="" NO_START="" CEREMONY=""
+CACHE_BYTES="" MEMORY_MAX="" MEMORY_HIGH=""
 while [ $# -gt 0 ]; do
   case "$1" in
+    --cache-bytes) CACHE_BYTES=${2-}; shift 2 ;;
+    --memory-max) MEMORY_MAX=${2-}; shift 2 ;;
+    --memory-high) MEMORY_HIGH=${2-}; shift 2 ;;
     --role) ROLE=$2; shift 2 ;;
     --public-ip) PUBLIC_IP=$2; shift 2 ;;
     --release) RELEASE=$2; shift 2 ;;
@@ -108,6 +125,13 @@ case "$ROLE" in validator|fullnode|rpc|dht) ;; *) die "--role must be validator,
 if [ -n "$CEREMONY" ]; then
   [ "$STEP" = activate ] && [ "$ROLE" = validator ] || die "--genesis-ceremony applies only to activate --role validator"
   [ -n "$GENESIS" ] || die "--genesis-ceremony needs --genesis: the ledger starts at that zero state"
+fi
+RESOURCES=""
+if [ -n "$CACHE_BYTES$MEMORY_MAX$MEMORY_HIGH" ]; then
+  [ "$STEP" = activate ] && [ "$ROLE" = validator ] \
+    || die "--cache-bytes, --memory-max and --memory-high apply only to activate --role validator"
+  [ -n "$CACHE_BYTES" ] && [ -n "$MEMORY_MAX" ] || die "--cache-bytes and --memory-max are required together"
+  RESOURCES=1
 fi
 DB="$DB_ROOT/$ROLE"
 LOG="$LOG_ROOT/$ROLE"
@@ -318,7 +342,44 @@ activate_rpc() {
   done
 }
 
+# Validator resources: check the values and render the drop-in and its record
+# into a private temporary directory. Changes nothing on the host; refuses
+# before activate changes anything.
+RES_TMP=""
+RES_DROP_IN_DIR="$UNIT_DIR/tos-testnet-validator.service.d"
+RES_DROP_IN="$RES_DROP_IN_DIR/50-resources.conf"
+check_resources() {
+  [ "$ROLE" = validator ] || return 0
+  if [ -z "$RESOURCES" ]; then
+    [ ! -e "$RES_DROP_IN" ] \
+      || die "$RES_DROP_IN exists; pass the values it was written with, or remove it deliberately"
+    return 0
+  fi
+  RES_TMP=$(mktemp -d)
+  trap 'rm -rf "$RES_TMP"' EXIT
+  python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import testnet_lib as l
+try:
+    l.write_validator_resources(*sys.argv[2:])
+except l.TestnetError as exc:
+    sys.exit(f"install-node: {exc}")' \
+    "$HERE" "$RES_TMP" "$CACHE_BYTES" "$MEMORY_MAX" "$MEMORY_HIGH" /proc/meminfo || exit 1
+  if [ -e "$RES_DROP_IN" ] && ! cmp -s "$RES_TMP/50-resources.conf" "$RES_DROP_IN"; then
+    die "$RES_DROP_IN exists with different values; remove it deliberately before writing new ones"
+  fi
+}
+
+# Run by activate after its other checks: the drop-in (read at the unit's
+# daemon-reload in install_unit) and its record.
+install_resources() {
+  [ -n "$RES_TMP" ] || return 0
+  install -d -m 0755 -o root -g root "$RES_DROP_IN_DIR"
+  install -m 0644 -o root -g root "$RES_TMP/50-resources.conf" "$RES_DROP_IN"
+  install -m 0644 -o root -g root "$RES_TMP/validator-resources.json" "$ETC/validator-resources.json"
+  echo "validator resources: $(grep -E '^(Memory|Environment)' "$RES_TMP/50-resources.conf" | tr '\n' ' ')"
+}
+
 activate() {
+  check_resources
   if [ -n "$NO_START" ] && [ "$ROLE" != fullnode ]; then
     die "--no-start is for a full node that tosctl node sync bootstrap fills; a $ROLE is never bootstrapped"
   fi
@@ -347,6 +408,7 @@ activate() {
         --client-dir "$DB/console-client"
     fi
   fi
+  install_resources
   install_unit
   if [ -n "$NO_START" ]; then
     systemctl enable "$UNIT"
