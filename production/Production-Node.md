@@ -353,6 +353,11 @@ It downloads over HTTPS, without a GitHub login, the role's
 `SHA256SUMS`, `release-provenance.json` and the node build artifact
 `tos-node-linux-<arch>.zip`. It writes nothing unless:
 
+- for `--role validator`, the host may validate: it is x86-64 and
+  `/proc/cpuinfo` shows `sha_ni`, `ssse3`, `sse4_1` and `sse4_2`. arm64 is not
+  allowed for a validator (the tos repository's `doc/Validator.md`, "CPU
+  instruction set"); the arm64 release is for the `fullnode`, `rpc` and `dht`
+  roles. The node does not check this itself;
 - the provenance names the tos repository, the tag and a commit equal to
   `--rev`, and its `tos-node-<arch>-linux` record names workflow
   `build-tos-linux-node-binaries.yml`, `head_sha` equal to `--rev` and an

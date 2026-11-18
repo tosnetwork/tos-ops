@@ -218,6 +218,13 @@ def fakebin(tmp_path):
     return directory
 
 
+VALIDATOR_FLAGS = "fpu sse2 ssse3 sse4_1 sse4_2 sha_ni avx2"
+
+
+def cpuinfo_text(flags):
+    return f"processor\t: 0\nmodel name\t: test cpu\nflags\t\t: {flags}\n\nprocessor\t: 1\n"
+
+
 @pytest.fixture
 def served(tmp_path, fakebin):
     root = tmp_path / "served"
@@ -226,7 +233,9 @@ def served(tmp_path, fakebin):
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    release.env = {"PATH": f"{fakebin}:/usr/bin:/bin"}
+    cpuinfo = tmp_path / "cpuinfo"
+    cpuinfo.write_text(cpuinfo_text(VALIDATOR_FLAGS))
+    release.env = {"PATH": f"{fakebin}:/usr/bin:/bin", "TOS_CPUINFO": str(cpuinfo)}
     try:
         yield release, f"http://127.0.0.1:{server.server_address[1]}"
     finally:
@@ -270,7 +279,8 @@ def node_record(record, arch="x86_64"):
 # ---------------------------------------------------------------- happy path
 
 
-@pytest.mark.parametrize(("role", "binaries"), [("validator", NODE), ("dht", DHT), ("rpc", RPC)])
+# On arm64, which the validator role refuses: the full node installs the same binaries.
+@pytest.mark.parametrize(("role", "binaries"), [("fullnode", NODE), ("dht", DHT), ("rpc", RPC)])
 def test_a_verified_release_is_written_in_the_layout_check_release_accepts(
     served, tmp_path, role, binaries
 ):
@@ -582,7 +592,9 @@ def test_each_missing_release_library_is_refused_naming_its_package(
     served, tmp_path, soname, package, arch, needers
 ):
     release, url = served
-    result = run(release, url, tmp_path / "out", arch=arch, env={"FAKE_MISSING": soname})
+    # The same binaries under the role each architecture allows.
+    role = "validator" if arch == "x86_64" else "fullnode"
+    result = run(release, url, tmp_path / "out", role=role, arch=arch, env={"FAKE_MISSING": soname})
     refused(result, f"; install the packages {package}")
     for name in needers:
         assert f"{name} needs {soname}" in result.stderr
@@ -681,6 +693,47 @@ def test_a_binary_reporting_another_commit_is_refused(served, tmp_path):
     out = tmp_path / "out"
     refused(run(release, url, out), f"-V does not report Commit: {PIN}")
     assert not out.exists()
+
+
+# ---------------------------------------------------------------- validator host
+
+
+def test_the_validator_role_is_refused_on_arm64(served, tmp_path):
+    release, url = served
+    out = tmp_path / "out"
+    refused(
+        run(release, url, out, arch="arm64"),
+        "a validator must run on x86-64 with SHA-NI, not arm64",
+    )
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("role", ["fullnode", "rpc", "dht"])
+def test_the_other_roles_are_not_refused_for_arm64_or_cpu_flags(served, tmp_path, role):
+    # They get past the validator-host check: the refusal, if any, is about
+    # the release, never the architecture or the CPU.
+    release, url = served
+    (tmp_path / "cpuinfo").write_text(cpuinfo_text("fpu sse2"))
+    for arch in ("arm64", "x86_64"):
+        result = run(release, url, tmp_path / f"out-{arch}", role=role, arch=arch)
+        assert "a validator must run" not in result.stderr, result.stderr
+        assert "does not show" not in result.stderr, result.stderr
+
+
+@pytest.mark.parametrize("flag", ["sha_ni", "ssse3", "sse4_1", "sse4_2"])
+def test_a_validator_host_without_a_required_cpu_flag_is_refused(served, tmp_path, flag):
+    release, url = served
+    flags = " ".join(f for f in VALIDATOR_FLAGS.split() if f != flag)
+    (tmp_path / "cpuinfo").write_text(cpuinfo_text(flags))
+    out = tmp_path / "out"
+    refused(run(release, url, out), f"this host's CPU does not show {flag} in")
+    assert not out.exists()
+
+
+def test_a_validator_host_whose_cpu_flags_cannot_be_read_is_refused(served, tmp_path):
+    release, url = served
+    (tmp_path / "cpuinfo").unlink()
+    refused(run(release, url, tmp_path / "out"), "cannot read this host's CPU flags")
 
 
 # ---------------------------------------------------------------- arguments and output

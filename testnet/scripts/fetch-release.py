@@ -40,6 +40,12 @@ directory before --out is created, and the fetch is refused when
     missing library it knows (libjemalloc2, libgsl27, libblas3,
     libreadline8t64, libatomic1 on arm64). Nothing is installed here:
     install the packages and fetch again;
+  - --role validator is asked for on a host that may not validate: any
+    architecture but x86-64, or an x86-64 CPU that does not show the flags
+    sha_ni, ssse3, sse4_1 and sse4_2 in /proc/cpuinfo. The SLH-DSA check is
+    priced for the SHA-NI backend, which exists for x86-64 only (the tos
+    repository's doc/Validator.md); the arm64 release is for the fullnode, rpc
+    and dht roles;
   - --out already exists.
 
 The result has exactly the layout build-node-binaries.sh writes and
@@ -81,6 +87,13 @@ DEFAULT_REPOSITORY = "tosnetwork/tos"
 DEFAULT_BASE_URL = f"https://github.com/{DEFAULT_REPOSITORY}/releases/download"
 RELEASE_SET = "full"
 NODE_WORKFLOW = "build-tos-linux-node-binaries.yml"
+# A validator must run on x86-64 with these CPU flags visible (the tos
+# repository's doc/Validator.md, "CPU instruction set"); the node itself does
+# not check them at start-up.
+VALIDATOR_ARCH = "x86_64"
+VALIDATOR_CPU_FLAGS = ("sha_ni", "ssse3", "sse4_1", "sse4_2")
+# Tests point this at a file of their own.
+CPUINFO = Path(os.environ.get("TOS_CPUINFO", "/proc/cpuinfo"))
 # The same binaries build-node-binaries.sh builds for each role.
 ROLE_BINARIES = {
     "validator": [
@@ -382,6 +395,31 @@ def check_needed(stage: Path, binaries: list[str], needed: dict[str, list[str]])
             )
 
 
+def check_validator_host(arch: str) -> None:
+    """Refuse the validator role on a host doc/Validator.md does not allow."""
+    if arch != VALIDATOR_ARCH:
+        raise Refused(
+            f"a validator must run on x86-64 with SHA-NI, not {arch}; the {arch} release "
+            f"is for the fullnode, rpc and dht roles"
+        )
+    try:
+        text = CPUINFO.read_text()
+    except OSError as error:
+        raise Refused(f"cannot read this host's CPU flags from {CPUINFO}: {error}") from error
+    flags: set[str] = set()
+    for line in text.splitlines():
+        key, _, value = line.partition(":")
+        if key.strip() == "flags":
+            flags = set(value.split())
+            break
+    missing = [flag for flag in VALIDATOR_CPU_FLAGS if flag not in flags]
+    if missing:
+        raise Refused(
+            f"this host's CPU does not show {' '.join(missing)} in {CPUINFO}; a validator "
+            f"needs {' '.join(VALIDATOR_CPU_FLAGS)}, on the host or visible to the guest"
+        )
+
+
 def check_runnable(stage: Path, binaries: list[str], rev: str) -> str:
     """Refuse unless this host's loader and glibc run every binary at --rev.
 
@@ -449,6 +487,8 @@ def fetch(
         raise Refused(f"--role must be one of {sorted(ROLE_BINARIES)}, got {role!r}")
     if arch not in ARCHES:
         raise Refused(f"--arch must be one of {list(ARCHES)}, got {arch!r}")
+    if role == "validator":
+        check_validator_host(arch)
     if out.exists() or out.is_symlink():
         raise Refused(f"{out} already exists; fetch into a new directory")
     if not out.parent.is_dir():
