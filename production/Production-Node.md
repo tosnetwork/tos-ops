@@ -112,6 +112,8 @@ Systemd reads the root-only environment before dropping privileges. It is not
 safe to create root-owned vault/lock/config files inside the service state.
 Testnet's [operator guide](../testnet/OPERATOR.md#6-onboard-for-elections) shows the
 safe invocation wrapper. Production installation must preserve these boundaries.
+`/usr/local/bin/tosctl` itself comes from the release, not from a Rust
+toolchain on the host: see [section 10.2](#102-tosctl).
 
 ## 5. First start and binding the validator
 
@@ -303,6 +305,8 @@ wallet to the Elector; with a pool it sends the pool the order with the fees
 only, and the pool forwards the stake. Recovered stakes are credited to the
 staking account. Keep the pool funded for the stakes and the operator wallet
 funded for the fees; neither replaces the node's binding to the account.
+Install tosctl from the same release and commit as the node it drives
+([section 10.2](#102-tosctl)).
 
 Multi-key consensus custody **is available** in the reference build: up to eight
 held keys, election-date scheduling, group-specific key selection and hard expiry.
@@ -337,7 +341,9 @@ tool installs nothing:
 `libgsl.so.27` and `libblas.so.3` into `validator-engine`, `libreadline.so.8`
 into `validator-engine-console` and `lite-client`, and `libatomic.so.1` on
 arm64. The `needed` lines of the release's build record are the authority for
-this list. The fetch also uses `ldd` (glibc) and `readelf` (binutils).
+this list. The fetch also uses `ldd` (glibc) and `readelf` (binutils). tosctl
+is fetched separately and needs only `libssl3t64`
+([section 10.2](#102-tosctl)).
 
 ```bash
 sudo apt-get install libjemalloc2 libgsl27 libblas3 libreadline8t64   # arm64: also libatomic1
@@ -412,7 +418,56 @@ On a new host, install from that directory with the order in
 [OPERATOR.md section 10](../testnet/OPERATOR.md#10-run-the-public-rpc-role):
 both `prepare` steps, then both `activate` steps, the full node's first.
 
-### 10.2 Upgrades
+### 10.2 tosctl
+
+`tosctl`, the tool every operator command and the election task run, is taken
+from the same release, with the same checks, by its own role. No node role
+fetches it, and the host needs no Rust toolchain:
+
+```bash
+sudo apt-get install libssl3t64   # part of a standard Ubuntu 24.04 installation
+sudo python3 /opt/tos-testnet/scripts/fetch-release.py --tag v<VERSION> \
+  --rev <FULL_40_CHARACTER_COMMIT> --role tosctl --arch x86_64 \
+  --out /var/lib/tos-build/tosctl-<FULL_40_CHARACTER_COMMIT>
+sudo /opt/tos-testnet/scripts/install-tosctl.sh \
+  --release /var/lib/tos-build/tosctl-<FULL_40_CHARACTER_COMMIT> --rev <FULL_40_CHARACTER_COMMIT>
+```
+
+`fetch-release.py --role tosctl` downloads `tosctl-linux-<arch>` with the same
+metadata and node build artifact and applies every check of section 10: the
+provenance, `SHA256SUMS`, byte identity with the `tosctl` member of
+`tos-node-linux-<arch>.zip`, and the build record's revision, SHA-256 and
+`needed` line. The build record must also carry the `rustc`, `cargo` and
+`rust_flags` lines of tosctl's recipe, which the directory's `BUILD-INFO`
+keeps. On this host `ldd` must find every library and `tosctl --version` must
+print the exact line `COMMIT_ID: <rev>` (tosctl has no `-V` that reports the
+commit). tosctl links `libssl.so.3` and `libcrypto.so.3`, both in the Ubuntu
+24.04 package `libssl3t64`, which a refusal names when either is missing; it
+uses none of the node binaries' libraries. The validator CPU check does not
+apply to this role, and arm64 is allowed.
+
+[install-tosctl.sh](../testnet/scripts/install-tosctl.sh) downloads and builds
+nothing. It runs `check-release.sh` on the directory for `--rev`, requires the
+release tag and provenance digest `fetch-release.py` recorded, stages a
+root-owned copy (0755) beside `/usr/local/bin/tosctl`, and requires that copy
+to have the SHA-256 `SHA256SUMS` lists and to print `COMMIT_ID: <rev>` before
+renaming it into place, so the installed tool is always the old or the new
+binary. It then writes `/etc/tos/TOSCTL-BUILD-INFO`: `tos_revision` and
+`sha256`, the release's source lines (tag, repository, provenance digest,
+artifact) and recipe lines, and the time of the install. A tosctl process
+already running, such as the election task, keeps the old binary until an
+approved restart.
+
+This needs a release that publishes `tosctl-linux-<arch>` as a member of the
+node build artifact with `sha256` and `needed` lines in its build record.
+Release v2026.11 does not: `--role tosctl` refuses it as a missing asset, and
+its node roles are unaffected. Until an approved release publishes tosctl,
+production builds it on the host from the node's commit with
+[build-tosctl.sh](../testnet/scripts/build-tosctl.sh), which installs the tos
+repository's pinned Rust toolchain and writes the same two leading record
+fields. The testnet keeps that host build.
+
+### 10.3 Upgrades
 
 Verify revision, binary digests and authenticated release origin. Fetch before
 stopping, upgrade one validator at a time and prove sync/custody before the next.

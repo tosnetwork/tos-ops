@@ -106,7 +106,7 @@ def test_the_installer_installs_the_services_from_any_release_that_carries_them(
 
 
 def test_the_services_are_not_asked_for_a_version_line():
-    assert not set(SERVICES) & fetch_release.VERSIONED
+    assert not set(SERVICES) & set(fetch_release.VERSIONED)
 
 
 # ---------------------------------------------------------------- install-node.sh with fakes
