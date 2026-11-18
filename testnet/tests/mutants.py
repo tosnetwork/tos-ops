@@ -1713,6 +1713,127 @@ M += [
         '        "tos-pq-consensus-key",\n        "tosctl",\n    ],\n    "fullnode": [',
     ),
     (
+        "VH1 validator role on an architecture without a backend",
+        FETCH,
+        '    if host is None:\n        raise Refused(\n            f"a validator must verify',
+        '    if False:\n        raise Refused(\n            f"a validator must verify',
+    ),
+    (
+        "VH2 validator CPU flags not checked",
+        FETCH,
+        "    if missing:\n        raise Refused(\n            f\"this host's CPU does not show",
+        "    if False:\n        raise Refused(\n            f\"this host's CPU does not show",
+    ),
+    (
+        "VH3 validator host check skipped",
+        FETCH,
+        '    if role == "validator":\n        check_validator_host(arch)\n',
+        "",
+    ),
+    (
+        "VH4 arm64 features read from the flags line",
+        FETCH,
+        'cpuinfo_key="Features",',
+        'cpuinfo_key="flags",',
+    ),
+    (
+        "VH5 x86-64 flags read from the Features line",
+        FETCH,
+        'cpuinfo_key="flags",',
+        'cpuinfo_key="Features",',
+    ),
+    (
+        "VH6 the last CPU of cpuinfo decides",
+        FETCH,
+        "            flags = set(value.split())\n            break\n",
+        "            flags = set(value.split())\n",
+    ),
+    *[
+        (
+            f"VH{number} validator not asked for {flag}",
+            FETCH,
+            "cpu_flags=(" + ", ".join(f'"{name}"' for name in flags) + "),",
+            "cpu_flags=(" + "".join(f'"{name}", ' for name in flags if name != flag) + "),",
+        )
+        for number, (flags, flag) in enumerate(
+            [
+                (flags, flag)
+                for flags in (
+                    ("sha_ni", "ssse3", "sse4_1", "sse4_2"),
+                    ("aes", "pmull", "sha1", "sha2"),
+                )
+                for flag in flags
+            ],
+            7,
+        )
+    ],
+    (
+        "VB1 validator build backend not checked",
+        FETCH,
+        '        if role == "validator":\n            check_validator_build(arch, backends)\n',
+        "",
+    ),
+    (
+        "VB2 arm64 release without the backend line accepted",
+        FETCH,
+        "line_required=True,",
+        "line_required=False,",
+    ),
+    (
+        "VB3 x86-64 release without the backend line refused",
+        FETCH,
+        "line_required=False,",
+        "line_required=True,",
+    ),
+    (
+        "VB4 build without the backend accepted",
+        FETCH,
+        "    if not backends[host.backend]:\n",
+        "    if False:\n",
+    ),
+    (
+        "VB5 arm64 build judged by the x86-64 switch",
+        FETCH,
+        '        backend="TOS_SLHDSA_ARMV8_SHA2",\n        line_required=True,',
+        '        backend="TOS_SLHDSA_SHA_NI",\n        line_required=True,',
+    ),
+    (
+        "VB6 unknown backend switch accepted",
+        FETCH,
+        "if switch not in SLHDSA_SWITCHES or switch in backends or state not in",
+        "if switch in backends or state not in",
+    ),
+    (
+        "VB7 repeated backend switch accepted",
+        FETCH,
+        "if switch not in SLHDSA_SWITCHES or switch in backends or state not in",
+        "if switch not in SLHDSA_SWITCHES or state not in",
+    ),
+    (
+        "VB8 backend switch value other than ON or OFF accepted",
+        FETCH,
+        ' or switch in backends or state not in ("ON", "OFF"):',
+        " or switch in backends:",
+    ),
+    (
+        "VB9 backend line missing a switch accepted",
+        FETCH,
+        "        if len(backends) == len(SLHDSA_SWITCHES):\n",
+        "        if True:\n",
+    ),
+    (
+        "VB10 second backend line accepted",
+        FETCH,
+        '            if backends is not None:\n                raise Refused(f"the node build record has two',
+        '            if False:\n                raise Refused(f"the node build record has two',
+    ),
+    (
+        "VB11 backend line not recorded in BUILD-INFO",
+        FETCH,
+        '    "flags",\n    SLHDSA_KEY,\n',
+        '    "flags",\n',
+    ),
+    (
         "IT1 tosctl release not checked",
         INSTALL_TOSCTL,
         'bash "$HERE/check-release.sh" "$RELEASE" "$REV" tosctl || die',

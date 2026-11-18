@@ -359,11 +359,22 @@ It downloads over HTTPS, without a GitHub login, the role's
 `SHA256SUMS`, `release-provenance.json` and the node build artifact
 `tos-node-linux-<arch>.zip`. It writes nothing unless:
 
-- for `--role validator`, the host may validate: it is x86-64 and
-  `/proc/cpuinfo` shows `sha_ni`, `ssse3`, `sse4_1` and `sse4_2`. arm64 is not
-  allowed for a validator (the tos repository's `doc/Validator.md`, "CPU
-  instruction set"); the arm64 release is for the `fullnode`, `rpc` and `dht`
-  roles. The node does not check this itself;
+- for `--role validator`, the host may validate: a validator must verify with
+  the hardware SHA-256 backend of its architecture, never the portable one
+  (the tos repository's `doc/Validator.md`, "CPU instruction set").
+  `/proc/cpuinfo` must show `sha_ni`, `ssse3`, `sse4_1` and `sse4_2` in its
+  `flags` line on x86-64, or `aes`, `pmull`, `sha1` and `sha2` in its
+  `Features` line on arm64; a refusal names the missing ones. The node does
+  not check this itself, and the other roles are not asked for it;
+- for `--role validator`, the release was built with that backend: the build
+  record's `slhdsa_sha256` line shows `TOS_SLHDSA_SHA_NI=ON` on x86-64 or
+  `TOS_SLHDSA_ARMV8_SHA2=ON` on arm64. A build record without the line is
+  accepted on x86-64, whose builds had the backend before the line existed,
+  and refused on arm64, whose builds did not: release v2026.11 serves an
+  x86-64 validator and no arm64 validator (its arm64 assets serve the
+  `fullnode`, `rpc` and `dht` roles). A line that is not exactly
+  `TOS_SLHDSA_SHA_NI=<ON|OFF> TOS_SLHDSA_ARMV8_SHA2=<ON|OFF>` is refused for
+  every role;
 - the provenance names the tos repository, the tag and a commit equal to
   `--rev`, and its `tos-node-<arch>-linux` record names workflow
   `build-tos-linux-node-binaries.yml`, `head_sha` equal to `--rev` and an
@@ -379,7 +390,8 @@ It downloads over HTTPS, without a GitHub login, the role's
 
 The output directory is the layout `check-release.sh` accepts. Its `BUILD-INFO`
 records the source, the provenance digest, the build recipe lines (compiler,
-flags, jemalloc package, build OS) and the host's glibc. The tool refuses an
+flags, the `slhdsa_sha256` line when the release has one, jemalloc package,
+build OS) and the host's glibc. The tool refuses an
 existing `--out` and a release that lacks one of the role's assets: a release
 must publish the node build assets before this path works for it. These checks
 bind binaries to one published release; they do not authenticate the release
@@ -443,8 +455,8 @@ keeps. On this host `ldd` must find every library and `tosctl --version` must
 print the exact line `COMMIT_ID: <rev>` (tosctl has no `-V` that reports the
 commit). tosctl links `libssl.so.3` and `libcrypto.so.3`, both in the Ubuntu
 24.04 package `libssl3t64`, which a refusal names when either is missing; it
-uses none of the node binaries' libraries. The validator CPU check does not
-apply to this role, and arm64 is allowed.
+uses none of the node binaries' libraries. The validator's CPU and backend
+checks do not apply to this role.
 
 [install-tosctl.sh](../testnet/scripts/install-tosctl.sh) downloads and builds
 nothing. It runs `check-release.sh` on the directory for `--rev`, requires the

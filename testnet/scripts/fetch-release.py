@@ -39,6 +39,9 @@ directory before --out is created, and the fetch is refused when
     differs from the binary, or its `needed` line for a binary differs from
     the DT_NEEDED libraries readelf reads from it; for the tosctl role, the
     build record lacks the rustc, cargo or rust_flags line of tosctl's recipe;
+  - the build record's `slhdsa_sha256` line, which says which hardware
+    SHA-256 backends the node build compiled in, is there twice or is not
+    exactly `TOS_SLHDSA_SHA_NI=<ON|OFF> TOS_SLHDSA_ARMV8_SHA2=<ON|OFF>`;
   - this host cannot run the binaries: the dynamic loader (ldd) does not find
     every library they need, glibc is older than 2.39, or a binary does not
     report the commit: a node binary's -V must print Commit: <rev>, and
@@ -47,12 +50,17 @@ directory before --out is created, and the fetch is refused when
     libgsl27, libblas3, libreadline8t64, libatomic1 on arm64; libssl3t64 for
     tosctl's libssl.so.3 and libcrypto.so.3). Nothing is installed here:
     install the packages and fetch again;
-  - --role validator is asked for on a host that may not validate: any
-    architecture but x86-64, or an x86-64 CPU that does not show the flags
-    sha_ni, ssse3, sse4_1 and sse4_2 in /proc/cpuinfo. The SLH-DSA check is
-    priced for the SHA-NI backend, which exists for x86-64 only (the tos
-    repository's doc/Validator.md); the arm64 release is for the fullnode, rpc
-    and dht roles;
+  - --role validator is asked for on a host that may not validate. A
+    validator must verify with the hardware SHA-256 backend of its
+    architecture, which the SLH-DSA check is priced for (the tos repository's
+    doc/Validator.md): /proc/cpuinfo must show sha_ni, ssse3, sse4_1 and
+    sse4_2 in its `flags` line on x86-64, or aes, pmull, sha1 and sha2 in its
+    `Features` line on arm64. The other roles are not asked for them;
+  - --role validator is asked for a release built without that backend: the
+    build record's `slhdsa_sha256` line must show TOS_SLHDSA_SHA_NI=ON on
+    x86-64 and TOS_SLHDSA_ARMV8_SHA2=ON on arm64. A record without the line
+    is accepted on x86-64, whose builds had the backend before the line
+    existed, and refused on arm64, whose builds did not;
   - --out already exists.
 
 The result has exactly the layout build-node-binaries.sh writes and
@@ -97,11 +105,48 @@ DEFAULT_REPOSITORY = "tosnetwork/tos"
 DEFAULT_BASE_URL = f"https://github.com/{DEFAULT_REPOSITORY}/releases/download"
 RELEASE_SET = "full"
 NODE_WORKFLOW = "build-tos-linux-node-binaries.yml"
-# A validator must run on x86-64 with these CPU flags visible (the tos
-# repository's doc/Validator.md, "CPU instruction set"); the node itself does
-# not check them at start-up.
-VALIDATOR_ARCH = "x86_64"
-VALIDATOR_CPU_FLAGS = ("sha_ni", "ssse3", "sse4_1", "sse4_2")
+
+
+class ValidatorHost(NamedTuple):
+    """What a validator needs on one architecture to verify with hardware SHA-256."""
+
+    # The architecture as doc/Validator.md names it.
+    label: str
+    # The /proc/cpuinfo line that lists the CPU's features, and the features
+    # that must be on it.
+    cpuinfo_key: str
+    cpu_flags: tuple[str, ...]
+    # The build switch of this architecture's backend, which the build
+    # record's slhdsa_sha256 line must show ON.
+    backend: str
+    # True: a release whose build record has no slhdsa_sha256 line was built
+    # without the backend. False: it was built with it (x86-64 had it by
+    # default before the line existed).
+    line_required: bool
+
+
+# A validator must verify with the hardware SHA-256 backend of its
+# architecture (the tos repository's doc/Validator.md, "CPU instruction
+# set"); the node itself does not check this at start-up.
+VALIDATOR_HOSTS = {
+    "x86_64": ValidatorHost(
+        label="x86-64",
+        cpuinfo_key="flags",
+        cpu_flags=("sha_ni", "ssse3", "sse4_1", "sse4_2"),
+        backend="TOS_SLHDSA_SHA_NI",
+        line_required=False,
+    ),
+    "arm64": ValidatorHost(
+        label="arm64",
+        cpuinfo_key="Features",
+        cpu_flags=("aes", "pmull", "sha1", "sha2"),
+        backend="TOS_SLHDSA_ARMV8_SHA2",
+        line_required=True,
+    ),
+}
+# The build record line naming the compiled-in backends, and its switches.
+SLHDSA_KEY = "slhdsa_sha256"
+SLHDSA_SWITCHES = tuple(host.backend for host in VALIDATOR_HOSTS.values())
 # Tests point this at a file of their own.
 CPUINFO = Path(os.environ.get("TOS_CPUINFO", "/proc/cpuinfo"))
 # The same binaries build-node-binaries.sh builds for each role.
@@ -200,6 +245,7 @@ RECIPE_KEYS = (
     "architecture",
     "compiler",
     "flags",
+    SLHDSA_KEY,
     "jemalloc",
     "jemalloc_package",
     "build_os",
@@ -373,15 +419,18 @@ def check_build_info(
     digests: dict[str, str],
     recipe_keys: tuple[str, ...] = RECIPE_KEYS,
     required_keys: tuple[str, ...] = (),
-) -> tuple[dict[str, str], dict[str, list[str]]]:
+) -> tuple[dict[str, str], dict[str, list[str]], dict[str, bool] | None]:
     """Refuse unless the node build record names --rev and each binary's digest.
 
     Returns the record's recipe lines (those of recipe_keys it has; each of
-    required_keys must be there) and its `needed` lines (binary -> sorted
-    sonames), the libraries the build linked each binary against."""
+    required_keys must be there), its `needed` lines (binary -> sorted
+    sonames), the libraries the build linked each binary against, and its
+    hardware SHA-256 backends (switch -> compiled in), None for a record
+    without the slhdsa_sha256 line."""
     fields: dict[str, str] = {}
     listed: dict[str, str] = {}
     needed: dict[str, list[str]] = {}
+    backends: dict[str, bool] | None = None
     for line in text.splitlines():
         match = NODE_SHA_RE.fullmatch(line)
         if match:
@@ -394,6 +443,10 @@ def check_build_info(
                 raise Refused(f"the node build record has two needed lines for {name}")
             needed[name] = sorted(libraries)
             continue
+        if key == SLHDSA_KEY:
+            if backends is not None:
+                raise Refused(f"the node build record has two {SLHDSA_KEY} lines")
+            backends = parse_backends(value)
         fields.setdefault(key, value)
     if fields.get("tos_revision") != rev:
         raise Refused(
@@ -412,7 +465,42 @@ def check_build_info(
                 f"{', '.join(sorted(digests))} was built"
             )
     recipe = {key: fields[key] for key in recipe_keys if key in fields}
-    return recipe, needed
+    return recipe, needed, backends
+
+
+def parse_backends(value: str) -> dict[str, bool]:
+    """The switches of a build record's slhdsa_sha256 line: each one, once, ON or OFF."""
+    backends: dict[str, bool] = {}
+    for token in value.split():
+        switch, _, state = token.partition("=")
+        if switch not in SLHDSA_SWITCHES or switch in backends or state not in ("ON", "OFF"):
+            break
+        backends[switch] = state == "ON"
+    else:
+        if len(backends) == len(SLHDSA_SWITCHES):
+            return backends
+    expected = " ".join(f"{switch}=<ON|OFF>" for switch in SLHDSA_SWITCHES)
+    raise Refused(
+        f"the node build record's {SLHDSA_KEY} line is {value!r}, expected exactly {expected}"
+    )
+
+
+def check_validator_build(arch: str, backends: dict[str, bool] | None) -> None:
+    """Refuse a release whose node build lacks the validator's hardware SHA-256 backend."""
+    host = VALIDATOR_HOSTS[arch]
+    if backends is None:
+        if host.line_required:
+            raise Refused(
+                f"this release was built without the {host.label} hardware SHA-256 backend: "
+                f"its node build record has no {SLHDSA_KEY} line; a validator needs a "
+                f"release whose build record has that line with {host.backend}=ON"
+            )
+        return
+    if not backends[host.backend]:
+        raise Refused(
+            f"this release was built without the {host.label} hardware SHA-256 backend: "
+            f"its node build record says {host.backend}=OFF; a validator needs {host.backend}=ON"
+        )
 
 
 def run_tool(command: list[str]) -> subprocess.CompletedProcess:
@@ -467,10 +555,11 @@ def check_needed(stage: Path, binaries: list[str], needed: dict[str, list[str]])
 
 def check_validator_host(arch: str) -> None:
     """Refuse the validator role on a host doc/Validator.md does not allow."""
-    if arch != VALIDATOR_ARCH:
+    host = VALIDATOR_HOSTS.get(arch)
+    if host is None:
         raise Refused(
-            f"a validator must run on x86-64 with SHA-NI, not {arch}; the {arch} release "
-            f"is for the fullnode, rpc and dht roles"
+            f"a validator must verify with a hardware SHA-256 backend, which exists for "
+            f"{' and '.join(h.label for h in VALIDATOR_HOSTS.values())}, not for {arch}"
         )
     try:
         text = CPUINFO.read_text()
@@ -479,14 +568,15 @@ def check_validator_host(arch: str) -> None:
     flags: set[str] = set()
     for line in text.splitlines():
         key, _, value = line.partition(":")
-        if key.strip() == "flags":
+        if key.strip() == host.cpuinfo_key:
             flags = set(value.split())
             break
-    missing = [flag for flag in VALIDATOR_CPU_FLAGS if flag not in flags]
+    missing = [flag for flag in host.cpu_flags if flag not in flags]
     if missing:
         raise Refused(
-            f"this host's CPU does not show {' '.join(missing)} in {CPUINFO}; a validator "
-            f"needs {' '.join(VALIDATOR_CPU_FLAGS)}, on the host or visible to the guest"
+            f"this host's CPU does not show {' '.join(missing)} in the {host.cpuinfo_key} "
+            f"line of {CPUINFO}; a validator on {host.label} needs "
+            f"{' '.join(host.cpu_flags)}, on the host or visible to the guest"
         )
 
 
@@ -616,13 +706,15 @@ def fetch(
                     f"{asset} is not the {member_name} in {archive_name} that "
                     f"release-provenance.json records ({actual[asset]} != {member})"
                 )
-        recipe, needed = check_build_info(
+        recipe, needed, backends = check_build_info(
             (downloads / build_info).read_text(errors="replace"),
             rev=rev,
             digests={name: actual[asset] for name, asset in assets.items()},
             recipe_keys=ROLE_RECIPE_KEYS[role],
             required_keys=ROLE_REQUIRED_RECIPE_KEYS.get(role, ()),
         )
+        if role == "validator":
+            check_validator_build(arch, backends)
 
         stage = scratch / "release"
         stage.mkdir()
