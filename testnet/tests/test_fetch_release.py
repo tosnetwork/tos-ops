@@ -128,6 +128,9 @@ class FakeRelease:
         # record's lines of tosctl's recipe.
         self.tosctl_commit_line = f"COMMIT_ID: {commit}"
         self.rust_lines = list(RUST_LINES)
+        # The build record's slhdsa_sha256 line per architecture; None: a
+        # release built before the record carried it.
+        self.slhdsa: dict[str, str | None] = dict(SLHDSA)
         # Overrides of what a binary links, and of what the build record says.
         self.linked_override: dict[str, list[str]] = {}
         self.needed_override: dict[str, list[str] | None] = {}
@@ -159,6 +162,7 @@ class FakeRelease:
             f"architecture {'aarch64' if arch == 'arm64' else arch}",
             "compiler Ubuntu clang version 21.1.0",
             "flags CMAKE_BUILD_TYPE=Release TOS_ARCH=x86-64-v2 PORTABLE=x86-64-v2 TOS_USE_JEMALLOC=ON",
+            *([f"slhdsa_sha256 {self.slhdsa[arch]}"] if self.slhdsa[arch] is not None else []),
             *(self.rust_lines if self.tosctl else []),
             "jemalloc /usr/lib/libjemalloc.so",
             "jemalloc_package libjemalloc-dev 5.3.0-2build1",
@@ -252,10 +256,30 @@ def fakebin(tmp_path):
 
 
 VALIDATOR_FLAGS = "fpu sse2 ssse3 sse4_1 sse4_2 sha_ni avx2"
+# An arm64 CPU a validator may run on, as its /proc/cpuinfo Features line.
+ARM64_FEATURES = "fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics"
+# The build record's line for the hardware SHA-256 backends of each release build.
+SLHDSA = {
+    "x86_64": "TOS_SLHDSA_SHA_NI=ON TOS_SLHDSA_ARMV8_SHA2=OFF",
+    "arm64": "TOS_SLHDSA_SHA_NI=OFF TOS_SLHDSA_ARMV8_SHA2=ON",
+}
+# What a validator needs of each architecture's /proc/cpuinfo.
+VALIDATOR_CPU = {
+    "x86_64": ("flags", VALIDATOR_FLAGS, ["sha_ni", "ssse3", "sse4_1", "sse4_2"]),
+    "arm64": ("Features", ARM64_FEATURES, ["aes", "pmull", "sha1", "sha2"]),
+}
+BACKEND = {"x86_64": "TOS_SLHDSA_SHA_NI", "arm64": "TOS_SLHDSA_ARMV8_SHA2"}
 
 
-def cpuinfo_text(flags):
-    return f"processor\t: 0\nmodel name\t: test cpu\nflags\t\t: {flags}\n\nprocessor\t: 1\n"
+def cpuinfo_text(flags, key="flags"):
+    # x86-64 lists them as "flags", aarch64 as "Features".
+    return f"processor\t: 0\nmodel name\t: test cpu\n{key}\t\t: {flags}\n\nprocessor\t: 1\n"
+
+
+def validator_cpuinfo(tmp_path, arch, flags=None):
+    """Point the fetch at a CPU of this architecture, by default one a validator may use."""
+    key, good, _ = VALIDATOR_CPU[arch]
+    (tmp_path / "cpuinfo").write_text(cpuinfo_text(good if flags is None else flags, key))
 
 
 @pytest.fixture
@@ -312,7 +336,7 @@ def node_record(record, arch="x86_64"):
 # ---------------------------------------------------------------- happy path
 
 
-# On arm64, which the validator role refuses: the full node installs the same binaries.
+# Without a validator's CPU: these roles are not asked for one.
 @pytest.mark.parametrize(("role", "binaries"), [("fullnode", NODE), ("dht", DHT), ("rpc", RPC)])
 def test_a_verified_release_is_written_in_the_layout_check_release_accepts(
     served, tmp_path, role, binaries
@@ -334,6 +358,7 @@ def test_a_verified_release_is_written_in_the_layout_check_release_accepts(
     assert f"node_build_info_sha256 {build}" in info
     assert "node_build compiler Ubuntu clang version 21.1.0" in info
     assert "node_build jemalloc_package libjemalloc-dev 5.3.0-2build1" in info
+    assert f"node_build slhdsa_sha256 {SLHDSA['arm64']}" in info
     assert any(
         line.startswith("node_build flags ") and "TOS_USE_JEMALLOC=ON" in line for line in info
     )
@@ -625,9 +650,8 @@ def test_each_missing_release_library_is_refused_naming_its_package(
     served, tmp_path, soname, package, arch, needers
 ):
     release, url = served
-    # The same binaries under the role each architecture allows.
-    role = "validator" if arch == "x86_64" else "fullnode"
-    result = run(release, url, tmp_path / "out", role=role, arch=arch, env={"FAKE_MISSING": soname})
+    validator_cpuinfo(tmp_path, arch)
+    result = run(release, url, tmp_path / "out", arch=arch, env={"FAKE_MISSING": soname})
     refused(result, f"; install the packages {package}")
     for name in needers:
         assert f"{name} needs {soname}" in result.stderr
@@ -731,42 +755,233 @@ def test_a_binary_reporting_another_commit_is_refused(served, tmp_path):
 # ---------------------------------------------------------------- validator host
 
 
-def test_the_validator_role_is_refused_on_arm64(served, tmp_path):
+@pytest.mark.parametrize("arch", ARCHES)
+def test_a_validator_is_fetched_on_each_architecture_with_its_hardware_sha256(
+    served, tmp_path, arch
+):
     release, url = served
+    validator_cpuinfo(tmp_path, arch)
     out = tmp_path / "out"
+    result = run(release, url, out, arch=arch)
+    assert result.returncode == 0, result.stderr
+    assert sorted(p.name for p in out.iterdir()) == sorted([*NODE, "SHA256SUMS", "BUILD-INFO"])
+    for name in NODE:
+        assert (out / name).read_bytes() == release.binary(name, arch)
+    info = (out / "BUILD-INFO").read_text().splitlines()
+    assert f"arch {arch}" in info
+    assert f"node_build slhdsa_sha256 {SLHDSA[arch]}" in info
+    # Right after the flags line, as the build record has it.
+    assert info[info.index(f"node_build slhdsa_sha256 {SLHDSA[arch]}") - 1].startswith(
+        "node_build flags "
+    )
+    check = subprocess.run(["bash", str(CHECK), str(out), PIN, *NODE], capture_output=True)
+    assert check.returncode == 0, check.stderr
+
+
+@pytest.mark.parametrize(
+    ("arch", "flag"), [(arch, flag) for arch in ARCHES for flag in VALIDATOR_CPU[arch][2]]
+)
+def test_a_validator_host_without_a_required_cpu_flag_is_refused(served, tmp_path, arch, flag):
+    release, url = served
+    key, good, needed = VALIDATOR_CPU[arch]
+    validator_cpuinfo(tmp_path, arch, " ".join(f for f in good.split() if f != flag))
+    out = tmp_path / "out"
+    label = {"x86_64": "x86-64", "arm64": "arm64"}[arch]
     refused(
-        run(release, url, out, arch="arm64"),
-        "a validator must run on x86-64 with SHA-NI, not arm64",
+        run(release, url, out, arch=arch),
+        f"this host's CPU does not show {flag} in the {key} line of {tmp_path / 'cpuinfo'}; "
+        f"a validator on {label} needs {' '.join(needed)}, on the host",
     )
     assert not out.exists()
 
 
-@pytest.mark.parametrize("role", ["fullnode", "rpc", "dht"])
-def test_the_other_roles_are_not_refused_for_arm64_or_cpu_flags(served, tmp_path, role):
-    # They get past the validator-host check: the refusal, if any, is about
-    # the release, never the architecture or the CPU.
+@pytest.mark.parametrize("arch", ARCHES)
+def test_a_validator_host_is_read_from_its_own_architectures_cpuinfo_line(served, tmp_path, arch):
+    # A file that lists the right names under the other architecture's key
+    # says nothing about this one: every flag is reported missing.
     release, url = served
-    (tmp_path / "cpuinfo").write_text(cpuinfo_text("fpu sse2"))
-    for arch in ("arm64", "x86_64"):
-        result = run(release, url, tmp_path / f"out-{arch}", role=role, arch=arch)
-        assert "a validator must run" not in result.stderr, result.stderr
-        assert "does not show" not in result.stderr, result.stderr
-
-
-@pytest.mark.parametrize("flag", ["sha_ni", "ssse3", "sse4_1", "sse4_2"])
-def test_a_validator_host_without_a_required_cpu_flag_is_refused(served, tmp_path, flag):
-    release, url = served
-    flags = " ".join(f for f in VALIDATOR_FLAGS.split() if f != flag)
-    (tmp_path / "cpuinfo").write_text(cpuinfo_text(flags))
+    (other,) = [a for a in ARCHES if a != arch]
+    key, good, needed = VALIDATOR_CPU[arch]
+    (tmp_path / "cpuinfo").write_text(cpuinfo_text(good, VALIDATOR_CPU[other][0]))
     out = tmp_path / "out"
-    refused(run(release, url, out), f"this host's CPU does not show {flag} in")
+    refused(
+        run(release, url, out, arch=arch),
+        f"this host's CPU does not show {' '.join(needed)} in the {key} line of",
+    )
     assert not out.exists()
 
 
-def test_a_validator_host_whose_cpu_flags_cannot_be_read_is_refused(served, tmp_path):
+def test_a_validator_host_is_read_from_the_first_cpu_of_cpuinfo(served, tmp_path):
+    # The first Features line decides, as the first flags line does on x86-64.
+    release, url = served
+    first = cpuinfo_text("fp asimd", "Features")
+    (tmp_path / "cpuinfo").write_text(first + cpuinfo_text(ARM64_FEATURES, "Features"))
+    refused(
+        run(release, url, tmp_path / "out", arch="arm64"),
+        "this host's CPU does not show aes pmull sha1 sha2 in the Features line",
+    )
+
+
+@pytest.mark.parametrize("role", ["fullnode", "rpc", "dht", "tosctl"])
+def test_the_other_roles_are_not_asked_for_a_validators_cpu_or_backend(served, tmp_path, role):
+    # Neither the CPU nor the build's backend line concerns them: they are
+    # fetched from a release without the line, on a CPU without the features.
+    release, url = served
+    release.slhdsa = dict.fromkeys(ARCHES)
+    release.publish()
+    (tmp_path / "cpuinfo").write_text(cpuinfo_text("fpu sse2"))
+    for arch in ARCHES:
+        out = tmp_path / f"out-{arch}"
+        result = run(release, url, out, role=role, arch=arch)
+        assert result.returncode == 0, result.stderr
+        assert "slhdsa_sha256" not in (out / "BUILD-INFO").read_text()
+    (tmp_path / "cpuinfo").unlink()
+    assert run(release, url, tmp_path / "unread", role=role).returncode == 0
+
+
+@pytest.mark.parametrize("arch", ARCHES)
+def test_a_validator_host_whose_cpu_flags_cannot_be_read_is_refused(served, tmp_path, arch):
     release, url = served
     (tmp_path / "cpuinfo").unlink()
-    refused(run(release, url, tmp_path / "out"), "cannot read this host's CPU flags")
+    refused(run(release, url, tmp_path / "out", arch=arch), "cannot read this host's CPU flags")
+
+
+def test_an_architecture_without_a_hardware_backend_is_refused_for_a_validator():
+    module = load_module()
+    with pytest.raises(module.Refused, match="exists for x86-64 and arm64, not for riscv64"):
+        module.check_validator_host("riscv64")
+    assert set(module.VALIDATOR_HOSTS) == set(module.ARCHES)
+
+
+# ---------------------------------------------------------------- the build's SHA-256 backend
+
+
+def test_an_x86_64_release_without_the_backend_line_serves_a_validator(served, tmp_path):
+    # A release published before the record carried the line: its x86-64
+    # build had the backend by default.
+    release, url = served
+    release.slhdsa["x86_64"] = None
+    release.publish()
+    assert b"slhdsa_sha256" not in (release.dir / "node-build-info-linux-x86_64.txt").read_bytes()
+    out = tmp_path / "out"
+    result = run(release, url, out)
+    assert result.returncode == 0, result.stderr
+    assert "slhdsa_sha256" not in (out / "BUILD-INFO").read_text()
+
+
+def test_an_arm64_release_without_the_backend_line_is_refused_for_a_validator(served, tmp_path):
+    release, url = served
+    release.slhdsa["arm64"] = None
+    release.publish()
+    validator_cpuinfo(tmp_path, "arm64")
+    out = tmp_path / "out"
+    refused(
+        run(release, url, out, arch="arm64"),
+        "this release was built without the arm64 hardware SHA-256 backend: its node build "
+        "record has no slhdsa_sha256 line; a validator needs a release whose build record "
+        "has that line with TOS_SLHDSA_ARMV8_SHA2=ON",
+    )
+    assert not out.exists()
+    # The full node of the same release is not concerned.
+    assert run(release, url, tmp_path / "fullnode", role="fullnode", arch="arm64").returncode == 0
+
+
+@pytest.mark.parametrize("arch", ARCHES)
+@pytest.mark.parametrize("other", ["ON", "OFF"])
+def test_a_release_built_without_the_architectures_backend_is_refused_for_a_validator(
+    served, tmp_path, arch, other
+):
+    # Only this architecture's switch counts, whatever the other one says.
+    release, url = served
+    (other_arch,) = [a for a in ARCHES if a != arch]
+    line = {BACKEND[arch]: "OFF", BACKEND[other_arch]: other}
+    release.slhdsa[arch] = " ".join(f"{switch}={line[switch]}" for switch in BACKEND.values())
+    release.publish()
+    validator_cpuinfo(tmp_path, arch)
+    out = tmp_path / "out"
+    label = {"x86_64": "x86-64", "arm64": "arm64"}[arch]
+    refused(
+        run(release, url, out, arch=arch),
+        f"this release was built without the {label} hardware SHA-256 backend: its node "
+        f"build record says {BACKEND[arch]}=OFF; a validator needs {BACKEND[arch]}=ON",
+    )
+    assert not out.exists()
+    result = run(release, url, tmp_path / "fullnode", role="fullnode", arch=arch)
+    assert result.returncode == 0, result.stderr
+    assert (
+        f"node_build slhdsa_sha256 {release.slhdsa[arch]}"
+        in (tmp_path / "fullnode" / "BUILD-INFO").read_text().splitlines()
+    )
+
+
+def test_a_build_with_both_backends_serves_a_validator(served, tmp_path):
+    release, url = served
+    release.slhdsa["arm64"] = "TOS_SLHDSA_ARMV8_SHA2=ON TOS_SLHDSA_SHA_NI=ON"
+    release.publish()
+    validator_cpuinfo(tmp_path, "arm64")
+    result = run(release, url, tmp_path / "out", arch="arm64")
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "",
+        "TOS_SLHDSA_SHA_NI=ON",
+        "TOS_SLHDSA_ARMV8_SHA2=OFF",
+        "TOS_SLHDSA_SHA_NI=ON TOS_SLHDSA_ARMV8_SHA2=OFF TOS_SLHDSA_AVX2=ON",
+        "TOS_SLHDSA_SHA_NI=ON TOS_SLHDSA_AVX2=ON",
+        "TOS_SLHDSA_SHA_NI=ON TOS_SLHDSA_ARMV8_SHA2",
+        "TOS_SLHDSA_SHA_NI=ON TOS_SLHDSA_ARMV8_SHA2=",
+        "TOS_SLHDSA_SHA_NI=ON TOS_SLHDSA_ARMV8_SHA2=1",
+        "TOS_SLHDSA_SHA_NI=on TOS_SLHDSA_ARMV8_SHA2=OFF",
+        "TOS_SLHDSA_SHA_NI=ON TOS_SLHDSA_SHA_NI=ON",
+        "TOS_SLHDSA_SHA_NI=ON TOS_SLHDSA_SHA_NI=OFF TOS_SLHDSA_ARMV8_SHA2=OFF",
+        "TOS_SLHDSA_SHA_NI=ON portable TOS_SLHDSA_ARMV8_SHA2=OFF",
+    ],
+)
+@pytest.mark.parametrize("role", ["validator", "fullnode", "dht", "tosctl"])
+def test_a_malformed_backend_line_is_refused_for_every_role(served, tmp_path, line, role):
+    release, url = served
+    release.slhdsa["x86_64"] = line
+    release.publish()
+    out = tmp_path / "out"
+    refused(
+        run(release, url, out, role=role),
+        f"the node build record's slhdsa_sha256 line is {line!r}, expected exactly "
+        "TOS_SLHDSA_SHA_NI=<ON|OFF> TOS_SLHDSA_ARMV8_SHA2=<ON|OFF>",
+    )
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("role", ["validator", "fullnode"])
+def test_a_build_record_with_two_backend_lines_is_refused(served, tmp_path, role):
+    # The first would say ON and the second OFF: neither is taken.
+    release, url = served
+    release.slhdsa["x86_64"] = (
+        f"{SLHDSA['x86_64']}\nslhdsa_sha256 TOS_SLHDSA_SHA_NI=OFF TOS_SLHDSA_ARMV8_SHA2=OFF"
+    )
+    release.publish()
+    refused(
+        run(release, url, tmp_path / "out", role=role),
+        "the node build record has two slhdsa_sha256 lines",
+    )
+
+
+def test_the_validator_table_names_each_architectures_backend():
+    module = load_module()
+    for arch, (key, _, needed) in VALIDATOR_CPU.items():
+        host = module.VALIDATOR_HOSTS[arch]
+        assert (host.cpuinfo_key, list(host.cpu_flags), host.backend) == (
+            key,
+            needed,
+            BACKEND[arch],
+        )
+    assert not module.VALIDATOR_HOSTS["x86_64"].line_required
+    assert module.VALIDATOR_HOSTS["arm64"].line_required
+    for role in NODE_ROLES:
+        assert "slhdsa_sha256" in module.ROLE_RECIPE_KEYS[role]
+    assert "slhdsa_sha256" not in module.ROLE_RECIPE_KEYS["tosctl"]
 
 
 # ---------------------------------------------------------------- arguments and output
