@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Verify a release directory before install-node.sh installs from it.
+# Verify a release directory before install-node.sh or install-tosctl.sh
+# installs from it.
 #
 #   check-release.sh DIR REV BINARY...
 #
-# DIR is what build-node-binaries.sh wrote. The release is accepted only if
+# DIR is what build-node-binaries.sh or fetch-release.py wrote; for the tosctl
+# role of fetch-release.py, BINARY is tosctl. The release is accepted only if
 #   - BUILD-INFO names tos_revision REV, the commit the operator pinned, so a
 #     release of another commit is refused even when it is self-consistent;
 #   - SHA256SUMS lists every other file in DIR and each one verifies;

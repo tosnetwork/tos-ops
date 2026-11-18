@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Mutation guards for the operations journal, the election task, the handover checker,
-the release fetch and the rpc role's installer and unit templates.
+the release fetch, the tosctl installer and the rpc role's installer and unit templates.
 
 Each mutant replaces one exact snippet of a script, runs the whole suite and
 restores the file. Every mutant must make a test fail: only pytest's exit 1
@@ -34,6 +34,7 @@ HO = W / "scripts/check-handover.py"
 LIB = W / "scripts/testnet_lib.py"
 FETCH = W / "scripts/fetch-release.py"
 INSTALL = W / "scripts/install-node.sh"
+INSTALL_TOSCTL = W / "scripts/install-tosctl.sh"
 BUILD = W / "scripts/build-node-binaries.sh"
 OPERATOR = W / "scripts/testnet-operator.py"
 INDEX_UNIT = W / "systemd/tos-testnet-wallet-index.service"
@@ -1593,14 +1594,14 @@ M += [
     (
         "FR16 missing library accepted",
         FETCH,
-        "    if missing:\n",
-        "    if False:\n",
+        "    if missing:\n        libraries = sorted(",
+        "    if False:\n        libraries = sorted(",
     ),
     ("FR17 old glibc accepted", FETCH, "if glibc < MIN_GLIBC:", "if False:"),
     (
         "FR18 reported commit ignored",
         FETCH,
-        'if f"Commit: {rev}" not in ran.stdout:',
+        "if not report.reported(ran.stdout, rev):",
         "if False:",
     ),
     (
@@ -1656,6 +1657,163 @@ M += [
         "        if False:\n",
     ),
     ("FR31 missing readelf not named", FETCH, "    if readelf is None:\n", "    if False:\n"),
+    (
+        "FR32 tosctl asked for its commit with -V",
+        FETCH,
+        'TOSCTL_COMMIT_REPORT = CommitReport(option="--version",',
+        'TOSCTL_COMMIT_REPORT = CommitReport(option="-V",',
+    ),
+    (
+        "FR33 tosctl commit accepted inside a longer line",
+        FETCH,
+        'text="COMMIT_ID: {rev}", whole_line=True)',
+        'text="COMMIT_ID: {rev}", whole_line=False)',
+    ),
+    (
+        "FR34 tosctl not asked for its commit",
+        FETCH,
+        '    "tosctl": TOSCTL_COMMIT_REPORT,\n',
+        "",
+    ),
+    ("FR35 libssl3t64 not named for libssl", FETCH, '    "libssl.so.3": "libssl3t64",\n', ""),
+    (
+        "FR36 libssl3t64 not named for libcrypto",
+        FETCH,
+        '    "libcrypto.so.3": "libssl3t64",\n',
+        "",
+    ),
+    (
+        "FR37 tosctl recipe lines not required",
+        FETCH,
+        "            required_keys=ROLE_REQUIRED_RECIPE_KEYS.get(role, ()),\n",
+        "",
+    ),
+    (
+        "FR38 tosctl recipe lines not recorded",
+        FETCH,
+        '        *TOSCTL_RECIPE_KEYS,\n        "build_os",',
+        '        "build_os",',
+    ),
+    (
+        "FR39 a node role needs tosctl",
+        FETCH,
+        '    "dht": ["dht-server", "generate-random-id"],',
+        '    "dht": ["dht-server", "generate-random-id", "tosctl"],',
+    ),
+    (
+        "FR40 tosctl fetch points at install-node.sh",
+        FETCH,
+        "    if args.role == TOSCTL_ROLE:\n",
+        "    if False:\n",
+    ),
+    (
+        "FR41 validator and full node roles need tosctl",
+        FETCH,
+        '        "tos-pq-consensus-key",\n    ],\n    "fullnode": [',
+        '        "tos-pq-consensus-key",\n        "tosctl",\n    ],\n    "fullnode": [',
+    ),
+    (
+        "IT1 tosctl release not checked",
+        INSTALL_TOSCTL,
+        'bash "$HERE/check-release.sh" "$RELEASE" "$REV" tosctl || die',
+        "true || die",
+    ),
+    (
+        "IT2 linked tosctl accepted",
+        INSTALL_TOSCTL,
+        '[ ! -L "$RELEASE/tosctl" ] || die',
+        "true || die",
+    ),
+    (
+        "IT3 release without a source accepted",
+        INSTALL_TOSCTL,
+        '[ -n "$TAG" ] || die',
+        "true || die",
+    ),
+    (
+        "IT4 release with two sources accepted",
+        INSTALL_TOSCTL,
+        '[ "$(wc -l <<<"$TAG")" = 1 ] || die',
+        "true || die",
+    ),
+    (
+        "IT5 release without a provenance digest accepted",
+        INSTALL_TOSCTL,
+        '[[ "$PROVENANCE" =~ ^[0-9a-f]{64}$ ]] || die',
+        "true || die",
+    ),
+    (
+        "IT6 SHA256SUMS entry of tosctl not read as one digest",
+        INSTALL_TOSCTL,
+        '[[ "$EXPECTED" =~ ^[0-9a-f]{64}$ ]] || die',
+        "true || die",
+    ),
+    (
+        "IT7 staged copy not compared with SHA256SUMS",
+        INSTALL_TOSCTL,
+        '[ "$ACTUAL" = "$EXPECTED" ] \\\n',
+        "true \\\n",
+    ),
+    (
+        "IT8 failed --version accepted",
+        INSTALL_TOSCTL,
+        '[ "$STATUS" = 0 ] \\\n',
+        "true \\\n",
+    ),
+    (
+        "IT9 reported commit ignored",
+        INSTALL_TOSCTL,
+        'grep -qxF "COMMIT_ID: $REV" <<<"$REPORTED" \\\n',
+        "true \\\n",
+    ),
+    (
+        "IT10 reported commit accepted inside a longer line",
+        INSTALL_TOSCTL,
+        'grep -qxF "COMMIT_ID: $REV"',
+        'grep -qF "COMMIT_ID: $REV"',
+    ),
+    (
+        "IT11 test prefix accepted from root",
+        INSTALL_TOSCTL,
+        'if [ -n "$PREFIX" ] && [ "$(/usr/bin/id -u)" = 0 ]; then die',
+        "if false; then die",
+    ),
+    (
+        "IT12 test prefix guard reads the injectable EUID",
+        INSTALL_TOSCTL,
+        'if [ -n "$PREFIX" ] && [ "$(/usr/bin/id -u)" = 0 ]; then die',
+        'if [ -n "$PREFIX" ] && [ "$EUID" = 0 ]; then die',
+    ),
+    (
+        "IT13 unprivileged install accepted",
+        INSTALL_TOSCTL,
+        '[ "$(id -u)" = 0 ] || die "run as root"',
+        'true || die "run as root"',
+    ),
+    (
+        "IT14 installed record without the release source",
+        INSTALL_TOSCTL,
+        """  awk '$1 != "tos_revision" && $1 != "sha256" && $1 != "installed"' "$INFO"\n""",
+        "",
+    ),
+    (
+        "IT15 staged files left behind on a refusal",
+        INSTALL_TOSCTL,
+        "trap cleanup EXIT\n",
+        "trap - EXIT\n",
+    ),
+    (
+        "IT16 pinned revision not validated by the installer",
+        INSTALL_TOSCTL,
+        '[[ "$REV" =~ ^[0-9a-f]{40}$ ]] || die',
+        "true || die",
+    ),
+    (
+        "IT17 missing --release not refused by the installer",
+        INSTALL_TOSCTL,
+        '[ -n "$RELEASE" ] || die',
+        "true || die",
+    ),
     (
         "RR1 rpc install role without the services",
         INSTALL,

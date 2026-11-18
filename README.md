@@ -62,7 +62,8 @@ Real inventories and ceremony directories stay outside the tree.
 | [README.md](testnet/README.md) | Roles, monitoring, alert setup and verification guidance. |
 | [preflight.py](testnet/scripts/preflight.py) / [setup-time.sh](testnet/scripts/setup-time.sh) | Check host resources, UDP reachability and time synchronization. |
 | [build-node-binaries.sh](testnet/scripts/build-node-binaries.sh) / [build-tosctl.sh](testnet/scripts/build-tosctl.sh) | Build pinned node/operator binaries on their destination hosts. |
-| [fetch-release.py](testnet/scripts/fetch-release.py) | Production binary path: fetch a role's binaries from a tos GitHub release, verify them against `SHA256SUMS` and `release-provenance.json`, and write a release directory `install-node.sh` accepts. |
+| [fetch-release.py](testnet/scripts/fetch-release.py) | Production binary path: fetch a role's binaries from a tos GitHub release, verify them against `SHA256SUMS` and `release-provenance.json`, and write a release directory `install-node.sh` accepts. Its `tosctl` role does the same for tosctl alone, from a release that publishes it. |
+| [install-tosctl.sh](testnet/scripts/install-tosctl.sh) | Production tosctl path: install tosctl from the directory `fetch-release.py --role tosctl` wrote, re-verified against the pinned commit, without a Rust toolchain on the host. |
 | [remove-old-builds.sh](testnet/scripts/remove-old-builds.sh) | After an upgrade: remove other revisions' build trees and releases and `/opt/tos-testnet.old`, keeping the running revision and every log. |
 | [tok01-signer.py](testnet/scripts/tok01-signer.py) | Signer adapter for tos `scripts/tok01-lifecycle.py --sender-command`: wallet v1 senders, keys 0600, returns only after the sender's seqno moved. |
 | [install-node.sh](testnet/scripts/install-node.sh) | Prepare, install binaries and activate validator, full-node, rpc (wallet index and public RPC beside a full node) or DHT roles. |

@@ -34,6 +34,20 @@ DHT = ["dht-server", "generate-random-id"]
 SERVICES = ["tos-rpc", "tos-wallet-index"]
 RPC = NODE + SERVICES
 ALL = sorted(set(NODE + DHT + SERVICES))
+# The operator tool, published as tosctl-linux-<arch> from the same artifact
+# by a release that builds it. Its own role fetches it; no node role does.
+TOSCTL = "tosctl"
+NODE_ROLES = {"validator": NODE, "fullnode": NODE, "rpc": RPC, "dht": DHT}
+# What the release build links into tosctl (no C++ runtime), as its build
+# record lists it on each architecture.
+TOSCTL_LINKED = ["libc.so.6", "libcrypto.so.3", "libgcc_s.so.1", "libm.so.6", "libssl.so.3"]
+LOADER = {"x86_64": "ld-linux-x86-64.so.2", "arm64": "ld-linux-aarch64.so.1"}
+RUST_LINES = [
+    "rustc 1.100.0 (0ef1bc386 2026-11-09)",
+    "cargo 1.100.0 (3acc79c0c 2026-11-05)",
+    "rust_flags RUSTFLAGS=-C target-cpu=x86-64-v2 CC=clang-21 "
+    "cargo build --release --locked -p tosctl",
+]
 # The libraries the release's node build links into each binary (tos release
 # policy: the build record's `needed` lines are the authority).
 STDLIBS = ["libc.so.6", "libgcc_s.so.1", "libm.so.6", "libstdc++.so.6"]
@@ -54,6 +68,8 @@ ARCHES = ("x86_64", "arm64")
 
 
 def linked(name: str, arch: str) -> list[str]:
+    if name == TOSCTL:
+        return sorted([*TOSCTL_LINKED, LOADER[arch]])
     extra = ["libatomic.so.1"] if arch == "arm64" else []
     return sorted(LINKED[name] + STDLIBS + extra)
 
@@ -106,6 +122,12 @@ class FakeRelease:
         self.build_info_member = True
         # False: a release published before the node artifact carried the services.
         self.services = True
+        # False: a release published before the node artifact carried tosctl.
+        self.tosctl = True
+        # What tosctl --version prints as its commit line, and the build
+        # record's lines of tosctl's recipe.
+        self.tosctl_commit_line = f"COMMIT_ID: {commit}"
+        self.rust_lines = list(RUST_LINES)
         # Overrides of what a binary links, and of what the build record says.
         self.linked_override: dict[str, list[str]] = {}
         self.needed_override: dict[str, list[str] | None] = {}
@@ -117,7 +139,16 @@ class FakeRelease:
     def binary(self, name: str, arch: str) -> bytes:
         body = f"#!/bin/sh\n# {name} {arch}\n"
         body += "".join(f"# NEEDED {lib}\n" for lib in self.links(name, arch))
-        if name not in UNVERSIONED:
+        if name == TOSCTL:
+            # As the real tool: the commit only under --version, on a line of
+            # its own; -V prints the package version alone.
+            body += (
+                'echo "tosctl 0.3.0"\n'
+                '[ "$1" = --version ] || exit 0\n'
+                f'echo "{self.tosctl_commit_line}"\n'
+                'echo "BUILD_DATE: 2026-11-18 04:29:43 +0000"\n'
+            )
+        elif name not in UNVERSIONED:
             body += f'echo "{name} build"\necho "Commit: {self.binary_commit}"\n'
         return body.encode()
 
@@ -128,6 +159,7 @@ class FakeRelease:
             f"architecture {'aarch64' if arch == 'arm64' else arch}",
             "compiler Ubuntu clang version 21.1.0",
             "flags CMAKE_BUILD_TYPE=Release TOS_ARCH=x86-64-v2 PORTABLE=x86-64-v2 TOS_USE_JEMALLOC=ON",
+            *(self.rust_lines if self.tosctl else []),
             "jemalloc /usr/lib/libjemalloc.so",
             "jemalloc_package libjemalloc-dev 5.3.0-2build1",
             "build_os Ubuntu 24.04.3 LTS",
@@ -140,7 +172,8 @@ class FakeRelease:
         return ("\n".join(lines) + "\n").encode()
 
     def shipped(self) -> list[str]:
-        return [n for n in ALL if self.services or n not in SERVICES]
+        names = [n for n in ALL if self.services or n not in SERVICES]
+        return [*names, TOSCTL] if self.tosctl else names
 
     def publish(self) -> None:
         for path in self.dir.iterdir():
@@ -218,6 +251,13 @@ def fakebin(tmp_path):
     return directory
 
 
+VALIDATOR_FLAGS = "fpu sse2 ssse3 sse4_1 sse4_2 sha_ni avx2"
+
+
+def cpuinfo_text(flags):
+    return f"processor\t: 0\nmodel name\t: test cpu\nflags\t\t: {flags}\n\nprocessor\t: 1\n"
+
+
 @pytest.fixture
 def served(tmp_path, fakebin):
     root = tmp_path / "served"
@@ -226,7 +266,9 @@ def served(tmp_path, fakebin):
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    release.env = {"PATH": f"{fakebin}:/usr/bin:/bin"}
+    cpuinfo = tmp_path / "cpuinfo"
+    cpuinfo.write_text(cpuinfo_text(VALIDATOR_FLAGS))
+    release.env = {"PATH": f"{fakebin}:/usr/bin:/bin", "TOS_CPUINFO": str(cpuinfo)}
     try:
         yield release, f"http://127.0.0.1:{server.server_address[1]}"
     finally:
@@ -270,7 +312,8 @@ def node_record(record, arch="x86_64"):
 # ---------------------------------------------------------------- happy path
 
 
-@pytest.mark.parametrize(("role", "binaries"), [("validator", NODE), ("dht", DHT), ("rpc", RPC)])
+# On arm64, which the validator role refuses: the full node installs the same binaries.
+@pytest.mark.parametrize(("role", "binaries"), [("fullnode", NODE), ("dht", DHT), ("rpc", RPC)])
 def test_a_verified_release_is_written_in_the_layout_check_release_accepts(
     served, tmp_path, role, binaries
 ):
@@ -582,7 +625,9 @@ def test_each_missing_release_library_is_refused_naming_its_package(
     served, tmp_path, soname, package, arch, needers
 ):
     release, url = served
-    result = run(release, url, tmp_path / "out", arch=arch, env={"FAKE_MISSING": soname})
+    # The same binaries under the role each architecture allows.
+    role = "validator" if arch == "x86_64" else "fullnode"
+    result = run(release, url, tmp_path / "out", role=role, arch=arch, env={"FAKE_MISSING": soname})
     refused(result, f"; install the packages {package}")
     for name in needers:
         assert f"{name} needs {soname}" in result.stderr
@@ -648,7 +693,7 @@ def test_a_record_with_needed_lines_must_cover_every_binary(served, tmp_path):
 
 def test_a_record_without_needed_lines_relies_on_the_loader_check(served, tmp_path):
     release, url = served
-    release.needed_override = dict.fromkeys(ALL)
+    release.needed_override = dict.fromkeys(release.shipped())
     release.publish()
     assert run(release, url, tmp_path / "out").returncode == 0
     result = run(release, url, tmp_path / "out2", env={"FAKE_MISSING": "libgsl.so.27"})
@@ -681,6 +726,47 @@ def test_a_binary_reporting_another_commit_is_refused(served, tmp_path):
     out = tmp_path / "out"
     refused(run(release, url, out), f"-V does not report Commit: {PIN}")
     assert not out.exists()
+
+
+# ---------------------------------------------------------------- validator host
+
+
+def test_the_validator_role_is_refused_on_arm64(served, tmp_path):
+    release, url = served
+    out = tmp_path / "out"
+    refused(
+        run(release, url, out, arch="arm64"),
+        "a validator must run on x86-64 with SHA-NI, not arm64",
+    )
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("role", ["fullnode", "rpc", "dht"])
+def test_the_other_roles_are_not_refused_for_arm64_or_cpu_flags(served, tmp_path, role):
+    # They get past the validator-host check: the refusal, if any, is about
+    # the release, never the architecture or the CPU.
+    release, url = served
+    (tmp_path / "cpuinfo").write_text(cpuinfo_text("fpu sse2"))
+    for arch in ("arm64", "x86_64"):
+        result = run(release, url, tmp_path / f"out-{arch}", role=role, arch=arch)
+        assert "a validator must run" not in result.stderr, result.stderr
+        assert "does not show" not in result.stderr, result.stderr
+
+
+@pytest.mark.parametrize("flag", ["sha_ni", "ssse3", "sse4_1", "sse4_2"])
+def test_a_validator_host_without_a_required_cpu_flag_is_refused(served, tmp_path, flag):
+    release, url = served
+    flags = " ".join(f for f in VALIDATOR_FLAGS.split() if f != flag)
+    (tmp_path / "cpuinfo").write_text(cpuinfo_text(flags))
+    out = tmp_path / "out"
+    refused(run(release, url, out), f"this host's CPU does not show {flag} in")
+    assert not out.exists()
+
+
+def test_a_validator_host_whose_cpu_flags_cannot_be_read_is_refused(served, tmp_path):
+    release, url = served
+    (tmp_path / "cpuinfo").unlink()
+    refused(run(release, url, tmp_path / "out"), "cannot read this host's CPU flags")
 
 
 # ---------------------------------------------------------------- arguments and output
@@ -730,6 +816,196 @@ def load_module():
     return module
 
 
+# ---------------------------------------------------------------- the tosctl role
+
+
+@pytest.mark.parametrize("arch", ARCHES)
+def test_the_tosctl_role_writes_tosctl_alone_in_the_layout_check_release_accepts(
+    served, tmp_path, arch
+):
+    release, url = served
+    # Neither the architecture nor the CPU flags of a validator are asked of it.
+    (tmp_path / "cpuinfo").write_text(cpuinfo_text("fpu sse2"))
+    out = tmp_path / f"tosctl-{PIN}"
+    result = run(release, url, out, role="tosctl", arch=arch)
+    assert result.returncode == 0, result.stderr
+    assert sorted(p.name for p in out.iterdir()) == ["BUILD-INFO", "SHA256SUMS", "tosctl"]
+    assert (out / "tosctl").read_bytes() == release.binary(TOSCTL, arch)
+    assert (out / "tosctl").stat().st_mode & 0o777 == 0o755
+    digest = sha256(release.binary(TOSCTL, arch))
+    assert (out / "SHA256SUMS").read_text() == f"{digest}  tosctl\n"
+    info = (out / "BUILD-INFO").read_text().splitlines()
+    assert info[0] == f"tos_revision {PIN}"
+    assert f"source github-release {TAG}" in info
+    assert "repository tosnetwork/tos" in info
+    provenance = sha256((release.dir / "release-provenance.json").read_bytes())
+    assert f"provenance_sha256 {provenance}" in info
+    record = node_record(release.provenance(), arch)
+    assert (
+        f"artifact tos-node-{arch}-linux run {record['run_id']} {record['artifact_digest']}" in info
+    )
+    for line in RUST_LINES:
+        assert f"node_build {line}" in info
+    assert "node_build compiler Ubuntu clang version 21.1.0" in info
+    assert not any(line.startswith("node_build jemalloc") for line in info)
+    check = subprocess.run(["bash", str(CHECK), str(out), PIN, "tosctl"], capture_output=True)
+    assert check.returncode == 0, check.stderr
+    assert f"install: install-tosctl.sh --release {out} --rev {PIN}" in result.stdout
+    assert "install-node.sh" not in result.stdout
+
+
+def test_a_release_without_tosctl_is_refused_as_a_missing_asset(served, tmp_path):
+    release, url = served
+    release.tosctl = False
+    release.publish()
+    out = tmp_path / "out"
+    result = run(release, url, out, role="tosctl")
+    refused(result, f"release {TAG} has no asset tosctl-linux-x86_64")
+    assert "this release does not ship the binaries this role needs" in result.stderr
+    assert not out.exists()
+
+
+@pytest.mark.parametrize(("role", "binaries"), sorted(NODE_ROLES.items()))
+def test_the_node_roles_do_not_need_tosctl_in_the_release(served, tmp_path, role, binaries):
+    release, url = served
+    release.tosctl = False
+    release.publish()
+    assert not (release.dir / "tosctl-linux-x86_64").exists()
+    assert b"tosctl" not in (release.dir / "node-build-info-linux-x86_64.txt").read_bytes()
+    out = tmp_path / "out"
+    result = run(release, url, out, role=role)
+    assert result.returncode == 0, result.stderr
+    assert sorted(p.name for p in out.iterdir()) == sorted([*binaries, "SHA256SUMS", "BUILD-INFO"])
+    assert f"install: install-node.sh binaries --role {role} --release {out}" in result.stdout
+
+
+@pytest.mark.parametrize(("role", "binaries"), sorted(NODE_ROLES.items()))
+def test_the_node_roles_leave_tosctl_out_of_a_release_that_has_it(served, tmp_path, role, binaries):
+    release, url = served
+    out = tmp_path / "out"
+    assert run(release, url, out, role=role).returncode == 0
+    assert sorted(p.name for p in out.iterdir()) == sorted([*binaries, "SHA256SUMS", "BUILD-INFO"])
+    info = (out / "BUILD-INFO").read_text()
+    assert "rust_flags" not in info and "node_build rustc" not in info
+    # tosctl missing from the host does not stop a node role either.
+    result = run(release, url, tmp_path / "again", role=role, env={"FAKE_MISSING": "libssl.so.3"})
+    assert result.returncode == 0, result.stderr
+
+
+def test_a_tampered_tosctl_is_refused(served, tmp_path):
+    release, url = served
+    with open(release.dir / "tosctl-linux-x86_64", "ab") as handle:
+        handle.write(b"x")
+    out = tmp_path / "out"
+    refused(run(release, url, out, role="tosctl"), "tosctl-linux-x86_64 has sha256")
+    assert not out.exists()
+
+
+def test_a_tosctl_that_is_not_the_zips_copy_is_refused(served, tmp_path):
+    release, url = served
+    (release.dir / "tosctl-linux-x86_64").write_bytes(b"another build\n")
+    release.write_sums()
+    out = tmp_path / "out"
+    refused(
+        run(release, url, out, role="tosctl"),
+        "tosctl-linux-x86_64 is not the tosctl in tos-node-linux-x86_64.zip",
+    )
+    assert not out.exists()
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        f"COMMIT_ID: {OTHER}",
+        # The line must be exactly the commit, not a line that contains it.
+        f"COMMIT_ID: {PIN}-dirty",
+        f"PARENT_COMMIT_ID: {PIN}",
+        f"Commit: {PIN}",
+    ],
+)
+def test_a_tosctl_that_does_not_report_the_commit_is_refused(served, tmp_path, line):
+    release, url = served
+    release.tosctl_commit_line = line
+    release.publish()
+    out = tmp_path / "out"
+    refused(
+        run(release, url, out, role="tosctl"),
+        f"tosctl --version does not report COMMIT_ID: {PIN}",
+    )
+    assert not out.exists()
+
+
+def test_tosctl_without_a_needed_line_is_refused(served, tmp_path):
+    release, url = served
+    release.needed_override[TOSCTL] = None
+    release.publish()
+    refused(
+        run(release, url, tmp_path / "out", role="tosctl"),
+        "the node build record has needed lines, but none for tosctl",
+    )
+
+
+def test_a_tosctl_linking_more_than_its_needed_line_is_refused(served, tmp_path):
+    release, url = served
+    release.linked_override[TOSCTL] = sorted([*linked(TOSCTL, "x86_64"), "libz.so.1"])
+    release.needed_override[TOSCTL] = linked(TOSCTL, "x86_64")
+    release.publish()
+    refused(
+        run(release, url, tmp_path / "out", role="tosctl"),
+        "tosctl links ld-linux-x86-64.so.2 libc.so.6 libcrypto.so.3 libgcc_s.so.1 libm.so.6 "
+        "libssl.so.3 libz.so.1, but the node build record says",
+    )
+
+
+@pytest.mark.parametrize("missing", ["libssl.so.3", "libcrypto.so.3", "libcrypto.so.3 libssl.so.3"])
+def test_a_host_without_tosctls_tls_library_is_refused_naming_the_package(
+    served, tmp_path, missing
+):
+    release, url = served
+    out = tmp_path / "out"
+    result = run(release, url, out, role="tosctl", env={"FAKE_MISSING": missing})
+    refused(
+        result,
+        "this host lacks libraries the binaries need: "
+        f"tosctl needs {', '.join(missing.split())}; install the packages libssl3t64\n",
+    )
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("key", ["rustc", "cargo", "rust_flags"])
+def test_a_build_record_without_tosctls_recipe_is_refused(served, tmp_path, key):
+    release, url = served
+    release.rust_lines = [x for x in RUST_LINES if x.split()[0] != key]
+    release.publish()
+    out = tmp_path / "out"
+    refused(
+        run(release, url, out, role="tosctl"),
+        f"the node build record has no {key} line; it does not record how tosctl was built",
+    )
+    assert not out.exists()
+    # The node binaries' recipe does not depend on it.
+    assert run(release, url, tmp_path / "dht", role="dht").returncode == 0
+
+
+def test_tosctl_is_asked_for_its_commit_its_own_way():
+    module = load_module()
+    assert module.ROLE_BINARIES["tosctl"] == ["tosctl"]
+    for role in NODE_ROLES:
+        assert "tosctl" not in module.ROLE_BINARIES[role]
+        assert module.ROLE_BINARIES[role] == NODE_ROLES[role]
+    report = module.VERSIONED["tosctl"]
+    assert (report.option, report.expected(PIN), report.whole_line) == (
+        "--version",
+        f"COMMIT_ID: {PIN}",
+        True,
+    )
+    for name in set(module.VERSIONED) - {"tosctl"}:
+        node = module.VERSIONED[name]
+        assert (node.option, node.expected(PIN), node.whole_line) == ("-V", f"Commit: {PIN}", False)
+    assert module.LIBRARY_PACKAGES["libssl.so.3"] == "libssl3t64"
+    assert module.LIBRARY_PACKAGES["libcrypto.so.3"] == "libssl3t64"
+
+
 def test_a_host_without_readelf_is_refused_naming_binutils(served, tmp_path, monkeypatch):
     release, url = served
     monkeypatch.setenv("PATH", release.env["PATH"])
@@ -766,5 +1042,5 @@ def test_the_role_binaries_are_the_ones_the_host_build_builds():
     assert module.ROLE_BINARIES["fullnode"] == module.ROLE_BINARIES["validator"]
     assert set(JEMALLOC) <= set(module.VERSIONED)
     assert "tos-pq-consensus-key" not in module.VERSIONED
-    assert not set(SERVICES) & module.VERSIONED
+    assert not set(SERVICES) & set(module.VERSIONED)
     assert os.path.basename(str(module.CHECK_RELEASE)) == "check-release.sh"

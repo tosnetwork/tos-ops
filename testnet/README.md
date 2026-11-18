@@ -57,6 +57,7 @@ testnet/
 │   ├── setup-time.sh             first on every host: ntpsec over IPv4, proven to follow a server
 │   ├── preflight.py              before installing: host floors, time source, ufw, and the UDP mesh between hosts
 │   ├── build-tosctl.sh           compile tosctl on a validator host from the node's commit
+│   ├── install-tosctl.sh         production: install tosctl from a release directory fetch-release.py --role tosctl wrote (root)
 │   ├── init-operator.sh          tosctl vault and operator wallet (--wallet-only, before genesis), then console key (root)
 │   ├── enable-elections.sh       election policy and the election task on a validator host (root)
 │   ├── testnet-elections.py      pool: before genesis, the offline owner and the staking pool (the validator id);

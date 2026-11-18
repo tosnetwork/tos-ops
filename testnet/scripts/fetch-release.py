@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Fetch a role's node binaries from a tos GitHub release, verified, as a release DIR.
+"""Fetch a role's binaries from a tos GitHub release, verified, as a release DIR.
 
-    fetch-release.py --tag v<version> --rev <40-hex commit> --role validator|fullnode|rpc|dht
+    fetch-release.py --tag v<version> --rev <40-hex commit>
+                     --role validator|fullnode|rpc|dht|tosctl
                      [--arch x86_64|arm64] --out DIR [--base-url URL]
 
 Production takes its node binaries from the tos repository's GitHub releases
@@ -18,7 +19,10 @@ provenance record names as artifact tos-node-<arch>-linux of workflow
 build-tos-linux-node-binaries.yml. The rpc role also needs the standalone
 services tos-rpc-linux-<arch> and tos-wallet-index-linux-<arch>, members of the
 same zip and lines of the same build record, so it works only with a release
-that publishes them. Everything is verified in a private scratch
+that publishes them. The tosctl role fetches only tosctl, the operator tool,
+as tosctl-linux-<arch>: also a member of that zip and a line of that build
+record, so it too works only with a release that publishes it, and the node
+roles never ask for it. Everything is verified in a private scratch
 directory before --out is created, and the fetch is refused when
 
   - an asset is missing from the release;
@@ -33,22 +37,33 @@ directory before --out is created, and the fetch is refused when
     zip it was copied from, so every file is bound to the provenance record;
   - the build record names another tos_revision, its sha256 of a binary
     differs from the binary, or its `needed` line for a binary differs from
-    the DT_NEEDED libraries readelf reads from it;
+    the DT_NEEDED libraries readelf reads from it; for the tosctl role, the
+    build record lacks the rustc, cargo or rust_flags line of tosctl's recipe;
   - this host cannot run the binaries: the dynamic loader (ldd) does not find
-    every library they need, glibc is older than 2.39, or a binary's -V does
-    not report Commit: <rev>. The refusal names the Ubuntu package of each
-    missing library it knows (libjemalloc2, libgsl27, libblas3,
-    libreadline8t64, libatomic1 on arm64). Nothing is installed here:
+    every library they need, glibc is older than 2.39, or a binary does not
+    report the commit: a node binary's -V must print Commit: <rev>, and
+    tosctl --version must print the exact line COMMIT_ID: <rev>. The refusal
+    names the Ubuntu package of each missing library it knows (libjemalloc2,
+    libgsl27, libblas3, libreadline8t64, libatomic1 on arm64; libssl3t64 for
+    tosctl's libssl.so.3 and libcrypto.so.3). Nothing is installed here:
     install the packages and fetch again;
+  - --role validator is asked for on a host that may not validate: any
+    architecture but x86-64, or an x86-64 CPU that does not show the flags
+    sha_ni, ssse3, sse4_1 and sse4_2 in /proc/cpuinfo. The SLH-DSA check is
+    priced for the SHA-NI backend, which exists for x86-64 only (the tos
+    repository's doc/Validator.md); the arm64 release is for the fullnode, rpc
+    and dht roles;
   - --out already exists.
 
 The result has exactly the layout build-node-binaries.sh writes and
 check-release.sh accepts: the plain binary names (mode 0755), SHA256SUMS over
 them and BUILD-INFO naming tos_revision <rev>, the source (tag, repository,
 provenance digest, artifact run and digest) and the node build's recipe
-lines. check-release.sh and the runtime check run on it before it is moved
+lines (for the tosctl role: the rustc, cargo and rust_flags lines of tosctl's
+recipe). check-release.sh and the runtime check run on it before it is moved
 into place, so `install-node.sh binaries|prepare --release DIR --rev COMMIT`
-installs it unchanged.
+installs a node role's directory unchanged, and
+`install-tosctl.sh --release DIR --rev COMMIT` the tosctl role's.
 
 SHA256SUMS, the provenance record and the binaries come from the same
 release, so these checks detect damage, mix-ups and a release of another
@@ -74,6 +89,7 @@ import urllib.request
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 HERE = Path(__file__).resolve().parent
 CHECK_RELEASE = HERE / "check-release.sh"
@@ -81,6 +97,13 @@ DEFAULT_REPOSITORY = "tosnetwork/tos"
 DEFAULT_BASE_URL = f"https://github.com/{DEFAULT_REPOSITORY}/releases/download"
 RELEASE_SET = "full"
 NODE_WORKFLOW = "build-tos-linux-node-binaries.yml"
+# A validator must run on x86-64 with these CPU flags visible (the tos
+# repository's doc/Validator.md, "CPU instruction set"); the node itself does
+# not check them at start-up.
+VALIDATOR_ARCH = "x86_64"
+VALIDATOR_CPU_FLAGS = ("sha_ni", "ssse3", "sse4_1", "sse4_2")
+# Tests point this at a file of their own.
+CPUINFO = Path(os.environ.get("TOS_CPUINFO", "/proc/cpuinfo"))
 # The same binaries build-node-binaries.sh builds for each role.
 ROLE_BINARIES = {
     "validator": [
@@ -112,22 +135,52 @@ ROLE_BINARIES = {
         "tos-wallet-index",
     ],
     "dht": ["dht-server", "generate-random-id"],
+    # The operator tool alone, for install-tosctl.sh. It ships as
+    # tosctl-linux-<arch> in the node build artifact; a release without it is
+    # refused (missing asset). No node role includes it.
+    "tosctl": ["tosctl"],
 }
-# The binaries whose -V prints the commit they were built from. The consensus
-# key tool and the two RPC services have no such option; the loader check
-# alone covers them.
-VERSIONED = frozenset(
-    {
-        "validator-engine",
-        "validator-engine-console",
-        "lite-client",
-        "generate-random-id",
-        "dht-server",
-    }
-)
+# The role install-tosctl.sh installs; install-node.sh installs the others.
+TOSCTL_ROLE = "tosctl"
+
+
+class CommitReport(NamedTuple):
+    """How a binary reports the commit it was built from."""
+
+    option: str
+    # The text the output must carry, with {rev} for the commit.
+    text: str
+    # True: the text must be a whole output line; False: it may be part of one.
+    whole_line: bool
+
+    def expected(self, rev: str) -> str:
+        return self.text.format(rev=rev)
+
+    def reported(self, output: str, rev: str) -> bool:
+        if self.whole_line:
+            return self.expected(rev) in output.splitlines()
+        return self.expected(rev) in output
+
+
+# A node binary's -V prints "... [ Commit: <rev>, Date: ...]".
+NODE_COMMIT_REPORT = CommitReport(option="-V", text="Commit: {rev}", whole_line=False)
+# tosctl --version prints the line "COMMIT_ID: <rev>"; its -V prints only the
+# package version.
+TOSCTL_COMMIT_REPORT = CommitReport(option="--version", text="COMMIT_ID: {rev}", whole_line=True)
+# The binaries that report the commit they were built from, and how. The
+# consensus key tool and the two RPC services have no such option; the loader
+# check alone covers them.
+VERSIONED = {
+    "validator-engine": NODE_COMMIT_REPORT,
+    "validator-engine-console": NODE_COMMIT_REPORT,
+    "lite-client": NODE_COMMIT_REPORT,
+    "generate-random-id": NODE_COMMIT_REPORT,
+    "dht-server": NODE_COMMIT_REPORT,
+    "tosctl": TOSCTL_COMMIT_REPORT,
+}
 MIN_GLIBC = (2, 39)
-# The Ubuntu 24.04 package that provides each library the release's node
-# binaries link, named in the refusal. The build record's `needed` lines are
+# The Ubuntu 24.04 package that provides each library the release's binaries
+# link, named in the refusal. The build record's `needed` lines are
 # the authority for what a binary links; a soname missing here is still
 # refused, without a package hint.
 LIBRARY_PACKAGES = {
@@ -136,6 +189,9 @@ LIBRARY_PACKAGES = {
     "libblas.so.3": "libblas3",
     "libreadline.so.8": "libreadline8t64",
     "libatomic.so.1": "libatomic1",
+    # tosctl's TLS; one package ships both.
+    "libssl.so.3": "libssl3t64",
+    "libcrypto.so.3": "libssl3t64",
 }
 NEEDED_RE = re.compile(r"\(NEEDED\)\s+Shared library: \[([^\]]+)\]")
 # Lines of the node build's BUILD-INFO copied into the release's BUILD-INFO.
@@ -148,6 +204,21 @@ RECIPE_KEYS = (
     "jemalloc_package",
     "build_os",
 )
+# The lines of tosctl's recipe, which a build record that lists tosctl carries.
+TOSCTL_RECIPE_KEYS = ("rustc", "cargo", "rust_flags")
+# Per role: the build record lines copied into BUILD-INFO, and those of them
+# the record must have.
+ROLE_RECIPE_KEYS = {
+    **dict.fromkeys(("validator", "fullnode", "rpc", "dht"), RECIPE_KEYS),
+    "tosctl": (
+        "source_date_epoch",
+        "architecture",
+        "compiler",
+        *TOSCTL_RECIPE_KEYS,
+        "build_os",
+    ),
+}
+ROLE_REQUIRED_RECIPE_KEYS = {"tosctl": TOSCTL_RECIPE_KEYS}
 ARCHES = ("x86_64", "arm64")
 REV_RE = re.compile(r"^[0-9a-f]{40}$")
 TAG_RE = re.compile(r"^v[0-9A-Za-z][0-9A-Za-z._-]*$")
@@ -296,11 +367,17 @@ def zip_member_sha256(archive: Path, name: str) -> str:
 
 
 def check_build_info(
-    text: str, *, rev: str, digests: dict[str, str]
+    text: str,
+    *,
+    rev: str,
+    digests: dict[str, str],
+    recipe_keys: tuple[str, ...] = RECIPE_KEYS,
+    required_keys: tuple[str, ...] = (),
 ) -> tuple[dict[str, str], dict[str, list[str]]]:
     """Refuse unless the node build record names --rev and each binary's digest.
 
-    Returns the record's recipe lines and its `needed` lines (binary -> sorted
+    Returns the record's recipe lines (those of recipe_keys it has; each of
+    required_keys must be there) and its `needed` lines (binary -> sorted
     sonames), the libraries the build linked each binary against."""
     fields: dict[str, str] = {}
     listed: dict[str, str] = {}
@@ -328,7 +405,13 @@ def check_build_info(
                 f"the node build record lists {name} as {listed.get(name)!r}, "
                 f"but the binary has sha256 {digest}"
             )
-    recipe = {key: fields[key] for key in RECIPE_KEYS if key in fields}
+    for key in required_keys:
+        if not fields.get(key):
+            raise Refused(
+                f"the node build record has no {key} line; it does not record how "
+                f"{', '.join(sorted(digests))} was built"
+            )
+    recipe = {key: fields[key] for key in recipe_keys if key in fields}
     return recipe, needed
 
 
@@ -382,6 +465,31 @@ def check_needed(stage: Path, binaries: list[str], needed: dict[str, list[str]])
             )
 
 
+def check_validator_host(arch: str) -> None:
+    """Refuse the validator role on a host doc/Validator.md does not allow."""
+    if arch != VALIDATOR_ARCH:
+        raise Refused(
+            f"a validator must run on x86-64 with SHA-NI, not {arch}; the {arch} release "
+            f"is for the fullnode, rpc and dht roles"
+        )
+    try:
+        text = CPUINFO.read_text()
+    except OSError as error:
+        raise Refused(f"cannot read this host's CPU flags from {CPUINFO}: {error}") from error
+    flags: set[str] = set()
+    for line in text.splitlines():
+        key, _, value = line.partition(":")
+        if key.strip() == "flags":
+            flags = set(value.split())
+            break
+    missing = [flag for flag in VALIDATOR_CPU_FLAGS if flag not in flags]
+    if missing:
+        raise Refused(
+            f"this host's CPU does not show {' '.join(missing)} in {CPUINFO}; a validator "
+            f"needs {' '.join(VALIDATOR_CPU_FLAGS)}, on the host or visible to the guest"
+        )
+
+
 def check_runnable(stage: Path, binaries: list[str], rev: str) -> str:
     """Refuse unless this host's loader and glibc run every binary at --rev.
 
@@ -421,12 +529,14 @@ def check_runnable(stage: Path, binaries: list[str], rev: str) -> str:
             hint += f"; no known package provides {', '.join(unknown)}"
         raise Refused(f"this host lacks libraries the binaries need: {detail}{hint}")
     for name in binaries:
-        if name in VERSIONED:
-            ran = run_tool([str(stage / name), "-V"])
-            if f"Commit: {rev}" not in ran.stdout:
+        report = VERSIONED.get(name)
+        if report is not None:
+            ran = run_tool([str(stage / name), report.option])
+            if not report.reported(ran.stdout, rev):
                 tail = (ran.stdout + ran.stderr).strip()[-300:]
                 raise Refused(
-                    f"{name} -V does not report Commit: {rev} (exit {ran.returncode}: {tail})"
+                    f"{name} {report.option} does not report {report.expected(rev)} "
+                    f"(exit {ran.returncode}: {tail})"
                 )
     return f"{glibc[0]}.{glibc[1]}"
 
@@ -449,6 +559,8 @@ def fetch(
         raise Refused(f"--role must be one of {sorted(ROLE_BINARIES)}, got {role!r}")
     if arch not in ARCHES:
         raise Refused(f"--arch must be one of {list(ARCHES)}, got {arch!r}")
+    if role == "validator":
+        check_validator_host(arch)
     if out.exists() or out.is_symlink():
         raise Refused(f"{out} already exists; fetch into a new directory")
     if not out.parent.is_dir():
@@ -473,7 +585,9 @@ def fetch(
             raise Refused(f"release-provenance.json is not valid JSON: {error}") from None
         check_provenance(record, repository=repository, tag=tag, rev=rev)
         entry = provenance_artifact(record, artifact=artifact, rev=rev)
-        for asset in [archive_name, *assets.values()]:
+        # The role's own assets first: a release that does not publish them is
+        # refused before the larger zip is downloaded.
+        for asset in [*assets.values(), archive_name]:
             download(base_url, tag, asset, downloads / asset, MAX_ASSET_BYTES)
 
         checked = ["release-provenance.json", build_info, archive_name, *assets.values()]
@@ -506,6 +620,8 @@ def fetch(
             (downloads / build_info).read_text(errors="replace"),
             rev=rev,
             digests={name: actual[asset] for name, asset in assets.items()},
+            recipe_keys=ROLE_RECIPE_KEYS[role],
+            required_keys=ROLE_REQUIRED_RECIPE_KEYS.get(role, ()),
         )
 
         stage = scratch / "release"
@@ -582,9 +698,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"fetch-release: refused: {error}", file=sys.stderr)
         return 1
     print(f"release {args.out} ({' '.join(binaries)}) from {args.tag} at {args.rev}")
-    print(
-        f"install: install-node.sh binaries --role {args.role} --release {args.out} --rev {args.rev}"
-    )
+    if args.role == TOSCTL_ROLE:
+        print(f"install: install-tosctl.sh --release {args.out} --rev {args.rev}")
+    else:
+        print(
+            f"install: install-node.sh binaries --role {args.role} "
+            f"--release {args.out} --rev {args.rev}"
+        )
     return 0
 
 
