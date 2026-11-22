@@ -26,9 +26,9 @@
     "source_date_epoch": null,
     "source_date_epoch_note": "Chosen and frozen by the coordinator at the ceremony (decision D03). It must lie in the future when the ceremony runs and leave the initial validator set enough lifetime to complete the first two elections.",
     "auth_network_tag": {
-      "campaign_epoch": 7,
-      "rule": "TOS-AUTH-NETWORK-TAG-v1;network=tos-public-testnet;global_id=2;epoch=7",
-      "value": "40ab325d9219dff844d803e0343d47fae297ee1ca7a9f6a26890619869f6fc36",
+      "campaign_epoch": 8,
+      "rule": "TOS-AUTH-NETWORK-TAG-v1;network=tos-public-testnet;global_id=2;epoch=8",
+      "value": "b7d72ce529d8d73dcf0332a2d9984a4ce08191126075e8799cfff7d5211f2011",
       "status": "CHOSEN",
       "note": "ConfigParam 48 (AUTH policy) is mandatory and critical from global version 16, and a version-16 genesis needs an explicit public 256-bit network tag; tos assigns none. The value is SHA-256 of the ASCII rule, so anyone can recompute it. It changes every epoch: all epochs share global id 2, and Quantum wallet keys and signatures bind the tag, so a fresh tag keeps an epoch's wallets and signed messages from carrying over to the next, as the fresh-identity checks do for everything else. It is never a tos test namespace (one repeated byte, or bytes 00..1f) nor the mainnet admission candidate's 0x42 repeated. The genesis step refuses unless TOS_AUTH_NETWORK_TAG names exactly this value, and records it with the ConfigParam 48 cell hash in genesis.json. Chosen by the test lead on 2026-10-17 for epoch 4 and moved to epoch 5 on 2026-10-24, to epoch 6 on 2026-10-28 and to epoch 7 on 2026-11-17; the owner may replace the rule before the launch."
     }
@@ -36,7 +36,7 @@
   "features": {
     "shielded_pool": "disabled",
     "energy": "disabled",
-    "note": "Neither may be activated on the public testnet until its own acceptance gate passes (memo public-testnet/README.md section 3.2). The shielded pool's restricted test was approved for epoch 6 only (memo STATUS 13.250, 13.267-13.269) and its record was bound to epoch 6's AUTH tag and zero state, so it does not carry over: epoch 7 has the pool disabled, the feature is not part of Gate C or D, and a later test needs a new record bound to epoch 7 and new approval. Energy stays disabled."
+    "note": "Neither may be activated on the public testnet until its own acceptance gate passes (memo public-testnet/README.md section 3.2). The shielded pool's restricted test was approved for epoch 6 only (memo STATUS 13.250, 13.267-13.269) and its record was bound to epoch 6's AUTH tag and zero state, so it does not carry over: epochs 7 and 8 have the pool disabled, the feature is not part of Gate C or D, and a later test needs a new record bound to its epoch and new approval. Energy stays disabled."
   },
   "ports": {
     "adnl_udp": 30001,
