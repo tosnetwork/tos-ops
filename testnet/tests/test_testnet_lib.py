@@ -1083,10 +1083,10 @@ def test_rpc_never_branches_on_an_ok_field():
 def test_profile_tag_is_sha256_of_its_rule():
     profile = lib.load_profile()
     entry = lib.profile_auth_network_tag(profile)
-    rule = "TOS-AUTH-NETWORK-TAG-v1;network=tos-public-testnet;global_id=2;epoch=7"
+    rule = "TOS-AUTH-NETWORK-TAG-v1;network=tos-public-testnet;global_id=2;epoch=8"
     assert entry["rule"] == rule
     assert entry["tag"] == hashlib.sha256(rule.encode()).digest()
-    assert entry["tag"].hex() == "40ab325d9219dff844d803e0343d47fae297ee1ca7a9f6a26890619869f6fc36"
+    assert entry["tag"].hex() == "b7d72ce529d8d73dcf0332a2d9984a4ce08191126075e8799cfff7d5211f2011"
 
 
 @pytest.mark.parametrize(
@@ -1094,7 +1094,7 @@ def test_profile_tag_is_sha256_of_its_rule():
     [
         ({"value": "00" * 32}, "reserved"),
         ({"value": "e3" * 31}, "64 hexadecimal"),
-        ({"campaign_epoch": 8}, "not SHA-256"),
+        ({"campaign_epoch": 9}, "not SHA-256"),
         ({"rule": "something else"}, "not SHA-256"),
         ({"status": "PROPOSED"}, "status"),
         ({"campaign_epoch": True}, "campaign_epoch"),
