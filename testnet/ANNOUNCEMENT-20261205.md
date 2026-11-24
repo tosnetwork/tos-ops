@@ -1,6 +1,6 @@
-# TOS Public Testnet Genesis Validator Invitation · December 5, 2026
+# TOS Public Testnet Validator Invitation · December 5, 2026
 
-We invite external operators to run a validator from genesis in the next TOS public testnet. You can apply even if you are new to TOS and have no wallet or tokens. You will need a Linux VPS you administer, time to prepare it before launch, and to be available for the first election. This is a new network with its own genesis; it does not continue any earlier TOS testnet.
+We invite external operators to run a validator in the next TOS public testnet. You register before genesis and join the validator set from the first election, about six hours after launch. You can apply even if you are new to TOS and have no wallet or tokens. You will need a Linux VPS you administer, time to prepare it before launch, and to be available for the first election. This is a new network with its own genesis; it does not continue any earlier TOS testnet.
 
 ## Official schedule (JST / UTC+9)
 
@@ -32,7 +32,7 @@ We invite external operators to run a validator from genesis in the next TOS pub
 
 ## Start here
 
-Finish registration by November 30. During December 1–4, work through the VPS setup, wallet creation and public record steps below with your coordinator. Before launch, confirm the exact time, your genesis seat and your availability for the first election. After launch, use the [election-cycle test plan](#test-plan-for-each-election-cycle) and send your results to the coordinator.
+Finish registration by November 30. During December 1–4, work through the VPS setup, wallet creation and public record steps below with your coordinator. Before launch, confirm the exact time, your validator seat and your availability for the first election. After launch, use the [election-cycle test plan](#test-plan-for-each-election-cycle) and send your results to the coordinator.
 
 ## What you will run
 
@@ -43,7 +43,7 @@ You can start with a zero-balance wallet. The coordinator allocates testnet TOS 
 ## Register and prepare your VPS
 
 1. Apply through the original recruitment channel or contact the team member who invited you. The official Discord entry is https://discord.tos.network. Share your operator name, time zone, availability during preparation and launch, and your VPS's operating system, CPU architecture, CPU count, memory and free disk space. Never submit passwords or private keys. Ask for help if you have never prepared a Linux server. The coordinator will confirm your seat before genesis.
-2. Use a dedicated VPS with Ubuntu 24.04, sudo access, provider console access, and a public IPv4 address or approved UDP forwarding. **Recruitment requirement: 8 vCPUs or more, 12 GB RAM or more (at least 11 GiB OS-visible memory), and an SSD/NVMe with at least 60 GiB free.** Allow capacity for database growth, logs and snapshots (100 GB or larger total storage recommended), with at least 10 Mbps symmetric bandwidth. If elections stall, the database grows quickly; see [If the first election does not conclude](#if-the-first-election-does-not-conclude). The current automated CPU preflight floor is still **4 vCPUs**, but passing it alone does **not** meet this campaign's 8 vCPU recruitment minimum. Hardware SHA-256 acceleration is required. If you use arm64, confirm the supported build or release artifact with the coordinator before proceeding. [CPU requirements](https://github.com/tosnetwork/tos/blob/main/doc/Validator.md#cpu-instruction-set)
+2. Use a dedicated VPS with Ubuntu 24.04, sudo access, provider console access, and a public IPv4 address or approved UDP forwarding. **Recruitment requirement: 8 vCPUs or more, 12 GB RAM or more (at least 11 GiB OS-visible memory), and an SSD/NVMe with at least 60 GiB free.** Allow capacity for database growth, logs and snapshots (100 GB or larger total storage recommended), with at least 10 Mbps symmetric bandwidth. If elections stall, the database grows quickly; see [If elections or block production stall](#if-elections-or-block-production-stall). The current automated CPU preflight floor is still **4 vCPUs**, but passing it alone does **not** meet this campaign's 8 vCPU recruitment minimum. Hardware SHA-256 acceleration is required. If you use arm64, confirm the supported build or release artifact with the coordinator before proceeding. [CPU requirements](https://github.com/tosnetwork/tos/blob/main/doc/Validator.md#cpu-instruction-set)
 3. During December 1–4, get your node name, operator label, pinned `tos` and `tos-ops` commits, and preflight instructions from the coordinator. Install the pinned operations bundle, synchronize the system clock, and prepare the validator and `tosctl` using the operator guide. You build the node and `tosctl` from source on your VPS; allow an hour or more for the build, and keep the build directory under `/var/lib/tos-build` until the coordinator has compared your release checksums. Allow inbound UDP 30001 and 31001 in both the provider and host firewalls. Keep console TCP 30002 closed to public traffic, and keep RPC 8081 and metrics 9100 on loopback. **The TOS team never logs in to, or runs commands on, your VPS.** You build, configure and run your node yourself, by hand or with the tos-ops scripts, and send the coordinator only the outputs and public records each step asks for. Do not give the team SSH or any other access, and do not run a command someone sends you unless it is in the operator guide or you understand what it does. Keep private keys and passwords private. [Host preparation and installation commands](OPERATOR.md#2-host-requirements-clock-and-preflight)
 
 ## Create your first operator wallet
@@ -77,13 +77,17 @@ Send **`/tmp/record.json`** to the coordinator and confirm receipt and validatio
 1. **Verify the genesis packet.** The coordinator supplies the global config, public genesis files, expected zero-state identity and a SHA-256 checksum for the config over a separate authenticated channel. Verify the checksum and activate the validator during the agreed window. [Activation commands](OPERATOR.md#5-activate-and-verify-custody-and-synchronization)
 2. **Confirm synchronization.** Check that the node service is active, the custody log names your pool, and your local chain head advances after launch. Ask the coordinator to compare your node against a reference node for network identity and agreement on a recent block.
 3. **Check election setup.** The coordinator funds the operator wallet and pool, configures the election service and reconciles the receipts. Check that the service is active and that your operator wallet has enough for elections. The election service submits the pool's stake during the window. [Election onboarding and wallet balance check](OPERATOR.md#6-onboard-for-elections)
-4. **Confirm your term.** Ask the coordinator to verify that the Elector accepted your pool's stake for the intended election and that your pool appears in the active validator set once the new term starts.
+4. **Confirm your term.** Ask the coordinator to verify that the Elector accepted your pool's stake for the first election and that your pool appears in the active validator set once the new term starts.
 
 If the previous election schedule is retained, the first election opens **five hours after genesis**, accepts stakes for **45 minutes**, and hands over to the elected set **six hours after genesis** if the election succeeds. Plan your availability using the final times confirmed by the coordinator.
 
-### If the first election does not conclude
+### How the network depends on you
 
-An election concludes only when enough validators have staked. Until one does, the genesis set keeps producing blocks but no key block is made, old state is not cleaned up, and the database grows much faster than usual. If that happens:
+The launch set is the team's two validators, so the chain starts without waiting for anyone. From the first election on, the team's validators together hold about half of the voting weight and external validators the other half. A block is final only with more than two thirds of the weight, so neither side can finalize alone: **the network moves forward only while enough external validators are online.** A validator that goes offline is left out of the next election, two hours later.
+
+### If elections or block production stall
+
+Two things can stop the network. If too much weight is offline at once, blocks stop. If an election does not conclude, blocks continue but no key block is made, old state is not cleaned up, and the database grows much faster than usual. In either case:
 
 - Keep the node and election service running. Do not delete the database, reinstall or rotate keys.
 - Watch free disk space every few hours and tell the coordinator before it falls below 20 GiB.
@@ -114,7 +118,7 @@ For **each counted operator**, the coordinator must retain evidence of all five 
 4. **Election and actual duties:** the pool entered the active elected validator set and the validator actually performed duties during that elected term. Being a candidate or merely appearing in a proposed set is not sufficient.
 5. **Recorded verification:** the coordinator cross-checks the election and active-set/key-block records with available term-participation evidence, timestamps the outcome, and marks it PASS, FAIL or PENDING. Missing evidence stays PENDING, not PASS.
 
-The team may declare this external-participation milestone **successful only when at least five different external operators have verified PASS results**. The team publishes the count and verification basis without disclosing private keys or unrelated private operator information. Genesis has at most 19 seats for external operators; the coordinator confirms each seat before genesis.
+The team may declare this external-participation milestone **successful only when at least five different external operators have verified PASS results**. The team publishes the count and verification basis without disclosing private keys or unrelated private operator information. There are at most 19 seats for external validators; the coordinator confirms each seat before genesis.
 
 ## Test plan for each election cycle
 
