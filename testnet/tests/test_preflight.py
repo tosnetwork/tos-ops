@@ -626,6 +626,16 @@ def test_a_probe_is_attributed_to_the_header_before_it():
     assert preflight.received_probes_with_source("PROB:x:1") == {("x", 1, None)}
 
 
+def test_a_payload_naming_another_port_than_its_header_is_not_counted():
+    capture = (
+        "06:10:01.1 IP 198.51.100.7.40123 > 203.0.113.10.30001: UDP, length 20\n"
+        "E..0..@.@.....PROB:probe-a:31001\n"
+        "06:10:01.2 IP 198.51.100.7.40124 > 203.0.113.10.30001: UDP, length 20\n"
+        "E..0..@.@.....PROB:probe-a:30001\n"
+    )
+    assert preflight.received_probes_with_source(capture) == {("probe-a", 30001, "198.51.100.7")}
+
+
 def test_local_listen_without_tcpdump_fails(as_root, monkeypatch, capsys):
     machine = LocalMachine({"tcpdump": ""})
     argv = local_argv("--listen-seconds", "5", "--expect-from", "probe-a")

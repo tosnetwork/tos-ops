@@ -427,15 +427,20 @@ PROBE_PAYLOAD = re.compile(r"PROB:([A-Za-z0-9_.-]+):(\d+)")
 
 def received_probes_with_source(capture: str) -> set[tuple[str, int, str | None]]:
     """(sender, port, source address) of each probe in a tcpdump -n -A capture: the
-    payload is attributed to the packet header printed before it (None if none)."""
+    payload is attributed to the packet header printed before it (None if none). A
+    payload naming another port than the header's destination port is not a probe
+    of that port and is dropped."""
     found = set()
-    source = None
+    source, destination_port = None, None
     for line in capture.splitlines():
         header = CAPTURE_HEADER.search(line)
         if header:
-            source = header.group(1)
+            source, destination_port = header.group(1), int(header.group(3))
         for m in PROBE_PAYLOAD.finditer(line):
-            found.add((m.group(1), int(m.group(2)), source))
+            port = int(m.group(2))
+            if destination_port is not None and port != destination_port:
+                continue
+            found.add((m.group(1), port, source))
     return found
 
 

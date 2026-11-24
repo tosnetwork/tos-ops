@@ -681,3 +681,28 @@ def test_a_successor_needs_a_failed_attempt_of_the_named_kind(external):
         ops_.successor_with(
             "deploy-pool-node-1", {"kind": "owner-deploy-pool"}, " ", ("deploy-pool",)
         )
+
+
+def test_a_failed_team_host_deployment_of_a_live_pool_sends_no_deploy(external):
+    """The failed operator-wallet attempt left the pool deployed: the owner sends no
+    second deployment and creates no successor; the principal still goes out."""
+    b = external
+    chain = b["chain"]
+    ssh_deploy_record(b, "failed")
+    init = elections.pool_state_init(
+        elections.single_nominator_code(b["tos"]), b["owner"], b["host"].operator
+    )
+    chain.account(b["pool"]).update(
+        state="active",
+        code=init.refs[0],
+        data=init.refs[1],
+        balance=E["pool_deploy_tos"] * NANO,
+    )
+    coordinator_until_hand_off(b)
+    journal = b["ops"].journal
+    assert journal.newest("deploy-pool-node-1") == "deploy-pool-node-1"
+    assert journal.record("deploy-pool-node-1")["state"] == "failed"
+    # fund-op, fund-owner, activate-owner and principal: no deployment message.
+    assert len(chain.sent) == len(ALL_STEPS) - 1
+    assert journal.record("principal-node-1")["state"] == "settled"
+    assert chain.account(b["pool"])["balance"] == (E["pool_deploy_tos"] + E["pool_tos"]) * NANO

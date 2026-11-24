@@ -2342,6 +2342,18 @@ M += [
         '        "host_binding_and_election_task": "UNVERIFIED",',
         '        "host_binding_and_election_task": "verified",',
     ),
+    (
+        "RV14 a live pool is deployed again after a failed team-host attempt",
+        EL,
+        '    if (earlier is None or replaces) and operations.state(pool) == "active":',
+        '    if earlier is None and operations.state(pool) == "active":',
+    ),
+    (
+        "RV15 a probe payload counts for another port than its packet's",
+        PREFLIGHT,
+        "            if destination_port is not None and port != destination_port:",
+        "            if False:",
+    ),
 ]
 
 
