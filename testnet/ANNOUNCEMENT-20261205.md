@@ -1,18 +1,18 @@
 # TOS Public Testnet Genesis Validator Invitation · December 5, 2026
 
-We invite external operators to run a validator from genesis in the next TOS public testnet. You can apply even if you are new to TOS and have no wallet or tokens. You will need a Linux VPS you administer and time to prepare it before launch and be available for the first election.
+We invite external operators to run a validator from genesis in the next TOS public testnet. You can apply even if you are new to TOS and have no wallet or tokens. You will need a Linux VPS you administer, time to prepare it before launch, and to be available for the first election. This is a new network with its own genesis; it does not continue any earlier TOS testnet.
 
 ## Official schedule (JST / UTC+9)
 
 | Date | Activity |
 | --- | --- |
 | November 23, 2026 | Registration opens |
-| November 30, 2026 | Registration deadline |
+| November 30, 2026, 23:59 JST | Registration deadline |
 | December 1–4, 2026 | Preparation and coordination |
 | December 5, 2026 | Public testnet starts |
 | December 19, 2026 | Public testnet ends |
 
-**Testing duration: 14 days (December 5–19, 2026).** The coordinator will confirm the precise start/end times and first election window during December 1–4. All dates are Japan Standard Time (JST, UTC+9).
+**Testing duration: 14 days (December 5–19, 2026).** The coordinator will confirm the precise start/end times and first election window during December 1–4. The dates above are Japan Standard Time (JST, UTC+9); election times and your reports use UTC.
 
 ## Registration, launch and reward conditions
 
@@ -22,7 +22,13 @@ We invite external operators to run a validator from genesis in the next TOS pub
 
 **Individual reward is a separate determination.** The announced reward is **1,000 mainnet TOS per qualified individual**, paid **after the mainnet launch**, and not paid in testnet tokens. Registering, preparing hardware, or appearing in an election does not automatically qualify anyone. Individual eligibility requires approved onboarding, participation during the assigned **14-day test**, acceptable node uptime and synchronization, completion of requested tests, and supporting evidence/feedback. The team will publish the exact uptime threshold, acceptance method, exceptions and claim instructions **before testing begins on December 5**. Until those rules and the individual's results are verified, individual reward qualification is pending. A person running multiple nodes cannot claim more than one participation reward. The collective success threshold does not by itself determine anyone's individual reward outcome.
 
-**Costs and key safety.** No TOS purchase or mainnet deposit is required. Participants cover their own VPS and networking costs unless separately agreed. Never send the coordinator, support staff, or other participants your mnemonic, consensus seed, wallet private key or vault credentials.
+**Where the reward comes from.** The reward is funded from the staking rewards that validators operated by the TOS team earn on mainnet. It is not a new issuance or an allocation from the genesis supply, and it does not change the token economics. It is paid out as those rewards accrue, so payment starts after mainnet launch and may arrive in instalments; mainnet has no fixed launch date. **At most 21 individuals can receive the reward in this campaign.** If more than 21 qualify, the team will publish how the 21 are chosen together with the rules before December 5.
+
+**Eligibility and terms.** You are responsible for any tax on the reward and for making sure you may lawfully take part and receive it where you live; the team may decline participants or payments where the law requires. The team collects a mainnet address for payment only after mainnet launch, through an announced channel; nobody will ask you for a key or a payment before then. The team may change or cancel this campaign before December 5 by announcing it in the official channels; after that, published rules change only to correct errors or to follow the law, and any change is announced.
+
+**Costs and key safety.** No TOS purchase or mainnet deposit is required. Testnet TOS has no value, and the testnet may be paused, reset or ended early. Participants cover their own VPS and networking costs unless separately agreed. Never send the coordinator, support staff, or other participants your mnemonic, consensus seed, wallet private key or vault credentials.
+
+**Your data.** The team keeps your operator name, contact handle, time zone, VPS public IP address and the public records you send, only to run this test, verify results and pay rewards. Public chain data stays public. Ask the coordinator to delete the rest after the campaign ends.
 
 ## Start here
 
@@ -37,8 +43,8 @@ You can start with a zero-balance wallet. The coordinator allocates testnet TOS 
 ## Register and prepare your VPS
 
 1. Apply through the original recruitment channel or contact the team member who invited you. The official Discord entry is https://discord.tos.network. Share your operator name, time zone, availability during preparation and launch, and your VPS's operating system, CPU architecture, CPU count, memory and free disk space. Never submit passwords or private keys. Ask for help if you have never prepared a Linux server. The coordinator will confirm your seat before genesis.
-2. Use a dedicated VPS with Ubuntu 24.04, sudo access, provider console access, and a public IPv4 address or approved UDP forwarding. **Recruitment requirement: 8 vCPUs or more, 12 GB RAM or more (at least 11 GiB OS-visible memory), and an SSD/NVMe with at least 60 GiB free.** Allow capacity for database growth, logs and snapshots (100 GB or larger total storage recommended), with at least 10 Mbps symmetric bandwidth. The current automated CPU preflight floor is still **4 vCPUs**, but passing it alone does **not** meet this campaign's 8 vCPU recruitment minimum. Hardware SHA-256 acceleration is required. If you use arm64, confirm the supported build or release artifact with the coordinator before proceeding. [CPU requirements](https://github.com/tosnetwork/tos/blob/main/doc/Validator.md#cpu-instruction-set)
-3. During December 1–4, get your node name, operator label, pinned `tos` and `tos-ops` commits, and preflight instructions from the coordinator. Install the pinned operations bundle, synchronize the system clock, and prepare the validator and `tosctl` using the operator guide. Allow inbound UDP 30001 and 31001 in both the provider and host firewalls. Keep console TCP 30002 closed to public traffic, and keep RPC 8081 and metrics 9100 on loopback. Arrange any required SSH access directly with the coordinator. Share public keys and access details through the agreed channel, and keep private keys and passwords private. [Host preparation and installation commands](OPERATOR.md#2-host-requirements-clock-and-preflight)
+2. Use a dedicated VPS with Ubuntu 24.04, sudo access, provider console access, and a public IPv4 address or approved UDP forwarding. **Recruitment requirement: 8 vCPUs or more, 12 GB RAM or more (at least 11 GiB OS-visible memory), and an SSD/NVMe with at least 60 GiB free.** Allow capacity for database growth, logs and snapshots (100 GB or larger total storage recommended), with at least 10 Mbps symmetric bandwidth. If elections stall, the database grows quickly; see [If the first election does not conclude](#if-the-first-election-does-not-conclude). The current automated CPU preflight floor is still **4 vCPUs**, but passing it alone does **not** meet this campaign's 8 vCPU recruitment minimum. Hardware SHA-256 acceleration is required. If you use arm64, confirm the supported build or release artifact with the coordinator before proceeding. [CPU requirements](https://github.com/tosnetwork/tos/blob/main/doc/Validator.md#cpu-instruction-set)
+3. During December 1–4, get your node name, operator label, pinned `tos` and `tos-ops` commits, and preflight instructions from the coordinator. Install the pinned operations bundle, synchronize the system clock, and prepare the validator and `tosctl` using the operator guide. You build the node and `tosctl` from source on your VPS; allow an hour or more for the build, and keep the build directory under `/var/lib/tos-build` until the coordinator has compared your release checksums. Allow inbound UDP 30001 and 31001 in both the provider and host firewalls. Keep console TCP 30002 closed to public traffic, and keep RPC 8081 and metrics 9100 on loopback. The coordinator needs SSH access to your VPS only for the host preflight and the election onboarding. Arrange it directly with the coordinator, share public keys and access details through the agreed channel, and keep private keys and passwords private. Remove the coordinator's access once your onboarding is confirmed; an operator is counted as independent only after that access is removed (see the [milestone](#external-participation-milestone)). [Host preparation and installation commands](OPERATOR.md#2-host-requirements-clock-and-preflight)
 
 ## Create your first operator wallet
 
@@ -75,12 +81,22 @@ Send **`/tmp/record.json`** to the coordinator and confirm receipt and validatio
 
 If the previous election schedule is retained, the first election opens **five hours after genesis**, accepts stakes for **45 minutes**, and hands over to the elected set **six hours after genesis** if the election succeeds. Plan your availability using the final times confirmed by the coordinator.
 
+### If the first election does not conclude
+
+An election concludes only when enough validators have staked. Until one does, the genesis set keeps producing blocks but no key block is made, old state is not cleaned up, and the database grows much faster than usual. If that happens:
+
+- Keep the node and election service running. Do not delete the database, reinstall or rotate keys.
+- Watch free disk space every few hours and tell the coordinator before it falls below 20 GiB.
+- The coordinator announces in the official channel, within 12 hours of the missed handover, whether the network continues, restarts from a new genesis or ends. A restart means a new seat confirmation and a new public record; the coordinator will tell you which steps to repeat.
+
 ## Monitor your validator during the test
 
 - Check node and election service status, chain progress, restarts, free disk space and operator wallet fee balance.
 - At each election, confirm stake acceptance and active-set membership. Check stake recovery when it is due. Report an expired term even if blocks are still advancing.
 - If chain progress stalls, an election fails, fees run low or disk usage grows unexpectedly, report the UTC time, node name, public pool address, last chain head and relevant sanitized log lines. If the outcome of a transaction is unclear, ask the coordinator to reconcile the original attempt before retrying.
 - Tell the coordinator before scheduled maintenance or leaving so they can check your active duties and outstanding stakes.
+- Upgrades are announced in the official channel with the new pinned commit, the deadline and whether the upgrade is mandatory. Upgrade one validator at a time as the coordinator schedules it, following the [upgrade steps](OPERATOR.md#8-upgrade-rollback-and-key-rotation).
+- For an urgent problem (your node is down, a stake looks wrong, a key may be exposed), post in the official channel and contact your coordinator directly. If you suspect a key is exposed, stop the validator first.
 
 [Daily checks, log commands and fee monitoring](OPERATOR.md#7-daily-checks-and-fee-top-ups)
 
@@ -92,15 +108,13 @@ If you contact the team after genesis, ask about running an observer node. The c
 
 For **each counted operator**, the coordinator must retain evidence of all five steps:
 
-1. **Independent onboarding:** one distinct external operator controls the validator host and consensus key, with a verified public staking pool and validator ID. No private keys are collected.
+1. **Independent onboarding:** one distinct external operator controls the validator host and consensus key, with a verified public staking pool and validator ID, and has removed the coordinator's onboarding access before the counted term. No private keys are collected.
 2. **Node synchronization:** the validator joined the correct testnet and its recent block identity agrees with independently checked reference nodes.
 3. **Accepted stake:** the Elector accepted that pool's stake in an identified election. Mere funding or submission is not sufficient.
 4. **Election and actual duties:** the pool entered the active elected validator set and the validator actually performed duties during that elected term. Being a candidate or merely appearing in a proposed set is not sufficient.
 5. **Recorded verification:** the coordinator cross-checks the election and active-set/key-block records with available term-participation evidence, timestamps the outcome, and marks it PASS, FAIL or PENDING. Missing evidence stays PENDING, not PASS.
 
-The team may declare this external-participation milestone **successful only when at least five different external operators have verified PASS results**. Publish the count and verification basis without disclosing private keys or unrelated private operator information.
-
-**Readiness dependency:** the existing operations profile was built for a four-validator genesis. Before promising a five-external-operator launch, the coordinator must validate sufficient genesis seats, staking funds, election and onboarding capacity, and successful multi-operator rehearsal. A four-seat genesis cannot by itself satisfy this milestone.
+The team may declare this external-participation milestone **successful only when at least five different external operators have verified PASS results**. The team publishes the count and verification basis without disclosing private keys or unrelated private operator information. Genesis seats are limited; the coordinator confirms each seat before genesis.
 
 ## Test plan for each election cycle
 
@@ -202,3 +216,12 @@ Read check (UTC, successes/20, median/p95, first and last heads):
 Coordinated load window (if any, host observations before and after):
 Incident or unresolved item:
 ```
+
+## When the test ends
+
+After the coordinator announces the end of the test on December 19:
+
+1. Send your last cycle report and any unresolved items.
+2. Stop the services: `sudo systemctl stop tos-testnet-elections tos-testnet-validator`.
+3. Keep the database and logs for 7 days in case the coordinator asks for evidence, then delete them along with the testnet keys and vault. Testnet keys must not be reused on mainnet.
+4. Remove any remaining coordinator access to your VPS.
