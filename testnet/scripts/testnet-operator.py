@@ -42,6 +42,28 @@ Subcommands, in ceremony order:
       master-wallet-secret, V3R2, subwallet 42, workchain 0), and refuses any
       other master wallet. --require refuses unless it is configured.
 
+  onboard --name NAME --pool POOL [--owner OWNER] [--rpc URL] [--out FILE]
+      As root, on the operator's own validator host, after the coordinator
+      reports its steps done (testnet-elections.py onboard --no-host): every
+      host-side step of election onboarding, each skipped when its result is
+      already there, so a rerun changes nothing:
+        1. init-operator.sh --name NAME (console key, node registration,
+           tosctl's master wallet, the operator wallet op-NAME);
+        2. reads POOL from this host's own node (loopback JSON-RPC, or --rpc):
+           refuses unless it is active, its validator role is op-NAME, its
+           owner role is --owner when given, and it holds two stakes
+           (elections.stake_tos) above its storage reserve;
+        3. activates op-NAME (`tosctl wallet activate`: the wallet deploys
+           itself from the fee money the coordinator sent; nothing else is
+           sent) unless it is active, refusing while it holds no fee money;
+        4. `tosctl config pool add` and `config bind add` for pool-NAME;
+        5. the node's latest `post-quantum consensus custody` line must name
+           POOL as its validator id;
+        6. enable-elections.sh --name NAME, unless the election task is
+           already running (a rerun does not restart it).
+      Prints a JSON summary of public facts (written to --out too) to send to
+      the coordinator, who checks the result on chain.
+
 Nothing here generates or reads a wallet key.
 """
 
@@ -51,6 +73,8 @@ import argparse
 import ipaddress
 import json
 import os
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -61,6 +85,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import testnet_lib as lib  # noqa: E402
+import testnet_ops as ops  # noqa: E402
+import validator_host as vh  # noqa: E402
 
 BIN = Path(os.environ.get("TOS_BIN", "/usr/local/bin"))
 
@@ -382,6 +408,135 @@ def cmd_rpc_config(args: argparse.Namespace) -> None:
     print(f"wrote {args.out}: tos-rpc trusts the lite server on {LOOPBACK}:{args.port}")
 
 
+# ---------------------------------------------------------------- onboard (the operator's host)
+
+NANO = 10**9
+# init-operator.sh's and enable-elections.sh's rule for NAME.
+NODE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,30}")
+ELECTIONS_UNIT = "tos-testnet-elections.service"
+# What the pool keeps for storage (MIN_TOS_FOR_STORAGE in single-nominator-code.fc).
+POOL_STORAGE_NANOTOS = NANO
+WAIT_ACTIVE_SECONDS = 120
+
+
+class NodeReader:
+    """Chain reads from this host's own node; nothing is sent through it here."""
+
+    def __init__(self, url: str, rpc=lib.rpc):
+        self.url = url
+        self.rpc = lib.retrying_reads(rpc)
+
+    def account(self, address: str) -> tuple[str, int]:
+        info = self.rpc(self.url, "getAddressInformation", address=address)
+        return info["state"], int(info["balance"])
+
+    def pool_roles(self, address: str) -> tuple[str, str]:
+        result = self.rpc(self.url, "runGetMethod", address=address, method="get_roles", stack=[])
+        return vh.decode_pool_roles(result, address)
+
+
+def onboard_host(args: argparse.Namespace, host, reader, profile: dict, sleep=time.sleep) -> dict:
+    """The host-side onboarding steps, in order, each decided by what is already there."""
+    name = args.name or ""
+    if not NODE_NAME.fullmatch(name):
+        raise lib.TestnetError("--name must be lower-case letters, digits and dashes")
+    pool = lib.check_raw_address(args.pool)
+    if not pool.startswith("-1:"):
+        raise lib.TestnetError(f"the pool {pool} is not in the masterchain")
+    expected_owner = lib.check_raw_address(args.owner) if args.owner else None
+    stake = int(profile["elections"]["stake_tos"]) * NANO
+
+    def step(text: str) -> None:
+        print(f"== {name}: {text}", flush=True)
+
+    step("operator tool (init-operator.sh)")
+    wallet = vh.operator_wallet(
+        host.run(f"{vh.SCRIPTS}/init-operator.sh --name {shlex.quote(name)}"), name
+    )
+    step(f"operator wallet {wallet}")
+
+    step(f"the pool {pool}, read on this node")
+    pool_state, pool_balance = reader.account(pool)
+    if pool_state != "active":
+        raise lib.TestnetError(
+            f"the pool is {pool_state} on this node: the coordinator has not deployed it yet, or "
+            "this node is not synchronized; rerun after the coordinator's hand-off"
+        )
+    owner, validator = reader.pool_roles(pool)
+    if validator != wallet:
+        raise lib.TestnetError(
+            f"the pool's validator role is {validator}, not this host's op-{name} {wallet}: "
+            "this host cannot stake for it; tell the coordinator (nothing was changed)"
+        )
+    if expected_owner is not None and owner != expected_owner:
+        raise lib.TestnetError(f"the pool's owner is {owner}, not {expected_owner}")
+    if pool_balance - POOL_STORAGE_NANOTOS < 2 * stake:
+        raise lib.TestnetError(
+            f"the pool holds {pool_balance / NANO:.9f} TOS, less than two stakes of "
+            f"{stake / NANO:.9f} and its reserve: the coordinator has not sent the principal yet"
+        )
+
+    wallet_state, wallet_balance = reader.account(wallet)
+    if wallet_state != "active":
+        if wallet_balance < ops.ACTIVATION_FEE_NANOTOS:
+            raise lib.TestnetError(
+                f"op-{name} holds {wallet_balance / NANO:.9f} TOS: the coordinator has not sent "
+                f"its fee money yet (fund-op-{name})"
+            )
+        # No value moves: the wallet deploys itself from its own credit.
+        step("activate the operator wallet")
+        host.tosctl(f"wallet activate --name op-{name}", 150)
+        waited = 0
+        while True:
+            wallet_state, wallet_balance = reader.account(wallet)
+            if wallet_state == "active":
+                break
+            if waited >= WAIT_ACTIVE_SECONDS:
+                raise lib.TestnetError(
+                    f"op-{name} did not become active within {WAIT_ACTIVE_SECONDS} s"
+                )
+            sleep(3)
+            waited += 3
+
+    vh.configure_pool(host, name, pool, owner, step)
+
+    step("custody: the node signs for the pool")
+    vh.check_custody(host, pool)
+
+    step("election task")
+    unit = host.run(f"systemctl is-active {ELECTIONS_UNIT} || true").strip()
+    if unit == "active":
+        step(f"{ELECTIONS_UNIT} is already running; not restarted")
+    else:
+        print(host.run(f"{vh.SCRIPTS}/enable-elections.sh --name {shlex.quote(name)}"), end="")
+        unit = host.run(f"systemctl is-active {ELECTIONS_UNIT} || true").strip()
+    return {
+        "name": name,
+        "operator_wallet": wallet,
+        "operator_state": wallet_state,
+        "operator_nanotos": wallet_balance,
+        "pool": pool,
+        "owner": owner,
+        "pool_nanotos": pool_balance,
+        "custody_validator_id": pool.split(":")[1],
+        "elections_unit": unit,
+    }
+
+
+def cmd_onboard(args: argparse.Namespace, host=None, reader=None) -> None:
+    if os.geteuid() != 0:
+        raise lib.TestnetError("run onboard as root on the validator host")
+    profile = lib.load_profile(args.profile)
+    url = args.rpc or f"http://127.0.0.1:{profile['ports']['json_rpc_loopback']}/jsonRPC"
+    if args.out is not None and (args.out.exists() or args.out.is_symlink()):
+        raise lib.TestnetError(f"{args.out} already exists; it is never overwritten")
+    result = onboard_host(args, host or vh.LocalHost(), reader or NodeReader(url), profile)
+    print(json.dumps(result, indent=2))
+    if args.out is not None:
+        lib.write_new_json(args.out, result)
+        print(f"wrote {args.out}: send it to the coordinator")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -425,6 +580,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--config", type=Path, required=True, help="tosctl-config.json")
     p.add_argument("--require", action="store_true", help="refuse unless it is configured")
     p.set_defaults(func=cmd_master_wallet)
+
+    p = sub.add_parser("onboard")
+    p.add_argument("--name", required=True, help="the node name (op-NAME, pool-NAME)")
+    p.add_argument("--pool", required=True, help="the pool (validator id) as -1:<64 hex>")
+    p.add_argument("--owner", help="the pool owner the coordinator named, checked on chain")
+    p.add_argument("--rpc", help="this node's JSON-RPC (default: the loopback listener)")
+    p.add_argument("--out", type=Path, help="also write the summary here (new file)")
+    p.set_defaults(func=cmd_onboard)
 
     args = parser.parse_args(argv)
     try:

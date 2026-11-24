@@ -61,10 +61,38 @@ the first testnet hosts that flag said yes while ntpsec had no server at all.
 The VMs had IPv6 addresses but no working IPv6 path, so ntpd chose IPv6
 servers, dropped them, and kept nothing.
 
-## 0.5 Coordinator: preflight every host
+## 0.5 Preflight every host
 
-Before anything is installed, run the preflight from the coordinator's
-machine against an inventory of every host (format:
+Every host is checked against the same floors before anything is installed,
+but who runs the check depends on who runs the host. The coordinator never logs
+in to a host an external operator runs: no SSH, no remote command, no tunnel.
+
+**External operators, on their own hosts** ([OPERATOR.md §2](OPERATOR.md#2-host-requirements-clock-and-preflight)):
+
+```bash
+sudo python3 /opt/tos-testnet/scripts/preflight.py --local --name <NODE_NAME> \
+  --role validator --public-ip <PUBLIC_IPV4> --out /tmp/preflight-<NODE_NAME>.json
+```
+
+The same facts script and the same checks (below, without SSH) run locally,
+judged against the same profile floors; the operator sends the JSON report
+(`tos-testnet.preflight-local.v1`, public facts only) to the coordinator, who
+reviews it before step 1: `passed` true, no FAIL, and the expected name,
+address and floors. A waiver the coordinator records for such a host is passed
+by the operator as `--waive CHECK=REASON` and shows in the report.
+
+The UDP mesh cannot be run without logging in to both ends, so for an external
+host ingress is proven by a listener and a sender instead: the operator
+captures with `--local --listen-seconds N --expect-from SENDER`, and a second
+machine (one the operator controls, or the coordinator's own) runs
+`preflight.py --send-probes --name SENDER --to <PUBLIC_IPV4> --role validator`.
+Sending probes to a public port needs no access to the host. Each role port
+must PASS for each expected sender. Without that test the report's `udp` line is
+a WARN: syncing later shows only that the node reaches the network, not that
+the network reaches it, so ingress stays unproven until the node validates.
+
+**Team-operated hosts** (the DHT hosts, the coordinator's own validators), from
+the coordinator's machine against an inventory of those hosts only (format:
 `network/inventory.example.json`; keep the real one outside the repository):
 
 ```bash
@@ -80,8 +108,8 @@ It checks, per host:
 - ufw rules for the role's UDP ports, and that the console port is closed;
 - whether another program already holds those ports.
 
-It then has every host send UDP probes to every other host's role ports, while
-each target captures with tcpdump. A probe that never arrives was dropped
+It then has every inventory host send UDP probes to every other inventory
+host's role ports, while each target captures with tcpdump. A probe that never arrives was dropped
 outside the VM. Fix every FAIL before step 1. It is safe to rerun on live
 nodes; a port held by `validator-engine` or `dht-server` passes.
 `--accept-new-host-keys` accepts only a first-seen host key; a changed key
@@ -403,9 +431,62 @@ heavy load.
 
 ### 8.1 Onboarding a genesis validator for elections
 
-From the coordinator's machine, with SSH tunnels to **two** validators'
-loopback JSON-RPC (`ssh -L 18081:127.0.0.1:8081 root@<validator>` and another
-on 28081 to a second validator), once per validator whose pool step 2 recorded:
+Onboarding has two forms, chosen by who runs the host. Both move value through
+the same journaled operations and read the chain on **two** validators: the
+coordinator's own or team-operated nodes, through their loopback JSON-RPC
+(`ssh -L 18081:127.0.0.1:8081 root@<team validator>` and another on 28081 to a
+second team validator). A tunnel is never opened to an external operator's host.
+
+**A host an external operator runs: `onboard --no-host`.** The coordinator does
+only its own steps and checks the operator's from chain state; it opens no SSH
+and runs nothing on the host. The operator runs the host-side steps
+([OPERATOR.md §6](OPERATOR.md#6-onboard-for-elections)). The hand-offs:
+
+| # | Who | Runs | Proceeds only when (read on chain unless noted) |
+|---|-----|------|-------------------------------------------------|
+| 1 | Coordinator | `onboard --no-host` (below) | the pool is recorded, derives from its owner and operator wallet, and genesis names it |
+| 1a | | `fund-op-<name>`: `operator_funding_tos` to the operator wallet (it may be undeployed) | the bootstrap wallet's history gate |
+| 1b | | `fund-owner-<name>`, `activate-owner-<name>` | the owner's credit settled |
+| 1c | | `deploy-pool-<name>` (kind `owner-deploy-pool`): `pool_deploy_tos` with the pool's StateInit, from the owner | the owner active on both validators, and keeping the principal, both fees and a withdrawal message |
+| 1d | | `principal-<name>`: `pool_tos` from the owner | the pool active with the pinned code and the two roles |
+| 2 | Coordinator | exits with status 3 and prints the operator's command; sends it, the pool and the owner through the agreed channel | the pool holds two stakes above its reserve |
+| 3 | Operator | `sudo python3 /opt/tos-testnet/scripts/testnet-operator.py onboard --name <name> --pool <pool> --owner <owner>` on their host | on their own node: the pool active, its validator role their wallet, two stakes in it, fee money in the wallet; then the custody line names the pool (host log) |
+| 4 | Operator | sends the printed JSON summary | (informational: the coordinator decides from the chain) |
+| 5 | Coordinator | `onboard --no-host` again: all operations settled, nothing is sent | the pool's code, roles and two stakes unchanged, and the operator wallet active holding at least a stake order (`stake_order_nanotos`) and its fee |
+
+```bash
+python3 /opt/tos-testnet/scripts/testnet-elections.py onboard \
+  --name node-1 --no-host --ceremony ./ceremony \
+  --tos-root "$TOS_ROOT" --fift "$TOS_ROOT/build/crypto/fift" \
+  --rpc http://127.0.0.1:18081/jsonRPC --confirm-rpc http://127.0.0.1:28081/jsonRPC \
+  --previous-ceremony ../epoch-1/ceremony   # after a reset: once per earlier epoch
+```
+
+The owner deploys the pool, not the operator wallet. The pool's address is the
+hash of its StateInit (the pinned code and a data cell of the two roles), so any
+sender carrying that StateInit creates exactly this pool, and the contract
+accepts an empty-body message from anyone. Deploying from the owner keeps every
+onboarding payment signed and journaled here, needs no message from the
+operator wallet before the principal, and leaves the operator a single step
+after a single hand-off. The 2 TOS come out of the owner's reserve
+(`pool_owner_reserve_tos`); the deployment is refused unless the owner keeps the
+principal, its fee and a withdrawal message afterwards. The operator wallet's
+fee money is unchanged, so it has 2 TOS more headroom than on a team host.
+
+Whether the node is bound to the pool and the election task runs cannot be read
+on chain before an election. They show at the first election as the pool's
+stake in the Elector and then in ConfigParam 34, which `sweep`'s prerequisites
+and the live checks read. A wrong binding loses nothing: the pool keeps the
+principal and only its owner can withdraw it.
+
+The operator's script refuses, and changes nothing, until the coordinator's
+steps are visible on the operator's own node; a pool whose validator role is not
+the host's wallet is refused there (the operator reports it; `change-validator`
+is the coordinator's remedy). A host that kept `/var/lib/tos-ctl` over a reset
+is caught the same way.
+
+**A host the team operates: `onboard --host --ssh-key`.** From the coordinator's
+machine, once per such validator whose pool step 2 recorded:
 
 ```bash
 python3 /opt/tos-testnet/scripts/testnet-elections.py onboard \
@@ -460,7 +541,9 @@ and the pool owners' keys never leave the coordinator.
 - `fund-op-<name>`
 - `fund-owner-<name>`
 - `activate-owner-<name>`
-- `deploy-pool-<name>`
+- `deploy-pool-<name>` (kind `deploy-pool` from the operator wallet on a team
+  host, `owner-deploy-pool` from the owner with `--no-host`; a step settled one
+  way is never redone the other way)
 - `principal-<name>`
 
 Each has a record in `ceremony/operations/<id>.jsonl`. The lines are append-only
@@ -468,8 +551,8 @@ and each is fsynced with its directory. The signed message is durable there
 before it is broadcast, and the shared ceremony journal lock is held across reread, validation,
 signing and broadcast. It serializes operations across wallets and processes.
 
-The operator wallet's messages are built and signed by tosctl on the host, but
-**never broadcast there**: `wallet send --build-only` hands the message to the
+On a team host, the operator wallet's messages are built and signed by tosctl on
+the host, but **never broadcast there**: `wallet send --build-only` hands the message to the
 coordinator. The coordinator decodes it and refuses anything but the intended
 one, checking:
 

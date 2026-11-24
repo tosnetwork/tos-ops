@@ -96,12 +96,16 @@ def certificate_digest(value: dict) -> str:
 
 # config-propose and config-vote (testnet-governance.py) send to the Config contract,
 # change-validator to a pool; they settle only when a getter shows the effect (the
-# caller's expect check).
+# caller's expect check). owner-deploy-pool is the pool deployment of an
+# operator-run host, sent with the pool's StateInit from the offline owner; like
+# the host's deploy-pool it settles only when the pool reads deployed with its
+# pinned code and roles.
 COORDINATOR_KINDS = (
     "fund",
     "owner-fund",
     "sweep",
     "activate-owner",
+    "owner-deploy-pool",
     "principal",
     "withdraw",
     "change-validator",

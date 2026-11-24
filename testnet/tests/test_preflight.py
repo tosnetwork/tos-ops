@@ -390,3 +390,199 @@ def test_the_inventory_refuses_a_bad_waiver(tmp_path, waive, message):
 def test_main_refuses_a_bad_waiver_as_a_usage_error(tmp_path, capsys):
     assert preflight.main(["--inventory", str(write_inventory(tmp_path, {"ssh": REASON}))]) == 2
     assert "refused:" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------- operator-local mode
+
+
+class LocalMachine:
+    """Stands in for the operator's own host: the facts script and a tcpdump capture."""
+
+    def __init__(self, facts=None, probes=()):
+        self.facts = dict(GOOD_FACTS, **(facts or {}))
+        self.probes = list(probes)
+        self.commands = []
+
+    def __call__(self, h, command, timeout):
+        self.commands.append(command)
+        if command == preflight.FACTS_SCRIPT:
+            return subprocess.CompletedProcess(
+                [], 0, "\n".join(f"{k}={v}" for k, v in self.facts.items()), ""
+            )
+        if command.startswith("timeout"):
+            ports = [int(p) for p in re.findall(r"dst port (\d+)", command)]
+            lines = [f"PROB:{s}:{p}" for s, p in self.probes if p in ports]
+            return subprocess.CompletedProcess([], 0, "\n".join(lines), "")
+        raise AssertionError(command)
+
+
+@pytest.fixture
+def as_root(monkeypatch):
+    monkeypatch.setattr(preflight.os, "geteuid", lambda: 0)
+
+
+def local_argv(*extra, name="node-x", ip="203.0.113.10"):
+    return ["--local", "--name", name, "--role", "validator", "--public-ip", ip, *extra]
+
+
+def run_local_main(argv, machine, monkeypatch):
+    monkeypatch.setattr(preflight, "local_runner", machine)
+    return preflight.main(argv)
+
+
+def test_local_mode_runs_every_host_check_without_ssh(as_root, monkeypatch, tmp_path, capsys):
+    machine = LocalMachine()
+
+    def no_ssh(*args, **kwargs):
+        raise AssertionError("the local mode never opens SSH")
+
+    monkeypatch.setattr(preflight, "make_runner", no_ssh)
+    monkeypatch.setattr(preflight, "ssh_argv", no_ssh)
+    out = tmp_path / "report.json"
+    assert run_local_main(local_argv("--out", str(out)), machine, monkeypatch) == 0
+    report = json.loads(out.read_text())
+    assert report["version"] == "tos-testnet.preflight-local.v1"
+    assert report["passed"] is True and report["name"] == "node-x"
+    assert report["floor"] == {"min_cpus": 4, "min_memory_gib": 11, "min_disk_free_gib": 60}
+    found = {r["check"]: r["status"] for r in report["results"]}
+    for check in ("os", "arch", "cpu", "memory", "disk", "address", "time", "ufw", "ports"):
+        assert found[check] == "PASS", check
+    # Ingress is not provable from inside the host: a warning, not a pass.
+    assert found["udp"] == "WARN"
+    assert machine.commands == [preflight.FACTS_SCRIPT]
+    assert "send it to the coordinator" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "key,value,check",
+    [
+        ("mem_kib", str(4 * 1048576), "memory"),
+        ("cpus", "2", "cpu"),
+        ("cpu_flags", "fpu sse2", "cpu"),
+        ("disk_free_kib", str(10 * 1048576), "disk"),
+        ("os_version", "22.04", "os"),
+        ("ntp_source", "ntpd:0", "time"),
+    ],
+)
+def test_local_mode_fails_below_the_same_floors(as_root, monkeypatch, tmp_path, key, value, check):
+    out = tmp_path / "report.json"
+    machine = LocalMachine({key: value})
+    assert run_local_main(local_argv("--out", str(out)), machine, monkeypatch) == 1
+    report = json.loads(out.read_text())
+    assert report["passed"] is False
+    assert {r["check"]: r["status"] for r in report["results"]}[check] == "FAIL"
+
+
+def test_local_mode_applies_a_recorded_waiver(as_root, monkeypatch, capsys):
+    machine = LocalMachine({"mem_kib": str(int(3.9 * 1048576))})
+    argv = local_argv("--waive", f"memory={REASON}", "--json")
+    assert run_local_main(argv, machine, monkeypatch) == 0
+    report = json.loads(capsys.readouterr().out)
+    memory = next(r for r in report["results"] if r["check"] == "memory")
+    assert memory["status"] == "WAIVED" and memory["detail"].endswith(REASON)
+    assert report["waive"] == {"memory": REASON}
+
+
+@pytest.mark.parametrize(
+    "argv,message",
+    [
+        (local_argv("--waive", "ufw=owner said so"), "can be waived"),
+        (local_argv("--waive", "memory"), "CHECK=REASON"),
+        (local_argv("--waive", "memory="), "needs a reason"),
+        (local_argv(ip="2001:db8::1"), "IPv4"),
+        (local_argv(name="bad name"), "--name"),
+        (local_argv("--listen-seconds", "30"), "--expect-from"),
+        (local_argv("--expect-from", "probe-a"), "--listen-seconds"),
+        (local_argv("--listen-seconds", "601", "--expect-from", "a"), "between 0 and 600"),
+    ],
+)
+def test_local_mode_refuses_bad_arguments(as_root, monkeypatch, capsys, argv, message):
+    assert run_local_main(argv, LocalMachine(), monkeypatch) == 2
+    assert message in capsys.readouterr().err
+
+
+def test_local_mode_needs_root(monkeypatch, capsys):
+    monkeypatch.setattr(preflight.os, "geteuid", lambda: 1000)
+    assert run_local_main(local_argv(), LocalMachine(), monkeypatch) == 2
+    assert "as root" in capsys.readouterr().err
+
+
+def test_local_mode_never_overwrites_a_report(as_root, monkeypatch, tmp_path):
+    out = tmp_path / "report.json"
+    out.write_text("{}")
+    assert run_local_main(local_argv("--out", str(out)), LocalMachine(), monkeypatch) == 2
+    assert out.read_text() == "{}"
+
+
+def test_local_listen_passes_when_every_sender_reaches_every_port(as_root, monkeypatch, capsys):
+    probes = [(s, p) for s in ("probe-a", "probe-b") for p in (30001, 31001)]
+    argv = local_argv(
+        "--listen-seconds", "5", "--expect-from", "probe-a", "--expect-from", "probe-b", "--json"
+    )
+    assert run_local_main(argv, LocalMachine(probes=probes), monkeypatch) == 0
+    report = json.loads(capsys.readouterr().out)
+    udp = {r["check"]: r["status"] for r in report["results"] if r["check"].startswith("udp")}
+    assert udp == {"udp:30001": "PASS", "udp:31001": "PASS"}
+
+
+def test_local_listen_names_the_port_and_sender_that_did_not_arrive(as_root, monkeypatch, capsys):
+    probes = [("probe-a", 30001), ("probe-a", 31001), ("probe-b", 30001)]
+    argv = local_argv(
+        "--listen-seconds", "5", "--expect-from", "probe-a", "--expect-from", "probe-b", "--json"
+    )
+    assert run_local_main(argv, LocalMachine(probes=probes), monkeypatch) == 1
+    report = json.loads(capsys.readouterr().out)
+    failed = [r for r in report["results"] if r["status"] == "FAIL"]
+    assert [r["check"] for r in failed] == ["udp:31001"]
+    assert "['probe-b']" in failed[0]["detail"]
+
+
+def test_local_listen_without_tcpdump_fails(as_root, monkeypatch, capsys):
+    machine = LocalMachine({"tcpdump": ""})
+    argv = local_argv("--listen-seconds", "5", "--expect-from", "probe-a")
+    assert run_local_main(argv, machine, monkeypatch) == 1
+    assert "tcpdump is missing" in capsys.readouterr().out
+
+
+class FakeSocket:
+    sent = []
+
+    def __init__(self, family, kind):
+        assert (family, kind) == (preflight.socket.AF_INET, preflight.socket.SOCK_DGRAM)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def sendto(self, payload, target):
+        FakeSocket.sent.append((payload, target))
+
+
+def test_send_probes_carries_the_sender_and_port_the_listener_parses():
+    FakeSocket.sent = []
+    count = preflight.send_probes(
+        "probe-a",
+        [("203.0.113.10", 30001), ("203.0.113.10", 31001)],
+        seconds=2,
+        make_socket=FakeSocket,
+        sleep=lambda s: None,
+    )
+    assert count == 4 and len(FakeSocket.sent) == 4
+    capture = "\n".join(payload.decode() for payload, _ in FakeSocket.sent)
+    assert preflight.received_probes(capture) == {("probe-a", 30001), ("probe-a", 31001)}
+
+
+def test_send_probes_mode_targets_the_role_ports(monkeypatch):
+    calls = []
+
+    def send(sender, targets, seconds):
+        calls.append((sender, targets, seconds))
+        return len(targets) * seconds
+
+    monkeypatch.setattr(preflight, "send_probes", send)
+    argv = ["--send-probes", "--name", "probe-a", "--to", "203.0.113.10", "--role", "validator"]
+    assert preflight.main(argv + ["--seconds", "3"]) == 0
+    assert calls == [("probe-a", [("203.0.113.10", 30001), ("203.0.113.10", 31001)], 3)]
+    assert preflight.main(argv[:-2] + ["--role", "miner"]) == 2

@@ -37,6 +37,8 @@ INSTALL = W / "scripts/install-node.sh"
 INSTALL_TOSCTL = W / "scripts/install-tosctl.sh"
 BUILD = W / "scripts/build-node-binaries.sh"
 OPERATOR = W / "scripts/testnet-operator.py"
+VHOST = W / "scripts/validator_host.py"
+PREFLIGHT = W / "scripts/preflight.py"
 INDEX_UNIT = W / "systemd/tos-testnet-wallet-index.service"
 RPC_UNIT = W / "systemd/tos-testnet-rpc.service"
 
@@ -940,13 +942,13 @@ M = [
     ),
     (
         "E13 host pool configuration not compared",
-        EL,
+        VHOST,
         '    elif (entry.get("address"), entry.get("owner")) != (pool, owner):',
         "    elif False:",
     ),
     (
         "E15 the node's staking account not compared",
-        EL,
+        VHOST,
         '    if bound != pool.split(":")[1]:',
         "    if False:",
     ),
@@ -2157,6 +2159,107 @@ M += [
         INSTALL,
         'if [ -n "$PREFIX" ] && [ "$(/usr/bin/id -u)" = 0 ]; then die',
         'if [ -n "$PREFIX" ] && [ "$EUID" = 0 ]; then die',
+    ),
+]
+
+# Onboarding an operator-run host: the coordinator's chain-only checks
+# (onboard --no-host), the operator's host-side script and the local preflight.
+M += [
+    (
+        "NH1 the owner deploys before it reads active",
+        EL,
+        '        if operations.state(owner) != "active":\n            raise lib.TestnetError(f"the pool owner',
+        '        if False:\n            raise lib.TestnetError(f"the pool owner',
+    ),
+    (
+        "NH2 the owner deploys without keeping the principal",
+        EL,
+        "        owner_keeps(operations, owner, deploy_nanotos + principal + ops.FEE_ALLOWANCE_NANOTOS // 10)",
+        "        pass",
+    ),
+    (
+        "NH3 done without the operator wallet active",
+        EL,
+        '    if state != "active":\n        raise WaitingForOperator(',
+        "    if False:\n        raise WaitingForOperator(",
+    ),
+    (
+        "NH4 done without a stake order's fee money",
+        EL,
+        '    if balance < floor:\n        raise lib.TestnetError(\n            f"the operator wallet',
+        '    if False:\n        raise lib.TestnetError(\n            f"the operator wallet',
+    ),
+    (
+        "NH5 hand-off before the pool holds two stakes",
+        EL,
+        "    pool_holds_two_stakes(operations, pool, stake)\n",
+        "",
+    ),
+    (
+        "NH6 an open operator-wallet deployment is ignored",
+        EL,
+        '    if earlier is not None and earlier.get("kind") != OWNER_DEPLOY_KIND:',
+        "    if False:",
+    ),
+    (
+        "OB1 the pool's validator role not compared on the host",
+        OPERATOR,
+        "    if validator != wallet:",
+        "    if False:",
+    ),
+    (
+        "OB2 the pool's owner not compared on the host",
+        OPERATOR,
+        "    if expected_owner is not None and owner != expected_owner:",
+        "    if False:",
+    ),
+    (
+        "OB3 the host configures a pool without the principal",
+        OPERATOR,
+        "    if pool_balance - POOL_STORAGE_NANOTOS < 2 * stake:",
+        "    if False:",
+    ),
+    (
+        "OB4 elections enabled without the custody check",
+        OPERATOR,
+        "    vh.check_custody(host, pool)\n",
+        "",
+    ),
+    (
+        "OB5 a rerun restarts the election task",
+        OPERATOR,
+        '    if unit == "active":',
+        "    if False:",
+    ),
+    (
+        "OB6 an unfunded operator wallet is activated",
+        OPERATOR,
+        "        if wallet_balance < ops.ACTIVATION_FEE_NANOTOS:",
+        "        if False:",
+    ),
+    (
+        "OB7 the host configures an undeployed pool",
+        OPERATOR,
+        '    if pool_state != "active":',
+        "    if False:",
+    ),
+    (
+        "PL1 local mode reports untested ingress as passed",
+        PREFLIGHT,
+        '                "WARN",\n                "provider ingress not tested',
+        '                "PASS",\n                "provider ingress not tested',
+    ),
+    (
+        "PL2 local listen ignores a missing sender",
+        PREFLIGHT,
+        "        missing = [s for s in expect_from if (s, port) not in got]",
+        "        missing = []",
+    ),
+    (
+        "PL3 local mode runs without root",
+        PREFLIGHT,
+        '    if os.geteuid() != 0:\n        raise lib.TestnetError("run --local as root',
+        '    if False:\n        raise lib.TestnetError("run --local as root',
     ),
 ]
 

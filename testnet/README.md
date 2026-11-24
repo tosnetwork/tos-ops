@@ -43,7 +43,8 @@ testnet/
 ├── network/inventory.example.json  host inventory format for preflight.py (real one stays outside)
 ├── scripts/
 │   ├── testnet_lib.py            shared checks and encodings (standard library only)
-│   ├── testnet-operator.py       pregenesis-config | record | configure
+│   ├── testnet-operator.py       pregenesis-config | record | configure | onboard (the operator's host-side onboarding)
+│   ├── validator_host.py         the host-side onboarding steps shared by onboard over SSH and the operator's own run
 │   ├── testnet-dht.py            prepare a DHT bootstrap identity and its signed record
 │   ├── testnet-coordinator.py    manifest | genesis | global-config
 │   ├── install-node.sh           prepare | activate one node (root)
@@ -55,13 +56,15 @@ testnet/
 │   ├── alert-relay.py            coordinator | peer: watch anomalies and heartbeats to Telegram; silence | unsilence
 │   ├── build-node-binaries.sh    compile the role's binaries on the host itself
 │   ├── setup-time.sh             first on every host: ntpsec over IPv4, proven to follow a server
-│   ├── preflight.py              before installing: host floors, time source, ufw, and the UDP mesh between hosts
+│   ├── preflight.py              before installing: host floors, time source, ufw, and the UDP mesh between hosts;
+│   │                             --local on an operator's own host, --send-probes for its ingress test
 │   ├── build-tosctl.sh           compile tosctl on a validator host from the node's commit
 │   ├── install-tosctl.sh         production: install tosctl from a release directory fetch-release.py --role tosctl wrote (root)
 │   ├── init-operator.sh          tosctl vault and operator wallet (--wallet-only, before genesis), then console key (root)
 │   ├── enable-elections.sh       election policy and the election task on a validator host (root)
 │   ├── testnet-elections.py      pool: before genesis, the offline owner and the staking pool (the validator id);
-│   │                             fund | onboard: bring a genesis validator into elections;
+│   │                             fund | onboard: bring a genesis validator into elections
+│   │                             (--no-host: an operator-run host, checked on chain only);
 │   │                             withdraw: principal back to the offline pool owner;
 │   │                             top-up: operator fee money from its pool owner;
 │   │                             sweep: the bootstrap wallet's final transfer to the blackhole;

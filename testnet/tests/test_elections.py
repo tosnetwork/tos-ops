@@ -787,6 +787,7 @@ class BoardingHost:
         self.operator = fakechain.wallet_address(OP_KEY, 698983191)
         # The validator id the node reports holding its consensus key for.
         self.bound = None
+        self.elections_on = False
 
     def run(self, command, timeout=300):
         self.commands.append(command)
@@ -803,7 +804,10 @@ class BoardingHost:
                 f"validator_id {self.bound} key_id {'ab' * 32} valid_from 0 expire_at 0\n"
             )
         if "enable-elections.sh" in command:
+            self.elections_on = True
             return "active\n"
+        if command.startswith("systemctl is-active tos-testnet-elections.service"):
+            return "active\n" if self.elections_on else "inactive\n"
         if command.startswith("systemctl "):
             return ""
         raise AssertionError(command)
