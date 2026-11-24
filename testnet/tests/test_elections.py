@@ -120,11 +120,11 @@ def check_election_amounts(e):
         e["pool_owner_reserve_tos"] * NANO
         >= elections.OWNER_MESSAGE_NANOTOS + (elections.ops.FEE_ALLOWANCE_NANOTOS // 10) * 3
     )
-    # The same allowance reproduces epoch 6's bootstrap wallet for four unit pools
-    # without the deployment headroom: the sizing rule did not change.
-    per_validator = e["operator_funding_tos"] + e["pool_tos"] + e["pool_owner_reserve_tos"]
-    fees = -(-allowance // NANO)
-    assert 4 * per_validator + e["bootstrap_margin_tos"] + fees == 80151
+    # The margin scales with the pools and is never below epoch 6's 50 TOS for four;
+    # the transfer allowance still rounds up to the 1 TOS epoch 6 kept for its fees.
+    assert 4 * e["bootstrap_margin_tos_per_pool"] >= 50
+    assert -(-allowance // NANO) == 1
+    assert -(-(2 * 21 + 1) * e["bootstrap_transfer_fee_nanotos"] // NANO) == 1
 
 
 def test_repository_profile_has_the_election_amounts():
@@ -140,6 +140,8 @@ def test_repository_profile_has_the_election_amounts():
         ("bootstrap_transfer_fee_nanotos", 3_000_000),
         # Far above them: the sweep burns it, but the genesis supply says otherwise.
         ("bootstrap_transfer_fee_nanotos", 125_000_000),
+        # A margin below epoch 6's for four pools.
+        ("bootstrap_margin_tos_per_pool", 12),
         # No withdrawal left to an owner that deployed its pool.
         ("pool_owner_reserve_tos", 1),
     ],
@@ -799,6 +801,12 @@ class BoardingHost:
 
     def run(self, command, timeout=300):
         self.commands.append(command)
+        if elections.vh.MAX_FACTOR_MARKER in command:
+            # The max-factor probe on a copy of tosctl's configuration.
+            factor = command.split("elections max-factor ")[1].split()[0]
+            if float(factor) > self.tweak.get("tosctl_max_factor", 100.0):
+                return "Error: max-factor must be in range [1.0..3.0]\nPROBE-REFUSED\n"
+            return f"{elections.vh.MAX_FACTOR_MARKER} {self.tweak.get('reads_back', factor)}\n"
         if "init-operator.sh" in command:
             body = bytes([0x11, 0xFF]) + bytes.fromhex(self.operator.split(":")[1]) + b"\x00\x00"
             return f"op-node-1 {base64.urlsafe_b64encode(body).decode()}\n"

@@ -359,7 +359,8 @@ result is already there, so a rerun changes nothing:
 4. `tosctl config pool add` and `config bind add` for `pool-<NODE_NAME>`;
 5. the node's latest `post-quantum consensus custody` line must name the pool;
 6. `enable-elections.sh --name <NODE_NAME>` installs and starts the election
-   task with a fixed stake of `elections.stake_tos` and the profile's max factor, unless it is already running (a rerun never restarts it); it refuses
+   task with a fixed stake of `elections.stake_tos` and tosctl's default max factor
+   (`elections.external_max_factor`, 3.0), unless it is already running (a rerun never restarts it); it refuses
    unless `tos-testnet-elections` is active at the end.
 
 A refusal names what is missing. A pool whose validator role is not your wallet

@@ -194,7 +194,7 @@ def test_the_genesis_check_reads_config_param_15_back():
 
 def test_the_profile_supply_targets_are_the_planned_ones():
     profile = planned_profile(2)
-    assert lib.genesis_supply_targets(profile) == (80_159 * NANO, 81_159 * NANO)
+    assert lib.genesis_supply_targets(profile) == (80_161 * NANO, 81_161 * NANO)
     profile["genesis"]["total_supply_tos"] = 81_150
     with pytest.raises(lib.TestnetError, match="plus 1000 TOS"):
         lib.genesis_supply_targets(profile)

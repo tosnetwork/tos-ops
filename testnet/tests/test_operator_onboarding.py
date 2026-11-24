@@ -771,7 +771,11 @@ def test_a_team_pool_stakes_the_team_multiple(boarding):  # noqa: F811
     principal = team["team_pool_principal_tos"]
     assert b["chain"].account(b["pool"])["balance"] == (E["pool_deploy_tos"] + principal) * NANO
     assert b["ops"].journal.record("principal-node-1")["value"] == principal * NANO
-    assert b["host"].commands[-1].endswith("--name node-1 --stake-tos 20004")
+    assert b["host"].commands[-1].endswith("--name node-1 --stake-tos 20004 --max-factor 10.0")
+    # The host's tosctl was probed for the team's max factor before anything moved.
+    probes = [c for c in b["host"].commands if elections.vh.MAX_FACTOR_MARKER in c]
+    assert len(probes) == 1 and "max-factor 10.0" in probes[0]
+    assert b["host"].commands.index(probes[0]) == 1  # right after init-operator.sh
 
 
 def test_a_team_pool_needs_the_ceremony_plan(boarding):  # noqa: F811
@@ -785,7 +789,9 @@ def test_a_team_pool_needs_the_ceremony_plan(boarding):  # noqa: F811
 def test_an_external_pool_over_ssh_stakes_one_unit(boarding):  # noqa: F811
     b = boarding
     elections.onboard(b["args"], b["ops"], 2, planned_profile(4))
-    assert b["host"].commands[-1].endswith(f"--stake-tos {E['stake_tos']}")
+    assert b["host"].commands[-1].endswith(f"--stake-tos {E['stake_tos']} --max-factor 3.0")
+    # An external pool keeps tosctl's default: nothing to probe.
+    assert not any(elections.vh.MAX_FACTOR_MARKER in c for c in b["host"].commands)
 
 
 def test_a_genesis_set_outside_the_records_is_refused(boarding):  # noqa: F811
@@ -796,3 +802,32 @@ def test_a_genesis_set_outside_the_records_is_refused(boarding):  # noqa: F811
     (b["ceremony"] / "genesis-set.json").unlink()
     with pytest.raises(lib.TestnetError, match="genesis-set.json is missing"):
         onboard(b)
+
+
+@pytest.mark.parametrize(
+    "tweak, message",
+    [
+        ({"tosctl_max_factor": 3.0}, "does not accept max factor 10.0"),
+        ({"reads_back": "3.0"}, "does not accept max factor 10.0"),
+    ],
+)
+def test_a_team_pool_is_refused_on_a_tosctl_that_rejects_its_max_factor(boarding, tweak, message):  # noqa: F811
+    b = boarding
+    name_in_genesis_set(b)
+    b["host"].tweak.update(tweak)
+    with pytest.raises(lib.TestnetError, match=message):
+        elections.onboard(b["args"], b["ops"], 2, planned_profile(4))
+    # Refused before any value moved or the election task was touched.
+    assert b["chain"].sent == [] and b["ops"].journal.all() == []
+    assert not any("enable-elections" in c for c in b["host"].commands)
+
+
+def test_the_probe_reads_a_throwaway_copy_of_the_configuration():
+    command = elections.vh.max_factor_probe_command("10.0", 20004)
+    assert '"$probe/config.json"' in command and "mktemp -d" in command
+    assert "elections max-factor 10.0" in command and "--fixed 20004" in command
+    # Every tosctl call runs as its own user, never as root.
+    assert command.count("runuser -u tos-ctl -- tosctl") == 2
+    assert subprocess.run(["bash", "-n"], input=command, text=True).returncode == 0
+    with pytest.raises(lib.TestnetError, match="not a max factor"):
+        elections.vh.max_factor_probe_command("10; rm -rf /", 1)

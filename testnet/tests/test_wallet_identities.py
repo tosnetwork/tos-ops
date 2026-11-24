@@ -848,7 +848,7 @@ def test_genesis_records_the_bootstrap_check(tmp_path, monkeypatch):
     profile = lib.load_profile(planned_profile(tmp_path))
     plan = lib.election_plan(profile)
     wallet = plan["bootstrap_wallet_tos"] * 10**9
-    assert wallet == 80_159 * 10**9
+    assert wallet == 80_161 * 10**9
     assert seen == [(wallet, wallet + 1000 * 10**9, lib.validator_schedule(profile))]
     genesis = json.loads((ceremony / "genesis.json").read_text())
     assert genesis["bootstrap"] == {"bootstrap_wallet_nanotos": wallet, "blackhole": lib.BLACKHOLE}

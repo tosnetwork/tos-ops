@@ -967,8 +967,8 @@ M = [
     (
         "E18 a pool genesis does not name is onboarded",
         EL,
-        "    if account not in registered:",
-        "    if False:",
+        "\n    if account not in registered:\n",
+        "\n    if False:\n",
     ),
     (
         "E19 a recorded pool that does not derive is trusted",
@@ -1302,16 +1302,64 @@ M += [
         "    if False:\n",
     ),
     (
-        "P8 the sweep counts only pools.json",
+        "P8 the sweep accepts a pool no record registers",
         EL,
-        "    if len(pools) != len(registered) or recorded != registered:\n",
-        "    if False:\n",
+        "        if account not in registered:\n            raise lib.TestnetError(\n",
+        "        if False:\n            raise lib.TestnetError(\n",
     ),
     (
         "P9 a team pool stakes one unit",
         LIB,
         '        stake, principal = plan["team_stake_tos"], plan["team_pool_principal_tos"]\n',
         '        stake, principal = int(e["stake_tos"]), int(e["pool_tos"])\n',
+    ),
+    (
+        "P10 a team pool's tosctl is not probed",
+        EL,
+        '        vh.check_tosctl_max_factor(host, amounts["max_factor"], amounts["stake"] // NANO)\n',
+        "        pass\n",
+    ),
+    (
+        "P11 the tosctl probe accepts any read-back",
+        VHOST,
+        "        accepted = len(found) == 1 and abs(float(found[0][0]) - float(factor)) < 1e-6\n",
+        "        accepted = True\n",
+    ),
+    (
+        "P12 a funded pool missing from a set is accepted",
+        EL,
+        "            if missing:\n",
+        "            if False:\n",
+    ),
+    (
+        "P13 a foreign validator in a set is accepted",
+        EL,
+        "            if foreign:\n",
+        "            if False:\n",
+    ),
+    (
+        "P14 a team pool can be excluded",
+        EL,
+        "            if team:\n                raise lib.TestnetError(\n",
+        "            if False:\n                raise lib.TestnetError(\n",
+    ),
+    (
+        "P15 a half-onboarded external is waited for silently",
+        EL,
+        '            if state != "settled":\n',
+        "            if False:\n",
+    ),
+    (
+        "P16 an external pool may change tosctl's default factor",
+        LIB,
+        "    if factor[1] != TOSCTL_DEFAULT_MAX_FACTOR:\n",
+        "    if False:\n",
+    ),
+    (
+        "P17 a never-funded external is not reported",
+        EL,
+        "            not_onboarded.append(name)\n",
+        "            pass\n",
     ),
 ]
 

@@ -47,26 +47,35 @@ elected with no team stake cut by a max factor, neither side holds more than two
 thirds of the weight, and from E = 2 the team holds `team_weight_percent` (50 %).
 Every load of a profile with E set repeats the check, so a wrong bootstrap total
 or multiple refuses. The bootstrap wallet is every pool's operator funding and
-owner funding (principal + `pool_owner_reserve_tos` + `pool_deploy_tos`), the
-50 TOS margin, and `bootstrap_transfer_fee_nanotos` for each of its 2 x (2 + E) + 1
-transfers, rounded up.
+owner funding (principal + `pool_owner_reserve_tos` + `pool_deploy_tos`), a
+margin of `bootstrap_margin_tos_per_pool` (13 TOS, epoch 6's 50 TOS for four
+pools rounded up) for every pool, since what it covers, a retried funding
+transfer or a fee rise, happens per pool and the sweep burns what is left, and
+`bootstrap_transfer_fee_nanotos` for each of its 2 x (2 + E) + 1 transfers,
+rounded up.
 
 | E | team multiple | team stake (TOS) | bootstrap wallet (TOS) | team weight |
 |---|---|---|---|---|
-| 0 | 1 | 10,002 | 40,105 | 100 % |
-| 1 | 1 | 10,002 | 60,132 | 66.7 % (exactly two thirds: not enough to finalize alone) |
-| 2 | 1 | 10,002 | 80,159 | 50 % |
-| 3 | 1.5 | 15,003 | 120,190 | 50 % |
-| 4 | 2 | 20,004 | 160,221 | 50 % |
-| 5 | 2.5 | 25,005 | 200,252 | 50 % |
-| 6–19 | refused | | | |
+| 0 | 1 | 10,002 | 40,081 | 100 % |
+| 1 | 1 | 10,002 | 60,121 | 66.7 % (exactly two thirds: not enough to finalize alone) |
+| 2 | 1 | 10,002 | 80,161 | 50 % |
+| 3 | 1.5 | 15,003 | 120,205 | 50 % |
+| 4 | 2 | 20,004 | 160,249 | 50 % |
+| 5 | 2.5 | 25,005 | 200,293 | 50 % |
+| 10 | 5 | 50,010 | 400,513 | 50 % |
+| 19 | 9.5 | 95,019 | 760,909 | 50 % |
 
-E above 5 is refused: tosctl's election task accepts a max factor of at most
-3.0 (`elections.max_factor`), and the Elector counts a stake at most at the max
-factor times the smallest elected stake, so a team stake above about three units
-would be cut and the team would fall below half. ConfigParam 17 already allows
-10; E up to 19 needs a tos release whose tosctl accepts a max factor up to 10,
-then `elections.max_factor` "10.0".
+A team pool's stake orders carry max factor 10.0 (`elections.max_factor`), so a
+team stake of up to 9.5 units (E = 19) counts in full against the one-unit
+external stakes; ConfigParam 17 allows 10. This needs a tosctl that accepts a max
+factor from 1.0 to 100.0 (the bound of upstream's `validator-elect-req.fif`);
+releases before that change stop at 3.0. Team onboarding probes the host's
+tosctl on a throwaway copy of its configuration before any value moves, and
+refuses one that rejects 10.0 or does not read it back, and
+`enable-elections.sh` refuses again when it sets the factor, so an old tosctl
+fails loudly instead of capping the team's weight. External pools keep
+tosctl's default 3.0 (`elections.external_max_factor`): their stakes are the
+smallest in the set and are never capped.
 
 The election limits are genesis values (`genesis.validator_num`,
 `genesis.stake_limits`): ConfigParam 16 is 21 / 21 / 2 (an election the team
@@ -313,7 +322,7 @@ records that share an identity or a host. The tos packer
 (`scripts/prepare-pq-genesis-manifest.py`) takes exactly four records, so a
 two-validator `validator-pq.pub` is packed by the coordinator alone; `genesis`
 then reads the validator set back from the zero state and refuses unless it is
-exactly `genesis-set.json`.
+exactly `genesis-set.json` (a known limit; see [Known limits](#known-limits)).
 
 ```bash
 S=/opt/tos-testnet/scripts
@@ -622,7 +631,9 @@ steps, in order:
    its storage reserve, and the node's latest `post-quantum consensus custody`
    line names the pool as its validator id (the Elector refuses a stake signed
    for another account);
-7. it runs `enable-elections.sh --stake-tos <the pool's stake>`, which installs
+7. it runs `enable-elections.sh --stake-tos <the pool's stake> --max-factor <F>`
+   (10.0 for a team pool, after probing the host's tosctl for it before step 1;
+   3.0 for an external one), which installs
    `systemd/tos-testnet-elections.service` (`Restart=always`).
 
 The election task (`tosctl service`) refuses to start without a master wallet
@@ -847,7 +858,7 @@ Single-nominator rewards go to the pool and its owner, never to the operator, so
 fee money after that comes from the owner.
 
 **Before the sweep** a top-up may still come from the bootstrap wallet, out of its
-50 TOS margin only, as an ordinary `fund` operation with its own fixed id:
+margin only, as an ordinary `fund` operation with its own fixed id:
 
 ```bash
 # C is the common ceremony / tools / --rpc / --confirm-rpc arguments above.
@@ -878,8 +889,10 @@ run them as part of deployment verification.
 #### Sweeping the bootstrap wallet
 
 The bootstrap wallet is one-time (memo STATUS 13.155/13.254). Once the second
-elected set is installed and holds every registered pool's stake, its remaining balance (the
-margin less what top-ups used, and the rounding) is sent with wallet-v3 send mode
+elected set is installed and holds the stake of both team pools and of every
+funded external pool, its remaining balance (the margin less what top-ups used,
+the rounding, and the allocation of every registered external validator that was
+never onboarded, since funding moves only at onboarding) is sent with wallet-v3 send mode
 160 (128: the whole remaining balance; 32: delete the account once empty), value
 0, non-bounce, to the ConfigParam 5 blackhole `-1:ff…ff`, where the credit phase
 destroys it and the block counts it in `ValueFlow.burned`. Nothing can be signed
@@ -887,12 +900,15 @@ from `-1:111…1` again: the account is gone and its address is no StateInit's.
 
 `sweep` refuses unless, read on both validators: live ConfigParam 5 names the
 blackhole and burns 0/1 (without it the transfer would create an ordinary account
-holding the funds); `pools.json` records exactly the pools `genesis-records.json`
-registers, the genesis set's and every external validator's, and their `fund-op-`,
-`fund-owner-` and `principal-` operations are settled; ConfigParam 34 and 32 are
-both elected sets of exactly those pools,
-each matched by an Elector result (the genesis set has none) and the previous one
-older; each pool holds a frozen, unbanned stake in both results; each operator
+holding the funds); every pool in `pools.json` is registered in
+`genesis-records.json` and both team pools are recorded; the team pools'
+`fund-op-`, `fund-owner-` and `principal-` operations are settled, and each
+external pool's are either all settled (it was funded and must stand) or none
+exists (it was never funded); ConfigParam 34 and 32 are both elected sets
+holding every team pool and every funded external pool and no validator outside
+the registered pools, each matched by an Elector result (the genesis set has
+none) and the previous one older; each of those pools holds a frozen, unbanned
+stake in both results; each of their operator
 wallet holds at least the measured first-recovery cash (0.203224039 TOS) plus the
 1 TOS fee allowance; and no other bootstrap operation is open. Then it reads the
 wallet's history like every bootstrap operation.
@@ -900,6 +916,28 @@ wallet's history like every bootstrap operation.
 ```bash
 python3 "$S" sweep "${C[@]}" --dry-run
 ```
+
+The report lists the pools that stood (`stood`), the registered external
+validators that were never onboarded (`not_onboarded`: their allocations are
+burned with the rest), and the excluded ones (`excluded`).
+
+An external validator that was funded (any of its onboarding operations exists)
+but never stood in both elected sets refuses the sweep, as does one whose
+onboarding stopped part way. Decide that it will not stand, then exclude it by
+name, with the reason:
+
+```bash
+python3 "$S" sweep "${C[@]}" --exclude node-7 --reason "host never synchronized" --dry-run
+python3 "$S" sweep "${C[@]}" --exclude node-7 --reason "host never synchronized"
+```
+
+The dry run checks the exclusion and records nothing. The real run records a
+settled `sweep-exclusion` operation, `sweep-exclude-node-7`, in the journal (the
+pool, the reason) only once every other prerequisite holds, and every later
+sweep check honors it. Its principal stays in its pool, whose owner key is
+offline on the coordinator: `withdraw --name node-7 --id <ID> --new --all` takes it
+out later, outside an election window. A
+team pool cannot be excluded, and a never-funded one needs no exclusion.
 
 The dry run makes all those reads and prints the exact transfer it would sign
 (mode, seqno, destination, value, bounce flag), the balance it would burn at most
@@ -1195,3 +1233,17 @@ digest, decoded transaction receipts and terminal consumer receipts. A fork or
 regression refuses. If a payment settles but its prefix cannot be certified,
 its true terminal result is retained with `checkpoint_refusal`; subsequent
 spending remains blocked. `reconcile` checks the same prefix without writing.
+
+## Known limits
+
+- **The tos genesis manifest packer takes four records.** tos
+  `scripts/prepare-pq-genesis-manifest.py` refuses any other count. The
+  coordinator runs it and compares its bytes only for a four-record genesis
+  set; the two-record December 5 set is packed by `testnet_lib.pack_manifest`
+  alone, and the cross-check is the zero state's validator set, which `genesis`
+  reads back and compares with `genesis-set.json`.
+- **`scripts/check-validator-keys.py` is the epoch-6 gate.** It pins epoch 6's
+  zero state and checks for four signers; it does not apply to a two-validator
+  genesis set and has not been generalized. Use `check-testnet.py
+  --genesis-set ceremony/genesis-set.json` and, after the first election,
+  `--elected-set`.

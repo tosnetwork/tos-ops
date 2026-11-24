@@ -455,10 +455,15 @@ def validator_schedule(profile: dict[str, Any]) -> dict[str, int]:
 # elections.external_validators, and with it the team stake multiple, the bootstrap
 # wallet and the genesis supply, which election_plan() derives and checks.
 
-# tosctl's election task refuses a max factor outside 1.0..3.0 (tos tosctl
-# node-control: ElectionsConfig::validate, `config elections max-factor`, and the
-# runner before it signs a stake), whatever ConfigParam 17 allows.
-TOSCTL_MAX_FACTOR = Fraction(3)
+# The largest max factor tosctl's election task accepts: 1.0..100.0, upstream's
+# validator-elect-req.fif bound (tos tosctl node-control: ElectionsConfig::validate,
+# `config elections max-factor` and the runner before it signs a stake). Releases
+# before that change refuse anything above 3.0; a team pool's onboarding probes the
+# host's tosctl (validator_host.check_tosctl_max_factor) so an old one refuses
+# loudly instead of capping the team's weight.
+TOSCTL_MAX_FACTOR = Fraction(100)
+# tosctl's own default max factor, which external pools keep.
+TOSCTL_DEFAULT_MAX_FACTOR = Fraction(3)
 # The Elector keeps 1 TOS of every stake message for its confirmation
 # (elector-code.fc process_new_stake): a member stands with its order less this.
 ELECTOR_CONFIRMATION_NANOTOS = 10**9
@@ -528,19 +533,25 @@ def genesis_limits(profile: dict[str, Any]) -> dict[str, int]:
     return values
 
 
-def tosctl_max_factor(profile: dict[str, Any]) -> Fraction:
-    """elections.max_factor, what enable-elections.sh gives tosctl, as a fraction."""
-    text = profile.get("elections", {}).get("max_factor")
+def tosctl_max_factor(profile: dict[str, Any], key: str = "max_factor") -> Fraction:
+    """elections.max_factor (a team pool's) or elections.external_max_factor (an
+    external pool's), what enable-elections.sh gives tosctl, as a fraction."""
+    text = profile.get("elections", {}).get(key)
     try:
         value = Fraction(text) if isinstance(text, str) else None
     except (ValueError, ZeroDivisionError):
         value = None
     if value is None or not 1 <= value <= TOSCTL_MAX_FACTOR:
         raise TestnetError(
-            f"profile elections.max_factor {text!r} must be a decimal string from 1.0 to "
+            f"profile elections.{key} {text!r} must be a decimal string from 1.0 to "
             f"{float(TOSCTL_MAX_FACTOR)}: tosctl's election task refuses any other"
         )
     return value
+
+
+def max_factor_text(value: Fraction) -> str:
+    """The decimal tosctl takes: "10.0", "2.5"."""
+    return str(float(value))
 
 
 def team_stake_multiple_rule(external: int) -> Fraction:
@@ -625,14 +636,21 @@ def election_plan(
     reserve = _whole(e.get("pool_owner_reserve_tos"), "elections.pool_owner_reserve_tos")
     deploy = _whole(e.get("pool_deploy_tos"), "elections.pool_deploy_tos", 1)
     operator = _whole(e.get("operator_funding_tos"), "elections.operator_funding_tos", 1)
-    margin = _whole(e.get("bootstrap_margin_tos"), "elections.bootstrap_margin_tos")
+    margin = _whole(
+        e.get("bootstrap_margin_tos_per_pool"), "elections.bootstrap_margin_tos_per_pool"
+    )
     transfer_fee = _whole(
         e.get("bootstrap_transfer_fee_nanotos"), "elections.bootstrap_transfer_fee_nanotos", 1
     )
     target = _whole(e.get("team_weight_percent"), "elections.team_weight_percent", 1)
     if target >= 100:
         raise TestnetError("elections.team_weight_percent must be below 100")
-    factor = tosctl_max_factor(profile)
+    factor = (tosctl_max_factor(profile), tosctl_max_factor(profile, "external_max_factor"))
+    if factor[1] != TOSCTL_DEFAULT_MAX_FACTOR:
+        raise TestnetError(
+            f"profile elections.external_max_factor must be tosctl's default "
+            f"{max_factor_text(TOSCTL_DEFAULT_MAX_FACTOR)}: external pools keep it"
+        )
     team = limits["validators"]
     max_external = _whole(e.get("max_external_validators"), "elections.max_external_validators")
     if max_external != limits["max_validators"] - team:
@@ -747,13 +765,22 @@ def _plan_for(
     # fund-op- and fund-owner- for every pool, and the sweep.
     transfers = 2 * pools + 1
     fees = -(-transfers * transfer_fee // NANOTOS)
+    # The margin covers a retried funding transfer or a fee rise; both are per pool.
+    margin_total = margin * pools
     bootstrap = (
-        team * (operator + team_owner) + external * (operator + external_owner) + margin + fees
+        team * (operator + team_owner)
+        + external * (operator + external_owner)
+        + margin_total
+        + fees
     )
-    f16 = int(factor * MAX_FACTOR_ONE)
+    team_factor, external_factor = factor
+    team_f16 = int(team_factor * MAX_FACTOR_ONE)
+    external_f16 = int(external_factor * MAX_FACTOR_ONE)
     order = ELECTOR_CONFIRMATION_NANOTOS
-    team_members = [(f"team-{i}", team_stake * NANOTOS - order, f16) for i in range(team)]
-    external_members = [(f"external-{i}", unit * NANOTOS - order, f16) for i in range(external)]
+    team_members = [(f"team-{i}", team_stake * NANOTOS - order, team_f16) for i in range(team)]
+    external_members = [
+        (f"external-{i}", unit * NANOTOS - order, external_f16) for i in range(external)
+    ]
     alone, why = simulate_election(team_members, limits)
     if alone is None or len(alone) != team:
         raise TestnetError(
@@ -772,12 +799,13 @@ def _plan_for(
             member["label"].startswith("team-")
             and member["true_stake_nanotos"] != member["stake_nanotos"]
         ):
-            limit = min(Fraction(limits["max_factor"]), factor)
+            limit = min(Fraction(limits["max_factor"]), team_factor)
             raise TestnetError(
                 f"with {external} external validators the team stakes {multiple_text(multiple)} "
                 f"units, but a max factor of {float(limit)} counts at most {float(limit)} units "
-                f"(ConfigParam 17 allows {limits['max_factor']}, tosctl's election task at most "
-                f"{float(TOSCTL_MAX_FACTOR)}); the team's weight would fall below its share"
+                f"(ConfigParam 17 allows {limits['max_factor']}, the team's tosctl "
+                f"elections.max_factor {float(team_factor)}); the team's weight would fall "
+                "below its share"
             )
     total = sum(m["weight"] for m in elected)
     team_weight = sum(m["weight"] for m in elected if m["label"].startswith("team-"))
@@ -808,24 +836,29 @@ def _plan_for(
         "operator_funding_tos": operator,
         "bootstrap_transfers": transfers,
         "bootstrap_transfer_fees_tos": fees,
-        "bootstrap_margin_tos": margin,
+        "bootstrap_margin_tos": margin_total,
         "bootstrap_wallet_tos": bootstrap,
         "total_supply_tos": bootstrap + GENESIS_SYSTEM_ACCOUNTS_TOS,
         "team_weight_percent": float(share),
         "team_only_election": f"elects the {team} team pools",
+        "team_max_factor": max_factor_text(team_factor),
+        "external_max_factor": max_factor_text(external_factor),
     }
 
 
 def pool_amounts(profile: dict[str, Any], team: bool) -> dict[str, int]:
     """One pool's onboarding amounts in nanotos: {"stake", "principal", "owner_funding",
-    "operator_funding", "deploy"}. A team pool's needs the ceremony's plan; an
-    external pool's are the unit amounts and do not."""
+    "operator_funding", "deploy"}, and "max_factor", the decimal its tosctl election
+    task stakes with. A team pool's needs the ceremony's plan; an external pool's
+    are the unit amounts and tosctl's default max factor, and do not."""
     e = profile["elections"]
     if team:
         plan = election_plan(profile)
         stake, principal = plan["team_stake_tos"], plan["team_pool_principal_tos"]
+        factor = max_factor_text(tosctl_max_factor(profile))
     else:
         stake, principal = int(e["stake_tos"]), int(e["pool_tos"])
+        factor = max_factor_text(tosctl_max_factor(profile, "external_max_factor"))
     deploy = int(e["pool_deploy_tos"])
     return {
         "stake": stake * NANOTOS,
@@ -833,6 +866,7 @@ def pool_amounts(profile: dict[str, Any], team: bool) -> dict[str, int]:
         "owner_funding": (principal + int(e["pool_owner_reserve_tos"]) + deploy) * NANOTOS,
         "operator_funding": int(e["operator_funding_tos"]) * NANOTOS,
         "deploy": deploy * NANOTOS,
+        "max_factor": factor,
     }
 
 

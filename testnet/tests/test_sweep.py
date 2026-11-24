@@ -200,6 +200,21 @@ def world(tmp_path, monkeypatch):
     return Sweep(tmp_path, monkeypatch)
 
 
+def forget(w, name, steps=elections.ONBOARDING_STEPS):
+    """Remove onboarding operations of `name` from the journal, as if never run."""
+    for step in steps:
+        w.operations.journal.path(f"{step}-{name}").unlink()
+
+
+def without(w, name):
+    """Both elected sets and the Elector's results without `name`'s pool."""
+    keep = [pid for pid in pool_ids() if pid != pool_of(name).split(":")[1]]
+    w.first = chainbuild.validator_set(keep, GENESIS_T + 21600, GENESIS_T + 28800)
+    w.second = chainbuild.validator_set(keep, GENESIS_T + 28800, GENESIS_T + 36000)
+    w.members = {pid: v for pid, v in w.members.items() if pid in keep}
+    w.install()
+
+
 def run_sweep(world, **changes):
     args = argparse.Namespace(**dict(vars(world.args), **changes))
     return elections.sweep(args, world.operations, 2)
@@ -297,11 +312,23 @@ def damage_an_unregistered_pool(w):
     (w.ceremony / "pools.json").write_text(json.dumps(pools))
 
 
-def damage_one_more_registered(w):
-    # An external validator registered at genesis that pools.json does not hold.
-    path = w.ceremony / "genesis-records.json"
-    records = json.loads(path.read_text()) + [{"validator_id": "ce" * 32}]
-    path.write_text(json.dumps(records))
+def damage_a_team_pool_unrecorded(w):
+    pools = json.loads((w.ceremony / "pools.json").read_text())
+    del pools["node-1"]
+    (w.ceremony / "pools.json").write_text(json.dumps(pools))
+
+
+def damage_a_foreign_validator(w):
+    # Every funded pool stands, and one more validator no registered pool names.
+    w.second = chainbuild.validator_set(
+        pool_ids() + ["99" * 32], GENESIS_T + 28800, GENESIS_T + 36000
+    )
+    w.install()
+
+
+def damage_external_half_onboarded(w):
+    # An external pool was funded but its principal never reached the pool.
+    forget(w, "node-4", ("principal",))
 
 
 @pytest.mark.parametrize(
@@ -313,7 +340,7 @@ def damage_one_more_registered(w):
         (damage_fee_burn, "burns 1/2"),
         (damage_second_set_missing, "ConfigParam 32 is not an installed validator set"),
         (damage_previous_is_the_genesis_set, "no single Elector result"),
-        (damage_set_misses_a_pool, "not the 4 registered pools"),
+        (damage_set_misses_a_pool, r"lacks the pools of \['node-4'\].*sweep --exclude"),
         (damage_stake_missing, "no frozen, unbanned stake"),
         (damage_stake_banned, "no frozen, unbanned stake"),
         (damage_two_results_for_one_set, "no single Elector result"),
@@ -321,9 +348,11 @@ def damage_one_more_registered(w):
         (damage_operator_below_floor, "first recovery"),
         (damage_onboarding_open, "principal-node-2.attempt-2 is not settled"),
         (damage_bootstrap_operation_open, "fund-extra is open"),
-        (damage_three_pools, "records 3 pools; the sweep waits for all 4"),
-        (damage_an_unregistered_pool, "records 4 pools; the sweep waits for all 4"),
-        (damage_one_more_registered, "the sweep waits for all 5"),
+        (damage_three_pools, "holds validators no funded registered pool names"),
+        (damage_an_unregistered_pool, "which genesis-records.json does not register"),
+        (damage_a_team_pool_unrecorded, "records no pool for genesis validators"),
+        (damage_a_foreign_validator, "holds validators no funded registered pool names"),
+        (damage_external_half_onboarded, "principal-node-4 is not settled.*sweep --exclude node-4"),
     ],
 )
 def test_a_sweep_waits_for_every_prerequisite(world, damage, message):
@@ -707,3 +736,98 @@ def test_an_owner_fund_with_an_unknown_outcome_is_reconciled_never_resent(world,
     with pytest.raises(lib.TestnetError, match="unsigned planned"):
         world.operations.record_abandoned("pri-e6-sender-b")
     assert world.chain.account(PRI)["balance"] == 0
+
+
+# ---------------------------------------------------------------- external validators that did not stand
+
+
+def test_a_registered_external_never_funded_is_listed_and_its_allocation_burned(world):
+    # node-4 registered at genesis, was never onboarded and never stood.
+    forget(world, "node-4")
+    without(world, "node-4")
+    found = elections.sweep_prerequisites(world.args, world.operations)
+    assert found["stood"] == ["node-1", "node-2", "node-3"]
+    assert found["not_onboarded"] == ["node-4"] and found["excluded"] == {}
+    report = run_sweep(world, dry_run=True)
+    assert report["prerequisites"]["not_onboarded"] == ["node-4"]
+    # The whole remaining balance, node-4's allocation with it, is burned.
+    assert report["burns_at_most_nanotos"] == world.chain.account(BOOT)["balance"]
+    with pytest.raises(ops.OperationRefused, match="fetch block"):
+        run_sweep(world)
+    assert world.signed == [{"to": BLACK, "amount": "0", "bounce": False, "mode": 160}]
+
+
+def test_a_registered_validator_without_a_pool_is_not_onboarded(world):
+    path = world.ceremony / "genesis-records.json"
+    path.write_text(json.dumps(json.loads(path.read_text()) + [{"validator_id": "ce" * 32}]))
+    found = elections.sweep_prerequisites(world.args, world.operations)
+    assert found["not_onboarded"] == ["validator id " + "ce" * 8 + " (no pool recorded)"]
+
+
+def test_a_funded_external_that_never_stood_refuses_until_excluded(world):
+    without(world, "node-4")
+    with pytest.raises(lib.TestnetError, match=r"lacks the pools of \['node-4'\]"):
+        run_sweep(world)
+    assert world.signed == []
+    # A dry run checks the exclusion and records nothing.
+    report = run_sweep(world, dry_run=True, exclude=["node-4"], reason="host never came up")
+    assert report["prerequisites"]["excluded"] == {"node-4": "host never came up"}
+    assert not world.operations.journal.path("sweep-exclude-node-4").exists()
+    with pytest.raises(ops.OperationRefused, match="fetch block"):
+        run_sweep(world, exclude=["node-4"], reason="host never came up")
+    record = world.operations.journal.record("sweep-exclude-node-4")
+    assert record["state"] == "settled" and record["kind"] == elections.SWEEP_EXCLUSION_KIND
+    assert record["pool"] == pool_of("node-4") and record["reason"] == "host never came up"
+    assert "withdrawn later" in record["note"]
+    assert world.signed == [{"to": BLACK, "amount": "0", "bounce": False, "mode": 160}]
+    # Later checks honor the recorded exclusion without --exclude.
+    found = elections.sweep_prerequisites(world.args, world.operations)
+    assert found["excluded"] == {"node-4": "host never came up"}
+
+
+def test_a_half_onboarded_external_can_be_excluded(world):
+    forget(world, "node-4", ("principal",))
+    without(world, "node-4")
+    found = elections.sweep_prerequisites(world.args, world.operations, {"node-4": "no principal"})
+    assert found["stood"] == ["node-1", "node-2", "node-3"]
+    assert found["excluded"] == {"node-4": "no principal"}
+
+
+def test_an_excluded_pool_may_still_be_in_a_set(world):
+    found = elections.sweep_prerequisites(world.args, world.operations, {"node-4": "late"})
+    assert "node-4" not in found["stood"] and found["excluded"] == {"node-4": "late"}
+
+
+@pytest.mark.parametrize(
+    "exclude, reason, message",
+    [
+        (["node-1"], "down", "team pool: a genesis validator is never excluded"),
+        (["node-4"], None, "--exclude needs --reason"),
+        (["node-4"], "  ", "--exclude needs --reason"),
+        ([], "why", "--reason goes with --exclude"),
+        (["node 4"], "why", "not a node name"),
+    ],
+)
+def test_an_exclusion_is_refused_unless_it_is_well_formed(world, exclude, reason, message):
+    without(world, "node-1")
+    with pytest.raises(lib.TestnetError, match=message):
+        run_sweep(world, exclude=exclude, reason=reason)
+    assert world.signed == []
+    assert not world.operations.journal.path("sweep-exclude-node-1").exists()
+
+
+def test_a_never_funded_external_needs_no_exclusion(world):
+    forget(world, "node-4")
+    without(world, "node-4")
+    with pytest.raises(lib.TestnetError, match="never funded: it needs no exclusion"):
+        run_sweep(world, exclude=["node-4"], reason="gone")
+    assert not world.operations.journal.path("sweep-exclude-node-4").exists()
+
+
+def test_an_exclusion_is_not_recorded_while_another_prerequisite_fails(world):
+    without(world, "node-4")
+    world.chain.config[5] = None
+    with pytest.raises(lib.TestnetError, match="ConfigParam 5"):
+        run_sweep(world, exclude=["node-4"], reason="host never came up")
+    assert not world.operations.journal.path("sweep-exclude-node-4").exists()
+    assert world.signed == []

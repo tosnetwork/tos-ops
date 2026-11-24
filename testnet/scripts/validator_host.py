@@ -151,6 +151,50 @@ def node_staking_account(host) -> str:
     return found.group(1)
 
 
+# A probe of the host's tosctl on a throwaway copy of its configuration: the
+# same two commands enable-elections.sh runs, then the factor read back. The
+# host's own configuration is not touched.
+MAX_FACTOR_MARKER = "MAX-FACTOR-PROBE"
+
+
+def max_factor_probe_command(factor: str, stake_tos: int) -> str:
+    if not re.fullmatch(r"[0-9]+(\.[0-9]+)?", factor) or not isinstance(stake_tos, int):
+        raise lib.TestnetError(f"not a max factor and stake: {factor!r} {stake_tos!r}")
+    as_ctl = f"runuser -u {TOSCTL_USER} --"
+    read = (
+        "import json,sys; c=json.load(open(sys.argv[1])); "
+        "print(sys.argv[2], c['elections']['max_factor'])"
+    )
+    return (
+        f"set -a; . {TOSCTL_ENV}; set +a; cd {TOSCTL_DIR}; "
+        f"probe=$({as_ctl} mktemp -d) && trap 'rm -rf \"$probe\"' EXIT && "
+        f'{as_ctl} cp "$CONFIG_PATH" "$probe/config.json" && '
+        f'{as_ctl} tosctl config --config "$probe/config.json" elections stake-policy '
+        f"--fixed {stake_tos} >/dev/null 2>&1 && "
+        f'{as_ctl} tosctl config --config "$probe/config.json" elections max-factor {factor} '
+        "2>&1 && "
+        f'python3 -c "{read}" "$probe/config.json" {MAX_FACTOR_MARKER} 2>&1 '
+        "|| echo PROBE-REFUSED"
+    )
+
+
+def check_tosctl_max_factor(host, factor: str, stake_tos: int) -> None:
+    """Refuse a host whose tosctl does not accept `factor` (a team pool's), read back
+    from a throwaway copy of its configuration. A tosctl that caps the factor at 3.0
+    would stake a team pool with a smaller one and cut the team's weight silently."""
+    output = host.run(max_factor_probe_command(factor, stake_tos), timeout=120)
+    found = [line.split()[1:] for line in output.splitlines() if line.startswith(MAX_FACTOR_MARKER)]
+    try:
+        accepted = len(found) == 1 and abs(float(found[0][0]) - float(factor)) < 1e-6
+    except (IndexError, ValueError):
+        accepted = False
+    if not accepted:
+        raise lib.TestnetError(
+            f"the host's tosctl does not accept max factor {factor} (a team pool's); install a "
+            f"tosctl release that accepts 1.0..100.0 before onboarding: {output.strip()[-300:]}"
+        )
+
+
 def check_custody(host, pool: str) -> None:
     """The node must sign stake authorizations for the pool: the Elector refuses others."""
     bound = node_staking_account(host)

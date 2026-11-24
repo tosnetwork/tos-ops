@@ -38,11 +38,10 @@ def planned(external, base=None):
     return p
 
 
-def wide_tosctl(monkeypatch):
-    """A tosctl that accepts a max factor of 10, as ConfigParam 17 does."""
-    monkeypatch.setattr(lib, "TOSCTL_MAX_FACTOR", Fraction(10))
+def old_tosctl_factor():
+    """The profile with the team staking at tosctl's former ceiling, 3.0."""
     p = profile()
-    p["elections"]["max_factor"] = "10.0"
+    p["elections"]["max_factor"] = "3.0"
     return p
 
 
@@ -57,7 +56,7 @@ def expected_bootstrap(p, external):
     others = external * (e["operator_funding_tos"] + e["pool_tos"] + owner_extra)
     transfers = 2 * (2 + external) + 1
     fees = -(-transfers * e["bootstrap_transfer_fee_nanotos"] // NANO)
-    return team + others + e["bootstrap_margin_tos"] + fees
+    return team + others + e["bootstrap_margin_tos_per_pool"] * (2 + external) + fees
 
 
 # ---------------------------------------------------------------- the repository profile
@@ -79,7 +78,8 @@ def test_the_repository_profile_is_the_decided_configuration():
         "max_factor": 10,
     }
     assert e["max_external_validators"] == 19 and e["team_weight_percent"] == 50
-    assert e["max_factor"] == "3.0" and e["stake_tos"] == 10002
+    assert e["max_factor"] == "10.0" and e["external_max_factor"] == "3.0"
+    assert e["stake_tos"] == 10002 and e["bootstrap_margin_tos_per_pool"] == 13
     # The ceremony sets these once registration closes.
     for value in (
         e["external_validators"],
@@ -115,8 +115,9 @@ def test_no_external_validator_leaves_the_team_alone():
     assert plan["team_stake_multiple"] == "1" and plan["team_stake_tos"] == 10002
     assert plan["team_pool_principal_tos"] == 20010
     assert plan["bootstrap_transfers"] == 5 and plan["bootstrap_transfer_fees_tos"] == 1
-    assert plan["bootstrap_wallet_tos"] == expected_bootstrap(profile(), 0) == 40105
-    assert plan["total_supply_tos"] == 41105
+    assert plan["bootstrap_wallet_tos"] == expected_bootstrap(profile(), 0) == 40081
+    assert plan["bootstrap_margin_tos"] == 26
+    assert plan["total_supply_tos"] == 41081
     assert plan["team_weight_percent"] == 100
 
 
@@ -125,7 +126,7 @@ def test_one_external_validator_leaves_the_team_at_exactly_two_thirds():
     # thirds, which is not more than two thirds, so neither side finalizes alone.
     plan = lib.election_plan(profile(), external=1)
     assert plan["team_stake_multiple"] == "1"
-    assert plan["bootstrap_wallet_tos"] == expected_bootstrap(profile(), 1) == 60132
+    assert plan["bootstrap_wallet_tos"] == expected_bootstrap(profile(), 1) == 60121
     assert Fraction(plan["team_weight_percent"]).limit_denominator(1000) == Fraction(200, 3)
 
 
@@ -135,40 +136,51 @@ def test_five_external_validators_give_the_team_half_the_weight():
     assert plan["team_pool_principal_tos"] == 20010 + 2 * 15003 == 50016
     assert plan["team_owner_funding_tos"] == 50016 + 5 + 2
     assert plan["external_owner_funding_tos"] == 20010 + 5 + 2
-    assert plan["bootstrap_wallet_tos"] == expected_bootstrap(profile(), 5) == 200252
+    assert plan["bootstrap_wallet_tos"] == expected_bootstrap(profile(), 5) == 200293
     assert abs(plan["team_weight_percent"] - 50) < 0.01
 
 
-def test_nineteen_external_validators_need_a_tosctl_that_allows_the_team_multiple():
-    # tosctl's election task allows a max factor of at most 3.0: a 9.5-unit team
-    # stake would count as 3 units and the external validators would hold the chain.
-    with pytest.raises(lib.TestnetError, match="tosctl's election task at most 3.0"):
-        lib.election_plan(profile(), external=19)
-
-
-def test_nineteen_external_validators_with_max_factor_10(monkeypatch):
-    p = wide_tosctl(monkeypatch)
-    plan = lib.election_plan(p, external=19)
+def test_nineteen_external_validators_with_max_factor_10():
+    plan = lib.election_plan(profile(), external=19)
     assert plan["team_stake_multiple"] == "9.5" and plan["team_stake_tos"] == 95019
-    assert plan["bootstrap_wallet_tos"] == expected_bootstrap(p, 19)
+    assert plan["team_max_factor"] == "10.0" and plan["external_max_factor"] == "3.0"
+    assert plan["bootstrap_wallet_tos"] == expected_bootstrap(profile(), 19) == 760909
     assert abs(plan["team_weight_percent"] - 50) < 0.01
     with pytest.raises(lib.TestnetError, match="exceed the 19 seats"):
-        lib.election_plan(p, external=20)
+        lib.election_plan(profile(), external=20)
 
 
-@pytest.mark.parametrize("external", range(0, 6))
-def test_every_e_the_current_tosctl_allows_is_planned(external):
+@pytest.mark.parametrize("external", range(0, 20))
+def test_every_e_is_planned(external):
     plan = lib.election_plan(profile(), external=external)
     assert plan["bootstrap_wallet_tos"] == expected_bootstrap(profile(), external)
+    if external >= 2:
+        assert abs(plan["team_weight_percent"] - 50) < 0.01
 
 
 @pytest.mark.parametrize("external", range(6, 20))
-def test_every_e_above_five_waits_for_tosctl(external, monkeypatch):
+def test_a_team_factor_of_3_would_cap_the_team_above_five_external(external):
+    # tosctl's former ceiling: a team stake above about three units would be cut
+    # and the external validators would outweigh the team.
     with pytest.raises(lib.TestnetError, match="max factor of 3.0"):
-        lib.election_plan(profile(), external=external)
-    # With tosctl at 10 the same E is planned at 50 %.
-    plan = lib.election_plan(wide_tosctl(monkeypatch), external=external)
-    assert abs(plan["team_weight_percent"] - 50) < 0.01
+        lib.election_plan(old_tosctl_factor(), external=external)
+    lib.election_plan(old_tosctl_factor(), external=5)
+
+
+def test_a_team_factor_below_the_team_multiple_is_refused():
+    p = profile()
+    p["elections"]["max_factor"] = "9.0"
+    lib.election_plan(p, external=17)
+    # Nine units of 10,002 less the Elector's 1 TOS is above nine units of 10,001.
+    with pytest.raises(lib.TestnetError, match="max factor of 9.0"):
+        lib.election_plan(p, external=18)
+
+
+def test_external_pools_keep_the_tosctl_default():
+    p = profile()
+    p["elections"]["external_max_factor"] = "10.0"
+    with pytest.raises(lib.TestnetError, match="external pools keep it"):
+        lib.election_plan(p, external=0)
 
 
 # ---------------------------------------------------------------- the weights, as the Elector sets them
@@ -178,9 +190,10 @@ def weights(p, external):
     """Team and external weight from the Elector simulation, as election_plan uses it."""
     limits = lib.genesis_limits(p)
     plan = lib.election_plan(p, external=external)
-    f = int(lib.tosctl_max_factor(p) * lib.MAX_FACTOR_ONE)
-    team = [("team-%d" % i, plan["team_stake_tos"] * NANO - NANO, f) for i in range(2)]
-    others = [("ext-%d" % i, plan["unit_stake_tos"] * NANO - NANO, f) for i in range(external)]
+    ft = int(lib.tosctl_max_factor(p) * lib.MAX_FACTOR_ONE)
+    fe = int(lib.tosctl_max_factor(p, "external_max_factor") * lib.MAX_FACTOR_ONE)
+    team = [("team-%d" % i, plan["team_stake_tos"] * NANO - NANO, ft) for i in range(2)]
+    others = [("ext-%d" % i, plan["unit_stake_tos"] * NANO - NANO, fe) for i in range(external)]
     elected, why = lib.simulate_election(team + others, limits)
     assert elected is not None, why
     team_w = sum(m["weight"] for m in elected if m["label"].startswith("team"))
@@ -188,7 +201,7 @@ def weights(p, external):
     return team_w, total - team_w, total, len(elected)
 
 
-@pytest.mark.parametrize("external", [1, 2, 3, 4, 5])
+@pytest.mark.parametrize("external", range(1, 20))
 def test_neither_side_alone_reaches_more_than_two_thirds(external):
     team, others, total, count = weights(profile(), external)
     assert count == 2 + external
@@ -236,7 +249,7 @@ def test_a_config_param_17_max_factor_of_one_cuts_the_team_stake():
 
 def test_a_tosctl_max_factor_outside_its_range_is_refused():
     p = profile()
-    for value in ("10.0", "0.5", "three", 3):
+    for value in ("101.0", "0.5", "three", 3):
         p["elections"]["max_factor"] = value
         with pytest.raises(lib.TestnetError, match="tosctl's election task refuses"):
             lib.election_plan(p, external=0)
@@ -269,9 +282,9 @@ def test_a_planned_profile_loads_and_any_wrong_value_refuses():
     p = planned(5)
     assert lib.election_plan(p)["external_validators"] == 5
     for section, key, value in (
-        ("elections", "bootstrap_wallet_tos", 200251),
+        ("elections", "bootstrap_wallet_tos", 200292),
         ("elections", "team_stake_multiple", "2"),
-        ("genesis", "total_supply_tos", 200252),
+        ("genesis", "total_supply_tos", 200293),
         ("elections", "external_validators", 4),
     ):
         wrong = copy.deepcopy(p)
@@ -282,7 +295,7 @@ def test_a_planned_profile_loads_and_any_wrong_value_refuses():
 
 def test_ceremony_values_are_set_together():
     p = profile()
-    p["elections"]["bootstrap_wallet_tos"] = 40105
+    p["elections"]["bootstrap_wallet_tos"] = 40081
     with pytest.raises(lib.TestnetError, match="sets them together"):
         lib.election_plan(p, required=False)
 
@@ -301,6 +314,7 @@ def test_pool_amounts_per_role():
     team, other = lib.pool_amounts(p, True), lib.pool_amounts(p, False)
     assert team["stake"] == 20004 * NANO and team["principal"] == 40014 * NANO
     assert team["owner_funding"] == (40014 + 5 + 2) * NANO
+    assert team["max_factor"] == "10.0" and other["max_factor"] == "3.0"
     assert other["stake"] == 10002 * NANO and other["principal"] == 20010 * NANO
     assert other["owner_funding"] == (20010 + 5 + 2) * NANO
     # An external pool needs no plan; a team pool does.
@@ -329,7 +343,7 @@ def test_the_plan_command_writes_a_planned_copy(tmp_path, capsys):
     assert lib.election_plan(lib.load_profile(out))["team_stake_tos"] == 15003
     # Never overwritten, and an impossible E is refused.
     assert coordinator.main(["plan", "--external-validators", "3", "--write", str(out)]) == 1
-    assert coordinator.main(["plan", "--external-validators", "7"]) == 1
+    assert coordinator.main(["plan", "--external-validators", "20"]) == 1
 
 
 # ---------------------------------------------------------------- the template patch
@@ -351,10 +365,10 @@ LIMITS = lib.genesis_limits(lib.load_profile())
 
 
 def test_the_patch_replaces_exactly_the_genesis_set_lines():
-    out = lib.patch_genesis_set("\n".join(TEMPLATE_LINES), LIMITS, 40105).split("\n")
+    out = lib.patch_genesis_set("\n".join(TEMPLATE_LINES), LIMITS, 40081).split("\n")
     assert out == [
         "#!/usr/bin/create-state -s",
-        "TM$40105 constant main_wallet_genesis_balance",
+        "TM$40081 constant main_wallet_genesis_balance",
         "21 21 2 config.validator_num!",
         "TM$10000 TM$10000000 TM$20000 sg~10 config.validator_stake_limits!",
         "{ file>B",
