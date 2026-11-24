@@ -1940,16 +1940,37 @@ def test_stake_order_value_inclusive_boundary(election_world):
     assert run(operations, chain=chain)["state"] == "settled"
 
 
-def test_stake_order_value_comes_from_the_profile(election_world, monkeypatch):
-    chain, operations, _, body, _ = election_world
+def custom_stake_order(operations, value):
     profile = lib.load_profile()
-    profile["elections"]["stake_order_nanotos"] = NANO
-    profile_path = operations.ceremony / "custom-profile.json"
+    profile["elections"]["stake_order_nanotos"] = value
+    profile_path = operations.ceremony / f"custom-profile-{value}.json"
     profile_path.write_text(json.dumps(profile))
     operations.profile_path = profile_path
-    send_election_message(chain, body, value=NANO + 1)
+
+
+def test_stake_order_value_comes_from_the_profile(election_world, monkeypatch):
+    """A larger ceiling in the profile explains an order the default would refuse
+    (the default's `budget` case above), and refuses one above it. The ceiling is
+    a valid order: the pool takes nothing below 1.2 TOS."""
+    chain, operations, _, body, _ = election_world
+    custom_stake_order(operations, STAKE_ORDER + NANO // 10)
+    send_election_message(chain, body, value=STAKE_ORDER + NANO // 20)
+    assert run(operations, chain=chain)["state"] == "settled"
+
+
+def test_stake_order_above_the_profile_ceiling_is_unexplained(election_world, monkeypatch):
+    chain, operations, _, body, _ = election_world
+    custom_stake_order(operations, STAKE_ORDER + NANO // 10)
+    send_election_message(chain, body, value=STAKE_ORDER + NANO // 10 + 1)
     with pytest.raises(ops.OperationRefused):
         run(operations, chain=chain)
+
+
+def test_a_profile_stake_order_below_the_pool_minimum_is_refused():
+    profile = lib.load_profile()
+    profile["elections"]["stake_order_nanotos"] = NANO
+    with pytest.raises(lib.TestnetError, match="single-nominator pool requires"):
+        lib.election_plan(profile, external=0)
 
 
 def test_busy_destination_settles_without_paging_its_history(world):

@@ -110,17 +110,25 @@ def check_election_amounts(e):
     )
     # tosctl's election task attaches ELECTOR_STAKE_FEE + NPOOL_COMPUTE_FEE to a pool order.
     assert e["stake_order_nanotos"] == 1_200_000_000
-    per_validator = e["operator_funding_tos"] + e["pool_tos"] + e["pool_owner_reserve_tos"]
-    # The bootstrap wallet funds the four validators, keeps the margin, and what is
-    # left pays its own transfers (whole-TOS rounding on top).
-    spare = e["bootstrap_wallet_tos"] - 4 * per_validator - e["bootstrap_margin_tos"]
-    assert spare * NANO >= BOOTSTRAP_TRANSFER_FEES_NANOTOS
-    assert spare < 2
+    # The per-transfer allowance covers the measured eight funding transfers and the
+    # sweep, with room: at most about three times the measured cost.
+    allowance = 9 * e["bootstrap_transfer_fee_nanotos"]
+    assert BOOTSTRAP_TRANSFER_FEES_NANOTOS <= allowance <= 4 * BOOTSTRAP_TRANSFER_FEES_NANOTOS
+    # An owner keeps a withdrawal message and its fee after onboarding, whoever
+    # deployed its pool (the owner's funding carries the deployment as well).
+    assert (
+        e["pool_owner_reserve_tos"] * NANO
+        >= elections.OWNER_MESSAGE_NANOTOS + (elections.ops.FEE_ALLOWANCE_NANOTOS // 10) * 3
+    )
+    # The margin scales with the pools and is never below epoch 6's 50 TOS for four;
+    # the transfer allowance still rounds up to the 1 TOS epoch 6 kept for its fees.
+    assert 4 * e["bootstrap_margin_tos_per_pool"] >= 50
+    assert -(-allowance // NANO) == 1
+    assert -(-(2 * 21 + 1) * e["bootstrap_transfer_fee_nanotos"] // NANO) == 1
 
 
 def test_repository_profile_has_the_election_amounts():
     check_election_amounts(lib.load_profile()["elections"])
-    assert lib.load_profile()["elections"]["bootstrap_wallet_tos"] == 80151
 
 
 @pytest.mark.parametrize(
@@ -128,12 +136,14 @@ def test_repository_profile_has_the_election_amounts():
     [
         # 6 TOS covers the measured spend but not the failure allowance.
         ("operator_funding_tos", 6),
-        # Not enough for four validators, the margin and the transfer fees.
-        ("bootstrap_wallet_tos", 80140),
-        # A margin eaten by the funding.
-        ("bootstrap_margin_tos", 51),
-        # The historical 150 TOS of operator money no longer fits the wallet.
-        ("operator_funding_tos", 150),
+        # Less than the measured transfer fees.
+        ("bootstrap_transfer_fee_nanotos", 3_000_000),
+        # Far above them: the sweep burns it, but the genesis supply says otherwise.
+        ("bootstrap_transfer_fee_nanotos", 125_000_000),
+        # A margin below epoch 6's for four pools.
+        ("bootstrap_margin_tos_per_pool", 12),
+        # No withdrawal left to an owner that deployed its pool.
+        ("pool_owner_reserve_tos", 1),
     ],
 )
 def test_the_election_amount_guard_catches_a_wrong_value(field, value):
@@ -791,6 +801,12 @@ class BoardingHost:
 
     def run(self, command, timeout=300):
         self.commands.append(command)
+        if elections.vh.MAX_FACTOR_MARKER in command:
+            # The max-factor probe on a copy of tosctl's configuration.
+            factor = command.split("elections max-factor ")[1].split()[0]
+            if float(factor) > self.tweak.get("tosctl_max_factor", 100.0):
+                return "Error: max-factor must be in range [1.0..3.0]\nPROBE-REFUSED\n"
+            return f"{elections.vh.MAX_FACTOR_MARKER} {self.tweak.get('reads_back', factor)}\n"
         if "init-operator.sh" in command:
             body = bytes([0x11, 0xFF]) + bytes.fromhex(self.operator.split(":")[1]) + b"\x00\x00"
             return f"op-node-1 {base64.urlsafe_b64encode(body).decode()}\n"
@@ -972,6 +988,9 @@ def boarding(tmp_path, pinned_tos, monkeypatch):
     (ceremony / "genesis-records.json").write_text(
         json.dumps([{"validator_id": staking["validator_id"]}])
     )
+    # A registered pool outside the genesis set: it stakes the unit amounts.
+    # Tests of a team pool name it in genesis-set.json themselves.
+    (ceremony / "genesis-set.json").write_text("[]")
     host.bound = staking["validator_id"]
     return {
         "chain": chain,

@@ -534,7 +534,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--value-boc", required=True)
     p.set_defaults(fn=cmd_adopted)
 
-    args = parser.parse_args(argv)
+    args = parser.parse_args(lib.cli_argv(argv))
     try:
         return args.fn(args)
     except (lib.TestnetError, ops.OperationRefused) as error:

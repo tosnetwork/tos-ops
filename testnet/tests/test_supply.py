@@ -47,8 +47,23 @@ EPOCH6 = {
 EPOCH6_EPOCH = 1793000000
 
 
+# The epoch-6 candidate's supply; the repository profile leaves its own to the
+# ceremony (elections.external_validators, then election_plan).
+EPOCH6_TARGETS = (80_151 * NANO, 81_151 * NANO)
+
+
 def targets():
-    return lib.genesis_supply_targets(lib.load_profile())
+    return EPOCH6_TARGETS
+
+
+def planned_profile(external):
+    profile = copy.deepcopy(lib.load_profile())
+    plan = lib.election_plan(profile, external=external)
+    profile["elections"]["external_validators"] = external
+    profile["elections"]["team_stake_multiple"] = plan["team_stake_multiple"]
+    profile["elections"]["bootstrap_wallet_tos"] = plan["bootstrap_wallet_tos"]
+    profile["genesis"]["total_supply_tos"] = plan["total_supply_tos"]
+    return profile
 
 
 def check(boc, schedule=None):
@@ -177,9 +192,9 @@ def test_the_genesis_check_reads_config_param_15_back():
         check(CANDIDATE, dict(EPOCH6, elected_for=14400))
 
 
-def test_the_profile_supply_targets_are_the_decided_ones():
-    assert targets() == (80_151 * NANO, 81_151 * NANO)
-    profile = copy.deepcopy(lib.load_profile())
+def test_the_profile_supply_targets_are_the_planned_ones():
+    profile = planned_profile(2)
+    assert lib.genesis_supply_targets(profile) == (100_161 * NANO, 101_161 * NANO)
     profile["genesis"]["total_supply_tos"] = 81_150
     with pytest.raises(lib.TestnetError, match="plus 1000 TOS"):
         lib.genesis_supply_targets(profile)
@@ -294,22 +309,29 @@ def epoch6_candidate(text):
     return text
 
 
-def create_state(tmp_path, text, epoch):
-    root = Path(os.environ["TOS_ROOT"])
-    binary = Path(os.environ.get("CREATE_STATE_PATH", root / "build/crypto/create-state"))
-    if not binary.is_file():
-        pytest.fail("build create-state before testing the generated genesis")
-    (tmp_path / "testnet.fif").write_text(text)
+def disposable_records(count):
+    """`count` disposable genesis records (a public key is any 1312 bytes here)."""
     records = []
-    for n in range(1, 5):
+    for n in range(1, count + 1):
         public = hashlib.shake_256(b"public-%d" % n).digest(lib.PQ_PUBLIC_KEY_BYTES)
         records.append(
             {
                 "validator_id": hashlib.sha256(b"staking-account-%d" % n).hexdigest(),
                 "adnl_id": hashlib.sha256(b"adnl-%d" % n).hexdigest(),
                 "public_key": public.hex(),
+                "key_id": lib.pq_key_id(public).hex(),
             }
         )
+    return records
+
+
+def create_state(tmp_path, text, epoch, validators=4):
+    root = Path(os.environ["TOS_ROOT"])
+    binary = Path(os.environ.get("CREATE_STATE_PATH", root / "build/crypto/create-state"))
+    if not binary.is_file():
+        pytest.fail("build create-state before testing the generated genesis")
+    (tmp_path / "testnet.fif").write_text(text)
+    records = disposable_records(validators)
     (tmp_path / "validator-pq.pub").write_bytes(lib.pack_manifest(records))
     # Deterministic disposable test key, never a network identity.
     (tmp_path / "main-wallet.pk").write_bytes(bytes([0x53]) * 32)
@@ -355,3 +377,121 @@ def test_the_production_timing_schedule_reaches_the_zero_state(tmp_path):
     boc = create_state(tmp_path, patched, EPOCH6_EPOCH)
     assert list(lib.zero_state_election_params(boc)) == [65536, 16384, 8192, 32768]
     check(boc, schedule)
+
+
+@pytest.mark.parametrize("external", [0, 5])
+def test_the_december_genesis_set_and_limits_reach_the_zero_state(tmp_path, external):
+    """The canonical template patched for the team-only genesis set: create-state
+    reads two manifest records, and ConfigParam 16, 17 and 34 and the bootstrap
+    balance read back from the generated state are the profile's."""
+    profile = planned_profile(external)
+    plan = lib.election_plan(profile)
+    limits = lib.genesis_limits(profile)
+    schedule = lib.validator_schedule(profile)
+    tag = lib.derive_auth_network_tag("tos-public-testnet", 2, 9)
+    patched = lib.patch_genesis_set(
+        lib.patch_template(tos_template(), 2, EPOCH6_EPOCH, schedule, tag),
+        limits,
+        plan["bootstrap_wallet_tos"],
+    )
+    boc = create_state(tmp_path, patched, EPOCH6_EPOCH, validators=2)
+    wallet, total = lib.genesis_supply_targets(profile)
+    found = lib.zero_state_bootstrap(boc, wallet, total, schedule)
+    assert found["bootstrap_wallet_nanotos"] == plan["bootstrap_wallet_tos"] * NANO
+    assert found["total_balance_nanotos"] == plan["total_supply_tos"] * NANO
+    records = disposable_records(2)
+    genesis_set = lib.check_zero_state_genesis_set(boc, limits, records)
+    assert genesis_set["validators"] == 2
+    assert genesis_set["config_param_16"] == {
+        "max_validators": 21,
+        "max_main_validators": 21,
+        "min_validators": 2,
+    }
+    assert genesis_set["config_param_17"] == {
+        "min_stake_nanotos": 10_000 * NANO,
+        "max_stake_nanotos": 10_000_000 * NANO,
+        "min_total_stake_nanotos": 20_000 * NANO,
+        "max_factor": 10 << 16,
+    }
+    read = lib.zero_state_genesis_set(boc)
+    assert read["main"] == 2 and len({v["weight"] for v in read["validators"]}) == 1
+    assert read["total_weight"] == sum(v["weight"] for v in read["validators"]) == 34
+    # The read-back refuses another set, other limits or a second manifest order.
+    with pytest.raises(lib.TestnetError, match="validator set is 2 validators other than"):
+        lib.check_zero_state_genesis_set(boc, limits, records[::-1])
+    with pytest.raises(lib.TestnetError, match="ConfigParam 16"):
+        lib.check_zero_state_genesis_set(boc, dict(limits, min_validators=4), records)
+    with pytest.raises(lib.TestnetError, match="ConfigParam 17"):
+        lib.check_zero_state_genesis_set(boc, dict(limits, min_total_stake_tos=40000), records)
+
+
+def test_the_patched_template_refuses_a_four_record_manifest(tmp_path):
+    profile = planned_profile(0)
+    patched = lib.patch_genesis_set(
+        lib.patch_template(
+            tos_template(),
+            2,
+            EPOCH6_EPOCH,
+            lib.validator_schedule(profile),
+            lib.derive_auth_network_tag("tos-public-testnet", 2, 9),
+        ),
+        lib.genesis_limits(profile),
+        lib.election_plan(profile)["bootstrap_wallet_tos"],
+    )
+    root = Path(os.environ["TOS_ROOT"])
+    binary = Path(os.environ.get("CREATE_STATE_PATH", root / "build/crypto/create-state"))
+    (tmp_path / "testnet.fif").write_text(patched)
+    (tmp_path / "validator-pq.pub").write_bytes(lib.pack_manifest(disposable_records(4)))
+    (tmp_path / "main-wallet.pk").write_bytes(bytes([0x53]) * 32)
+    run = subprocess.run(
+        [
+            str(binary),
+            "-I",
+            f"{root / 'crypto/fift/lib'}:{root / 'crypto/smartcont'}",
+            "-I",
+            str(binary.parent / "smartcont"),
+            "-s",
+            str(tmp_path / "testnet.fif"),
+        ],
+        cwd=tmp_path,
+        env=dict(os.environ, SOURCE_DATE_EPOCH=str(EPOCH6_EPOCH)),
+        capture_output=True,
+        text=True,
+    )
+    assert run.returncode != 0
+    assert "exactly 2 1376-byte records" in run.stdout + run.stderr
+
+
+def test_a_validator_set_whose_total_weight_disagrees_is_refused(tmp_path, monkeypatch):
+    """ConfigParam 34's total_weight must be the sum of its validators' weights."""
+    profile = planned_profile(0)
+    patched = lib.patch_genesis_set(
+        lib.patch_template(
+            tos_template(),
+            2,
+            EPOCH6_EPOCH,
+            lib.validator_schedule(profile),
+            lib.derive_auth_network_tag("tos-public-testnet", 2, 9),
+        ),
+        lib.genesis_limits(profile),
+        lib.election_plan(profile)["bootstrap_wallet_tos"],
+    )
+    december_state = create_state(tmp_path, patched, EPOCH6_EPOCH, validators=2)
+    assert lib.zero_state_genesis_set(december_state)["total_weight"] == 34
+    real = lib.zero_state_config
+
+    def tampered(boc):
+        root, global_id, params = real(boc)
+        cell = params[34]
+        s = lib.Slice(cell)
+        bits = "".join(str(s.bits(1)) for _ in range(cell.bits))
+        # validators_ext#12 since until total main | total_weight (64 bits at 8+64+32).
+        start = 8 + 64 + 32
+        weight = int(bits[start : start + 64], 2) + 1
+        bits = bits[:start] + format(weight, "064b") + bits[start + 64 :]
+        params = {**params, 34: lib.cell_from_bits(bits, cell.refs)}
+        return root, global_id, params
+
+    monkeypatch.setattr(lib, "zero_state_config", tampered)
+    with pytest.raises(lib.TestnetError, match="total weight"):
+        lib.zero_state_genesis_set(december_state)

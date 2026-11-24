@@ -3,7 +3,7 @@
 
   check-testnet.py --genesis genesis.json --rpc URL --rpc URL [--rpc URL ...]
                    [--max-age 120]
-                   [--genesis-set genesis-records.json | --elected-set genesis-records.json]
+                   [--genesis-set genesis-set.json | --elected-set RECORDS.json]
 
 Each URL is a JSON-RPC endpoint of a node the checker trusts to answer for
 itself (a validator's loopback listener through an SSH tunnel, or a full
@@ -17,10 +17,11 @@ itself proves nothing. The check refuses unless:
   * every node's own head is younger than --max-age. When none is, the
     network has stalled; when only some are, those nodes are behind, and the
     refusal names them with their lag;
-  * with --genesis-set,
-    live ConfigParam 34 is exactly the four genesis identities. Use it only
+  * with --genesis-set (the ceremony's genesis-set.json),
+    live ConfigParam 34 is exactly the genesis set's identities. Use it only
     before the first ordinary election replaces the genesis set;
-  * with --elected-set (same records file), after a rotation:
+  * with --elected-set (a list of operator records, such as the ceremony's
+    genesis-records.json once every registered validator is elected), after a rotation:
     live ConfigParam 34 has as many members as the records, all of them main
     validators, and its validator ids (staking accounts) are exactly the
     records'. The consensus keys are not compared: an election may register
@@ -82,9 +83,11 @@ def check(args: argparse.Namespace, rpc=lib.rpc, now=time.time, decode=decode_co
         decoded = decode(param["config"]["bytes"])
         actual = {(v["validator_id_hex"], v["consensus_key_id_hex"]) for v in decoded["validators"]}
         expected = {(r["validator_id"], r["key_id"]) for r in records}
-        if decoded["total"] != lib.GENESIS_VALIDATORS or actual != expected:
-            raise lib.TestnetError("live ConfigParam 34 is not the four genesis identities")
-        summary["config34"] = "the four genesis identities"
+        if decoded["total"] != len(records) or actual != expected:
+            raise lib.TestnetError(
+                f"live ConfigParam 34 is not the {len(records)} genesis identities"
+            )
+        summary["config34"] = f"the {len(records)} genesis identities"
     if args.elected_set:
         records = lib.check_operator_set(json.loads(Path(args.elected_set).read_text()))
         param = rpc(args.rpc[0], "getConfigParam", param=34, seqno=height)

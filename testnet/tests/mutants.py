@@ -937,7 +937,7 @@ M = [
     (
         "E10 readiness not checked",
         EL,
-        '    staking_readiness(operations, host, pool, int(elections["stake_tos"]) * NANO)',
+        '    staking_readiness(operations, host, pool, amounts["stake"])',
         "    pass",
     ),
     (
@@ -967,8 +967,8 @@ M = [
     (
         "E18 a pool genesis does not name is onboarded",
         EL,
-        '    if pool.split(":")[1] not in {r.get("validator_id") for r in records}:',
-        "    if False:",
+        "\n    if account not in registered:\n",
+        "\n    if False:\n",
     ),
     (
         "E19 a recorded pool that does not derive is trusted",
@@ -1257,6 +1257,169 @@ M += [
         OPS,
         '                if state_of(record) in ("planned", "signed", "broadcast"):',
         '                if state_of(record) in ("signed", "broadcast"):',
+    ),
+    # The December 5 plan: the genesis set, the election limits and the weights.
+    (
+        "P1 a team-only election is not simulated",
+        LIB,
+        "    if alone is None or len(alone) != team:\n",
+        "    if False:\n",
+    ),
+    (
+        "P2 min_total_stake ignored by the simulation",
+        LIB,
+        "    if total < min_total:\n",
+        "    if False:\n",
+    ),
+    (
+        "P3 a capped team stake is accepted",
+        LIB,
+        '            and member["true_stake_nanotos"] != member["stake_nanotos"]\n',
+        "            and False\n",
+    ),
+    (
+        "P4 the profile's bootstrap total is not compared",
+        LIB,
+        "            if given[key] != plan[key]:\n",
+        "            if False:\n",
+    ),
+    (
+        "P5 the manifest loop keeps four records",
+        LIB,
+        '        (TEMPLATE_MANIFEST_LOOP_LINE, f"  }} {count} times drop"),\n',
+        "",
+    ),
+    (
+        "P6 the genesis set is not read back",
+        LIB,
+        '    actual = [(v["validator_id"], v["key_id"], v["adnl_id"]) for v in found["validators"]]\n',
+        "    actual = expected\n",
+    ),
+    (
+        "P7 a team pool is onboarded without its host",
+        EL,
+        '    if genesis_staking_account(ceremony, pool) == "team":\n',
+        "    if False:\n",
+    ),
+    (
+        "P8 the sweep accepts a pool no record registers",
+        EL,
+        "        if account not in registered:\n            raise lib.TestnetError(\n",
+        "        if False:\n            raise lib.TestnetError(\n",
+    ),
+    (
+        "P9 a team pool stakes one unit",
+        LIB,
+        '        stake, principal = plan["team_stake_tos"], plan["team_pool_principal_tos"]\n',
+        '        stake, principal = int(e["stake_tos"]), int(e["pool_tos"])\n',
+    ),
+    (
+        "P10 a team pool's tosctl is not probed",
+        EL,
+        '        vh.check_tosctl_max_factor(host, amounts["max_factor"], amounts["stake"] // NANO)\n',
+        "        pass\n",
+    ),
+    (
+        "P11 the tosctl probe accepts any read-back",
+        VHOST,
+        "        accepted = len(found) == 1 and abs(float(found[0][0]) - float(factor)) < 1e-6\n",
+        "        accepted = True\n",
+    ),
+    (
+        "P12 a funded pool missing from a set is accepted",
+        EL,
+        "            if missing:\n",
+        "            if False:\n",
+    ),
+    (
+        "P13 a foreign validator in a set is accepted",
+        EL,
+        "            if foreign:\n",
+        "            if False:\n",
+    ),
+    (
+        "P14 a team pool can be excluded",
+        EL,
+        "            if team:\n                raise lib.TestnetError(\n",
+        "            if False:\n                raise lib.TestnetError(\n",
+    ),
+    (
+        "P15 a half-onboarded external is waited for silently",
+        EL,
+        '            if state != "settled":\n',
+        "            if False:\n",
+    ),
+    (
+        "P16 an external pool may change tosctl's default factor",
+        LIB,
+        "    if factor[1] != TOSCTL_DEFAULT_MAX_FACTOR:\n",
+        "    if False:\n",
+    ),
+    (
+        "P17 a never-funded external is not reported",
+        EL,
+        "            not_onboarded.append(name)\n",
+        "            pass\n",
+    ),
+    (
+        "P18 externals reaching two thirds of the full set are accepted",
+        LIB,
+        "    if finalizes(external_weight, total):\n",
+        "    if False:\n",
+    ),
+    (
+        "P19 externals reaching two thirds with one team pool absent are accepted",
+        LIB,
+        '    if one_team["concluded"] and one_team["external_finalizes_alone"]:\n',
+        "    if False:\n",
+    ),
+    (
+        "P20 the team share bounds are not checked",
+        LIB,
+        "    if external >= 3 and not target <= share < Fraction(200, 3):\n",
+        "    if False:\n",
+    ),
+    (
+        "P21 an exclusion without a recorded pool is accepted",
+        EL,
+        "        if name not in pools:\n",
+        "        if False:\n",
+    ),
+    (
+        "P22 ConfigParam 34's total weight is not compared",
+        LIB,
+        '    if total_weight != sum(v["weight"] for v in validators):\n',
+        "    if False:\n",
+    ),
+    (
+        "P23 finality at more than two thirds",
+        LIB,
+        "    return 3 * weight >= 2 * total\n",
+        "    return 3 * weight > 2 * total\n",
+    ),
+    (
+        "P24 the one-team guard reads only a fully elected set",
+        LIB,
+        '    if one_team["concluded"] and one_team["external_finalizes_alone"]:\n',
+        '    if one_team["elected"] and one_team["external_finalizes_alone"]:\n',
+    ),
+    (
+        "P25 the printed operator command separates the addresses",
+        EL,
+        '        f"--pool={pool} --owner={owner}"\n',
+        '        f"--pool {pool} --owner {owner}"\n',
+    ),
+    (
+        "P26 a space-separated masterchain address is not joined",
+        LIB,
+        "            and HYPHEN_ADDRESS.match(argv[i + 1])\n",
+        "            and False\n",
+    ),
+    (
+        "P27 the Elector credit is modeled as the order less 1 TOS",
+        LIB,
+        "    return stake_nanotos + surplus_nanotos\n",
+        "    return stake_nanotos - ELECTOR_CONFIRMATION_NANOTOS\n",
     ),
 ]
 
@@ -2192,7 +2355,7 @@ M += [
     (
         "NH5 hand-off before the pool holds two stakes",
         EL,
-        "    pool_holds_two_stakes(operations, pool, stake)\n",
+        '    pool_holds_two_stakes(operations, pool, amounts["stake"])\n',
         "",
     ),
     (

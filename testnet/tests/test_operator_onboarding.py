@@ -175,7 +175,7 @@ def test_one_hand_off_onboards_an_operator_run_host(external):
     assert b["host"].commands == []
     # The hand-off names the operator's exact command.
     assert (
-        f"testnet-operator.py onboard --name node-1 --pool {b['pool']} --owner {b['owner']}"
+        f"testnet-operator.py onboard --name node-1 --pool={b['pool']} --owner={b['owner']}"
         in message
     )
 
@@ -706,3 +706,128 @@ def test_a_failed_team_host_deployment_of_a_live_pool_sends_no_deploy(external):
     assert len(chain.sent) == len(ALL_STEPS) - 1
     assert journal.record("principal-node-1")["state"] == "settled"
     assert chain.account(b["pool"])["balance"] == (E["pool_deploy_tos"] + E["pool_tos"]) * NANO
+
+
+# ---------------------------------------------------------------- team and external pools
+
+
+def planned_profile(external):
+    """The repository profile with the ceremony's values for `external` set."""
+    profile = lib.load_profile()
+    plan = lib.election_plan(profile, external=external)
+    profile["elections"]["external_validators"] = external
+    profile["elections"]["team_stake_multiple"] = plan["team_stake_multiple"]
+    profile["elections"]["bootstrap_wallet_tos"] = plan["bootstrap_wallet_tos"]
+    profile["genesis"]["total_supply_tos"] = plan["total_supply_tos"]
+    return profile
+
+
+def name_in_genesis_set(b):
+    (b["ceremony"] / "genesis-set.json").write_text(
+        json.dumps([{"validator_id": b["pool"].split(":")[1]}])
+    )
+
+
+def test_an_external_pool_outside_the_genesis_set_onboards_without_a_host(external):
+    b = external
+    # Registered in genesis-records.json, not in the zero state's set.
+    registered = json.loads((b["ceremony"] / "genesis-records.json").read_text())
+    assert [r["validator_id"] for r in registered] == [b["pool"].split(":")[1]]
+    assert json.loads((b["ceremony"] / "genesis-set.json").read_text()) == []
+    assert elections.genesis_staking_account(b["ceremony"], b["pool"]) == "external"
+    # No plan is needed for an external pool: E may still be unset here.
+    assert lib.load_profile()["elections"]["external_validators"] is None
+    coordinator_until_hand_off(b)
+    operator(b)
+    done = coordinator(b)
+    assert done["pool_nanotos"] == (E["pool_deploy_tos"] + E["pool_tos"]) * NANO
+    # The owner paid the deployment from its own funding and still holds the
+    # reserve less its own transfer fees: a later withdrawal is covered.
+    owner = b["chain"].account(b["owner"])["balance"]
+    assert owner >= E["pool_owner_reserve_tos"] * NANO - 3 * (NANO // 10)
+    assert owner >= elections.OWNER_MESSAGE_NANOTOS + 2 * (NANO // 10)
+    funded = b["ops"].journal.record("fund-owner-node-1")
+    assert (
+        funded["value"]
+        == (E["pool_tos"] + E["pool_owner_reserve_tos"] + E["pool_deploy_tos"]) * NANO
+    )
+
+
+def test_a_team_pool_is_not_onboarded_without_its_host(external):
+    b = external
+    name_in_genesis_set(b)
+    with pytest.raises(lib.TestnetError, match="is in the genesis set"):
+        elections.onboard_external(no_host_args(b), b["ops"], 2, planned_profile(4))
+    assert b["chain"].sent == [] and b["ops"].journal.all() == []
+
+
+def test_a_team_pool_stakes_the_team_multiple(boarding):  # noqa: F811
+    b = boarding
+    name_in_genesis_set(b)
+    profile = planned_profile(4)
+    team = lib.election_plan(profile)
+    assert team["team_stake_tos"] == 25003
+    elections.onboard(b["args"], b["ops"], 2, profile)
+    principal = team["team_pool_principal_tos"]
+    assert b["chain"].account(b["pool"])["balance"] == (E["pool_deploy_tos"] + principal) * NANO
+    assert b["ops"].journal.record("principal-node-1")["value"] == principal * NANO
+    assert b["host"].commands[-1].endswith("--name node-1 --stake-tos 25003 --max-factor 10.0")
+    # The host's tosctl was probed for the team's max factor before anything moved.
+    probes = [c for c in b["host"].commands if elections.vh.MAX_FACTOR_MARKER in c]
+    assert len(probes) == 1 and "max-factor 10.0" in probes[0]
+    assert b["host"].commands.index(probes[0]) == 1  # right after init-operator.sh
+
+
+def test_a_team_pool_needs_the_ceremony_plan(boarding):  # noqa: F811
+    b = boarding
+    name_in_genesis_set(b)
+    with pytest.raises(lib.TestnetError, match="external_validators is not set"):
+        onboard(b)
+    assert b["chain"].sent == []
+
+
+def test_an_external_pool_over_ssh_stakes_one_unit(boarding):  # noqa: F811
+    b = boarding
+    elections.onboard(b["args"], b["ops"], 2, planned_profile(4))
+    assert b["host"].commands[-1].endswith(f"--stake-tos {E['stake_tos']} --max-factor 3.0")
+    # An external pool keeps tosctl's default: nothing to probe.
+    assert not any(elections.vh.MAX_FACTOR_MARKER in c for c in b["host"].commands)
+
+
+def test_a_genesis_set_outside_the_records_is_refused(boarding):  # noqa: F811
+    b = boarding
+    (b["ceremony"] / "genesis-set.json").write_text(json.dumps([{"validator_id": "cd" * 32}]))
+    with pytest.raises(lib.TestnetError, match="does not register"):
+        onboard(b)
+    (b["ceremony"] / "genesis-set.json").unlink()
+    with pytest.raises(lib.TestnetError, match="genesis-set.json is missing"):
+        onboard(b)
+
+
+@pytest.mark.parametrize(
+    "tweak, message",
+    [
+        ({"tosctl_max_factor": 3.0}, "does not accept max factor 10.0"),
+        ({"reads_back": "3.0"}, "does not accept max factor 10.0"),
+    ],
+)
+def test_a_team_pool_is_refused_on_a_tosctl_that_rejects_its_max_factor(boarding, tweak, message):  # noqa: F811
+    b = boarding
+    name_in_genesis_set(b)
+    b["host"].tweak.update(tweak)
+    with pytest.raises(lib.TestnetError, match=message):
+        elections.onboard(b["args"], b["ops"], 2, planned_profile(4))
+    # Refused before any value moved or the election task was touched.
+    assert b["chain"].sent == [] and b["ops"].journal.all() == []
+    assert not any("enable-elections" in c for c in b["host"].commands)
+
+
+def test_the_probe_reads_a_throwaway_copy_of_the_configuration():
+    command = elections.vh.max_factor_probe_command("10.0", 20004)
+    assert '"$probe/config.json"' in command and "mktemp -d" in command
+    assert "elections max-factor 10.0" in command and "--fixed 20004" in command
+    # Every tosctl call runs as its own user, never as root.
+    assert command.count("runuser -u tos-ctl -- tosctl") == 2
+    assert subprocess.run(["bash", "-n"], input=command, text=True).returncode == 0
+    with pytest.raises(lib.TestnetError, match="not a max factor"):
+        elections.vh.max_factor_probe_command("10; rm -rf /", 1)

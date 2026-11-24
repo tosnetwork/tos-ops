@@ -73,7 +73,7 @@ PUBLIC_IPV4='<YOUR_VPS_PUBLIC_IPV4>'
 sudo -u tos python3 /opt/tos-testnet/scripts/testnet-operator.py record \
   --db /var/lib/tos/validator \
   --seed /var/lib/tos/validator/keys/pq-consensus.seed \
-  --validator-id "$VALIDATOR_ID" --operator "$OPERATOR_LABEL" \
+  --validator-id="$VALIDATOR_ID" --operator "$OPERATOR_LABEL" \
   --address "$PUBLIC_IPV4:30001" --out /tmp/record.json
 ```
 
@@ -87,7 +87,7 @@ Send **`/tmp/record.json`** to the coordinator and confirm receipt and validatio
 
    ```bash
    sudo python3 /opt/tos-testnet/scripts/testnet-operator.py onboard --name <YOUR_NODE_NAME> \
-     --pool <POOL_ADDRESS> --owner <POOL_OWNER_ADDRESS> --out /tmp/onboard-<YOUR_NODE_NAME>.json
+     --pool=<POOL_ADDRESS> --owner=<POOL_OWNER_ADDRESS> --out /tmp/onboard-<YOUR_NODE_NAME>.json
    ```
 
    Send `/tmp/onboard-<YOUR_NODE_NAME>.json` to the coordinator, who checks the result on chain. The election service submits the pool's stake during the window. [Election onboarding and wallet balance check](OPERATOR.md#6-onboard-for-elections)
@@ -97,7 +97,7 @@ If the previous election schedule is retained, the first election opens **five h
 
 ### How the network depends on you
 
-The launch set is the team's two validators, so the chain starts without waiting for anyone. From the first election on, the team's validators together hold about half of the voting weight and external validators the other half. A block is final only with more than two thirds of the weight, so neither side can finalize alone: **the network moves forward only while enough external validators are online.** A validator that goes offline is left out of the next election, two hours later.
+The launch set is the team's two validators, so the chain starts without waiting for anyone. From the first election on, the team's validators together hold a little over half of the voting weight and external validators the rest. A block is final only with at least two thirds of the weight. **External validators can never finalize blocks without the team. Once enough external validators are elected, the team cannot finalize alone either, and the network moves forward only while enough of them are online.** A validator that goes offline is left out of the next election, two hours later.
 
 ### If elections or block production stall
 

@@ -11,7 +11,11 @@
   },
   "genesis": {
     "template": "crypto/smartcont/gen-zerostate.fif",
-    "validators": 4,
+    "validators": 2,
+    "validators_note": "The genesis set (the zero state's ConfigParam 34): the team's two validators, in the order of the records given to `manifest`. External validators' records and pools are registered before genesis as well and are written to genesis-records.json beside the genesis set (genesis-set.json), but they are not in the zero state; they stand from the first election. The coordinator replaces the template's four-record manifest loader, ConfigParam 16 and 17 and the bootstrap balance with these values (testnet_lib.patch_genesis_set) and reads all three back from the generated state.",
+    "validator_num": {"max_validators": 21, "max_main_validators": 21, "min_validators": 2},
+    "stake_limits": {"min_stake_tos": 10000, "max_stake_tos": 10000000, "min_total_stake_tos": 20000, "max_factor": 10},
+    "limits_note": "ConfigParam 16 and 17. min_validators 2: an election the team's two pools alone stand in must conclude (epoch 8 stalled with min_validators 4 and three stakes). min_total_stake_tos 20,000 instead of the template's 40,000: the Elector postpones an election whose stakes total less, and a team-only election puts 2 x 10,002.1788215 TOS into the Elector (one unit each, as the Elector credits it: pool_new_stake_cost_note) when no external validator joins, so 40,000 would stall it. Raising the team's stakes to clear 40,000 instead would need two units per team pool even for E = 0 to 3 and put the team above half of the weight, against the weight decision; 20,000 is the smallest floor at which min_validators stakes of min_stake_tos still elect. max_factor 10 so that a team stake of up to (E+1)/2 units (10 for E = 19) counts fully against the one-unit external stakes; each stake order also carries its tosctl max factor (elections.max_factor 10.0 for a team pool), and the smaller applies. election_plan checks each of these against a simulation of the Elector's choice, for the team alone and for E external validators.",
     "global_version": 16,
     "initial_set_valid_for_seconds": 21600,
     "election_params": {
@@ -21,8 +25,8 @@
       "stake_held_for": 32768
     },
     "schedule_note": "The canonical template's schedule unchanged (crypto/smartcont/gen-zerostate.fif: 21,600 s initial set, 65,536 s terms, elections from 16,384 s to 8,192 s before a term, stakes held 32,768 s), which memo STATUS 13.155 asks the bootstrap rehearsal to run at. The first election opens at T + 5,216 s (about 1 h 27 min) and closes at T + 13,408 s (about 3 h 43 min); the elected set takes office at T + 6 h and the second at T + 6 h + 65,536 s, so the sweep comes about 24 h after genesis.",
-    "total_supply_tos": 81151,
-    "supply_note": "The genesis total the coordinator requires of the generated state: the bootstrap wallet (elections.bootstrap_wallet_tos) plus the Elector's and the Config contract's 500 TOS each in the canonical template. ConfigParam 5 must name the blackhole -1:ff...ff with no fee burning and be critical.",
+    "total_supply_tos": null,
+    "supply_note": "The genesis total the coordinator requires of the generated state: the bootstrap wallet (elections.bootstrap_wallet_tos) plus the Elector's and the Config contract's 500 TOS each in the canonical template. Set by the ceremony with elections.external_validators (testnet-coordinator.py plan). ConfigParam 5 must name the blackhole -1:ff...ff with no fee burning and be critical.",
     "source_date_epoch": null,
     "source_date_epoch_note": "Chosen and frozen by the coordinator at the ceremony (decision D03). It must lie in the future when the ceremony runs and leave the initial validator set enough lifetime to complete the first two elections.",
     "auth_network_tag": {
@@ -52,35 +56,35 @@
   },
   "retention": {
     "note": "Retention follows upstream TON's validator settings (mytonctrl validator mode and the upstream docker image: state_ttl 86400, archive_ttl 86400; mytonctrl liteserver mode: archive_ttl 2592000). Validator consensus databases are deleted only behind the GC checkpoint, which never passes the last key block, state_ttl or the persistent-state serializer (tos doc/Validator.md, 'Retired consensus databases'). With state_ttl 86400 a validator keeps about 24 h of them, up to about 30 h when a key block opens a new 2^17 s persistent-state period and the serializer waits up to 6 h. That is about 14-17 GB at the epoch-6 rate measured during T1 (about 0.56 GB/h, 2026-11-11). At the first epoch's 145 GB a day it would be 145-180 GB, more than a 98 GiB testnet disk, so watch free disk under heavy load. The earlier 3,600 s state_ttl kept under 5 h of them.",
-    "validator": {
-      "state_ttl": 86400,
-      "archive_ttl": 86400
-    },
-    "validator_logs": {
-      "rotate_mb": 15,
-      "keep_files": 5,
-      "session_stats_max_mb": 512,
-      "max_total_mb": 2048,
-      "note": "Owner decision 2026-10-12: at most 2 GB of logs per validator (memo EPOCH-1-FINDINGS.md, E1-05). One file per engine thread (threads + 1 files), each with keep_files rotated copies, plus the session stats file, which the engine rotates at 256 MiB keeping one .old. About an hour of history at the first epoch's volume."
-    },
-    "fullnode": {
-      "state_ttl": 86400,
-      "archive_ttl": 2592000
-    }
+    "validator": {"state_ttl": 86400, "archive_ttl": 86400},
+    "validator_logs": {"rotate_mb": 15, "keep_files": 5, "session_stats_max_mb": 512, "max_total_mb": 2048, "note": "Owner decision 2026-10-12: at most 2 GB of logs per validator (memo EPOCH-1-FINDINGS.md, E1-05). One file per engine thread (threads + 1 files), each with keep_files rotated copies, plus the session stats file, which the engine rotates at 256 MiB keeping one .old. About an hour of history at the first epoch's volume."},
+    "fullnode": {"state_ttl": 86400, "archive_ttl": 2592000}
   },
   "elections": {
-    "note": "What testnet-elections.py onboard moves for each genesis validator. The staking account, and so the validator id genesis records, is a single-nominator pool whose owner is an offline wallet on the coordinator and whose validator is the operator wallet on the host. The stake principal never passes through the operator wallet: the bootstrap wallet funds the owner (pool_tos + pool_owner_reserve_tos), the owner sends pool_tos to the pool, and the operator wallet gets only fee money (the pool deployment, and for every election the stake order's fees and a recovery message). The bootstrap wallet holds 80,151 TOS (memo STATUS 13.155/13.254, BOOTSTRAP-AMOUNT.md): four validators at 10 + 20,015 = 20,025 use 80,100 and leave 51 for its own transfer fees, the 50 TOS margin and whole-TOS rounding. Once ConfigParam 34 and 32 are both elected sets holding the four stakes, `sweep` sends what is left (send mode 160) to the ConfigParam 5 blackhole and deletes the wallet; after that operator fee money and load funding come from the pool owners (`top-up`, `load --funding-owner`), never from the bootstrap wallet. Each pool holds two fixed stakes of 10,002 (the Elector subtracts 1 TOS before it compares with the 10,000 minimum), for the first and the overlapping second election.",
+    "note": "What testnet-elections.py onboard moves for each registered validator, team or external. The staking account, and so the validator id the genesis records name, is a single-nominator pool whose owner is an offline wallet on the coordinator and whose validator is the operator wallet on the host. The stake principal never passes through the operator wallet: the bootstrap wallet funds the owner (the pool's principal + pool_owner_reserve_tos + pool_deploy_tos, the last so that an owner that deploys its pool itself, onboard --no-host, still keeps the whole reserve for a later withdrawal), the owner sends the principal to the pool, and the operator wallet gets only fee money (operator_funding_tos: the pool deployment of a team host, and for every election the stake order's fees and a recovery message). Each pool holds two fixed stakes, for the first and the overlapping second election: an external pool two of stake_tos (10,002; the Elector subtracts 1 TOS before it compares with the 10,000 minimum) in pool_tos (20,010), a team pool two of its team stake (team_stake_note) in pool_tos + 2 x (team stake - stake_tos). The bootstrap wallet holds exactly what testnet_lib.election_plan derives: every pool's operator and owner funding, bootstrap_margin_tos_per_pool for every pool, and bootstrap_transfer_fee_nanotos for each of its 2 x pools + 1 transfers (fund-op-, fund-owner-, the sweep) rounded up to whole TOS. The fee allowance is about three times the measured epoch-5 cost (28,622,334 nanotos for eight transfers and the sweep, BOOTSTRAP-AMOUNT.md), and like epoch 6's 1 TOS of transfer fees for four pools it rounds up to 1 TOS for up to 21 pools. Once ConfigParam 34 and 32 are both elected sets holding the stake of both team pools and of every external pool whose principal was sent (a registered external never funded leaves its allocation in the wallet, and an external funded but never elected is excluded by name with a reason recorded in the journal), `sweep` sends what is left (send mode 160) to the ConfigParam 5 blackhole and deletes the wallet; after that operator fee money and load funding come from the pool owners (`top-up`, `load --funding-owner`), never from the bootstrap wallet.",
+    "external_validators": null,
+    "external_validators_note": "E, the number of external validators whose records and pools the ceremony registered, set when registration closes (November 30). With it the ceremony sets team_stake_multiple, bootstrap_wallet_tos and genesis.total_supply_tos to what `testnet-coordinator.py plan --external-validators E` prints; election_plan refuses a profile in which any of them differs, and genesis and team onboarding refuse while E is null. `manifest` refuses unless it is given exactly E external records.",
+    "max_external_validators": 19,
+    "team_stake_multiple": null,
+    "team_weight_percent": 50,
+    "team_stake_note": "Each team pool stakes team_stake_multiple = (E+1)/2 units, and at least one (the Elector's minimum); its order is multiple x (stake_tos - 1) + 1 TOS, rounded down, which keeps the team pool's Elector credit at most multiple x an external pool's credit whatever the Elector adds to an order (stake + stake_order_nanotos - pool_new_stake_cost_nanotos - 1 TOS, measured as stake + 0.1788215 TOS in the 2026-11-24 rehearsal). TOS finalizes with at least two thirds of the weight (tos quorum.h has_quorum: signed x 3 >= total x 2). With both team pools elected the team holds E+1 units against E, just above half; with one team pool absent the external validators hold 2E/(3E+1), strictly below two thirds. The hard invariant, refused otherwise: the external validators never hold two thirds, with every pool elected or with either team pool absent. The team holding two thirds is allowed and reported as team_finalizes_alone: at E = 0 and 1, and in any election where few external validators stand (accepted degradation: the network then runs on the team). From E = 3 the team's share must lie in [team_weight_percent (50 %), two thirds). A team stake counts fully only while the max factor allows it: ConfigParam 17 allows 10 and the team pools stake with max factor 10.0 (max_factor below), enough for 10 units at E = 19; election_plan refuses a team factor that would cap the team's stake.",
+    "bootstrap_transfer_fee_nanotos": 10000000,
     "stake_order_nanotos": 1200000000,
+    "pool_new_stake_cost_nanotos": 21178500,
+    "pool_new_stake_cost_note": "What the single-nominator pool spends of the stake order's value when it forwards a stake to the Elector (its compute and forwarding fees; it sends the stake with mode 64, so the rest of the order goes on to the Elector). The Elector then keeps 1 TOS (process_new_stake) and records stake + stake_order_nanotos - this - 1 TOS. Measured in the 2026-11-24 onboarding rehearsal: every pool's stake was recorded as stake + 0.1788215 TOS, so this is 1.2 - 1 - 0.1788215 TOS at the testnet's current gas and forwarding prices; it is the same for every pool, so the weight ratios depend on it only through that shared offset. election_plan simulates the Elector with it.",
     "stake_order_note": "The value the election task attaches to a stake order it sends from the operator wallet to the pool: ELECTOR_STAKE_FEE (1 TOS) + NPOOL_COMPUTE_FEE (0.2 TOS), tos tosctl/src/node-control/elections/src/runner.rs send_stake; the pool forwards the stake itself. The history gate explains exactly one outbound internal message to the recorded operator pool: new-stake (at most this value), recover-stake, update-validator-set, validator-deposit or process-withdraw-requests, each with its decoded body and documented value limit (CEREMONY.md, Election task history). Only new-stake carries an election id and requires its transaction time inside that election window, using current ConfigParam 15 on both validators only when it equals genesis. No historical state read is needed.",
     "operator_funding_tos": 10,
     "operator_funding_note": "Epoch 5 measured at most 5.933747311 TOS of operator cash through the first stake recovery and the third stake order, and 1.442093644 TOS for one stake order and recovery, the allowance for one failed submission (BOOTSTRAP-AMOUNT.md); 10 TOS leaves about 2.6 spare. Later fee money comes from the pool owner (`top-up`).",
-    "bootstrap_wallet_tos": 80151,
-    "bootstrap_margin_tos": 50,
+    "bootstrap_wallet_tos": null,
+    "bootstrap_margin_tos_per_pool": 13,
+    "bootstrap_margin_note": "The margin scales with the pool count, 13 TOS a pool (epoch 6's 50 TOS for four pools, rounded up): what it covers, a retried funding transfer or a fee rise before the sweep, happens per pool, and the sweep burns whatever is left, so a larger margin costs nothing.",
     "pool_deploy_tos": 2,
     "pool_tos": 20010,
     "pool_owner_reserve_tos": 5,
     "stake_tos": 10002,
-    "max_factor": "1.0"
+    "max_factor": "10.0",
+    "external_max_factor": "3.0",
+    "max_factor_note": "What enable-elections.sh gives tosctl (`config elections max-factor`), which every stake order carries; the Elector applies the smaller of it and ConfigParam 17's (10). A team pool stakes with max_factor 10.0, so a team stake of up to (E+1)/2 = 10 units counts fully against the one-unit external stakes; it needs a tosctl that accepts 1.0..100.0 (the bound of upstream's validator-elect-req.fif), and a team pool's onboarding probes the host's tosctl first and refuses one that rejects 10.0 instead of letting it cap the team's weight. External pools keep tosctl's default, 3.0 (external_max_factor; election_plan refuses another): their one-unit stakes are the smallest in the set and are never capped. The epoch-8 value 1.0 counted every stake at most at the smallest elected stake."
   },
   "paths": {
     "global_config": "/etc/tos/global-config.json",
@@ -88,37 +92,15 @@
     "log_root": "/var/log/tos",
     "bin": "/usr/local/bin"
   },
-  "dht": {
-    "k": 6,
-    "a": 3,
-    "network_id": -1
-  },
+  "dht": {"k": 6, "a": 3, "network_id": -1},
   "host_requirements": {
     "note": "Testnet floors checked by scripts/preflight.py before a host is prepared. Measured on 12 GB / 6-core VMs: a running validator holds about 6 GB RSS, and build-node-binaries.sh peaked at 8.4 GB with 4 jobs (3.2 GB for a DHT build with 2). A 12 GB VM reports about 11.6 GiB MemTotal. Full nodes with a 1 GiB cache cap hold about 2.5-3 GB RSS (3.0 GB peak under load); an 8 GB VM reports about 7.7 GiB MemTotal and uses a 7 GiB floor. Production requirements are production/Hardware-and-Hosting.md, not these.",
-    "os": {
-      "id": "ubuntu",
-      "version_id": "24.04"
-    },
-    "architectures": [
-      "x86_64",
-      "aarch64"
-    ],
+    "os": {"id": "ubuntu", "version_id": "24.04"},
+    "architectures": ["x86_64", "aarch64"],
     "roles": {
-      "validator": {
-        "min_cpus": 4,
-        "min_memory_gib": 11,
-        "min_disk_free_gib": 60
-      },
-      "fullnode": {
-        "min_cpus": 4,
-        "min_memory_gib": 7,
-        "min_disk_free_gib": 160
-      },
-      "dht": {
-        "min_cpus": 2,
-        "min_memory_gib": 3,
-        "min_disk_free_gib": 20
-      }
+      "validator": {"min_cpus": 4, "min_memory_gib": 11, "min_disk_free_gib": 60},
+      "fullnode": {"min_cpus": 4, "min_memory_gib": 7, "min_disk_free_gib": 160},
+      "dht": {"min_cpus": 2, "min_memory_gib": 3, "min_disk_free_gib": 20}
     }
   }
 }
