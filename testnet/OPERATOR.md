@@ -1,33 +1,69 @@
 # Testnet validator operator guide
 
-This is the **operator-side** runbook for the supplied Ubuntu 24.04 x86_64
-installation, not a mainnet procedure. [CEREMONY.md](CEREMONY.md) is the
-coordinator's authoritative signing and genesis sequence; this guide adds host
-checks, custody, maintenance and incident response without duplicating that
-sequence. Read [agent safety rules](../AGENTS.md#hard-safety-rules) first.
+[2026-12-05 public testnet genesis and validator invitation](ANNOUNCEMENT-20261205.md)
 
-Commands with `<PLACEHOLDERS>` need approved values; never paste them unchanged.
-Run host commands on the validator host and coordinator commands on the
-coordinator. Keep all real inventories, keys, receipts and ceremony directories
-outside this checkout. Any refusal means stop, retain evidence and ask the
-coordinator. Never loosen a check to continue.
+Use this guide to run your own validator in a coordinated public testnet
+ceremony. You need a dedicated Ubuntu 24.04 host you administer and a place in
+the testnet's genesis validator set. The coordinator handles genesis, staking
+funds and its side of election onboarding. You administer the host alone, run
+every step on it yourself, and hold its consensus key and operator wallet. The
+coordinator never logs in to your host.
+
+## Start here
+
+1. **Ask for the onboarding packet.** Get the epoch and launch time in UTC,
+   the full `tos` and `tos-ops` commits, the approved hardware and build path,
+   your node name and operator label, the staking and fee funding arrangement,
+   and a coordinator contact. Before activation, get the public genesis files
+   and global config, its SHA-256 over a separate authenticated channel, and
+   the expected zero-state root and file hashes.
+2. **Confirm your route.** For a new genesis, reserve a seat with the
+   coordinator and follow sections 1–7 in order. For an epoch already running,
+   ask whether your pool is in its genesis records. The supplied
+   `testnet-elections.py onboard` requires that entry. If you are a new
+   participant in a running epoch, you can [run an observer](#a-new-full-node-from-a-published-snapshot)
+   with the coordinator's full-node instructions while waiting for a genesis
+   seat or a reviewed procedure for live admission.
+3. **Check each milestone.** A prepared node has a public identity. An
+   activated node runs and synchronizes. An accepted stake is recorded by the
+   Elector. A validator has duties once its pool appears in the active set
+   during that set's term. Use the checks below to tell which step you reached.
+
+Run commands on your validator host unless the guide assigns them to the
+coordinator. Replace angle-bracket placeholders with values from your packet.
+Keep inventories, keys and generated records outside the source checkout.
+If a command refuses or a transaction times out, retain the error and
+coordinate read-only diagnosis before retrying. See [custody and operation
+rules](../AGENTS.md#hard-safety-rules).
 
 ## 1. Agree the network and responsibilities
 
 **Prerequisites:** the coordinator supplies the full 40-character tos commit,
 approved profile, epoch/zero-state identity, operator label, authenticated public
 artifacts and contact/alert channel. Record these outside the repository.
-The documented reference build is tos `85c679c3454f306eb867e25b1960ae3d757bd3dd`;
-the ceremony's approved revision takes precedence and must match on every host.
+Use the revisions from the packet on every host.
 
-- **Operator:** provides host and SSH public access details, prepares it, retains
-  the consensus seed, supplies the authenticated public record, and keeps it live.
+- **Operator:** administers the host alone. You build and configure the node
+  yourself, by hand or with the tos-ops scripts in this guide: preflight (§2),
+  build and prepare (§3), the operator wallet and public record (§4),
+  activation (§5) and the host-side onboarding steps (§6). You retain the
+  consensus seed and the operator wallet's vault, supply the authenticated
+  public records, and keep the node live.
 - **Coordinator / authorized offline signer:** derives each validator's staking
   pool, generates/publishes genesis, retains the bootstrap and offline pool-owner
-  wallets, journals payments and onboards. The pool owner keys stay in the
-  coordinator's signing domain, never on the validator host.
-- Only public records cross to the coordinator. A request for a seed, vault key
-  or mnemonic is not part of onboarding.
+  wallets, and sends and journals every onboarding payment (fee money for your
+  operator wallet, the pool deployment, the stake principal). The coordinator
+  checks your host-side results only from chain state read through its own
+  nodes. The pool owner keys stay in the coordinator's signing domain, never on
+  the validator host.
+- **The coordinator never touches your machine.** No SSH access, no remote
+  commands, no SSH tunnel to it, no account on it. Do not create one for the
+  coordinator, and treat any request for one as outside this procedure. Hosts the
+  team itself operates (for example the DHT hosts) are the only ones the
+  coordinator logs in to.
+- Only public records cross to the coordinator: the preflight report, the
+  operator wallet address, the genesis record and the onboarding summary. A
+  request for a seed, vault key or mnemonic is not part of onboarding.
 
 Verify commands against this installed bundle, not an older guide:
 
@@ -52,8 +88,22 @@ MemTotal, 60 GiB free** on Ubuntu 24.04. These are installation floors, not a
 production capacity guarantee. See [profile](network/profile.json) and
 [hardware proposal](../production/Hardware-and-Hosting.md).
 
-1. Install the reviewed `testnet/` bundle at `/opt/tos-testnet`, owned by root,
-   readable by service accounts. Do not put it in a private home directory.
+1. On a fresh host, install the pinned operations bundle. Ask the coordinator
+   to review any existing installation before replacing it.
+
+   ```bash
+   sudo apt-get update
+   sudo apt-get install -y git ca-certificates
+   git clone https://github.com/tosnetwork/tos-ops.git "$HOME/tos-ops"
+   OPS_COMMIT='<APPROVED_TOS_OPS_COMMIT>'
+   git -C "$HOME/tos-ops" checkout --detach "$OPS_COMMIT"
+   git -C "$HOME/tos-ops" rev-parse HEAD
+   sudo install -d -m 0755 /opt/tos-testnet
+   sudo cp -a "$HOME/tos-ops/testnet/." /opt/tos-testnet/
+   sudo chown -R root:root /opt/tos-testnet
+   ```
+
+   Compare the printed commit with your packet before using the bundle. Run the commands in order and stop on any error.
 2. With approval, set time on the host:
 
    ```bash
@@ -64,9 +114,53 @@ production capacity guarantee. See [profile](network/profile.json) and
    Expected: ntpsec follows a selected reachable server (`*` in `ntpq`), using
    IPv4. `NTPSynchronized=yes` alone is insufficient. On failure fix clock/network
    reachability; do not prepare a node with an unproven clock.
-3. The **coordinator** runs [preflight §0.5](CEREMONY.md#05-coordinator-preflight-every-host)
-   over all hosts. It must report no FAIL. `--install-tools` changes packages;
-   first-seen SSH keys require independent confirmation. A changed key is refused.
+3. **Run the preflight on this host yourself.** It reads the same facts and
+   applies the same floors as the coordinator's preflight of team hosts
+   ([§0.5](CEREMONY.md#05-preflight-every-host)), locally, and changes nothing:
+
+   ```bash
+   sudo python3 /opt/tos-testnet/scripts/preflight.py --local --name <NODE_NAME> \
+     --role validator --public-ip <PUBLIC_IPV4> --out /tmp/preflight-<NODE_NAME>.json
+   ```
+
+   It checks Ubuntu 24.04, the architecture and x86-64-v2 instructions, CPUs,
+   memory and free disk against the validator floors, whether the public address
+   is on an interface (a WARN behind NAT), NTP with a selected server, ufw rules
+   for UDP 30001/31001 with console 30002 closed, and whether another program
+   holds those ports. Expected: no FAIL. Fix every FAIL and rerun with a new
+   `--out` file. Send the JSON report to the coordinator. If the coordinator
+   recorded a floor waiver for this host, pass it exactly as given:
+   `--waive memory="<REASON>"`. A waiver in your report is only your claim: the
+   coordinator compares the report's `waive` entries with its own recorded
+   decision and rejects a report with any other. `passed` in the report means
+   no FAIL among the checks that were not waived.
+
+   The `udp` line is a WARN until provider ingress is proven, because a host
+   cannot prove it from the inside. Prove it before activation if you can:
+   install tcpdump (`sudo apt-get install -y tcpdump`), start a listener here,
+   and send probes **from a different machine**: one you control, or the
+   coordinator's own machine (it needs only your public address, never
+   access). Probes sent from this host itself never count: the listener
+   captures on the default-route interface and ignores loopback and this
+   host's own addresses. Name the sender's public address with
+   `--expect-from <SENDER_NAME>@<SENDER_IPV4>` to count only its probes:
+
+   ```bash
+   # On this host (captures for 120 s):
+   sudo python3 /opt/tos-testnet/scripts/preflight.py --local --name <NODE_NAME> \
+     --role validator --public-ip <PUBLIC_IPV4> --listen-seconds 120 \
+     --expect-from <SENDER_NAME>@<SENDER_IPV4> --out /tmp/preflight-udp-<NODE_NAME>.json
+   # On the different machine, from a tos-ops checkout at the same commit, within those 120 s:
+   python3 testnet/scripts/preflight.py --send-probes --name <SENDER_NAME> \
+     --to <PUBLIC_IPV4> --role validator
+   ```
+
+   Expected: `udp:30001` and `udp:31001` PASS. A FAIL means the probes were
+   dropped before the host: open the provider security group or ACL, not the
+   console or RPC ports. Do this test: without it, ingress stays unproven until
+   the node validates. Sync after activation (§5) shows that your node reaches
+   the network, not that the network reaches it; a provider group that admits
+   only replies lets a node sync and still miss its validator duties.
 4. Open provider **and host** ingress UDP 30001/31001 for a validator. RPC 8081 and
    exporter 9100 listen on loopback; the console 30002 listens on every address, so
    the host firewall must not admit it (preflight's `ufw` check refuses an allow rule). DHT uses 30300/udp; lite 30003/tcp
@@ -82,11 +176,12 @@ production capacity guarantee. See [profile](network/profile.json) and
 ## 3. Build the pinned binaries and prepare
 
 **Operator, after approval:** set the full ceremony commit, then build on this
-host; no binaries copied from a different CPU. The testnet keeps these host
-builds; only production installs from tos GitHub releases with `fetch-release.py`:
+host. Use this recipe on the documented x86_64 build path. For arm64, get the
+approved revision and hardware-SHA-capable artifact instructions from the
+coordinator before preparing the host. See [CPU requirements](https://github.com/tosnetwork/tos/blob/main/doc/Validator.md#cpu-instruction-set).
 
 ```bash
-TOS_COMMIT=<FULL_40_CHARACTER_COMMIT>
+TOS_COMMIT='<FULL_40_CHARACTER_COMMIT>'
 sudo /opt/tos-testnet/scripts/build-node-binaries.sh --rev "$TOS_COMMIT" --role validator
 sudo /opt/tos-testnet/scripts/build-tosctl.sh --rev "$TOS_COMMIT"
 sudo /opt/tos-testnet/scripts/install-node.sh prepare --role validator \
@@ -159,12 +254,20 @@ id that is not a recorded pool.
 ## 5. Activate and verify custody and synchronization
 
 **Prerequisites:** coordinator published complete ceremony artifacts, authenticated
-global-config SHA-256 and epoch, and verified your record. With explicit approval:
+global-config SHA-256 and epoch, and verified your record. Use the directory
+containing `genesis.json`, `zerostate.boc`, `basestate0.boc` and their published
+file hashes. For a fresh genesis identity whose key has never signed, verify
+the config digest and activate with explicit approval:
 
 ```bash
+GLOBAL_CONFIG='<GLOBAL_CONFIG_JSON>'
+CONFIG_SHA256='<PUBLISHED_SHA256>'
+GENESIS_DIR='<PUBLISHED_GENESIS_DIRECTORY>'
+VALIDATOR_ID='<VALIDATOR_ID>'
+printf '%s  %s\n' "$CONFIG_SHA256" "$GLOBAL_CONFIG" | sha256sum --check
 sudo /opt/tos-testnet/scripts/install-node.sh activate --role validator \
-  --global-config <GLOBAL_CONFIG_JSON> --sha256 <PUBLISHED_SHA256> \
-  --genesis <PUBLISHED_GENESIS_DIRECTORY> --validator-id <VALIDATOR_ID>
+  --global-config "$GLOBAL_CONFIG" --sha256 "$CONFIG_SHA256" \
+  --genesis "$GENESIS_DIR" --genesis-ceremony --validator-id "$VALIDATOR_ID"
 systemctl is-active tos-testnet-validator
 sudo journalctl -u tos-testnet-validator -n 100 --no-pager
 sudo sh -c 'grep "post-quantum consensus custody" /var/log/tos/validator/node.log*'
@@ -175,9 +278,14 @@ exact key id/window.
 The installer binds the seed while stopped, configures the console (30002/tcp, closed by the host firewall), installs
 and verifies the template, and starts the node. It refuses different installed
 config content or a mismatched digest. Investigate rather than replace it silently.
-Before the announced epoch, height zero can be expected; afterward ask the
-coordinator to run [the two-node live check](CEREMONY.md#7-coordinator-the-chain-is-live).
-An active unit alone does not prove sync or correct custody.
+Before the announced epoch, height zero can be expected. Follow the local
+head check in section 7 and compare your node's zero state and a recent block
+ID with the ones the coordinator's [two-node live
+check](CEREMONY.md#7-coordinator-the-chain-is-live) of its own nodes publishes;
+the coordinator does not connect to your node to do it. Require agreement on
+zero state, a common recent block ID and AUTH policy before elections. Use `--genesis-ceremony` only when the
+coordinator's instructions call for initializing a fresh genesis signing
+ledger.
 
 ### A new full node from a published snapshot
 
@@ -201,19 +309,58 @@ refused for every other role: a validator never joins from a snapshot.
 
 ## 6. Onboard for elections
 
-**Operator supplies:** label, host/approved SSH access, the operator wallet made
-in §4, matching node/tosctl revision and a live synced console and RPC. Never
-send the consensus seed or the vault key to the host/coordinator agent.
+**Prerequisites:** the node is activated and synchronized (§5), its custody line
+names your pool, and the operator wallet from §4 is unchanged. Nobody but you
+logs in to the host, and nothing secret leaves it.
 
-**Coordinator**, with human approval, follows [§8.1](CEREMONY.md#81-onboarding-a-genesis-validator-for-elections).
-There is no `onboard --dry-run`. Review the two-validator `reconcile` report,
-funding amounts/profile, identities and public artifacts before authorizing it.
-It completes `tos-ctl` (console key, node), refuses an operator wallet other than
-the one the pool was derived from, funds the operator wallet with fee money, funds
-the offline owner, deploys the pool, configures pool and binding, sends the
-principal from the owner, checks that the pool holds two stakes and that the node
-reports custody for the pool, and enables elections. Keep the ceremony journal and secret
-backups; do not restart onboarding with a different ceremony after a timeout.
+Onboarding is one hand-off in each direction. Every payment is sent and
+journaled by the coordinator; your operator wallet sends nothing but its own
+deployment.
+
+| # | Who | Runs | Waits for | The other side checks |
+|---|-----|------|-----------|-----------------------|
+| 1 | Coordinator | `testnet-elections.py onboard --no-host` ([§8.1](CEREMONY.md#81-onboarding-a-genesis-validator-for-elections)): fee money to your operator wallet, the pool owner's funding and activation, the pool's deployment from the owner, the stake principal | each step's prerequisite on chain on two of its own nodes | — |
+| 2 | Coordinator | stops with exit status 3 and sends you your exact command, pool and owner | the pool deployed with two stakes | you check the pool on your own node (step 3) |
+| 3 | Operator | `testnet-operator.py onboard` on your host (below) | the pool active with the pinned code, its owner and validator roles as given, two stakes in it, fee money in your wallet | — |
+| 4 | Operator | sends the printed JSON summary | — | the coordinator reads the chain, not the summary |
+| 5 | Coordinator | the same `onboard --no-host` again | your operator wallet active with fee money, the pool unchanged | its own steps are done; your node's binding and election task stay **unverified** until the pool's stake appears in the Elector at the next election |
+
+**Operator, on your host**, after the coordinator's hand-off (step 3):
+
+```bash
+sudo python3 /opt/tos-testnet/scripts/testnet-operator.py onboard --name <NODE_NAME> \
+  --pool <POOL_ADDRESS> --owner <POOL_OWNER_ADDRESS> --out /tmp/onboard-<NODE_NAME>.json
+```
+
+`<POOL_ADDRESS>` is `-1:<VALIDATOR_ID>`. In order, each step skipped when its
+result is already there, so a rerun changes nothing:
+
+1. `init-operator.sh --name <NODE_NAME>` completes `tos-ctl` (console key, node
+   registration, tosctl's master wallet) and prints the operator wallet;
+2. it reads the pool from your own node and refuses unless it is active, runs
+   the pinned single-nominator code (the hash of
+   `crypto/smartcont/single-nominator-pool/single-nominator-code.hex` in the
+   tos checkout `build-tosctl.sh` used, `/var/lib/tos-build/tos`, or
+   `--tos-root`; the same file the coordinator pins), its validator role is
+   your operator wallet, its owner is `--owner` (required), and it holds two
+   stakes above its reserve. Before the coordinator's step 2 this refuses with
+   "has not deployed it yet" or "has not sent the principal yet"; past step 1
+   nothing is changed, rerun it later;
+3. it activates the operator wallet (`tosctl wallet activate`: the wallet
+   deploys itself from the fee money; nothing else is sent), refusing while the
+   wallet holds no fee money;
+4. `tosctl config pool add` and `config bind add` for `pool-<NODE_NAME>`;
+5. the node's latest `post-quantum consensus custody` line must name the pool;
+6. `enable-elections.sh --name <NODE_NAME>` installs and starts the election
+   task, unless it is already running (a rerun never restarts it); it refuses
+   unless `tos-testnet-elections` is active at the end.
+
+A refusal names what is missing. A pool whose validator role is not your wallet
+means the pool was derived from another wallet: tell the coordinator; do not
+create another wallet. Send `/tmp/onboard-<NODE_NAME>.json` (public facts only)
+to the coordinator. You may do the same steps by hand instead, in the same order
+and with the same checks (`testnet-operator.py --help` lists them); the
+coordinator's check in step 5 is the same either way.
 
 **Operator verifies** the host task:
 
@@ -250,6 +397,42 @@ sudo journalctl -u tos-testnet-elections --since '-1 hour' --no-pager
 sudo journalctl -u tos-testnet-validator --since '-1 hour' --no-pager
 df -h /var/lib/tos
 ```
+
+Read your local chain head twice, several seconds apart:
+
+```bash
+curl -fsS --max-time 5 http://127.0.0.1:8081/ \
+  -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"getMasterchainInfo","params":{}}' \
+  | python3 -m json.tool
+systemctl show tos-testnet-validator -p NRestarts -p MemoryCurrent
+```
+
+Look for `result.last.seqno` advancing and `result.init` matching the packet's
+zero state. A JSON-RPC `error`, missing result, or a head that stays behind the
+coordinator's reference calls for investigation. For an actively advancing
+but delayed node, ask the coordinator for the head age from the cross-node
+check. Keep RPC on loopback. Use this table at each election and handover:
+
+| Step | Evidence to check |
+| --- | --- |
+| Election task healthy | The service is active and its journal has recent activity. Investigate repeated errors or low wallet balance before the next window. |
+| Stake accepted | The coordinator confirms your pool and stake in the Elector for the intended election ID. |
+| Duty started | The coordinator confirms your pool in current ConfigParam 34 with the expected term and an expiry in the future. ConfigParam 36 describes the next set when published. |
+| Duty ended or renewed | Confirm the new term and the old stake's recovery when due. Report a stale term even if blocks keep advancing. |
+
+Agree with the coordinator who watches head freshness, set expiry, missed
+stakes, balance, disk and service failures between your manual checks.
+Confirm the alert channel reaches a person. To follow both services while
+diagnosing a problem, run the command below and press Ctrl+C to exit the log
+viewer.
+
+```bash
+sudo journalctl -f -u tos-testnet-validator -u tos-testnet-elections
+```
+When reporting a fault, provide
+UTC time, epoch, host label, public pool ID, last head, service status and
+relevant sanitized log lines.
 
 Check head and head age, process memory/restarts, disk and growth, net failures,
 peer/transport timeout logs, accepted stakes and the operator wallet balance from §6.
@@ -448,7 +631,7 @@ come after them, the full node's first.
 <!-- testnet/tests/test_rpc_role.py runs this block's install-node.sh lines, in
      this order, on a fake host; keep them runnable. -->
 ```bash
-TOS_COMMIT=<FULL_40_CHARACTER_COMMIT>
+TOS_COMMIT='<FULL_40_CHARACTER_COMMIT>'
 sudo /opt/tos-testnet/scripts/build-node-binaries.sh --rev "$TOS_COMMIT" --role rpc
 REL=/var/lib/tos-build/release-$TOS_COMMIT
 sudo /opt/tos-testnet/scripts/install-node.sh prepare --role fullnode \

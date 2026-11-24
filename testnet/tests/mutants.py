@@ -37,6 +37,8 @@ INSTALL = W / "scripts/install-node.sh"
 INSTALL_TOSCTL = W / "scripts/install-tosctl.sh"
 BUILD = W / "scripts/build-node-binaries.sh"
 OPERATOR = W / "scripts/testnet-operator.py"
+VHOST = W / "scripts/validator_host.py"
+PREFLIGHT = W / "scripts/preflight.py"
 INDEX_UNIT = W / "systemd/tos-testnet-wallet-index.service"
 RPC_UNIT = W / "systemd/tos-testnet-rpc.service"
 
@@ -940,13 +942,13 @@ M = [
     ),
     (
         "E13 host pool configuration not compared",
-        EL,
+        VHOST,
         '    elif (entry.get("address"), entry.get("owner")) != (pool, owner):',
         "    elif False:",
     ),
     (
         "E15 the node's staking account not compared",
-        EL,
+        VHOST,
         '    if bound != pool.split(":")[1]:',
         "    if False:",
     ),
@@ -2157,6 +2159,200 @@ M += [
         INSTALL,
         'if [ -n "$PREFIX" ] && [ "$(/usr/bin/id -u)" = 0 ]; then die',
         'if [ -n "$PREFIX" ] && [ "$EUID" = 0 ]; then die',
+    ),
+]
+
+# Onboarding an operator-run host: the coordinator's chain-only checks
+# (onboard --no-host), the operator's host-side script and the local preflight.
+M += [
+    (
+        "NH1 the owner deploys before it reads active",
+        EL,
+        '        if operations.state(owner) != "active":\n            raise lib.TestnetError(f"the pool owner',
+        '        if False:\n            raise lib.TestnetError(f"the pool owner',
+    ),
+    (
+        "NH2 the owner deploys without keeping the principal",
+        EL,
+        "        owner_keeps(operations, owner, deploy_nanotos + principal + ops.FEE_ALLOWANCE_NANOTOS // 10)",
+        "        pass",
+    ),
+    (
+        "NH3 done without the operator wallet active",
+        EL,
+        '    if state != "active":\n        raise WaitingForOperator(',
+        "    if False:\n        raise WaitingForOperator(",
+    ),
+    (
+        "NH4 done without a stake order's fee money",
+        EL,
+        '    if balance < floor:\n        raise lib.TestnetError(\n            f"the operator wallet',
+        '    if False:\n        raise lib.TestnetError(\n            f"the operator wallet',
+    ),
+    (
+        "NH5 hand-off before the pool holds two stakes",
+        EL,
+        "    pool_holds_two_stakes(operations, pool, stake)\n",
+        "",
+    ),
+    (
+        "NH6 an open operator-wallet deployment is ignored",
+        EL,
+        '    if earlier is not None and earlier.get("kind") != OWNER_DEPLOY_KIND:',
+        "    if False:",
+    ),
+    (
+        "OB1 the pool's validator role not compared on the host",
+        OPERATOR,
+        "    if validator != wallet:",
+        "    if False:",
+    ),
+    (
+        "OB2 the pool's owner not compared on the host",
+        OPERATOR,
+        "    if owner != expected_owner:",
+        "    if False:",
+    ),
+    (
+        "OB3 the host configures a pool without the principal",
+        OPERATOR,
+        "    if pool_balance - POOL_STORAGE_NANOTOS < 2 * stake:",
+        "    if False:",
+    ),
+    (
+        "OB4 elections enabled without the custody check",
+        OPERATOR,
+        "    vh.check_custody(host, pool)\n",
+        "",
+    ),
+    (
+        "OB5 a rerun restarts the election task",
+        OPERATOR,
+        '    if unit == "active":',
+        "    if False:",
+    ),
+    (
+        "OB6 an unfunded operator wallet is activated",
+        OPERATOR,
+        "        if wallet_balance < ops.ACTIVATION_FEE_NANOTOS:",
+        "        if False:",
+    ),
+    (
+        "OB7 the host configures an undeployed pool",
+        OPERATOR,
+        '    if pool_state != "active":',
+        "    if False:",
+    ),
+    (
+        "PL1 local mode reports untested ingress as passed",
+        PREFLIGHT,
+        '                "WARN",\n                "provider ingress not tested',
+        '                "PASS",\n                "provider ingress not tested',
+    ),
+    (
+        "PL2 local listen ignores a missing sender",
+        PREFLIGHT,
+        "        missing = [s for s in names if (s, port) not in accepted]",
+        "        missing = []",
+    ),
+    (
+        "PL3 local mode runs without root",
+        PREFLIGHT,
+        '    if os.geteuid() != 0:\n        raise lib.TestnetError("run --local as root',
+        '    if False:\n        raise lib.TestnetError("run --local as root',
+    ),
+    # Review fixes: settlement of pool deployments, the no-SSH guard, the listener's
+    # sources, successors of a failed team-host deployment and the operator's checks.
+    (
+        "RV1 onboard --no-host calls ssh",
+        EL,
+        '    step(f"operator wallet {operator}, staking pool {pool} (operator-run host, no access)")\n',
+        '    step(f"operator wallet {operator}, staking pool {pool} (operator-run host, no access)")\n'
+        '    subprocess.run(["/usr/bin/ssh", "-V"], capture_output=True)\n',
+    ),
+    (
+        "RV2 a read error fails a delivered pool deployment",
+        EL,
+        '        return "pending", dict(evidence, reason=f"the pool could not be read yet: {exc}")',
+        '        return "failed", dict(evidence, form="b", reason=str(exc))',
+    ),
+    (
+        "RV3 a definite pool mismatch stays pending",
+        EL,
+        '    except PoolMismatch as exc:\n        return "failed", dict(evidence, form="b", reason=str(exc))',
+        '    except PoolMismatch as exc:\n        return "pending", dict(evidence, reason=str(exc))',
+    ),
+    (
+        "RV4 wrong pool roles read as a read error",
+        EL,
+        '        raise PoolMismatch(f"{pool} reports roles',
+        '        raise lib.TestnetError(f"{pool} reports roles',
+    ),
+    (
+        "RV5 the listener counts loopback probes",
+        PREFLIGHT,
+        '    if ipaddress.IPv4Address(source).is_loopback:\n        return "sent over loopback"',
+        '    if False:\n        return "sent over loopback"',
+    ),
+    (
+        "RV6 the listener counts probes from this host's addresses",
+        PREFLIGHT,
+        "    if source in local:\n",
+        "    if False:\n",
+    ),
+    (
+        "RV7 the listener ignores the named sender address",
+        PREFLIGHT,
+        "    if expected is not None and source != expected:",
+        "    if False:",
+    ),
+    (
+        "RV8 the listener captures on any interface",
+        PREFLIGHT,
+        "    proc = run(host, capture_command(ports, seconds, interface), seconds + 20)",
+        "    proc = run(host, capture_command(ports, seconds), seconds + 20)",
+    ),
+    (
+        "RV9 an unfinished team-host deployment is succeeded",
+        EL,
+        '        if state != "failed":\n            how = (',
+        "        if False:\n            how = (",
+    ),
+    (
+        "RV10 a successor of an attempt that did not fail",
+        OPS,
+        '            if state_of(record) != "failed" or record.get("kind") not in from_kinds:',
+        "            if False:",
+    ),
+    (
+        "RV11 the operator script ends with the election unit inactive",
+        OPERATOR,
+        '    if unit != "active":\n        raise lib.TestnetError(',
+        "    if False:\n        raise lib.TestnetError(",
+    ),
+    (
+        "RV12 the operator script trusts the pool's code",
+        OPERATOR,
+        "    if code_hash != pinned_code:",
+        "    if False:",
+    ),
+    (
+        "RV13 the coordinator calls the host side verified",
+        EL,
+        '        "host_binding_and_election_task": "UNVERIFIED",',
+        '        "host_binding_and_election_task": "verified",',
+    ),
+    (
+        "RV14 a live pool is deployed again after a failed team-host attempt",
+        EL,
+        '    if (earlier is None or replaces) and operations.state(pool) == "active":',
+        '    if earlier is None and operations.state(pool) == "active":',
+    ),
+    (
+        "RV15 a probe payload counts for another port than its packet's",
+        PREFLIGHT,
+        "            if destination_port is not None and port != destination_port:",
+        "            if False:",
     ),
 ]
 

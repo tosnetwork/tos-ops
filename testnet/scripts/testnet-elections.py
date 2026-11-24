@@ -99,6 +99,25 @@ and drive load through a post-quantum high-volume wallet.
       Settlement is by hashes, on both. A rerun skips settled operations,
       resumes the configuration from the host's tosctl config, and refuses an
       open operation: a person resolves it with reconcile, record or resubmit.
+      This form is for hosts the team operates.
+
+  onboard --name NAME --no-host --ceremony DIR --tos-root DIR --fift PATH
+          --rpc URL --confirm-rpc URL [--previous-ceremony DIR]...
+      For a validator whose host only its operator touches: nothing here logs
+      in to it. The coordinator's steps, as the same journaled operations:
+      fund-op- (fee money to the recorded operator wallet, which may still be
+      undeployed), fund-owner-, activate-owner-, deploy-pool- (kind
+      owner-deploy-pool: the owner sends the pool's StateInit with
+      pool_deploy_tos, so the operator wallet sends nothing during onboarding)
+      and principal-. Each is refused until its prerequisite reads on both
+      validators (the owner active, the pool deployed with the pinned code and
+      the two roles). Then it reads the operator's outcome on chain only: the
+      pool still has its code and roles and holds two stakes, and the operator
+      wallet is active with at least a stake order and its fee. Until the
+      operator wallet is active it prints the operator's command
+      (testnet-operator.py onboard on their host) and exits 3; rerun it after
+      the operator reports done. The node's binding and the election task show
+      on chain at the next election, as the pool's stake in the Elector.
 
   withdraw --name NAME --id ID [--new] --ceremony DIR --tos-root DIR --fift PATH
           --rpc URL --confirm-rpc URL (--amount TOS | --all)
@@ -220,24 +239,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import testnet_lib as lib  # noqa: E402
 import testnet_ops as ops  # noqa: E402
+import validator_host as vh  # noqa: E402
 from load_finality_window import AdmissionClosed  # noqa: E402
+from validator_host import check_custody, configure_pool, raw_from_friendly  # noqa: E402
 
 BOOTSTRAP_WALLET = "-1:" + "1" * 64
 NANO = 10**9
 
 
 # ---------------------------------------------------------------- pure helpers
-
-
-def raw_from_friendly(friendly: str) -> str:
-    """A user-friendly address (36 bytes, base64 or base64url) as workchain:hex."""
-    data = base64.urlsafe_b64decode(
-        friendly.replace("+", "-").replace("/", "_") + "=" * (-len(friendly) % 4)
-    )
-    if len(data) != 36:
-        raise lib.TestnetError(f"not a user-friendly address: {friendly!r}")
-    workchain = int.from_bytes(data[1:2], "big", signed=True)
-    return f"{workchain}:{data[2:34].hex()}"
 
 
 check_raw_address = lib.check_raw_address
@@ -321,22 +331,7 @@ class Chain:
         The node lists a getter's results top of stack first, so the stack reads
         validator, owner."""
         result = self.rpc(self.url, "runGetMethod", address=address, method="get_roles", stack=[])
-        stack = result.get("stack") or []
-        if result.get("exit_code") != 0 or len(stack) != 2:
-            raise lib.TestnetError(f"get_roles of {address} failed: {result}")
-        roles = []
-        for entry in stack:
-            if (
-                not isinstance(entry, list)
-                or len(entry) != 2
-                or entry[0] != "slice"
-                or not isinstance(entry[1], dict)
-                or not isinstance(entry[1].get("bytes"), str)
-            ):
-                raise lib.TestnetError(f"get_roles of {address}: not an address slice: {entry}")
-            roles.append(std_address(lib.parse_boc(base64.b64decode(entry[1]["bytes"]))))
-        validator, owner = roles
-        return owner, validator
+        return vh.decode_pool_roles(result, address)
 
     def send_boc(self, boc: bytes) -> None:
         self.rpc(self.url, "sendBoc", boc=base64.b64encode(boc).decode())
@@ -510,12 +505,6 @@ def fund(args: argparse.Namespace, operations: ops.Operations, global_id: int) -
 # ---------------------------------------------------------------- onboard
 
 
-# The operator tool's state on a validator host, owned by its own non-login user.
-TOSCTL_USER = "tos-ctl"
-TOSCTL_DIR = "/var/lib/tos-ctl"
-TOSCTL_ENV = "/etc/tos/tosctl.env"
-
-
 class Host:
     def __init__(self, host: str, ssh_key: str, user: str = "root"):
         self.target = f"{user}@{host}"
@@ -532,17 +521,8 @@ class Host:
         return result.stdout
 
     def tosctl(self, arguments: str, timeout: int = 240) -> str:
-        """tosctl on the host as its own user; root only reads the root-owned env file.
-
-        runuser keeps the exported environment (the vault URL with its master
-        key), so the key never appears on a command line, and every file
-        tosctl writes under the state directory stays owned by that user.
-        """
-        return self.run(
-            f"set -a; . {TOSCTL_ENV}; set +a; cd {TOSCTL_DIR}; "
-            f"timeout {timeout} runuser -u {TOSCTL_USER} -- tosctl {arguments} 2>&1",
-            timeout=timeout + 30,
-        )
+        """tosctl on the host as its own user (validator_host.tosctl_command)."""
+        return self.run(vh.tosctl_command(arguments, timeout), timeout=timeout + 30)
 
     def put(self, local: Path, remote: str, owner: str) -> None:
         """Write a local file on the host as `owner`, mode 0600.
@@ -601,19 +581,6 @@ def nanotos_text(nanotos: int) -> str:
 SINGLE_NOMINATOR_CODE = Path("crypto/smartcont/single-nominator-pool/single-nominator-code.hex")
 
 
-def std_address(cell: lib.Cell) -> str:
-    """A MsgAddressInt cell holding addr_std without anycast, as workchain:hex."""
-    s = lib.Slice(cell)
-    if s.bits(3) != 0b100:
-        raise lib.TestnetError("not an addr_std without anycast")
-    workchain = s.bits(8)
-    workchain -= 256 if workchain > 127 else 0
-    address = f"{workchain}:{s.bytes(32).hex()}"
-    if not s.end():
-        raise lib.TestnetError("trailing data after an address")
-    return address
-
-
 def address_bits(address: str) -> str:
     workchain, account = check_raw_address(address).split(":")
     return "100" + format(int(workchain) & 0xFF, "08b") + format(int(account, 16), "0256b")
@@ -637,6 +604,13 @@ def pool_address(code: lib.Cell, owner: str, validator: str) -> str:
     return f"-1:{pool_state_init(code, owner, validator).hash().hex()}"
 
 
+class PoolMismatch(lib.TestnetError):
+    """A definite answer that the account is not the expected pool: another
+    address, an active account running other code, or other roles. A failed read
+    (an RPC error, a timeout, validators that disagree, an account not active yet)
+    is never this."""
+
+
 def verify_pool(chain: Chain, tos_root: Path | str, pool: str, owner: str, operator: str) -> None:
     """Refuse unless `pool` is the single-nominator pool of exactly these roles.
 
@@ -650,19 +624,24 @@ def verify_pool(chain: Chain, tos_root: Path | str, pool: str, owner: str, opera
     pool = check_raw_address(pool)
     expected = pool_address(code, owner, operator)
     if pool != expected:
-        raise lib.TestnetError(
+        raise PoolMismatch(
             f"{pool} is not the pool of owner {owner} and validator {operator}; "
             f"that pool is {expected}"
         )
     state, code_hash = chain.code_hash(pool)
-    if state != "active" or code_hash != code.hash():
+    if state != "active":
         raise lib.TestnetError(
-            f"{pool} is {state} and runs code {code_hash.hex() if code_hash else None}, not "
-            f"the pinned single-nominator code {code.hash().hex()}"
+            f"{pool} is {state}, not active with the pinned single-nominator code "
+            f"{code.hash().hex()}"
+        )
+    if code_hash != code.hash():
+        raise PoolMismatch(
+            f"{pool} runs code {code_hash.hex() if code_hash else None}, not the pinned "
+            f"single-nominator code {code.hash().hex()}"
         )
     roles = chain.pool_roles(pool)
     if roles != (owner, operator):
-        raise lib.TestnetError(f"{pool} reports roles {roles}, not {(owner, operator)}")
+        raise PoolMismatch(f"{pool} reports roles {roles}, not {(owner, operator)}")
 
 
 def pool_owner_paths(ceremony: Path, name: str) -> dict[str, Path]:
@@ -885,9 +864,11 @@ def owner_transfer(
     bounce: bool = True,
     init: Path | None = None,
     admission_guard=None,
+    before_run=None,
 ) -> dict:
     """A transfer from the pool owner, signed here with its offline key: bounceable
-    to a pool, non-bounce (with a StateInit for a deployment) for owner-fund."""
+    to a pool, non-bounce (with a StateInit for a deployment) for owner-fund.
+    `before_run(params)` sees the operation's exact parameters before it runs."""
     ceremony = Path(args.ceremony)
     paths = pool_owner_paths(ceremony, name)
     if not paths["key"].is_file():
@@ -934,6 +915,8 @@ def owner_transfer(
         "subwallet": POOL_OWNER_SUBWALLET,
     }
     params.update(extra or {})
+    if before_run is not None:
+        before_run(params)
     return operations.run(
         op_id, params, sign, lambda decoded: None, prerequisites, expect, export=export
     )
@@ -957,6 +940,19 @@ def owner_role_check(operations: ops.Operations, tos_root, pool: str, owner: str
 def verify_pool_both(operations: ops.Operations, tos_root, pool, owner, operator):
     for node in operations.nodes:
         verify_pool(Chain(node.url, node.rpc), tos_root, pool, owner, operator)
+
+
+def pool_deployment_outcome(operations, tos_root, pool, owner, operator, evidence):
+    """A delivered pool deployment's settlement: settled when both validators read
+    the pool with the pinned code and roles, failed only on a definite mismatch,
+    and pending while a read fails, so a transient error never closes the step."""
+    try:
+        verify_pool_both(operations, tos_root, pool, owner, operator)
+    except PoolMismatch as exc:
+        return "failed", dict(evidence, form="b", reason=str(exc))
+    except lib.TestnetError as exc:
+        return "pending", dict(evidence, reason=f"the pool could not be read yet: {exc}")
+    return "settled", evidence
 
 
 def withdraw_id_record(operations: ops.Operations, args: argparse.Namespace) -> dict | None:
@@ -1747,56 +1743,24 @@ def stake_pool(args: argparse.Namespace, global_id: int) -> dict:
     return result
 
 
-# What the node logs at start-up for each consensus key it holds (tos
-# doc/validator-operator-guide.md, "Bind the node to the staking account").
-CUSTODY_LINE = re.compile(r"post-quantum consensus custody: validator_id ([0-9a-f]{64}) ")
-
-
-def node_staking_account(host) -> str:
-    """The validator id the node on the host last reported holding its key for."""
-    output = host.run(
-        "{ journalctl -u tos-testnet-validator -o cat --no-pager 2>/dev/null; "
-        "cat /var/log/tos/validator/node.log* 2>/dev/null; } "
-        "| grep -a 'post-quantum consensus custody' | tail -n 1 || true"
-    )
-    found = CUSTODY_LINE.search(output)
-    if not found:
-        raise lib.TestnetError(
-            "the node reports no post-quantum consensus custody line; check that it is bound "
-            "(install-node.sh activate --validator-id) and running"
-        )
-    return found.group(1)
-
-
-def staking_readiness(operations, host, pool: str, stake_nanotos: int) -> None:
-    """Ready to stand: the pool holds two stakes and the node signs for the pool."""
+def pool_holds_two_stakes(operations, pool: str, stake_nanotos: int) -> None:
+    """The pool holds two stakes above its storage reserve, read on both validators."""
     available = operations.balance(pool) - POOL_STORAGE_NANOTOS
     if available < 2 * stake_nanotos:
         raise lib.TestnetError(
             f"the pool holds {available / NANO:.9f} TOS above its reserve, less than two stakes "
             f"of {stake_nanotos / NANO:.9f}"
         )
-    bound = node_staking_account(host)
-    if bound != pool.split(":")[1]:
-        raise lib.TestnetError(
-            f"the node signs stake authorizations for {bound}, not the pool {pool}; the Elector "
-            "refuses a stake signed for another account"
-        )
 
 
-def onboard(
-    args: argparse.Namespace, operations: ops.Operations, global_id: int, profile: dict
-) -> None:
-    name = args.name
-    if not SAFE_NAME.match(name):
-        raise lib.TestnetError(f"not a node name: {name!r}")
-    ceremony = Path(args.ceremony)
-    previous = previous_wallets(args)
-    elections = profile["elections"]
-    pool, owner, operator = recorded_staking(ceremony, name, args.tos_root)
-    genesis_staking_account(ceremony, pool)
-    host = Host(args.host, args.ssh_key)
-    scripts = "/opt/tos-testnet/scripts"
+def staking_readiness(operations, host, pool: str, stake_nanotos: int) -> None:
+    """Ready to stand: the pool holds two stakes and the node signs for the pool."""
+    pool_holds_two_stakes(operations, pool, stake_nanotos)
+    check_custody(host, pool)
+
+
+def journal_steps(operations: ops.Operations, name: str):
+    """(step, settled, require) for one validator's onboarding."""
 
     def step(text: str) -> None:
         print(f"== {name}: {text}", flush=True)
@@ -1809,6 +1773,141 @@ def onboard(
     def require(op_id: str) -> None:
         if not settled(op_id):
             raise lib.TestnetError(f"operation {op_id} is not settled")
+
+    return step, settled, require
+
+
+def fund_from_bootstrap(
+    args: argparse.Namespace,
+    operations: ops.Operations,
+    global_id: int,
+    steps,
+    op_id: str,
+    to: str,
+    nanotos: int,
+    label: str,
+) -> None:
+    step, settled, _ = steps
+    if not settled(op_id):
+        step(f"{op_id}: {nanotos / NANO:.9f} TOS from the bootstrap wallet")
+    fund(
+        argparse.Namespace(
+            ceremony=args.ceremony,
+            tos_root=args.tos_root,
+            fift=args.fift,
+            to=to,
+            amount=nanotos_text(nanotos),
+            label=label,
+            op_id=op_id,
+            dry_run=False,
+        ),
+        operations,
+        global_id,
+    )
+
+
+def fund_and_activate_owner(
+    args: argparse.Namespace,
+    operations: ops.Operations,
+    global_id: int,
+    name: str,
+    owner: str,
+    previous: list,
+    elections: dict,
+    steps,
+) -> int:
+    """fund-owner- (principal and reserve from the bootstrap wallet) and activate-owner-.
+
+    The pool's owner holds the stake principal and is the only role that can take
+    it out. Its key was made here before genesis and never leaves this machine;
+    the operator wallet on the host is only the pool's validator role. Returns
+    the principal."""
+    step, settled, require = steps
+    ceremony = Path(args.ceremony)
+    if ensure_pool_owner(args, name, global_id, previous) != owner:
+        raise lib.TestnetError(f"the pool owner key of {name} is not the recorded owner {owner}")
+    step(f"pool owner {owner} (key offline in the ceremony's secret/)")
+    principal = int(elections["pool_tos"]) * NANO
+    fund_from_bootstrap(
+        args,
+        operations,
+        global_id,
+        steps,
+        f"fund-owner-{name}",
+        owner,
+        principal + int(elections["pool_owner_reserve_tos"]) * NANO,
+        f"pool-owner-{name}",
+    )
+    init_boc = pool_owner_paths(ceremony, name)["init"].read_bytes()
+    if not settled(f"activate-owner-{name}"):
+        step("activate the pool owner wallet")
+    operations.run(
+        f"activate-owner-{name}",
+        owner_op_params(ceremony, name, owner),
+        lambda seqno: init_boc,
+        lambda decoded: None,
+        lambda: require(f"fund-owner-{name}"),
+    )
+    return principal
+
+
+def send_principal(
+    args: argparse.Namespace,
+    operations: ops.Operations,
+    global_id: int,
+    name: str,
+    pool: str,
+    owner: str,
+    operator: str,
+    principal: int,
+    steps,
+) -> None:
+    """principal-: the owner sends the stake principal to the verified pool."""
+    step, settled, require = steps
+
+    def principal_prerequisites() -> None:
+        require(f"fund-owner-{name}")
+        require(f"activate-owner-{name}")
+        verify_pool_both(operations, args.tos_root, pool, owner, operator)
+        balance = operations.balance(owner)
+        if balance < principal + ops.FEE_ALLOWANCE_NANOTOS // 10:
+            raise lib.TestnetError(
+                f"the pool owner holds {balance / NANO:.9f} TOS, less than the principal and its fee"
+            )
+
+    if not settled(f"principal-{name}"):
+        step(f"the pool owner sends the principal, {principal // NANO} TOS, to the pool")
+    owner_transfer(
+        args,
+        operations,
+        global_id,
+        name,
+        f"principal-{name}",
+        "principal",
+        pool,
+        principal,
+        None,
+        principal_prerequisites,
+    )
+    record_pool(Path(args.ceremony), name, principal_sent=True)
+
+
+def onboard(
+    args: argparse.Namespace, operations: ops.Operations, global_id: int, profile: dict
+) -> None:
+    """A team-operated host, over SSH: the coordinator runs the host-side steps too."""
+    name = args.name
+    if not SAFE_NAME.match(name):
+        raise lib.TestnetError(f"not a node name: {name!r}")
+    ceremony = Path(args.ceremony)
+    previous = previous_wallets(args)
+    elections = profile["elections"]
+    pool, owner, operator = recorded_staking(ceremony, name, args.tos_root)
+    genesis_staking_account(ceremony, pool)
+    host = Host(args.host, args.ssh_key)
+    scripts = vh.SCRIPTS
+    steps = journal_steps(operations, name)
+    step, settled, require = steps
 
     step("operator tool")
     last = (
@@ -1826,26 +1925,15 @@ def onboard(
     record_fresh_wallets(ceremony, {f"op-{name}": operator}, previous)
     operations.check_network()
 
-    def fund_from_bootstrap(op_id: str, to: str, nanotos: int, label: str) -> None:
-        if not settled(op_id):
-            step(f"{op_id}: {nanotos / NANO:.9f} TOS from the bootstrap wallet")
-        fund(
-            argparse.Namespace(
-                ceremony=args.ceremony,
-                tos_root=args.tos_root,
-                fift=args.fift,
-                to=to,
-                amount=nanotos_text(nanotos),
-                label=label,
-                op_id=op_id,
-                dry_run=False,
-            ),
-            operations,
-            global_id,
-        )
-
     fund_from_bootstrap(
-        f"fund-op-{name}", operator, int(elections["operator_funding_tos"]) * NANO, f"op-{name}"
+        args,
+        operations,
+        global_id,
+        steps,
+        f"fund-op-{name}",
+        operator,
+        int(elections["operator_funding_tos"]) * NANO,
+        f"op-{name}",
     )
     if operations.state(operator) != "active":
         # No value moves: the wallet deploys itself from its own credit.
@@ -1853,28 +1941,8 @@ def onboard(
         host.tosctl(f"wallet activate --name op-{name}", 150)
         operations.both(lambda node: Chain(node.url, node.rpc).wait_active(operator))
 
-    # The pool's owner holds the stake principal and is the only role that can
-    # take it out. Its key was made here before genesis and never leaves this
-    # machine; the operator wallet on the host is only the pool's validator role.
-    if ensure_pool_owner(args, name, global_id, previous) != owner:
-        raise lib.TestnetError(f"the pool owner key of {name} is not the recorded owner {owner}")
-    step(f"pool owner {owner} (key offline in the ceremony's secret/)")
-    principal = int(elections["pool_tos"]) * NANO
-    fund_from_bootstrap(
-        f"fund-owner-{name}",
-        owner,
-        principal + int(elections["pool_owner_reserve_tos"]) * NANO,
-        f"pool-owner-{name}",
-    )
-    init_boc = pool_owner_paths(ceremony, name)["init"].read_bytes()
-    if not settled(f"activate-owner-{name}"):
-        step("activate the pool owner wallet")
-    operations.run(
-        f"activate-owner-{name}",
-        owner_op_params(ceremony, name, owner),
-        lambda seqno: init_boc,
-        lambda decoded: None,
-        lambda: require(f"fund-owner-{name}"),
+    principal = fund_and_activate_owner(
+        args, operations, global_id, name, owner, previous, elections, steps
     )
 
     pool_init_b64 = base64.b64encode(
@@ -1882,11 +1950,7 @@ def onboard(
     ).decode()
 
     def pool_deployed(operations_, record, delivery, evidence):
-        try:
-            verify_pool_both(operations_, args.tos_root, pool, owner, operator)
-        except lib.TestnetError as exc:
-            return "failed", dict(evidence, form="b", reason=str(exc))
-        return "settled", evidence
+        return pool_deployment_outcome(operations_, args.tos_root, pool, owner, operator, evidence)
 
     if not settled(f"deploy-pool-{name}"):
         step(f"deploy the pool {pool} with {elections['pool_deploy_tos']} TOS")
@@ -1905,31 +1969,7 @@ def onboard(
     )
     configure_pool(host, name, pool, owner, step)
 
-    def principal_prerequisites() -> None:
-        require(f"fund-owner-{name}")
-        require(f"activate-owner-{name}")
-        verify_pool_both(operations, args.tos_root, pool, owner, operator)
-        balance = operations.balance(owner)
-        if balance < principal + ops.FEE_ALLOWANCE_NANOTOS // 10:
-            raise lib.TestnetError(
-                f"the pool owner holds {balance / NANO:.9f} TOS, less than the principal and its fee"
-            )
-
-    if not settled(f"principal-{name}"):
-        step(f"the pool owner sends the principal, {elections['pool_tos']} TOS, to the pool")
-    owner_transfer(
-        args,
-        operations,
-        global_id,
-        name,
-        f"principal-{name}",
-        "principal",
-        pool,
-        principal,
-        None,
-        principal_prerequisites,
-    )
-    record_pool(ceremony, name, principal_sent=True)
+    send_principal(args, operations, global_id, name, pool, owner, operator, principal, steps)
 
     step("readiness: two stakes in the pool, the node bound to the pool")
     staking_readiness(operations, host, pool, int(elections["stake_tos"]) * NANO)
@@ -1939,25 +1979,245 @@ def onboard(
     step("done")
 
 
-def configure_pool(host, name, pool, owner, step) -> None:
-    """The host's tosctl configuration: each step decided by what is there, never nested."""
+# ---------------------------------------------------------------- onboard, operator-run host
 
-    def config() -> dict:
-        return json.loads(host.run(f"cat {TOSCTL_DIR}/tosctl-config.json"))
+# The pool deployment of an operator-run host: the owner, not the operator wallet,
+# sends the pool's StateInit, so every value movement of onboarding is signed and
+# journaled here and the operator has nothing to do until it is complete.
+OWNER_DEPLOY_KIND = "owner-deploy-pool"
+POOL_DEPLOY_KINDS = ("deploy-pool", OWNER_DEPLOY_KIND)
+# What onboard --no-host exits with when its own steps are done and the
+# operator's are not visible on chain yet: not a failure, not done either.
+WAITING_EXIT = 3
 
-    entry = config().get("pools", {}).get(f"pool-{name}")
-    if entry is None:
-        step(f"config pool add pool-{name}")
-        host.tosctl(f"config pool add --name pool-{name} --address {pool} --owner {owner}")
-    elif (entry.get("address"), entry.get("owner")) != (pool, owner):
-        raise lib.TestnetError(f"pool-{name} is configured on the host as {entry}")
-    binding = config().get("bindings", {}).get(name)
-    if binding is None or not binding.get("pool"):
-        step(f"config bind add {name}")
-        host.tosctl(f"config bind add --node {name} --wallet op-{name} --pool pool-{name}")
-        binding = config().get("bindings", {}).get(name) or {}
-    if (binding.get("wallet"), binding.get("pool")) != (f"op-{name}", f"pool-{name}"):
-        raise lib.TestnetError(f"node {name} is bound on the host as {binding}")
+
+class WaitingForOperator(lib.TestnetError):
+    """The coordinator's steps are complete; the operator's are not on chain yet."""
+
+
+def onboard_mode(args: argparse.Namespace) -> str:
+    """'no-host' or 'ssh': exactly one of --no-host and --host with --ssh-key."""
+    host, key = getattr(args, "host", None), getattr(args, "ssh_key", None)
+    if getattr(args, "no_host", False):
+        if host or key:
+            raise lib.TestnetError("--no-host takes no --host or --ssh-key: nothing logs in")
+        return "no-host"
+    if not (host and key):
+        raise lib.TestnetError(
+            "onboard needs --host and --ssh-key (a team-operated host) or --no-host "
+            "(a host only its operator touches)"
+        )
+    return "ssh"
+
+
+def operator_command(name: str, pool: str, owner: str) -> str:
+    return (
+        f"sudo python3 {vh.SCRIPTS}/testnet-operator.py onboard --name {name} "
+        f"--pool {pool} --owner {owner}"
+    )
+
+
+def owner_deploys_pool(
+    args: argparse.Namespace,
+    operations: ops.Operations,
+    global_id: int,
+    name: str,
+    pool: str,
+    owner: str,
+    operator: str,
+    deploy_nanotos: int,
+    principal: int,
+    steps,
+) -> None:
+    """deploy-pool-: the owner sends the pool's StateInit with `deploy_nanotos`.
+
+    The pool's address is the hash of that StateInit (the pinned code and the two
+    roles), so whoever sends it creates exactly this pool; the contract accepts an
+    empty-body message from any sender. Skipped when the step was already settled
+    by the operator wallet (a host onboarded over SSH). When the newest attempt is
+    a failed operator-wallet deployment, the owner's deployment is its successor
+    attempt, naming it as predecessor; any other operator-wallet attempt refuses."""
+    step, settled, require = steps
+    op_id = f"deploy-pool-{name}"
+    journal = operations.journal
+    earlier = journal.record(journal.newest(op_id))
+    replaces = None
+    if earlier is not None and earlier.get("kind") != OWNER_DEPLOY_KIND:
+        state = ops.state_of(earlier)
+        if state == "settled":
+            return
+        if state != "failed":
+            how = (
+                "it was never signed: finish it with `onboard --host --ssh-key` on the team "
+                "host it was started for"
+                if state == "planned"
+                else "run `testnet-elections.py reconcile`, then `record --id "
+                f"{earlier['id']} --settled --hint TX` or `--failed FORM`, or `resubmit --id "
+                f"{earlier['id']}`"
+            )
+            raise lib.TestnetError(
+                f"{earlier['id']} is an operator-wallet deployment that is {state}; {how}; "
+                "then run onboard --no-host again"
+            )
+        replaces = earlier["id"]
+    code = single_nominator_code(args.tos_root)
+    state_init = pool_state_init(code, owner, operator)
+    if pool_address(code, owner, operator) != pool:
+        raise lib.TestnetError(f"{pool} is not the pool of owner {owner} and validator {operator}")
+
+    if (earlier is None or replaces) and operations.state(pool) == "active":
+        # Deployed already, and not by an operation here: nothing of ours moved.
+        # Its code and roles must be the expected ones; nothing more is sent.
+        verify_pool_both(operations, args.tos_root, pool, owner, operator)
+        step(f"the pool {pool} is already deployed with the pinned code and roles")
+        return
+
+    def prerequisites() -> None:
+        require(f"activate-owner-{name}")
+        if operations.state(owner) != "active":
+            raise lib.TestnetError(f"the pool owner {owner} is not active on both validators")
+        # The owner pays the deployment and still the principal, both fees and a
+        # withdrawal message afterwards.
+        owner_keeps(operations, owner, deploy_nanotos + principal + ops.FEE_ALLOWANCE_NANOTOS // 10)
+
+    def deployed(operations_, record, delivery, evidence):
+        return pool_deployment_outcome(operations_, args.tos_root, pool, owner, operator, evidence)
+
+    def succeed_failed_attempt(params: dict) -> None:
+        # The failed operator-wallet attempt cannot run again without the host;
+        # the owner's deployment becomes the step's next attempt.
+        if replaces is None:
+            return
+        successor = operations.successor_with(
+            op_id,
+            params,
+            f"{replaces} (operator wallet) failed; the owner deploys the pool of an "
+            "operator-run host",
+            from_kinds=("deploy-pool",),
+        )
+        step(f"{successor['id']} succeeds the failed {replaces}")
+
+    if not settled(op_id):
+        step(f"the pool owner deploys the pool {pool} with {deploy_nanotos / NANO:.9f} TOS")
+    with tempfile.TemporaryDirectory(prefix="pool-init-") as work:
+        init = Path(work) / "pool-state-init.boc"
+        init.write_bytes(lib.serialize_boc(state_init))
+        owner_transfer(
+            args,
+            operations,
+            global_id,
+            name,
+            op_id,
+            OWNER_DEPLOY_KIND,
+            pool,
+            deploy_nanotos,
+            None,
+            prerequisites,
+            {"owner": owner, "operator": operator},
+            expect=deployed,
+            bounce=False,
+            init=init,
+            before_run=succeed_failed_attempt,
+        )
+
+
+def onboard_external(
+    args: argparse.Namespace, operations: ops.Operations, global_id: int, profile: dict
+) -> dict:
+    """A host only its operator touches (onboard --no-host). Nothing here opens SSH.
+
+    The coordinator's own steps, each a journaled operation: fund-op-,
+    fund-owner-, activate-owner-, deploy-pool- (from the owner) and principal-.
+    Then the operator's outcome is checked from chain state on both validators
+    only: the pool still has the pinned code and the two roles and holds two
+    stakes, and the operator wallet is active with fee money. Raises
+    WaitingForOperator, naming the operator's command, until it is."""
+    name = args.name
+    if not SAFE_NAME.match(name):
+        raise lib.TestnetError(f"not a node name: {name!r}")
+    ceremony = Path(args.ceremony)
+    previous = previous_wallets(args)
+    elections = profile["elections"]
+    pool, owner, operator = recorded_staking(ceremony, name, args.tos_root)
+    genesis_staking_account(ceremony, pool)
+    steps = journal_steps(operations, name)
+    step = steps[0]
+    step(f"operator wallet {operator}, staking pool {pool} (operator-run host, no access)")
+    record_fresh_wallets(ceremony, {f"op-{name}": operator}, previous)
+    operations.check_network()
+
+    fund_from_bootstrap(
+        args,
+        operations,
+        global_id,
+        steps,
+        f"fund-op-{name}",
+        operator,
+        int(elections["operator_funding_tos"]) * NANO,
+        f"op-{name}",
+    )
+    principal = fund_and_activate_owner(
+        args, operations, global_id, name, owner, previous, elections, steps
+    )
+    owner_deploys_pool(
+        args,
+        operations,
+        global_id,
+        name,
+        pool,
+        owner,
+        operator,
+        int(elections["pool_deploy_tos"]) * NANO,
+        principal,
+        steps,
+    )
+    send_principal(args, operations, global_id, name, pool, owner, operator, principal, steps)
+
+    step("readiness on chain: the pool's code, roles and two stakes")
+    verify_pool_both(operations, args.tos_root, pool, owner, operator)
+    stake = int(elections["stake_tos"]) * NANO
+    pool_holds_two_stakes(operations, pool, stake)
+
+    step("the operator's steps, read on chain")
+    state = operations.state(operator)
+    if state != "active":
+        raise WaitingForOperator(
+            f"{name}: every coordinator step is settled; the operator wallet {operator} is "
+            f"{state}. Hand off to the operator, who runs on their own host:\n"
+            f"  {operator_command(name, pool, owner)}\n"
+            "then run this command again to check the result on chain"
+        )
+    balance = operations.balance(operator)
+    floor = int(elections["stake_order_nanotos"]) + ops.FEE_ALLOWANCE_NANOTOS
+    if balance < floor:
+        raise lib.TestnetError(
+            f"the operator wallet {operator} holds {balance / NANO:.9f} TOS, less than a stake "
+            f"order and its fee ({floor / NANO:.9f}); top it up from the owner (top-up)"
+        )
+    result = {
+        "name": name,
+        "pool": pool,
+        "owner": owner,
+        "operator": operator,
+        "operator_state": state,
+        "operator_nanotos": balance,
+        "pool_nanotos": operations.balance(pool),
+        "coordinator_steps": "settled",
+        "operator_wallet": "active with fee money (read on chain)",
+        "host_binding_and_election_task": "UNVERIFIED",
+        "next": (
+            "the node's binding to the pool and the election task are on the operator's "
+            "host and are not visible on chain yet; they are verified only when the pool's "
+            "stake appears in the Elector at the next election (then ConfigParam 34, "
+            "sweep prerequisites)"
+        ),
+    }
+    print(json.dumps(result, indent=2))
+    step(
+        "coordinator steps settled and the operator wallet is active; the host's binding and "
+        "election task stay UNVERIFIED until the pool's stake appears in the Elector"
+    )
+    return result
 
 
 # ---------------------------------------------------------------- withdraw
@@ -3486,8 +3746,14 @@ def main(argv: list[str] | None = None) -> int:
         p_pool.add_argument(flag, required=True)
     p_pool.add_argument("--previous-ceremony", action="append", default=[])
     p_onboard = sub.add_parser("onboard", parents=[common])
-    for flag in ("--name", "--host", "--ssh-key"):
-        p_onboard.add_argument(flag, required=True)
+    p_onboard.add_argument("--name", required=True)
+    p_onboard.add_argument("--host", help="a team-operated host, onboarded over SSH")
+    p_onboard.add_argument("--ssh-key")
+    p_onboard.add_argument(
+        "--no-host",
+        action="store_true",
+        help="an operator-run host: only the coordinator's steps, checked on chain; no SSH",
+    )
     p_onboard.add_argument("--previous-ceremony", action="append", default=[])
     p_withdraw = sub.add_parser("withdraw", parents=[common])
     p_withdraw.add_argument("--name", required=True)
@@ -3622,8 +3888,13 @@ def main(argv: list[str] | None = None) -> int:
                 owner_fund(args, operations, global_id)
             elif args.command in ("reconcile", "record", "resubmit", "baseline", "retry"):
                 manual(args, operations)
+            elif onboard_mode(args) == "no-host":
+                onboard_external(args, operations, global_id, profile)
             else:
                 onboard(args, operations, global_id, profile)
+    except WaitingForOperator as exc:
+        print(f"testnet-elections: waiting for the operator: {exc}", file=sys.stderr)
+        return WAITING_EXIT
     except (lib.TestnetError, OSError, KeyError, ValueError, subprocess.SubprocessError) as exc:
         print(f"testnet-elections: {exc}", file=sys.stderr)
         return 1
@@ -3633,20 +3904,15 @@ def main(argv: list[str] | None = None) -> int:
 def expect_for(args: argparse.Namespace, record: dict):
     """The kind-specific settlement extra for a record, as onboard would pass it."""
     kind = record["kind"]
-    if kind == "deploy-pool":
+    if kind in POOL_DEPLOY_KINDS:
 
         def deployed(operations, rec, delivery, evidence):
-            try:
-                verify_pool_both(
-                    operations,
-                    args.tos_root,
-                    rec["destination"],
-                    rec["owner"],
-                    rec["wallet"],
-                )
-            except lib.TestnetError as exc:
-                return "failed", dict(evidence, form="b", reason=str(exc))
-            return "settled", evidence
+            # The operator wallet sends a host-built deployment; the owner sends
+            # the deployment of an operator-run host and records the operator.
+            operator = rec["operator"] if rec["kind"] == OWNER_DEPLOY_KIND else rec["wallet"]
+            return pool_deployment_outcome(
+                operations, args.tos_root, rec["destination"], rec["owner"], operator, evidence
+            )
 
         return deployed
     if kind == "change-validator":
@@ -3687,7 +3953,7 @@ def manual(args: argparse.Namespace, operations: ops.Operations) -> None:
     record = journal.record(args.id)
     if record is None:
         raise lib.TestnetError(f"no operation {args.id}")
-    expect = expect_for(args, record) if record["kind"] in ops.HOST_KINDS else None
+    expect = expect_for(args, record) if record["kind"] in POOL_DEPLOY_KINDS else None
     block_boc = getattr(args, "block_boc", None)
     if block_boc is not None:
         if record["kind"] != "sweep":
