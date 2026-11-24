@@ -24,10 +24,14 @@ Onboarding accepts any pool `genesis-records.json` names; a pool in
 
 ### Stake, weight and funding: set after registration closes
 
-Each external pool stakes one unit (`elections.stake_tos`, 10,002 TOS; the
-Elector keeps 1 TOS of every order, so a unit stands as 10,001). Each team pool
-stakes `elections.team_stake_multiple` = (E+1)/2 units, at least one: its order
-is that many units of 10,001 TOS, rounded down, plus the 1 TOS. TOS finalizes
+Each external pool stakes one unit (`elections.stake_tos`, 10,002 TOS). The
+Elector records a pool's stake as the stake plus what is left of the 1.2 TOS
+stake order (`stake_order_nanotos`) after the pool's fees
+(`pool_new_stake_cost_nanotos`) and the Elector's own 1 TOS: measured in the
+rehearsal as stake + 0.1788215 TOS, so a unit stands as 10,002.1788215. Each
+team pool stakes `elections.team_stake_multiple` = (E+1)/2 units, at least one:
+its order is multiple x (10,002 - 1) + 1 TOS, rounded down, which keeps its
+credit at most multiple x a unit's credit whatever the Elector adds. TOS finalizes
 with **at least** two thirds of the weight (tos `quorum.h` `has_quorum`:
 signed x 3 >= total x 2). With both team pools elected the team holds E+1 units
 against E, just above half; with one team pool absent from an election the
@@ -78,11 +82,12 @@ rounded up.
 At E = 0 and E = 1 the team holds two thirds or more and finalizes alone; that
 is accepted degradation, the network then runs on the team. The same holds in
 any election in which few external validators stand: at E = 19 the team
-finalizes alone with up to 10 standing external validators.
+finalizes alone with up to 9 standing external validators.
 
 A team pool's stake orders carry max factor 10.0 (`elections.max_factor`), so a
-team stake of up to 10 units (E = 19: 10 x 10,001 TOS as the Elector holds it,
-exactly the cap) counts in full against the one-unit external stakes;
+team stake of up to 10 units (E = 19: an order of 100,011 TOS, credited as
+100,011.1788215, under the cap of 10 x 10,002.1788215) counts in full against
+the one-unit external stakes;
 ConfigParam 17 allows 10. This needs a tosctl that accepts a max
 factor from 1.0 to 100.0 (the bound of upstream's `validator-elect-req.fif`);
 releases before that change stop at 3.0. Team onboarding probes the host's
@@ -97,8 +102,8 @@ The election limits are genesis values (`genesis.validator_num`,
 `genesis.stake_limits`): ConfigParam 16 is 21 / 21 / 2 (an election the team
 alone stands in concludes), and ConfigParam 17 is 10,000 / 10,000,000 /
 **20,000** / 10. The template's `min_total_stake` of 40,000 TOS would postpone a
-team-only election, whose two unit stakes are 20,002 TOS in the Elector; 20,000
-is the floor at which two minimum stakes still elect.
+team-only election, whose two unit stakes are 20,004.357643 TOS in the Elector;
+20,000 is the floor at which two minimum stakes still elect.
 
 ```
 O: prepare host -> O: operator wallet -> C: pool -> O: record --\
@@ -135,6 +140,35 @@ world-readable) and release binaries in `/usr/local/bin`.
 - Confirm every registered operator's identity out of band, the team's and
   each external one's. The ceremony checks that each record is self-consistent;
   it cannot prove who sent it.
+- **Coordinator Python environment.** `testnet-elections.py` imports
+  `pytosiq_core` (through `load_finality_window` and `load_finality`) for every
+  subcommand, `pool` included, so run it, and `check-testnet.py`, with the tos
+  checkout's own virtualenv: `"$TOS_ROOT/.venv/bin/python"`, where `$TOS_ROOT`
+  is the tos checkout at the ceremony commit and its `.venv` has the tos test
+  package installed editable (`"$TOS_ROOT/.venv/bin/pip" install -e
+  "$TOS_ROOT/test/tostester"`, which provides `pytosiq_core`). A system
+  `python3` fails with `ModuleNotFoundError: pytosiq_core`. Operator hosts need
+  none of this: `testnet-operator.py` and the host scripts use the standard
+  library only.
+- **The whole tos-ops checkout, not `testnet/` alone.** `check-testnet.py` and
+  `testnet-elections.py` load `production/network_check.py` from the directory
+  beside `testnet/` (`<tos-ops>/production`). Run them from a full tos-ops
+  checkout at the ceremony commit, or install `production/` next to
+  `/opt/tos-testnet` as `/opt/production`.
+
+### Rehearsed
+
+The operator-run onboarding and the first elections of this configuration were
+rehearsed on 2026-11-24 with tos-ops 5268121 and tosctl 6be232ff8, at E = 2 on
+four isolated hosts of one machine with a shortened election schedule: genesis
+with the two-validator set, `onboard --no-host` and
+`testnet-operator.py onboard` for both external pools, team pools staking
+15,002 TOS with max factor 10.0 and external pools 10,002 TOS with 3.0, two
+elections electing all four pools, and stake recovery. Every item passed. The
+measured team share was 59.99826 %, which `election_plan` now reproduces
+exactly; the one defect found, a `-1:` address given as a separate argument, is
+fixed in 8257324. The record is the memo's
+`public-testnet/DEC5-REHEARSAL-20261124.md`.
 
 ## 0.4 Every host: set the clock first
 
@@ -530,7 +564,7 @@ reports, under `liveness`, how many external validators must be online:
   validators: both must be up.
 - **Both team validators up:** the team holds just over half, so the chain
   needs about a third of the external weight online. At E = 19 that is
-  6 of the 19 external validators.
+  7 of the 19 external validators.
 - **One team validator down:** the remaining team validator holds about a
   quarter, so the chain needs most of the external weight. At E = 19 that is
   16 of the 19.
@@ -557,7 +591,8 @@ lite-client -C global-config.json -c 'runmethod -1:33333333333333333333333333333
 Each entry is `[validator id, stake]`, the id printed as a decimal integer and
 the stake in nanotos (`python3 -c 'print(int("<hex id>", 16))'` converts a
 `genesis-set.json` id). Both team validator ids must be in the list, each with
-the team stake (`team_stake_tos` less 1 TOS). A missing team stake is an incident:
+the team stake as the Elector credits it (the plan's `team_credit_nanotos`,
+`team_stake_tos` + 0.1788215 TOS). A missing team stake is an incident:
 check `journalctl -u tos-testnet-elections` on that team host, fix the election
 task and let it resubmit while the window is open; if the window closes without
 both, announce it and decide before the set takes office whether to continue.

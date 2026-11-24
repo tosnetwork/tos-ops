@@ -1415,6 +1415,12 @@ M += [
         "            and HYPHEN_ADDRESS.match(argv[i + 1])\n",
         "            and False\n",
     ),
+    (
+        "P27 the Elector credit is modeled as the order less 1 TOS",
+        LIB,
+        "    return stake_nanotos + surplus_nanotos\n",
+        "    return stake_nanotos - ELECTOR_CONFIRMATION_NANOTOS\n",
+    ),
 ]
 
 

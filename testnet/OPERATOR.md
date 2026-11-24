@@ -14,7 +14,7 @@ coordinator. The two team pools stake (E+1)/2 units each for E external
 validators, so the team holds a little over half of the weight and the external
 validators together never two thirds. A block is final with at least two thirds
 of the weight, so with both team validators up the chain needs about a third of
-the external validators online (6 of 19 at E = 19), and with one team validator
+the external validators online (7 of 19 at E = 19), and with one team validator
 down most of them (16 of 19); see [Liveness](CEREMONY.md#liveness-what-keeps-blocks-final). The coordinator handles genesis, staking
 funds and its side of election onboarding. You administer the host alone, run
 every step on it yourself, and hold its consensus key and operator wallet. The

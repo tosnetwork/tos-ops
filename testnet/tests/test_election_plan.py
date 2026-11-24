@@ -4,8 +4,11 @@ weight and funding plan testnet_lib.election_plan derives from the number of
 external validators (E).
 
 The Elector arithmetic is checked against a direct reading of elector-code.fc
-(process_new_stake keeps 1 TOS of each order; try_elect caps each stake at
-max_factor x the smallest elected stake and weighs it by (stake << 60) / total).
+(process_new_stake keeps 1 TOS of what arrives; try_elect caps each stake at
+max_factor x the smallest elected stake and weighs it by (stake << 60) / total)
+and against the onboarding rehearsal of 2026-11-24 (memo
+public-testnet/DEC5-REHEARSAL-20261124.md): what arrives is the stake plus what
+is left of tosctl's 1.2 TOS stake order after the pool's fees.
 """
 
 import copy
@@ -38,6 +41,14 @@ def planned(external, base=None):
     return p
 
 
+def credit(p, stake_tos):
+    """The Elector's record of a pool stake order, computed here from the profile:
+    the stake, plus the stake order's value less the pool's fees, less the
+    Elector's 1 TOS."""
+    e = p["elections"]
+    return stake_tos * NANO + e["stake_order_nanotos"] - e["pool_new_stake_cost_nanotos"] - NANO
+
+
 def old_tosctl_factor():
     """The profile with the team staking at tosctl's former ceiling, 3.0."""
     p = profile()
@@ -50,7 +61,7 @@ def expected_bootstrap(p, external):
     e = p["elections"]
     unit = e["stake_tos"]
     multiple = max(Fraction(1), Fraction(external + 1, 2))
-    # The Elector keeps 1 TOS of each order: a unit stands as unit - 1.
+    # The team order rule: multiple x (unit - 1) + 1, rounded down.
     team_stake = int(multiple * (unit - 1)) + 1
     team_principal = e["pool_tos"] + 2 * (team_stake - unit)
     owner_extra = e["pool_owner_reserve_tos"] + e["pool_deploy_tos"]
@@ -141,7 +152,7 @@ def test_one_external_validator_leaves_the_team_finalizing_alone():
 
 def test_five_external_validators_give_the_team_just_over_half():
     plan = lib.election_plan(profile(), external=5)
-    # (5+1)/2 = 3 units of 10,001 TOS as the Elector holds them, plus its 1 TOS.
+    # (5+1)/2 = 3 units: 3 x (10,002 - 1) + 1.
     assert plan["team_stake_multiple"] == "3" and plan["team_stake_tos"] == 30004
     assert plan["team_pool_principal_tos"] == 20010 + 2 * 20002 == 60014
     assert plan["team_owner_funding_tos"] == 60014 + 5 + 2
@@ -154,16 +165,19 @@ def test_five_external_validators_give_the_team_just_over_half():
 
 def test_nineteen_external_validators_with_max_factor_10():
     plan = lib.election_plan(profile(), external=19)
-    # Ten units as the Elector holds them, 100,010 TOS: exactly ConfigParam 17's cap.
+    # Ten units: an order of 100,011 TOS, credited as 100,011.1788215, under
+    # ConfigParam 17's cap of 10 x 10,002.1788215 = 100,021.788215.
     assert plan["team_stake_multiple"] == "10" and plan["team_stake_tos"] == 100011
+    assert plan["team_credit_nanotos"] == 100_011_178_821_500
+    assert plan["team_credit_nanotos"] <= 10 * plan["unit_credit_nanotos"]
     assert plan["team_max_factor"] == "10.0" and plan["external_max_factor"] == "3.0"
     assert plan["bootstrap_wallet_tos"] == expected_bootstrap(profile(), 19) == 780877
     assert abs(plan["team_weight_percent"] - 2000 / 39) < 0.01
     partial = plan["partial_sets"]
-    assert partial["team_finalizes_alone_with_externals"] == list(range(11))
+    assert partial["team_finalizes_alone_with_externals"] == list(range(10))
     assert abs(100 - partial["one_team_pool_absent"]["team_weight_percent"] - 3800 / 58) < 0.01
     assert plan["liveness"] == {
-        "externals_online_needed_both_team_up": 6,
+        "externals_online_needed_both_team_up": 7,
         "externals_online_needed_one_team_down": 16,
     }
     with pytest.raises(lib.TestnetError, match="exceed the 19 seats"):
@@ -192,7 +206,7 @@ def test_a_team_factor_below_the_team_multiple_is_refused():
     p = profile()
     p["elections"]["max_factor"] = "9.0"
     lib.election_plan(p, external=17)
-    # Nine units of 10,002 less the Elector's 1 TOS is above nine units of 10,001.
+    # 9.5 units at E = 18 are above a max factor of 9.
     with pytest.raises(lib.TestnetError, match="max factor of 9.0"):
         lib.election_plan(p, external=18)
 
@@ -209,13 +223,14 @@ def test_external_pools_keep_the_tosctl_default():
 
 def elector_sets(p, external):
     """(both team pools, one team pool absent) elected sets, simulated here from the
-    plan's stake orders: each order less the Elector's 1 TOS, integer weights."""
+    plan's stake orders, each credited as the Elector records it (credit()), with
+    integer weights."""
     limits = lib.genesis_limits(p)
     plan = lib.election_plan(p, external=external)
     ft = int(lib.tosctl_max_factor(p) * lib.MAX_FACTOR_ONE)
     fe = int(lib.tosctl_max_factor(p, "external_max_factor") * lib.MAX_FACTOR_ONE)
-    team = [("team-%d" % i, plan["team_stake_tos"] * NANO - NANO, ft) for i in range(2)]
-    others = [("ext-%d" % i, plan["unit_stake_tos"] * NANO - NANO, fe) for i in range(external)]
+    team = [("team-%d" % i, credit(p, plan["team_stake_tos"]), ft) for i in range(2)]
+    others = [("ext-%d" % i, credit(p, plan["unit_stake_tos"]), fe) for i in range(external)]
     both, why = lib.simulate_election(team + others, limits)
     assert both is not None and len(both) == 2 + external, why
     one, _ = lib.simulate_election(team[:1] + others, limits)
@@ -288,19 +303,74 @@ def test_finality_is_at_two_thirds_inclusive():
     assert lib.finalizes(2, 3) and lib.finalizes(200, 300) and not lib.finalizes(199, 300)
 
 
+# ---------------------------------------------------------------- the Elector's credit, as rehearsed
+
+# Rehearsal of 2026-11-24 (memo public-testnet/DEC5-REHEARSAL-20261124.md), E = 2,
+# team stake orders 15,002 TOS and external 10,002 TOS: the Elector recorded
+# 15,002.1788215 and 10,002.1788215 TOS, total 50,008.715286; ConfigParam 34 gave
+# the team 2 x 345866405092531622 and the external pools 2 x 230594347210891865, a
+# team share of 59.99826 %.
+REHEARSED_CREDITS = (15_002_178_821_500, 10_002_178_821_500)
+REHEARSED_WEIGHTS = (345866405092531622, 230594347210891865)
+
+
+def test_the_credit_model_is_the_rehearsed_elector_record():
+    p = profile()
+    # tosctl attaches 1.2 TOS; the pool keeps its fees and forwards the rest with the
+    # stake (send mode 64); the Elector keeps 1 TOS.
+    assert p["elections"]["stake_order_nanotos"] == 1_200_000_000
+    assert lib.credit_surplus(p) == 178_821_500
+    assert lib.elector_credit(15_002 * NANO, lib.credit_surplus(p)) == REHEARSED_CREDITS[0]
+    assert credit(p, 10_002) == REHEARSED_CREDITS[1]
+    assert 2 * sum(REHEARSED_CREDITS) == 50_008_715_286_000
+
+
+def test_the_rehearsed_weights_and_share_are_reproduced_exactly():
+    p = profile()
+    plan = lib.election_plan(p, external=2)
+    assert (plan["team_stake_tos"], plan["unit_stake_tos"]) == (15_002, 10_002)
+    assert (plan["team_credit_nanotos"], plan["unit_credit_nanotos"]) == REHEARSED_CREDITS
+    both, _ = elector_sets(p, 2)
+    weights = {m["label"].split("-")[0]: m["weight"] for m in both}
+    assert (weights["team"], weights["ext"]) == REHEARSED_WEIGHTS
+    assert round(plan["team_weight_percent"], 5) == 59.99826
+    # The earlier stake - 1 TOS model said 59.99920 %.
+    assert round(plan["team_weight_percent"], 5) != 59.9992
+
+
+def test_the_team_credit_never_exceeds_its_multiple_of_a_unit():
+    """The order rule keeps the team's credit at most multiple x a unit credit, for
+    any surplus the Elector adds: so ConfigParam 17's factor 10 never cuts it."""
+    p = profile()
+    unit = p["elections"]["stake_tos"]
+    for external in range(20):
+        multiple = lib.team_stake_multiple_rule(external)
+        stake = lib.team_stake_tos(multiple, unit)
+        for surplus in (0, 178_821_500, 999_999_999, 5 * NANO):
+            team = lib.elector_credit(stake * NANO, surplus)
+            assert team <= multiple * lib.elector_credit(unit * NANO, surplus)
+
+
+def test_a_stake_order_that_does_not_cover_the_fees_is_refused():
+    p = profile()
+    p["elections"]["pool_new_stake_cost_nanotos"] = 300_000_000
+    with pytest.raises(lib.TestnetError, match="does not cover"):
+        lib.election_plan(p, external=0)
+
+
 # ---------------------------------------------------------------- election limits
 
 
 def test_the_template_min_total_stake_would_stall_a_team_only_election():
     p = profile()
     p["genesis"]["stake_limits"]["min_total_stake_tos"] = 40000
-    # Two unit stakes of 10,001 TOS in the Elector: 20,002 < 40,000.
+    # Two unit stakes credited as 10,002.1788215 TOS each: 20,004.357643 < 40,000.
     with pytest.raises(lib.TestnetError, match="team pools alone .* below min_total_stake"):
         lib.election_plan(p, required=False)
-    # 20,002 is the most a floor may be with E = 0.
-    p["genesis"]["stake_limits"]["min_total_stake_tos"] = 20002
+    # 20,004 is the most a floor may be with E = 0.
+    p["genesis"]["stake_limits"]["min_total_stake_tos"] = 20004
     lib.election_plan(p, external=0)
-    p["genesis"]["stake_limits"]["min_total_stake_tos"] = 20003
+    p["genesis"]["stake_limits"]["min_total_stake_tos"] = 20005
     with pytest.raises(lib.TestnetError, match="below min_total_stake"):
         lib.election_plan(p, external=0)
 

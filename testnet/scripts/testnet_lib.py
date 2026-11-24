@@ -505,7 +505,7 @@ TOSCTL_MAX_FACTOR = Fraction(100)
 # tosctl's own default max factor, which external pools keep.
 TOSCTL_DEFAULT_MAX_FACTOR = Fraction(3)
 # The Elector keeps 1 TOS of every stake message for its confirmation
-# (elector-code.fc process_new_stake): a member stands with its order less this.
+# (elector-code.fc process_new_stake: msg_value -= 1000000000).
 ELECTOR_CONFIRMATION_NANOTOS = 10**9
 # The template's stake-limit ceilings: Tomi values are VarUInteger 16, max_factor
 # is a 16.16 fraction in 32 bits.
@@ -603,10 +603,35 @@ def team_stake_multiple_rule(external: int) -> Fraction:
 
 
 def team_stake_tos(multiple: Fraction, unit: int) -> int:
-    """The team pool's stake order in whole TOS: the Elector keeps 1 TOS of every
-    order, so a unit stands as unit - 1 TOS, and a team pool stands as `multiple`
-    such units, rounded down to whole TOS. The order is that plus the 1 TOS."""
+    """The team pool's stake order in whole TOS: multiple x (unit - 1) + 1, rounded
+    down. Whatever the Elector credits on top of an order (`elector_credit`), the
+    team pool's credit is then at most `multiple` unit credits:
+    multiple x (unit + c) - (multiple x (unit - 1) + 1 + c) = (multiple - 1)(1 + c)
+    >= 0. So at ConfigParam 17's max factor 10 a 10-unit team stake is never cut."""
     return int(multiple * (unit - 1)) + 1
+
+
+def elector_credit(stake_nanotos: int, surplus_nanotos: int) -> int:
+    """What the Elector records for a pool's stake order. tosctl sends the pool
+    stake_order_nanotos (ELECTOR_STAKE_FEE 1 TOS + NPOOL_COMPUTE_FEE 0.2 TOS) with
+    the stake amount in the body; the pool sends the stake to the Elector with send
+    mode 64, adding what is left of that 1.2 TOS after its own compute and
+    forwarding fees; process_new_stake keeps 1 TOS. `surplus_nanotos` is
+    stake_order_nanotos - pool_new_stake_cost_nanotos - 1 TOS."""
+    return stake_nanotos + surplus_nanotos
+
+
+def credit_surplus(profile: dict[str, Any]) -> int:
+    """elections.stake_order_nanotos less the pool's measured cost and the Elector's 1 TOS."""
+    e = profile.get("elections", {})
+    order = _whole(e.get("stake_order_nanotos"), "elections.stake_order_nanotos", 1)
+    cost = _whole(e.get("pool_new_stake_cost_nanotos"), "elections.pool_new_stake_cost_nanotos")
+    surplus = order - cost - ELECTOR_CONFIRMATION_NANOTOS
+    if surplus < 0:
+        raise TestnetError(
+            "elections.stake_order_nanotos does not cover the pool's cost and the Elector's 1 TOS"
+        )
+    return surplus
 
 
 def finalizes(weight: int, total: int) -> bool:
@@ -703,7 +728,11 @@ def election_plan(
     target = _whole(e.get("team_weight_percent"), "elections.team_weight_percent", 1)
     if target >= 100:
         raise TestnetError("elections.team_weight_percent must be below 100")
-    factor = (tosctl_max_factor(profile), tosctl_max_factor(profile, "external_max_factor"))
+    factor = (
+        tosctl_max_factor(profile),
+        tosctl_max_factor(profile, "external_max_factor"),
+        credit_surplus(profile),
+    )
     if factor[1] != TOSCTL_DEFAULT_MAX_FACTOR:
         raise TestnetError(
             f"profile elections.external_max_factor must be tosctl's default "
@@ -828,14 +857,15 @@ def _plan_for(
         + margin_total
         + fees
     )
-    team_factor, external_factor = factor
+    # `factor` is (team max factor, external max factor, the Elector's credit
+    # surplus over the stake amount).
+    team_factor, external_factor, surplus = factor
     team_f16 = int(team_factor * MAX_FACTOR_ONE)
     external_f16 = int(external_factor * MAX_FACTOR_ONE)
-    order = ELECTOR_CONFIRMATION_NANOTOS
-    team_members = [(f"team-{i}", team_stake * NANOTOS - order, team_f16) for i in range(team)]
-    external_members = [
-        (f"external-{i}", unit * NANOTOS - order, external_f16) for i in range(external)
-    ]
+    team_credit = elector_credit(team_stake * NANOTOS, surplus)
+    unit_credit = elector_credit(unit * NANOTOS, surplus)
+    team_members = [(f"team-{i}", team_credit, team_f16) for i in range(team)]
+    external_members = [(f"external-{i}", unit_credit, external_f16) for i in range(external)]
     alone, why = simulate_election(team_members, limits)
     if alone is None or len(alone) != team:
         raise TestnetError(
@@ -939,6 +969,8 @@ def _plan_for(
             "externals_online_needed_one_team_down": needed(team - 1),
         },
         "team_max_factor": max_factor_text(team_factor),
+        "team_credit_nanotos": team_credit,
+        "unit_credit_nanotos": unit_credit,
         "external_max_factor": max_factor_text(external_factor),
     }
 
