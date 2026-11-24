@@ -1370,7 +1370,7 @@ M += [
     (
         "P19 externals reaching two thirds with one team pool absent are accepted",
         LIB,
-        '    if one_team["elected"] and one_team["external_finalizes_alone"]:\n',
+        '    if one_team["concluded"] and one_team["external_finalizes_alone"]:\n',
         "    if False:\n",
     ),
     (
@@ -1396,6 +1396,12 @@ M += [
         LIB,
         "    return 3 * weight >= 2 * total\n",
         "    return 3 * weight > 2 * total\n",
+    ),
+    (
+        "P24 the one-team guard reads only a fully elected set",
+        LIB,
+        '    if one_team["concluded"] and one_team["external_finalizes_alone"]:\n',
+        '    if one_team["elected"] and one_team["external_finalizes_alone"]:\n',
     ),
 ]
 

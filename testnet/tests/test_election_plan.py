@@ -485,3 +485,32 @@ def test_the_patch_applies_to_the_canonical_template():
     changed = [(a, b) for a, b in zip(text.split("\n"), out.split("\n"), strict=True) if a != b]
     assert len(changed) == 5
     assert ("  } 4 times drop", "  } 2 times drop") in changed
+
+
+@pytest.mark.parametrize("external", range(0, 20))
+def test_both_team_pools_absent_is_reported(external):
+    """Not prevented by stakes: without both team pools the external validators
+    elect themselves from E = 2 and hold everything. Reported, not refused."""
+    case = lib.election_plan(profile(), external=external)["partial_sets"]["both_team_pools_absent"]
+    assert "runbook" in case["guarded_by"]
+    if external >= 2:
+        assert case["concluded"] and case["elected"]
+        assert case["external_finalizes_alone"] and case["team_weight_percent"] == 0
+    else:
+        assert not case["concluded"]  # fewer than min_validators
+
+
+def test_the_one_team_guard_applies_to_any_concluded_election(monkeypatch):
+    """The guard reads the one-team election whenever it concludes, even when the
+    Elector leaves some member out."""
+    real = lib._partial_election
+
+    def leaves_one_out(team_members, external_members, limits):
+        result = real(team_members, external_members, limits)
+        if len(team_members) == 1 and external_members:
+            result = dict(result, elected=False, external_finalizes_alone=True)
+        return result
+
+    monkeypatch.setattr(lib, "_partial_election", leaves_one_out)
+    with pytest.raises(lib.TestnetError, match="one team pool absent"):
+        lib.election_plan(profile(), external=3)

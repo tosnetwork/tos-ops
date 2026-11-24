@@ -538,6 +538,31 @@ reports, under `liveness`, how many external validators must be online:
   not: a pool whose node is not in sync stands with its weight and does not
   sign, and counts as offline in the numbers above until it is.
 
+**Both team pools absent from an election** is the one case the stakes do not
+cover. The hard invariant holds with either team pool absent, but if both team
+pools miss an election at E >= 2, the external validators elect themselves and
+hold all of the weight (the plan reports it as
+`partial_sets.both_team_pools_absent`). It is plausible: both team hosts run the
+same tosctl release and the same election configuration, so one fault can stop
+both stake orders. Runbook check, every election: once its window opens and
+before it closes (the window is `elections_start_before` to
+`elections_end_before` before the next term, T + 5 h to T + 5 h 45 min for the
+first), confirm that the Elector holds both team pools' stakes for that
+election, from a node the coordinator reads:
+
+```bash
+lite-client -C global-config.json -c 'runmethod -1:3333333333333333333333333333333333333333333333333333333333333333 participant_list'
+```
+
+Each entry is `[validator id, stake]`, the id printed as a decimal integer and
+the stake in nanotos (`python3 -c 'print(int("<hex id>", 16))'` converts a
+`genesis-set.json` id). Both team validator ids must be in the list, each with
+the team stake (`team_stake_tos` less 1 TOS). A missing team stake is an incident:
+check `journalctl -u tos-testnet-elections` on that team host, fix the election
+task and let it resubmit while the window is open; if the window closes without
+both, announce it and decide before the set takes office whether to continue.
+No monitor raises this today (see [Known limits](#known-limits)).
+
 A halt shows first as head age. `watch-testnet.py` (`--max-head-age`, default
 120 s) reports `ANOMALY <host>:head_age=...` and, with `--stuck-samples`, a head
 seqno that stops moving, and the alert relay forwards it; `check-testnet.py`
@@ -1289,6 +1314,11 @@ spending remains blocked. `reconcile` checks the same prefix without writing.
   set; the two-record December 5 set is packed by `testnet_lib.pack_manifest`
   alone, and the cross-check is the zero state's validator set, which `genesis`
   reads back and compares with `genesis-set.json`.
+- **No monitor checks the team stakes in an open election.** `watch-testnet.py`
+  samples the hosts (head age, units, disk), not the Elector, and no existing
+  watch reads an election's participants. The check that both team pools have
+  staked before each election closes is a manual runbook step
+  ([Liveness](#liveness-what-keeps-blocks-final)).
 - **`scripts/check-validator-keys.py` is the epoch-6 gate.** It pins epoch 6's
   zero state and checks for four signers; it does not apply to a two-validator
   genesis set and has not been generalized. Use `check-testnet.py

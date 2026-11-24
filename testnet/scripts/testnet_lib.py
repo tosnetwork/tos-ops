@@ -832,7 +832,8 @@ def _plan_for(
             "the weight and finalize without the team"
         )
     one_team = _partial_election(team_members[:-1], external_members, limits)
-    if one_team["elected"] and one_team["external_finalizes_alone"]:
+    # Whatever that election elects, if it concludes at all.
+    if one_team["concluded"] and one_team["external_finalizes_alone"]:
         raise TestnetError(
             f"with {external} external validators and one team pool absent the external "
             "validators would hold at least two thirds of the weight and finalize alone"
@@ -884,6 +885,14 @@ def _plan_for(
             ],
             "team_finalizes_alone_with_externals": alone,
             "one_team_pool_absent": one_team,
+            # Not prevented by stakes: if both team pools miss an election (both
+            # hosts run the same tosctl and election config), the external
+            # validators elect themselves and hold all of the weight from E = 2.
+            # The ceremony's runbook checks the Elector before each election closes.
+            "both_team_pools_absent": dict(
+                _partial_election([], external_members, limits),
+                guarded_by="runbook: confirm both team stakes in the Elector before close",
+            ),
         },
         "liveness": {
             "externals_online_needed_both_team_up": needed(team),
@@ -906,9 +915,10 @@ def _partial_election(team_members, external_members, limits) -> dict[str, Any]:
     each side's share and whether either side finalizes alone."""
     elected, why = simulate_election(team_members + external_members, limits)
     if elected is None:
-        return {"elected": False, "why": why}
+        return {"concluded": False, "elected": False, "why": why}
     team, others, total = side_weights(elected)
     return {
+        "concluded": True,
         "elected": len(elected) == len(team_members) + len(external_members),
         "team_weight_percent": float(Fraction(100 * team, total)),
         "team_finalizes_alone": finalizes(team, total),
