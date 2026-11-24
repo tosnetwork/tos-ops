@@ -42,7 +42,11 @@ Subcommands, in ceremony order:
       master-wallet-secret, V3R2, subwallet 42, workchain 0), and refuses any
       other master wallet. --require refuses unless it is configured.
 
-  onboard --name NAME --pool POOL --owner OWNER [--tos-root DIR] [--rpc URL] [--out FILE]
+  onboard --name NAME --pool=POOL --owner=OWNER [--tos-root DIR] [--rpc URL] [--out FILE]
+      POOL and OWNER are masterchain addresses, -1:<64 hex>; give them with `=`
+      (a separate token starting with "-" is otherwise taken for an option). A
+      space-separated -1: address after an option is joined to it before
+      parsing (testnet_lib.cli_argv), so both forms work here.
       As root, on the operator's own validator host, after the coordinator
       reports its steps done (testnet-elections.py onboard --no-host): every
       host-side step of election onboarding, each skipped when its result is
@@ -638,7 +642,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", type=Path, help="also write the summary here (new file)")
     p.set_defaults(func=cmd_onboard)
 
-    args = parser.parse_args(argv)
+    args = parser.parse_args(lib.cli_argv(argv))
     try:
         args.func(args)
     except lib.TestnetError as exc:

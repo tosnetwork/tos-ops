@@ -43,6 +43,9 @@ coordinator never logs in to your host.
 
 Run commands on your validator host unless the guide assigns them to the
 coordinator. Replace angle-bracket placeholders with values from your packet.
+Commands give a masterchain address as `--option=-1:<hex>`, with the `=`: a
+value starting with `-` is otherwise read as another option. The scripts also
+accept `--option -1:<hex>`, but tools outside them may not.
 Keep inventories, keys and generated records outside the source checkout.
 If a command refuses or a transaction times out, retain the error and
 coordinate read-only diagnosis before retrying. See [custody and operation
@@ -253,7 +256,7 @@ names is yours.
 ```bash
 sudo -u tos python3 /opt/tos-testnet/scripts/testnet-operator.py record \
   --db /var/lib/tos/validator --seed /var/lib/tos/validator/keys/pq-consensus.seed \
-  --validator-id <VALIDATOR_ID> --operator <OPERATOR_LABEL> \
+  --validator-id=<VALIDATOR_ID> --operator <OPERATOR_LABEL> \
   --address <PUBLIC_IPV4>:30001 --out /tmp/record.json
 ```
 
@@ -341,7 +344,7 @@ deployment.
 
 ```bash
 sudo python3 /opt/tos-testnet/scripts/testnet-operator.py onboard --name <NODE_NAME> \
-  --pool <POOL_ADDRESS> --owner <POOL_OWNER_ADDRESS> --out /tmp/onboard-<NODE_NAME>.json
+  --pool=<POOL_ADDRESS> --owner=<POOL_OWNER_ADDRESS> --out /tmp/onboard-<NODE_NAME>.json
 ```
 
 `<POOL_ADDRESS>` is `-1:<VALIDATOR_ID>`. In order, each step skipped when its

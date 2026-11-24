@@ -577,7 +577,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("dht_nodes", nargs="+")
     p.set_defaults(func=cmd_global_config)
 
-    args = parser.parse_args(argv)
+    args = parser.parse_args(lib.cli_argv(argv))
     try:
         args.func(args)
     except lib.TestnetError as exc:

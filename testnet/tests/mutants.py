@@ -1403,6 +1403,18 @@ M += [
         '    if one_team["concluded"] and one_team["external_finalizes_alone"]:\n',
         '    if one_team["elected"] and one_team["external_finalizes_alone"]:\n',
     ),
+    (
+        "P25 the printed operator command separates the addresses",
+        EL,
+        '        f"--pool={pool} --owner={owner}"\n',
+        '        f"--pool {pool} --owner {owner}"\n',
+    ),
+    (
+        "P26 a space-separated masterchain address is not joined",
+        LIB,
+        "            and HYPHEN_ADDRESS.match(argv[i + 1])\n",
+        "            and False\n",
+    ),
 ]
 
 

@@ -122,7 +122,7 @@ for i in $(seq 1 "$NODES"); do
   (umask 077; "$TOS_BIN/tos-pq-consensus-key" generate "$db/keys/pq-consensus.seed" >"$WORK/consensus-$i.txt")
   key_id=$(awk '$1 == "key_id" {print $2}' "$WORK/consensus-$i.txt")
   operator_wallet="-1:$(printf 'rehearsal-operator-%s' "$i" | sha256sum | cut -d' ' -f1)"
-  python3 "$EL" --profile "$PROFILE" pool --name "operator-$i" --operator "$operator_wallet" --ceremony "$WORK/ceremony" \
+  python3 "$EL" --profile "$PROFILE" pool --name "operator-$i" --operator="$operator_wallet" --ceremony "$WORK/ceremony" \
     --tos-root "$TOS_ROOT" --fift "$TOS_BUILD/crypto/fift" >"$WORK/pool-$i.json"
   validator_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["validator_id"])' \
     "$WORK/pool-$i.json")

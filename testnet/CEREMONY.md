@@ -283,7 +283,7 @@ directory that becomes the ceremony directory:
 
 ```bash
 python3 /opt/tos-testnet/scripts/testnet-elections.py pool --name <node-name> \
-  --operator <ADDRESS> --ceremony ./ceremony --tos-root "$TOS_ROOT" \
+  --operator=<ADDRESS> --ceremony ./ceremony --tos-root "$TOS_ROOT" \
   --fift "$TOS_ROOT/build/crypto/fift" \
   --previous-ceremony ../epoch-1/ceremony   # after a reset: once per earlier epoch
 ```
@@ -304,7 +304,7 @@ and no node is asked. Return the validator id to the operator.
 ```bash
 sudo -u tos python3 /opt/tos-testnet/scripts/testnet-operator.py record \
   --db /var/lib/tos/validator --seed /var/lib/tos/validator/keys/pq-consensus.seed \
-  --validator-id <VALIDATOR_ID> --operator <short-name> \
+  --validator-id=<VALIDATOR_ID> --operator <short-name> \
   --address <PUBLIC_IPV4>:30001 --out /tmp/record.json
 ```
 
@@ -781,7 +781,7 @@ python3 "$S" record "${C[@]}" --id ID --settled --hint TXHASH
 # Choose ONE evidence form a, b, c or d; hint is required where the form needs it.
 python3 "$S" record "${C[@]}" --id ID --failed b --hint TXHASH
 python3 "$S" resubmit "${C[@]}" --id ID                # the original message, never re-signed
-python3 "$S" baseline "${C[@]}" --wallet ADDR --reason TEXT
+python3 "$S" baseline "${C[@]}" --wallet=ADDR --reason TEXT
 ```
 
 What each command does:
@@ -845,7 +845,7 @@ validator address (`CHANGE_VALIDATOR_ADDRESS`); the pool, and with it the
 validator id, stays the same:
 
 ```bash
-python3 "$S" change-validator "${C[@]}" --name node-1 --id change-node-1-1 --new --to "$NEW" --dry-run
+python3 "$S" change-validator "${C[@]}" --name node-1 --id change-node-1-1 --new --to="$NEW" --dry-run
 # After approval, repeat without --dry-run. Restoring the operator wallet is
 # another id with --to set to it.
 ```
@@ -934,9 +934,9 @@ margin only, as an ordinary `fund` operation with its own fixed id:
 ```bash
 # C is the common ceremony / tools / --rpc / --confirm-rpc arguments above.
 python3 "$S" fund "${C[@]}" --id top-up-node-1-1 --label top-up-node-1-1 \
-  --to <RECORDED_OPERATOR_WALLET> --amount 5 --dry-run
+  --to=<RECORDED_OPERATOR_WALLET> --amount 5 --dry-run
 python3 "$S" fund "${C[@]}" --id top-up-node-1-1 --label top-up-node-1-1 \
-  --to <RECORDED_OPERATOR_WALLET> --amount 5
+  --to=<RECORDED_OPERATOR_WALLET> --amount 5
 ```
 
 **After the sweep** (and whenever it is the better source) the pool owner pays:

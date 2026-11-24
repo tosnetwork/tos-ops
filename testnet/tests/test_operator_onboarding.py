@@ -175,7 +175,7 @@ def test_one_hand_off_onboards_an_operator_run_host(external):
     assert b["host"].commands == []
     # The hand-off names the operator's exact command.
     assert (
-        f"testnet-operator.py onboard --name node-1 --pool {b['pool']} --owner {b['owner']}"
+        f"testnet-operator.py onboard --name node-1 --pool={b['pool']} --owner={b['owner']}"
         in message
     )
 

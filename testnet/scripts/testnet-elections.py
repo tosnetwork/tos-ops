@@ -2248,7 +2248,7 @@ def onboard_mode(args: argparse.Namespace) -> str:
 def operator_command(name: str, pool: str, owner: str) -> str:
     return (
         f"sudo python3 {vh.SCRIPTS}/testnet-operator.py onboard --name {name} "
-        f"--pool {pool} --owner {owner}"
+        f"--pool={pool} --owner={owner}"
     )
 
 
@@ -4104,7 +4104,7 @@ def main(argv: list[str] | None = None) -> int:
     p_load.add_argument(
         "--fee-stop", help="observed net fee stop in TOS; excludes still-in-flight costs"
     )
-    args = parser.parse_args(argv)
+    args = parser.parse_args(lib.cli_argv(argv))
     try:
         profile = lib.load_profile(args.profile)
         global_id = lib.confirmed_global_id(profile)

@@ -18,6 +18,7 @@ import os
 import re
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -91,6 +92,45 @@ MIN_FIRST_ELECTION_LEAD_SECONDS = 3600
 
 class TestnetError(Exception):
     """A refusal: the input is not what the ceremony or the operator expects."""
+
+
+# A raw address whose workchain is negative (-1:<64 hex>, the masterchain). argparse
+# reads a separate token that starts with "-" and is not a negative number as an
+# option, so `--pool -1:<hex>` fails with "expected one argument"; `--pool=-1:<hex>`
+# works. Printed and documented commands use the `=` form.
+HYPHEN_ADDRESS = re.compile(r"^-[0-9]+:[0-9A-Fa-f]{64}$")
+
+
+def join_address_values(argv: list[str]) -> list[str]:
+    """argv with every `--opt -1:<hex>` pair joined into `--opt=-1:<hex>`.
+
+    Only a long option without its own `=` followed by a token that is exactly a
+    raw negative-workchain address is joined. No option name and no other value
+    has that shape, and argparse refuses such a token wherever it stands, so the
+    join changes nothing argparse would have accepted."""
+    out: list[str] = []
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if (
+            token.startswith("--")
+            and len(token) > 2
+            and "=" not in token
+            and i + 1 < len(argv)
+            and HYPHEN_ADDRESS.match(argv[i + 1])
+        ):
+            out.append(f"{token}={argv[i + 1]}")
+            i += 2
+            continue
+        out.append(token)
+        i += 1
+    return out
+
+
+def cli_argv(argv: list[str] | None) -> list[str]:
+    """The arguments a script's main() parses: `argv`, or the process's own, with
+    space-separated masterchain addresses joined to their options."""
+    return join_address_values(list(sys.argv[1:] if argv is None else argv))
 
 
 # ---------------------------------------------------------------- profile

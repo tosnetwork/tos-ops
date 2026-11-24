@@ -73,7 +73,7 @@ PUBLIC_IPV4='<YOUR_VPS_PUBLIC_IPV4>'
 sudo -u tos python3 /opt/tos-testnet/scripts/testnet-operator.py record \
   --db /var/lib/tos/validator \
   --seed /var/lib/tos/validator/keys/pq-consensus.seed \
-  --validator-id "$VALIDATOR_ID" --operator "$OPERATOR_LABEL" \
+  --validator-id="$VALIDATOR_ID" --operator "$OPERATOR_LABEL" \
   --address "$PUBLIC_IPV4:30001" --out /tmp/record.json
 ```
 
@@ -87,7 +87,7 @@ Send **`/tmp/record.json`** to the coordinator and confirm receipt and validatio
 
    ```bash
    sudo python3 /opt/tos-testnet/scripts/testnet-operator.py onboard --name <YOUR_NODE_NAME> \
-     --pool <POOL_ADDRESS> --owner <POOL_OWNER_ADDRESS> --out /tmp/onboard-<YOUR_NODE_NAME>.json
+     --pool=<POOL_ADDRESS> --owner=<POOL_OWNER_ADDRESS> --out /tmp/onboard-<YOUR_NODE_NAME>.json
    ```
 
    Send `/tmp/onboard-<YOUR_NODE_NAME>.json` to the coordinator, who checks the result on chain. The election service submits the pool's stake during the window. [Election onboarding and wallet balance check](OPERATOR.md#6-onboard-for-elections)
