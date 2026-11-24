@@ -129,7 +129,9 @@ sudo sysctl --system
 A node asks for a 16 MiB receive buffer on its UDP sockets and is granted at most
 `net.core.rmem_max`. The Linux default is 212,992 bytes, about two hundred datagrams.
 At that default a local 21-validator test at 300 transfers per second dropped several
-million datagrams in the kernel per run; at 32 MiB it dropped none. A socket keeps the
+million datagrams in the kernel per run; at 32 MiB three runs dropped 0, 633 and 9,532.
+Latency did not change, so this guards against silent loss; it is not a performance
+setting. A socket keeps the
 buffer it was created with, so restart the node after changing the limit.
 
 Check it on a running host: the receive buffer of the node's UDP sockets is `rb` in
