@@ -2,9 +2,45 @@
 """Check hosts before a node is prepared on them, and prove they can reach each other.
 
   preflight.py --inventory hosts.json [--json] [--accept-new-host-keys] [--install-tools]
+  preflight.py --local --name NAME --role ROLE [--role ROLE] --public-ip IPV4
+               [--waive CHECK=REASON]...
+               [--listen-seconds N --expect-from SENDER[@IPV4]...] [--out FILE] [--json]
+  preflight.py --send-probes --name SENDER --to IPV4 --role ROLE [--role ROLE]
 
-Run it from the coordinator's machine. It logs in to every host over SSH and
-changes nothing there (unless --install-tools installs a missing tcpdump).
+The inventory mode runs on the coordinator's machine for hosts the team operates.
+It logs in to every host over SSH and changes nothing there (unless
+--install-tools installs a missing tcpdump).
+
+--local is the same per-host check run by an operator, as root, on their own
+host: nobody else logs in to it. It reads the same facts with the same script and
+judges them against the same profile floors. It prints the report and, with --out,
+writes it as JSON (public facts only) for the operator to send to the
+coordinator. A floor waiver is the coordinator's recorded decision, passed as
+--waive CHECK=REASON, with the same rules as an inventory waiver. The waiver is
+self-attested in the report: the coordinator compares the report's `waive`
+entries with its own record and rejects any other. `passed` means no FAIL among
+the checks that were not waived.
+
+Provider ingress cannot be proven from inside one host. In --local mode the udp
+check is therefore one of:
+  --listen-seconds N   capture on the role's UDP ports for N seconds, on the
+                       interface of the IPv4 default route (not `any`, which
+                       also sees loopback), while a different machine runs
+                       --send-probes to this host's public address. Every
+                       --expect-from SENDER must be seen on every role port, or
+                       that port FAILs. A probe whose source is a loopback
+                       address or an address of this host is not counted, nor,
+                       with SENDER@IPV4, one from any other source. The sender
+                       can be any machine the operator controls, or the
+                       coordinator's own machine: sending packets to a public
+                       port needs no access to the host.
+  (neither)            a WARN saying ingress is unproven. It then stays unproven
+                       until the node validates: syncing shows that the node
+                       reaches the network, not that the network reaches it (a
+                       provider group that admits only replies lets a node sync
+                       and still miss its duties).
+--send-probes sends the probes from wherever it runs; it reads and changes
+nothing.
 
 Per host, against network/profile.json `host_requirements`:
   ssh       the host answers as the inventory user
@@ -54,7 +90,9 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import json
+import os
 import re
+import socket
 import subprocess
 import sys
 import threading
@@ -88,6 +126,8 @@ echo "mem_kib=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
 d=/var/lib; [ -d /var/lib/tos ] && d=/var/lib/tos
 echo "disk_free_kib=$(df -Pk "$d" | awk 'NR==2 {print $4}')"
 echo "ipv4=$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | tr '\n' ' ')"
+echo "ipv4_all=$(ip -4 -o addr show | awk '{print $4}' | cut -d/ -f1 | tr '\n' ' ')"
+echo "default_dev=$(ip -4 route show default 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "dev") {print $(i + 1); exit}}')"
 echo "ntp=$(timedatectl show -p NTPSynchronized --value 2>/dev/null)"
 # The kernel flag alone can stay "yes" while the daemon has no server at all (seen with ntpsec
 # preferring unreachable IPv6 servers), so also count the daemon's selected source.
@@ -365,12 +405,43 @@ def evaluate_host(host: Host, facts: dict[str, str], profile: dict) -> list[Resu
 # ---------------------------------------------------------------- UDP reachability
 
 
-def capture_command(ports: list[int], seconds: int) -> str:
+INTERFACE = re.compile(r"[A-Za-z0-9_.:@-]{1,32}")
+
+
+def capture_command(ports: list[int], seconds: int, interface: str = "any") -> str:
+    if not INTERFACE.fullmatch(interface):
+        raise lib.TestnetError(f"not an interface name: {interface!r}")
     port_expr = " or ".join(f"dst port {p}" for p in ports)
     return (
-        f"timeout {seconds} tcpdump -n -l -A -i any "
+        f"timeout {seconds} tcpdump -n -l -A -i {interface} "
         f"'udp and ({port_expr}) and {PROBE_MAGIC_BPF}' 2>/dev/null; true"
     )
+
+
+# A tcpdump -n header line: "... IP <src>.<sport> > <dst>.<dport>: UDP, length N".
+CAPTURE_HEADER = re.compile(
+    r"\bIP (\d{1,3}(?:\.\d{1,3}){3})\.\d+ > (\d{1,3}(?:\.\d{1,3}){3})\.(\d+): UDP"
+)
+PROBE_PAYLOAD = re.compile(r"PROB:([A-Za-z0-9_.-]+):(\d+)")
+
+
+def received_probes_with_source(capture: str) -> set[tuple[str, int, str | None]]:
+    """(sender, port, source address) of each probe in a tcpdump -n -A capture: the
+    payload is attributed to the packet header printed before it (None if none). A
+    payload naming another port than the header's destination port is not a probe
+    of that port and is dropped."""
+    found = set()
+    source, destination_port = None, None
+    for line in capture.splitlines():
+        header = CAPTURE_HEADER.search(line)
+        if header:
+            source, destination_port = header.group(1), int(header.group(3))
+        for m in PROBE_PAYLOAD.finditer(line):
+            port = int(m.group(2))
+            if destination_port is not None and port != destination_port:
+                continue
+            found.add((m.group(1), port, source))
+    return found
 
 
 def probe_command(sender: str, targets: list[tuple[str, int]]) -> str:
@@ -490,6 +561,204 @@ def run_preflight(
     return results
 
 
+# ---------------------------------------------------------------- operator-local mode
+
+# A host or sender name as it appears in a probe payload (received_probes matches it).
+NAME = re.compile(r"[A-Za-z0-9_.-]{1,40}")
+LOCAL_REPORT_VERSION = "tos-testnet.preflight-local.v1"
+SEND_SECONDS = 30
+
+
+def local_runner(host: Host, command: str, timeout: int) -> subprocess.CompletedProcess:
+    """The same read-only facts script, run on this machine instead of over SSH."""
+    return subprocess.run(["bash", "-c", command], capture_output=True, text=True, timeout=timeout)
+
+
+def check_name(name: str, what: str) -> str:
+    if not NAME.fullmatch(name or ""):
+        raise lib.TestnetError(f"{what} must be 1-40 letters, digits, dots, dashes or underscores")
+    return name
+
+
+def check_roles(roles: list[str]) -> list[str]:
+    if not roles or any(r not in ROLES for r in roles):
+        raise lib.TestnetError(f"--role must be one or more of {ROLES}")
+    return [r for r in ROLES if r in roles]
+
+
+def parse_waive_flags(values: list[str], name: str) -> dict[str, str]:
+    """--waive CHECK=REASON flags, held to the inventory's waiver rules."""
+    waive: dict[str, str] = {}
+    for value in values:
+        check, sep, reason = value.partition("=")
+        check = check.strip()
+        if not sep:
+            raise lib.TestnetError(f"--waive takes CHECK=REASON, not {value!r}")
+        if check in waive:
+            raise lib.TestnetError(f"--waive names {check} twice")
+        waive[check] = reason
+    return load_waivers({"name": name, "waive": waive})
+
+
+def local_host(name: str, roles: list[str], public_ip: str, waive: dict[str, str]) -> Host:
+    try:
+        address = str(ipaddress.IPv4Address(public_ip))
+    except ValueError as exc:
+        raise lib.TestnetError(f"--public-ip must be an IPv4 address: {public_ip!r}") from exc
+    return Host(
+        name=check_name(name, "--name"),
+        address=address,
+        roles=check_roles(roles),
+        ssh_user="",
+        waive=waive,
+    )
+
+
+def parse_expect_from(value: str) -> tuple[str, str | None]:
+    """--expect-from SENDER or SENDER@IPV4: the probe's name and, optionally, the only
+    source address its packets may come from."""
+    name, sep, address = value.partition("@")
+    check_name(name, "--expect-from")
+    if not sep:
+        return name, None
+    try:
+        return name, str(ipaddress.IPv4Address(address))
+    except ValueError as exc:
+        raise lib.TestnetError(f"--expect-from {value!r}: not an IPv4 address") from exc
+
+
+def probe_refusal(source: str | None, local: set[str], expected: str | None) -> str | None:
+    """Why a captured probe does not prove ingress from another machine (None if it does)."""
+    if source is None:
+        return "no packet header before the payload"
+    if ipaddress.IPv4Address(source).is_loopback:
+        return "sent over loopback"
+    if source in local:
+        return "sent from an address of this host"
+    if expected is not None and source != expected:
+        return f"not from {expected}"
+    return None
+
+
+def check_listen(
+    host: Host,
+    profile: dict,
+    seconds: int,
+    expect_from: list[tuple[str, str | None]],
+    run: Runner,
+    facts: dict[str, str],
+) -> list[Result]:
+    """Capture probes on every role port, on the default-route interface (never `any`,
+    which also sees this host's own loopback traffic); each expected sender must
+    reach each port from another machine's address."""
+    ports = role_udp_ports(host.roles, profile)
+    interface = facts.get("default_dev", "")
+    if not interface:
+        return [Result(host.name, "udp", "FAIL", "no IPv4 default route to capture on")]
+    proc = run(host, capture_command(ports, seconds, interface), seconds + 20)
+    local = {host.address, *facts.get("ipv4", "").split(), *facts.get("ipv4_all", "").split()}
+    expected_ip = dict(expect_from)
+    accepted: set[tuple[str, int]] = set()
+    refused: set[str] = set()
+    for sender, port, source in received_probes_with_source(proc.stdout):
+        why = probe_refusal(source, local, expected_ip.get(sender))
+        if why:
+            refused.add(f"{sender} from {source}: {why}")
+        else:
+            accepted.add((sender, port))
+    names = [name for name, _ in expect_from]
+    out = []
+    for port in ports:
+        seen = sorted({sender for sender, p in accepted if p == port})
+        missing = [s for s in names if (s, port) not in accepted]
+        if missing:
+            detail = (
+                f"UDP {port} on {interface} not reached from {missing} (seen: {seen}): dropped "
+                "before the host (provider security group, ACL or routing), or the sender did "
+                "not run"
+            )
+        else:
+            detail = f"UDP {port} on {interface} reached from {names}"
+        if refused:
+            detail += f"; not counted: {sorted(refused)}"
+        out.append(Result(host.name, f"udp:{port}", "FAIL" if missing else "PASS", detail))
+    return out
+
+
+def run_local(
+    host: Host,
+    profile: dict,
+    run: Runner,
+    listen_seconds: int = 0,
+    expect_from: list[tuple[str, str | None]] | None = None,
+) -> list[Result]:
+    """Every per-host check, read on this machine; nothing is changed or installed."""
+    expect_from = list(expect_from or [])
+    try:
+        proc = run(host, FACTS_SCRIPT, 60)
+    except subprocess.TimeoutExpired:
+        return [Result(host.name, "facts", "FAIL", "the facts script timed out")]
+    if proc.returncode != 0 and not proc.stdout:
+        return [Result(host.name, "facts", "FAIL", (proc.stderr.strip() or "no output")[:200])]
+    facts = parse_facts(proc.stdout)
+    results = [Result(host.name, "facts", "PASS", "read on this host, no remote login")]
+    results.extend(evaluate_host(host, facts, profile))
+    if not listen_seconds:
+        results.append(
+            Result(
+                host.name,
+                "udp",
+                "WARN",
+                "provider ingress not tested: rerun with --listen-seconds while a different "
+                "machine runs --send-probes to this address",
+            )
+        )
+    elif not facts.get("tcpdump"):
+        results.append(
+            Result(host.name, "udp", "FAIL", "tcpdump is missing: apt-get install tcpdump")
+        )
+    else:
+        results.extend(check_listen(host, profile, listen_seconds, expect_from, run, facts))
+    return results
+
+
+def local_report(host: Host, profile: dict, results: list[Result]) -> dict:
+    """The JSON the operator sends to the coordinator: public facts only."""
+    counts = {s: sum(r.status == s for r in results) for s in ("PASS", "WARN", "WAIVED", "FAIL")}
+    return {
+        "version": LOCAL_REPORT_VERSION,
+        "network": profile.get("network"),
+        "name": host.name,
+        "public_ip": host.address,
+        "roles": host.roles,
+        "floor": role_floor(host.roles, profile),
+        "udp_ports": role_udp_ports(host.roles, profile),
+        "waive": host.waive,
+        "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "results": [asdict(r) for r in results],
+        "counts": counts,
+        "passed": counts["FAIL"] == 0,
+    }
+
+
+def send_probes(
+    sender: str,
+    targets: list[tuple[str, int]],
+    seconds: int = SEND_SECONDS,
+    make_socket=socket.socket,
+    sleep=time.sleep,
+) -> int:
+    """UDP probes to every target once a second for `seconds`; returns how many were sent."""
+    sent = 0
+    with make_socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        for _ in range(max(1, seconds)):
+            for address, port in targets:
+                sock.sendto(f"PROB:{sender}:{port}".encode(), (address, port))
+                sent += 1
+            sleep(1)
+    return sent
+
+
 def report(results: list[Result]) -> str:
     order = {"FAIL": 0, "WAIVED": 1, "WARN": 2, "PASS": 3}
     lines = []
@@ -507,7 +776,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--inventory", type=Path, required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--inventory", type=Path, help="team hosts, checked over SSH")
+    mode.add_argument("--local", action="store_true", help="this host, checked by its operator")
+    mode.add_argument(
+        "--send-probes", action="store_true", help="send UDP probes to --to from this machine"
+    )
     parser.add_argument("--profile", type=Path, default=lib.PROFILE_PATH)
     parser.add_argument("--json", action="store_true", help="print results as JSON")
     parser.add_argument(
@@ -518,9 +792,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--install-tools", action="store_true", help="install tcpdump where it is missing"
     )
+    parser.add_argument("--name", help="--local: this host's node name; --send-probes: sender")
+    parser.add_argument("--role", action="append", default=[], help="--local, --send-probes")
+    parser.add_argument("--public-ip", help="--local: the IPv4 address the node announces")
+    parser.add_argument("--waive", action="append", default=[], help="--local: CHECK=REASON")
+    parser.add_argument("--listen-seconds", type=int, default=0, help="--local: capture probes")
+    parser.add_argument(
+        "--expect-from", action="append", default=[], help="--local: a sender that must reach us"
+    )
+    parser.add_argument("--out", type=Path, help="--local: write the JSON report here (new file)")
+    parser.add_argument("--to", help="--send-probes: the target's public IPv4 address")
+    parser.add_argument("--seconds", type=int, default=SEND_SECONDS, help="--send-probes")
     args = parser.parse_args(argv)
     try:
         profile = lib.load_profile(args.profile)
+        if args.local:
+            return main_local(args, profile)
+        if args.send_probes:
+            return main_send(args, profile)
         hosts = load_inventory(args.inventory)
     except (lib.TestnetError, KeyError, ValueError) as exc:
         print(f"refused: {exc}", file=sys.stderr)
@@ -533,6 +822,51 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(report(results))
     return 1 if any(r.status == "FAIL" for r in results) else 0
+
+
+def main_local(args: argparse.Namespace, profile: dict, run: Runner | None = None) -> int:
+    """--local: refusals raise TestnetError (exit 2); a failed check exits 1."""
+    run = run or local_runner
+    if os.geteuid() != 0:
+        raise lib.TestnetError("run --local as root: ufw and the port owners are read as root")
+    if args.listen_seconds < 0 or args.listen_seconds > 600:
+        raise lib.TestnetError("--listen-seconds must be between 0 and 600")
+    expect_from = [parse_expect_from(s) for s in args.expect_from]
+    if args.listen_seconds and not expect_from:
+        raise lib.TestnetError("--listen-seconds needs at least one --expect-from SENDER")
+    if expect_from and not args.listen_seconds:
+        raise lib.TestnetError("--expect-from needs --listen-seconds")
+    host = local_host(
+        args.name or "", args.role, args.public_ip or "", parse_waive_flags(args.waive, args.name)
+    )
+    if args.out is not None and (args.out.exists() or args.out.is_symlink()):
+        raise lib.TestnetError(f"{args.out} already exists; reports are never overwritten")
+    results = run_local(host, profile, run, args.listen_seconds, expect_from)
+    document = local_report(host, profile, results)
+    if args.out is not None:
+        lib.write_new_json(args.out, document)
+    if args.json:
+        print(json.dumps(document, indent=2))
+    else:
+        print(report(results))
+        if args.out is not None:
+            print(f"wrote {args.out}: send it to the coordinator")
+    return 0 if document["passed"] else 1
+
+
+def main_send(args: argparse.Namespace, profile: dict, send=None) -> int:
+    send = send or send_probes
+    sender = check_name(args.name or "", "--name")
+    try:
+        target = str(ipaddress.IPv4Address(args.to or ""))
+    except ValueError as exc:
+        raise lib.TestnetError(f"--to must be an IPv4 address: {args.to!r}") from exc
+    if not 1 <= args.seconds <= 600:
+        raise lib.TestnetError("--seconds must be between 1 and 600")
+    ports = role_udp_ports(check_roles(args.role), profile)
+    count = send(sender, [(target, p) for p in ports], args.seconds)
+    print(f"sent {count} probes as {sender} to {target} on UDP {ports}")
+    return 0
 
 
 if __name__ == "__main__":

@@ -96,12 +96,16 @@ def certificate_digest(value: dict) -> str:
 
 # config-propose and config-vote (testnet-governance.py) send to the Config contract,
 # change-validator to a pool; they settle only when a getter shows the effect (the
-# caller's expect check).
+# caller's expect check). owner-deploy-pool is the pool deployment of an
+# operator-run host, sent with the pool's StateInit from the offline owner; like
+# the host's deploy-pool it settles only when the pool reads deployed with its
+# pinned code and roles.
 COORDINATOR_KINDS = (
     "fund",
     "owner-fund",
     "sweep",
     "activate-owner",
+    "owner-deploy-pool",
     "principal",
     "withdraw",
     "change-validator",
@@ -1908,6 +1912,34 @@ class Operations:
                     predecessor=newest,
                     reason=reason,
                 ),
+            )
+            return self.journal.record(successor)
+
+    def successor_with(self, step: str, params: dict, reason: str, from_kinds: tuple) -> dict:
+        """A new attempt of a failed step with other parameters (retry keeps them).
+
+        Only for a step whose newest attempt is failed and of one of `from_kinds`:
+        the replacement of an operator-wallet pool deployment by the owner's, for
+        a host that is no longer reached over SSH. Same conventions as retry: one
+        complete append under the journal lock, naming its predecessor and reason."""
+        if not reason.strip():
+            raise OperationRefused("a successor needs a reason")
+        if params.get("kind") not in KINDS:
+            raise OperationRefused(f"unknown operation kind {params.get('kind')}")
+        with self.journal.lock(params.get("wallet")):
+            attempts = self.journal.attempts(step)
+            if not attempts:
+                raise OperationRefused(f"step {step} has no attempt")
+            n, newest = attempts[-1]
+            record = self.journal.record(newest)
+            if state_of(record) != "failed" or record.get("kind") not in from_kinds:
+                raise OperationRefused(
+                    f"the newest attempt {newest} is {state_of(record)} of kind "
+                    f"{record.get('kind')}; only a failed {from_kinds} attempt is succeeded"
+                )
+            successor = attempt_id(step, n + 1)
+            self.journal.append(
+                successor, dict(params, state="planned", predecessor=newest, reason=reason)
             )
             return self.journal.record(successor)
 
