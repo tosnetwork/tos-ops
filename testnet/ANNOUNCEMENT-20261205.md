@@ -12,7 +12,17 @@ We invite external operators to run a validator from genesis in the next TOS pub
 | December 5, 2026 | Public testnet starts |
 | December 19, 2026 | Public testnet ends |
 
-**Testing duration: 14 days. Reward: 1,000 TOS per qualified participant.** The team will communicate qualification and claim details. The coordinator will confirm the exact launch time and first election window during preparation.
+**Testing duration: 14 days (December 5–19, 2026).** The coordinator will confirm the precise start/end times and first election window during December 1–4. All dates are Japan Standard Time (JST, UTC+9).
+
+## Registration, launch and reward conditions
+
+**Pre-launch recruitment threshold (November 30).** At least **five distinct independent external validator applicants** must register by the November 30 deadline and be confirmed as credible candidates. The TOS organizer, team-controlled nodes and duplicate accounts operated by the same person do not count. **If fewer than five qualify by the deadline, this public test campaign will not proceed, and no validator-participation or recruitment rewards will be paid under this campaign.** Five applications are a minimum recruitment gate, not proof of test success or a guarantee of launch; technical and safety readiness must also be confirmed.
+
+**External-participation success threshold.** The technical milestone requires **at least five independent external operators** to successfully synchronize nodes, have their stakes accepted by the Elector, enter an elected validator set, and actually perform validation duties during an elected term. One operator counts once regardless of how many VPS instances, wallets, pools, or validators they operate. The coordinator verifies the results against chain records and supporting operational evidence. See the [external participation milestone](#external-participation-milestone).
+
+**Individual reward is a separate determination.** The announced reward is **1,000 mainnet TOS per qualified individual**, paid **after the mainnet launch**, and not paid in testnet tokens. Registering, preparing hardware, or appearing in an election does not automatically qualify anyone. Individual eligibility requires approved onboarding, participation during the assigned **14-day test**, acceptable node uptime and synchronization, completion of requested tests, and supporting evidence/feedback. The team will publish the exact uptime threshold, acceptance method, exceptions and claim instructions **before testing begins on December 5**. Until those rules and the individual's results are verified, individual reward qualification is pending. A person running multiple nodes cannot claim more than one participation reward. The collective success threshold does not by itself determine anyone's individual reward outcome.
+
+**Costs and key safety.** No TOS purchase or mainnet deposit is required. Participants cover their own VPS and networking costs unless separately agreed. Never send the coordinator, support staff, or other participants your mnemonic, consensus seed, wallet private key or vault credentials.
 
 ## Start here
 
@@ -26,8 +36,8 @@ You can start with a zero-balance wallet. The coordinator allocates testnet TOS 
 
 ## Register and prepare your VPS
 
-1. Apply through the original recruitment channel or contact the team member who invited you. Share your operator name, time zone, availability during preparation and launch, and your VPS's operating system, CPU architecture, CPU count, memory and free disk space. Ask for help if you have never prepared a Linux server. The coordinator will confirm your seat before genesis.
-2. Use a dedicated VPS with Ubuntu 24.04, sudo access, access to the provider console, and a public IPv4 address or approved UDP forwarding. The current validator preflight requires at least **4 vCPUs, 11 GiB of OS-visible memory and 60 GiB of free disk space**. Check the hardware SHA-256 requirements. If you use arm64, confirm the supported build or release artifact with the coordinator before proceeding. [CPU requirements](https://github.com/tosnetwork/tos/blob/main/doc/Validator.md#cpu-instruction-set)
+1. Apply through the original recruitment channel or contact the team member who invited you. The official Discord entry is https://discord.tos.network. Share your operator name, time zone, availability during preparation and launch, and your VPS's operating system, CPU architecture, CPU count, memory and free disk space. Never submit passwords or private keys. Ask for help if you have never prepared a Linux server. The coordinator will confirm your seat before genesis.
+2. Use a dedicated VPS with Ubuntu 24.04, sudo access, provider console access, and a public IPv4 address or approved UDP forwarding. **Recruitment requirement: 8 vCPUs or more, 12 GB RAM or more (at least 11 GiB OS-visible memory), and an SSD/NVMe with at least 60 GiB free.** Allow capacity for database growth, logs and snapshots (100 GB or larger total storage recommended), with at least 10 Mbps symmetric bandwidth. The current automated CPU preflight floor is still **4 vCPUs**, but passing it alone does **not** meet this campaign's 8 vCPU recruitment minimum. Hardware SHA-256 acceleration is required. If you use arm64, confirm the supported build or release artifact with the coordinator before proceeding. [CPU requirements](https://github.com/tosnetwork/tos/blob/main/doc/Validator.md#cpu-instruction-set)
 3. During December 1–4, get your node name, operator label, pinned `tos` and `tos-ops` commits, and preflight instructions from the coordinator. Install the pinned operations bundle, synchronize the system clock, and prepare the validator and `tosctl` using the operator guide. Allow inbound UDP 30001 and 31001 in both the provider and host firewalls. Keep console TCP 30002 closed to public traffic, and keep RPC 8081 and metrics 9100 on loopback. Arrange any required SSH access directly with the coordinator. Share public keys and access details through the agreed channel, and keep private keys and passwords private. [Host preparation and installation commands](OPERATOR.md#2-host-requirements-clock-and-preflight)
 
 ## Create your first operator wallet
@@ -78,12 +88,19 @@ If you contact the team after genesis, ask about running an observer node. The c
 
 ## External participation milestone
 
-To declare the external validator test successful, at least **five independent
-external operators**, excluding the TOS organizer, must each run their own
-validator, synchronize it, have their stake accepted, and take up duties in
-an elected validator set. Count distinct operators, with one count per
-operator across all their nodes. The coordinator will verify each operator's
-pool against the election records and the active set for the relevant term.
+**This is a collective technical acceptance gate, distinct from the individual 1,000 TOS reward decision.** A successful external-validator test requires **at least five independent external operators**. The TOS organizer and core-team-controlled validators do not count. Different accounts, machines, public IPs and pools do not necessarily represent different operators; one person controlling multiple nodes counts once. The coordinator must also confirm genuine operational independence through an appropriate operator-side check, since chain records alone cannot prove who controls a machine.
+
+For **each counted operator**, the coordinator must retain evidence of all five steps:
+
+1. **Independent onboarding:** one distinct external operator controls the validator host and consensus key, with a verified public staking pool and validator ID. No private keys are collected.
+2. **Node synchronization:** the validator joined the correct testnet and its recent block identity agrees with independently checked reference nodes.
+3. **Accepted stake:** the Elector accepted that pool's stake in an identified election. Mere funding or submission is not sufficient.
+4. **Election and actual duties:** the pool entered the active elected validator set and the validator actually performed duties during that elected term. Being a candidate or merely appearing in a proposed set is not sufficient.
+5. **Recorded verification:** the coordinator cross-checks the election and active-set/key-block records with available term-participation evidence, timestamps the outcome, and marks it PASS, FAIL or PENDING. Missing evidence stays PENDING, not PASS.
+
+The team may declare this external-participation milestone **successful only when at least five different external operators have verified PASS results**. Publish the count and verification basis without disclosing private keys or unrelated private operator information.
+
+**Readiness dependency:** the existing operations profile was built for a four-validator genesis. Before promising a five-external-operator launch, the coordinator must validate sufficient genesis seats, staking funds, election and onboarding capacity, and successful multi-operator rehearsal. A four-seat genesis cannot by itself satisfy this milestone.
 
 ## Test plan for each election cycle
 
