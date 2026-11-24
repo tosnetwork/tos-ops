@@ -114,7 +114,7 @@ For **each counted operator**, the coordinator must retain evidence of all five 
 4. **Election and actual duties:** the pool entered the active elected validator set and the validator actually performed duties during that elected term. Being a candidate or merely appearing in a proposed set is not sufficient.
 5. **Recorded verification:** the coordinator cross-checks the election and active-set/key-block records with available term-participation evidence, timestamps the outcome, and marks it PASS, FAIL or PENDING. Missing evidence stays PENDING, not PASS.
 
-The team may declare this external-participation milestone **successful only when at least five different external operators have verified PASS results**. The team publishes the count and verification basis without disclosing private keys or unrelated private operator information. Genesis has at most 18 seats for external operators; the coordinator confirms each seat before genesis.
+The team may declare this external-participation milestone **successful only when at least five different external operators have verified PASS results**. The team publishes the count and verification basis without disclosing private keys or unrelated private operator information. Genesis has at most 19 seats for external operators; the coordinator confirms each seat before genesis.
 
 ## Test plan for each election cycle
 
