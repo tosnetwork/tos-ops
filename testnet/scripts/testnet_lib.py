@@ -621,10 +621,20 @@ def elector_credit(stake_nanotos: int, surplus_nanotos: int) -> int:
     return stake_nanotos + surplus_nanotos
 
 
+# The single-nominator pool refuses a NEW_STAKE order carrying less than this
+# (single-nominator-code.fc MIN_TOS_FOR_SEND_MSG, ERROR::INSUFFICIENT_ELECTOR_FEE).
+POOL_MIN_STAKE_ORDER_NANOTOS = 1_200_000_000
+
+
 def credit_surplus(profile: dict[str, Any]) -> int:
     """elections.stake_order_nanotos less the pool's measured cost and the Elector's 1 TOS."""
     e = profile.get("elections", {})
     order = _whole(e.get("stake_order_nanotos"), "elections.stake_order_nanotos", 1)
+    if order < POOL_MIN_STAKE_ORDER_NANOTOS:
+        raise TestnetError(
+            f"elections.stake_order_nanotos {order} is below the {POOL_MIN_STAKE_ORDER_NANOTOS} "
+            "nanotos the single-nominator pool requires of a NEW_STAKE order"
+        )
     cost = _whole(e.get("pool_new_stake_cost_nanotos"), "elections.pool_new_stake_cost_nanotos")
     surplus = order - cost - ELECTOR_CONFIRMATION_NANOTOS
     if surplus < 0:
