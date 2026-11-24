@@ -1,24 +1,46 @@
 # Testnet validator operator guide
 
-This is the **operator-side** runbook for the supplied Ubuntu 24.04 x86_64
-installation, not a mainnet procedure. [CEREMONY.md](CEREMONY.md) is the
-coordinator's authoritative signing and genesis sequence; this guide adds host
-checks, custody, maintenance and incident response without duplicating that
-sequence. Read [agent safety rules](../AGENTS.md#hard-safety-rules) first.
+[2026-12-05 public testnet genesis and validator invitation](ANNOUNCEMENT-20261205.md)
 
-Commands with `<PLACEHOLDERS>` need approved values; never paste them unchanged.
-Run host commands on the validator host and coordinator commands on the
-coordinator. Keep all real inventories, keys, receipts and ceremony directories
-outside this checkout. Any refusal means stop, retain evidence and ask the
-coordinator. Never loosen a check to continue.
+Use this guide to run your own validator in a coordinated public testnet
+ceremony. You need a dedicated Ubuntu 24.04 host you administer and a place in
+the testnet's genesis validator set. The coordinator handles genesis, staking
+funds and election onboarding. You administer the host and hold its consensus
+key and operator wallet.
+
+## Start here
+
+1. **Ask for the onboarding packet.** Get the epoch and launch time in UTC,
+   the full `tos` and `tos-ops` commits, the approved hardware and build path,
+   your node name and operator label, the staking and fee funding arrangement,
+   and a coordinator contact. Before activation, get the public genesis files
+   and global config, its SHA-256 over a separate authenticated channel, and
+   the expected zero-state root and file hashes.
+2. **Confirm your route.** For a new genesis, reserve a seat with the
+   coordinator and follow sections 1–7 in order. For an epoch already running,
+   ask whether your pool is in its genesis records. The supplied
+   `testnet-elections.py onboard` requires that entry. If you are a new
+   participant in a running epoch, you can [run an observer](#a-new-full-node-from-a-published-snapshot)
+   with the coordinator's full-node instructions while waiting for a genesis
+   seat or a reviewed procedure for live admission.
+3. **Check each milestone.** A prepared node has a public identity. An
+   activated node runs and synchronizes. An accepted stake is recorded by the
+   Elector. A validator has duties once its pool appears in the active set
+   during that set's term. Use the checks below to tell which step you reached.
+
+Run commands on your validator host unless the guide assigns them to the
+coordinator. Replace angle-bracket placeholders with values from your packet.
+Keep inventories, keys and generated records outside the source checkout.
+If a command refuses or a transaction times out, retain the error and
+coordinate read-only diagnosis before retrying. See [custody and operation
+rules](../AGENTS.md#hard-safety-rules).
 
 ## 1. Agree the network and responsibilities
 
 **Prerequisites:** the coordinator supplies the full 40-character tos commit,
 approved profile, epoch/zero-state identity, operator label, authenticated public
 artifacts and contact/alert channel. Record these outside the repository.
-The documented reference build is tos `85c679c3454f306eb867e25b1960ae3d757bd3dd`;
-the ceremony's approved revision takes precedence and must match on every host.
+Use the revisions from the packet on every host.
 
 - **Operator:** provides host and SSH public access details, prepares it, retains
   the consensus seed, supplies the authenticated public record, and keeps it live.
@@ -52,8 +74,22 @@ MemTotal, 60 GiB free** on Ubuntu 24.04. These are installation floors, not a
 production capacity guarantee. See [profile](network/profile.json) and
 [hardware proposal](../production/Hardware-and-Hosting.md).
 
-1. Install the reviewed `testnet/` bundle at `/opt/tos-testnet`, owned by root,
-   readable by service accounts. Do not put it in a private home directory.
+1. On a fresh host, install the pinned operations bundle. Ask the coordinator
+   to review any existing installation before replacing it.
+
+   ```bash
+   sudo apt-get update
+   sudo apt-get install -y git ca-certificates
+   git clone https://github.com/tosnetwork/tos-ops.git "$HOME/tos-ops"
+   OPS_COMMIT='<APPROVED_TOS_OPS_COMMIT>'
+   git -C "$HOME/tos-ops" checkout --detach "$OPS_COMMIT"
+   git -C "$HOME/tos-ops" rev-parse HEAD
+   sudo install -d -m 0755 /opt/tos-testnet
+   sudo cp -a "$HOME/tos-ops/testnet/." /opt/tos-testnet/
+   sudo chown -R root:root /opt/tos-testnet
+   ```
+
+   Compare the printed commit with your packet before using the bundle. Run the commands in order and stop on any error.
 2. With approval, set time on the host:
 
    ```bash
@@ -82,11 +118,12 @@ production capacity guarantee. See [profile](network/profile.json) and
 ## 3. Build the pinned binaries and prepare
 
 **Operator, after approval:** set the full ceremony commit, then build on this
-host; no binaries copied from a different CPU. The testnet keeps these host
-builds; only production installs from tos GitHub releases with `fetch-release.py`:
+host. Use this recipe on the documented x86_64 build path. For arm64, get the
+approved revision and hardware-SHA-capable artifact instructions from the
+coordinator before preparing the host. See [CPU requirements](https://github.com/tosnetwork/tos/blob/main/doc/Validator.md#cpu-instruction-set).
 
 ```bash
-TOS_COMMIT=<FULL_40_CHARACTER_COMMIT>
+TOS_COMMIT='<FULL_40_CHARACTER_COMMIT>'
 sudo /opt/tos-testnet/scripts/build-node-binaries.sh --rev "$TOS_COMMIT" --role validator
 sudo /opt/tos-testnet/scripts/build-tosctl.sh --rev "$TOS_COMMIT"
 sudo /opt/tos-testnet/scripts/install-node.sh prepare --role validator \
@@ -159,12 +196,20 @@ id that is not a recorded pool.
 ## 5. Activate and verify custody and synchronization
 
 **Prerequisites:** coordinator published complete ceremony artifacts, authenticated
-global-config SHA-256 and epoch, and verified your record. With explicit approval:
+global-config SHA-256 and epoch, and verified your record. Use the directory
+containing `genesis.json`, `zerostate.boc`, `basestate0.boc` and their published
+file hashes. For a fresh genesis identity whose key has never signed, verify
+the config digest and activate with explicit approval:
 
 ```bash
+GLOBAL_CONFIG='<GLOBAL_CONFIG_JSON>'
+CONFIG_SHA256='<PUBLISHED_SHA256>'
+GENESIS_DIR='<PUBLISHED_GENESIS_DIRECTORY>'
+VALIDATOR_ID='<VALIDATOR_ID>'
+printf '%s  %s\n' "$CONFIG_SHA256" "$GLOBAL_CONFIG" | sha256sum --check
 sudo /opt/tos-testnet/scripts/install-node.sh activate --role validator \
-  --global-config <GLOBAL_CONFIG_JSON> --sha256 <PUBLISHED_SHA256> \
-  --genesis <PUBLISHED_GENESIS_DIRECTORY> --validator-id <VALIDATOR_ID>
+  --global-config "$GLOBAL_CONFIG" --sha256 "$CONFIG_SHA256" \
+  --genesis "$GENESIS_DIR" --genesis-ceremony --validator-id "$VALIDATOR_ID"
 systemctl is-active tos-testnet-validator
 sudo journalctl -u tos-testnet-validator -n 100 --no-pager
 sudo sh -c 'grep "post-quantum consensus custody" /var/log/tos/validator/node.log*'
@@ -175,9 +220,13 @@ exact key id/window.
 The installer binds the seed while stopped, configures the console (30002/tcp, closed by the host firewall), installs
 and verifies the template, and starts the node. It refuses different installed
 config content or a mismatched digest. Investigate rather than replace it silently.
-Before the announced epoch, height zero can be expected; afterward ask the
-coordinator to run [the two-node live check](CEREMONY.md#7-coordinator-the-chain-is-live).
-An active unit alone does not prove sync or correct custody.
+Before the announced epoch, height zero can be expected. Follow the local
+head check in section 7 and ask the coordinator to run the [two-node live
+check](CEREMONY.md#7-coordinator-the-chain-is-live) with your node as one of the
+sources. Require agreement on zero state, a common recent block ID and
+AUTH policy before elections. Use `--genesis-ceremony` only when the
+coordinator's instructions call for initializing a fresh genesis signing
+ledger.
 
 ### A new full node from a published snapshot
 
@@ -250,6 +299,42 @@ sudo journalctl -u tos-testnet-elections --since '-1 hour' --no-pager
 sudo journalctl -u tos-testnet-validator --since '-1 hour' --no-pager
 df -h /var/lib/tos
 ```
+
+Read your local chain head twice, several seconds apart:
+
+```bash
+curl -fsS --max-time 5 http://127.0.0.1:8081/ \
+  -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"getMasterchainInfo","params":{}}' \
+  | python3 -m json.tool
+systemctl show tos-testnet-validator -p NRestarts -p MemoryCurrent
+```
+
+Look for `result.last.seqno` advancing and `result.init` matching the packet's
+zero state. A JSON-RPC `error`, missing result, or a head that stays behind the
+coordinator's reference calls for investigation. For an actively advancing
+but delayed node, ask the coordinator for the head age from the cross-node
+check. Keep RPC on loopback. Use this table at each election and handover:
+
+| Step | Evidence to check |
+| --- | --- |
+| Election task healthy | The service is active and its journal has recent activity. Investigate repeated errors or low wallet balance before the next window. |
+| Stake accepted | The coordinator confirms your pool and stake in the Elector for the intended election ID. |
+| Duty started | The coordinator confirms your pool in current ConfigParam 34 with the expected term and an expiry in the future. ConfigParam 36 describes the next set when published. |
+| Duty ended or renewed | Confirm the new term and the old stake's recovery when due. Report a stale term even if blocks keep advancing. |
+
+Agree with the coordinator who watches head freshness, set expiry, missed
+stakes, balance, disk and service failures between your manual checks.
+Confirm the alert channel reaches a person. To follow both services while
+diagnosing a problem, run the command below and press Ctrl+C to exit the log
+viewer.
+
+```bash
+sudo journalctl -f -u tos-testnet-validator -u tos-testnet-elections
+```
+When reporting a fault, provide
+UTC time, epoch, host label, public pool ID, last head, service status and
+relevant sanitized log lines.
 
 Check head and head age, process memory/restarts, disk and growth, net failures,
 peer/transport timeout logs, accepted stakes and the operator wallet balance from §6.
@@ -448,7 +533,7 @@ come after them, the full node's first.
 <!-- testnet/tests/test_rpc_role.py runs this block's install-node.sh lines, in
      this order, on a fake host; keep them runnable. -->
 ```bash
-TOS_COMMIT=<FULL_40_CHARACTER_COMMIT>
+TOS_COMMIT='<FULL_40_CHARACTER_COMMIT>'
 sudo /opt/tos-testnet/scripts/build-node-binaries.sh --rev "$TOS_COMMIT" --role rpc
 REL=/var/lib/tos-build/release-$TOS_COMMIT
 sudo /opt/tos-testnet/scripts/install-node.sh prepare --role fullnode \

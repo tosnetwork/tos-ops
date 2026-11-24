@@ -1,5 +1,7 @@
 # tos-ops
 
+[2026-12-05 public testnet genesis and validator invitation](testnet/ANNOUNCEMENT-20261205.md)
+
 Operations tools and runbooks for TOS networks: host preparation, installation,
 activation and retirement; the genesis ceremony; staking pools, journaled
 funding, validator onboarding and withdrawals; monitoring, alerting and
@@ -11,7 +13,7 @@ node code, binaries or Python modules locate a separate **tos** checkout through
 belong outside the repository.
 
 **Agent entry point:** [AGENTS.md](AGENTS.md). **Validator operators:**
-[testnet/OPERATOR.md](testnet/OPERATOR.md).
+[Join and monitor a public testnet validator](testnet/OPERATOR.md#start-here).
 
 **Start here:** [network bring-up](testnet/CEREMONY.md) ·
 [onboarding](testnet/CEREMONY.md#81-onboarding-a-genesis-validator-for-elections) ·
