@@ -105,6 +105,7 @@ binding and a new account, not an in-place edit.
 | `tos-ctl` | Non-login elections account; owns `/var/lib/tos-ctl` (0700) |
 | `/etc/tos/global-config.json` | Public authenticated network config |
 | `/etc/tos/tosctl.env` | Root-only (0600) vault environment; never display |
+| `/etc/sysctl.d/90-udp-receive-buffer.conf` | Kernel UDP receive buffer limit, see below |
 | `/usr/local/bin` | Verified executables |
 
 Every host `tosctl` command runs as `tos-ctl`, including configuration writes.
@@ -114,6 +115,28 @@ Testnet's [operator guide](../testnet/OPERATOR.md#6-onboard-for-elections) shows
 safe invocation wrapper. Production installation must preserve these boundaries.
 `/usr/local/bin/tosctl` itself comes from the release, not from a Rust
 toolchain on the host: see [section 10.2](#102-tosctl).
+
+### 4.1 Kernel UDP receive buffer
+
+Every host that runs a node raises the kernel's UDP receive buffer limit before the
+node first starts:
+
+```bash
+printf 'net.core.rmem_max = 33554432\n' | sudo tee /etc/sysctl.d/90-udp-receive-buffer.conf
+sudo sysctl --system
+```
+
+A node asks for a 16 MiB receive buffer on its UDP sockets and is granted at most
+`net.core.rmem_max`. The Linux default is 212,992 bytes, about two hundred datagrams.
+At that default a local 21-validator test at 300 transfers per second dropped several
+million datagrams in the kernel per run; at 32 MiB three runs dropped 0, 633 and 9,532.
+Latency did not change, so this guards against silent loss; it is not a performance
+setting. A socket keeps the
+buffer it was created with, so restart the node after changing the limit.
+
+Check it on a running host: the receive buffer of the node's UDP sockets is `rb` in
+`ss -u -l -n -m -p`, and `RcvbufErrors` on the second `Udp:` line of `/proc/net/snmp`
+should not grow.
 
 ## 5. First start and binding the validator
 
