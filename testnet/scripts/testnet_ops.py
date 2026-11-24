@@ -1915,6 +1915,34 @@ class Operations:
             )
             return self.journal.record(successor)
 
+    def successor_with(self, step: str, params: dict, reason: str, from_kinds: tuple) -> dict:
+        """A new attempt of a failed step with other parameters (retry keeps them).
+
+        Only for a step whose newest attempt is failed and of one of `from_kinds`:
+        the replacement of an operator-wallet pool deployment by the owner's, for
+        a host that is no longer reached over SSH. Same conventions as retry: one
+        complete append under the journal lock, naming its predecessor and reason."""
+        if not reason.strip():
+            raise OperationRefused("a successor needs a reason")
+        if params.get("kind") not in KINDS:
+            raise OperationRefused(f"unknown operation kind {params.get('kind')}")
+        with self.journal.lock(params.get("wallet")):
+            attempts = self.journal.attempts(step)
+            if not attempts:
+                raise OperationRefused(f"step {step} has no attempt")
+            n, newest = attempts[-1]
+            record = self.journal.record(newest)
+            if state_of(record) != "failed" or record.get("kind") not in from_kinds:
+                raise OperationRefused(
+                    f"the newest attempt {newest} is {state_of(record)} of kind "
+                    f"{record.get('kind')}; only a failed {from_kinds} attempt is succeeded"
+                )
+            successor = attempt_id(step, n + 1)
+            self.journal.append(
+                successor, dict(params, state="planned", predecessor=newest, reason=reason)
+            )
+            return self.journal.record(successor)
+
     # -- settlement
 
     def wallet_attempts(self, record: dict) -> list[dict]:

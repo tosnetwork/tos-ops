@@ -130,21 +130,27 @@ production capacity guarantee. See [profile](network/profile.json) and
    holds those ports. Expected: no FAIL. Fix every FAIL and rerun with a new
    `--out` file. Send the JSON report to the coordinator. If the coordinator
    recorded a floor waiver for this host, pass it exactly as given:
-   `--waive memory="<REASON>"`.
+   `--waive memory="<REASON>"`. A waiver in your report is only your claim: the
+   coordinator compares the report's `waive` entries with its own recorded
+   decision and rejects a report with any other. `passed` in the report means
+   no FAIL among the checks that were not waived.
 
    The `udp` line is a WARN until provider ingress is proven, because a host
    cannot prove it from the inside. Prove it before activation if you can:
    install tcpdump (`sudo apt-get install -y tcpdump`), start a listener here,
-   and send probes from a second machine you control, or ask the coordinator
-   to send them from its own machine (it needs only your public address, never
-   access):
+   and send probes **from a different machine**: one you control, or the
+   coordinator's own machine (it needs only your public address, never
+   access). Probes sent from this host itself never count: the listener
+   captures on the default-route interface and ignores loopback and this
+   host's own addresses. Name the sender's public address with
+   `--expect-from <SENDER_NAME>@<SENDER_IPV4>` to count only its probes:
 
    ```bash
    # On this host (captures for 120 s):
    sudo python3 /opt/tos-testnet/scripts/preflight.py --local --name <NODE_NAME> \
      --role validator --public-ip <PUBLIC_IPV4> --listen-seconds 120 \
-     --expect-from <SENDER_NAME> --out /tmp/preflight-udp-<NODE_NAME>.json
-   # On the other machine, from a tos-ops checkout at the same commit, within those 120 s:
+     --expect-from <SENDER_NAME>@<SENDER_IPV4> --out /tmp/preflight-udp-<NODE_NAME>.json
+   # On the different machine, from a tos-ops checkout at the same commit, within those 120 s:
    python3 testnet/scripts/preflight.py --send-probes --name <SENDER_NAME> \
      --to <PUBLIC_IPV4> --role validator
    ```
@@ -315,9 +321,9 @@ deployment.
 |---|-----|------|-----------|-----------------------|
 | 1 | Coordinator | `testnet-elections.py onboard --no-host` ([§8.1](CEREMONY.md#81-onboarding-a-genesis-validator-for-elections)): fee money to your operator wallet, the pool owner's funding and activation, the pool's deployment from the owner, the stake principal | each step's prerequisite on chain on two of its own nodes | — |
 | 2 | Coordinator | stops with exit status 3 and sends you your exact command, pool and owner | the pool deployed with two stakes | you check the pool on your own node (step 3) |
-| 3 | Operator | `testnet-operator.py onboard` on your host (below) | the pool active, its validator role your wallet, two stakes in it, fee money in your wallet | — |
+| 3 | Operator | `testnet-operator.py onboard` on your host (below) | the pool active with the pinned code, its owner and validator roles as given, two stakes in it, fee money in your wallet | — |
 | 4 | Operator | sends the printed JSON summary | — | the coordinator reads the chain, not the summary |
-| 5 | Coordinator | the same `onboard --no-host` again | your operator wallet active with fee money, the pool unchanged | done; the stake is proven by the Elector at the next election |
+| 5 | Coordinator | the same `onboard --no-host` again | your operator wallet active with fee money, the pool unchanged | its own steps are done; your node's binding and election task stay **unverified** until the pool's stake appears in the Elector at the next election |
 
 **Operator, on your host**, after the coordinator's hand-off (step 3):
 
@@ -331,18 +337,23 @@ result is already there, so a rerun changes nothing:
 
 1. `init-operator.sh --name <NODE_NAME>` completes `tos-ctl` (console key, node
    registration, tosctl's master wallet) and prints the operator wallet;
-2. it reads the pool from your own node and refuses unless it is active, its
-   validator role is your operator wallet, its owner is `--owner`, and it holds
-   two stakes above its reserve. Before the coordinator's step 2 this refuses
-   with "has not deployed it yet" or "has not sent the principal yet"; nothing
-   is changed, rerun it later;
+2. it reads the pool from your own node and refuses unless it is active, runs
+   the pinned single-nominator code (the hash of
+   `crypto/smartcont/single-nominator-pool/single-nominator-code.hex` in the
+   tos checkout `build-tosctl.sh` used, `/var/lib/tos-build/tos`, or
+   `--tos-root`; the same file the coordinator pins), its validator role is
+   your operator wallet, its owner is `--owner` (required), and it holds two
+   stakes above its reserve. Before the coordinator's step 2 this refuses with
+   "has not deployed it yet" or "has not sent the principal yet"; past step 1
+   nothing is changed, rerun it later;
 3. it activates the operator wallet (`tosctl wallet activate`: the wallet
    deploys itself from the fee money; nothing else is sent), refusing while the
    wallet holds no fee money;
 4. `tosctl config pool add` and `config bind add` for `pool-<NODE_NAME>`;
 5. the node's latest `post-quantum consensus custody` line must name the pool;
 6. `enable-elections.sh --name <NODE_NAME>` installs and starts the election
-   task, unless it is already running (a rerun never restarts it).
+   task, unless it is already running (a rerun never restarts it); it refuses
+   unless `tos-testnet-elections` is active at the end.
 
 A refusal names what is missing. A pool whose validator role is not your wallet
 means the pool was derived from another wallet: tell the coordinator; do not

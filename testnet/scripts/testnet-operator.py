@@ -42,7 +42,7 @@ Subcommands, in ceremony order:
       master-wallet-secret, V3R2, subwallet 42, workchain 0), and refuses any
       other master wallet. --require refuses unless it is configured.
 
-  onboard --name NAME --pool POOL [--owner OWNER] [--rpc URL] [--out FILE]
+  onboard --name NAME --pool POOL --owner OWNER [--tos-root DIR] [--rpc URL] [--out FILE]
       As root, on the operator's own validator host, after the coordinator
       reports its steps done (testnet-elections.py onboard --no-host): every
       host-side step of election onboarding, each skipped when its result is
@@ -50,9 +50,12 @@ Subcommands, in ceremony order:
         1. init-operator.sh --name NAME (console key, node registration,
            tosctl's master wallet, the operator wallet op-NAME);
         2. reads POOL from this host's own node (loopback JSON-RPC, or --rpc):
-           refuses unless it is active, its validator role is op-NAME, its
-           owner role is --owner when given, and it holds two stakes
-           (elections.stake_tos) above its storage reserve;
+           refuses unless it is active, runs the pinned single-nominator code
+           (crypto/smartcont/single-nominator-pool/single-nominator-code.hex
+           in --tos-root, default /var/lib/tos-build/tos, the same file the
+           coordinator pins), its validator role is op-NAME, its owner role
+           is --owner, and it holds two stakes (elections.stake_tos) above
+           its storage reserve;
         3. activates op-NAME (`tosctl wallet activate`: the wallet deploys
            itself from the fee money the coordinator sent; nothing else is
            sent) unless it is active, refusing while it holds no fee money;
@@ -60,7 +63,8 @@ Subcommands, in ceremony order:
         5. the node's latest `post-quantum consensus custody` line must name
            POOL as its validator id;
         6. enable-elections.sh --name NAME, unless the election task is
-           already running (a rerun does not restart it).
+           already running (a rerun does not restart it); refuses unless the
+           unit is active at the end.
       Prints a JSON summary of public facts (written to --out too) to send to
       the coordinator, who checks the result on chain.
 
@@ -70,6 +74,7 @@ Nothing here generates or reads a wallet key.
 from __future__ import annotations
 
 import argparse
+import base64
 import ipaddress
 import json
 import os
@@ -417,6 +422,22 @@ ELECTIONS_UNIT = "tos-testnet-elections.service"
 # What the pool keeps for storage (MIN_TOS_FOR_STORAGE in single-nominator-code.fc).
 POOL_STORAGE_NANOTOS = NANO
 WAIT_ACTIVE_SECONDS = 120
+# The pinned single-nominator code (the coordinator derives and checks the pool from
+# the same file), in the tos checkout build-tosctl.sh built this host's tosctl from.
+SINGLE_NOMINATOR_CODE = Path("crypto/smartcont/single-nominator-pool/single-nominator-code.hex")
+DEFAULT_TOS_ROOT = Path("/var/lib/tos-build/tos")
+
+
+def pinned_pool_code_hash(tos_root: Path) -> bytes:
+    path = Path(tos_root) / SINGLE_NOMINATOR_CODE
+    try:
+        text = path.read_text().strip()
+    except OSError as exc:
+        raise lib.TestnetError(
+            f"cannot read the pinned pool code {path}: pass --tos-root, the tos checkout "
+            "at the ceremony commit"
+        ) from exc
+    return lib.parse_boc(bytes.fromhex(text)).hash()
 
 
 class NodeReader:
@@ -434,6 +455,12 @@ class NodeReader:
         result = self.rpc(self.url, "runGetMethod", address=address, method="get_roles", stack=[])
         return vh.decode_pool_roles(result, address)
 
+    def code_hash(self, address: str) -> bytes | None:
+        """The representation hash of the account's code (None without code)."""
+        info = self.rpc(self.url, "getAddressInformation", address=address)
+        code = info.get("code") or ""
+        return lib.parse_boc(base64.b64decode(code)).hash() if code else None
+
 
 def onboard_host(args: argparse.Namespace, host, reader, profile: dict, sleep=time.sleep) -> dict:
     """The host-side onboarding steps, in order, each decided by what is already there."""
@@ -443,7 +470,10 @@ def onboard_host(args: argparse.Namespace, host, reader, profile: dict, sleep=ti
     pool = lib.check_raw_address(args.pool)
     if not pool.startswith("-1:"):
         raise lib.TestnetError(f"the pool {pool} is not in the masterchain")
-    expected_owner = lib.check_raw_address(args.owner) if args.owner else None
+    if not args.owner:
+        raise lib.TestnetError("--owner is required: the pool owner the coordinator named")
+    expected_owner = lib.check_raw_address(args.owner)
+    pinned_code = pinned_pool_code_hash(getattr(args, "tos_root", None) or DEFAULT_TOS_ROOT)
     stake = int(profile["elections"]["stake_tos"]) * NANO
 
     def step(text: str) -> None:
@@ -462,13 +492,19 @@ def onboard_host(args: argparse.Namespace, host, reader, profile: dict, sleep=ti
             f"the pool is {pool_state} on this node: the coordinator has not deployed it yet, or "
             "this node is not synchronized; rerun after the coordinator's hand-off"
         )
+    code_hash = reader.code_hash(pool)
+    if code_hash != pinned_code:
+        raise lib.TestnetError(
+            f"the pool runs code {code_hash.hex() if code_hash else None}, not the pinned "
+            f"single-nominator code {pinned_code.hex()}: tell the coordinator (nothing was changed)"
+        )
     owner, validator = reader.pool_roles(pool)
     if validator != wallet:
         raise lib.TestnetError(
             f"the pool's validator role is {validator}, not this host's op-{name} {wallet}: "
             "this host cannot stake for it; tell the coordinator (nothing was changed)"
         )
-    if expected_owner is not None and owner != expected_owner:
+    if owner != expected_owner:
         raise lib.TestnetError(f"the pool's owner is {owner}, not {expected_owner}")
     if pool_balance - POOL_STORAGE_NANOTOS < 2 * stake:
         raise lib.TestnetError(
@@ -510,6 +546,11 @@ def onboard_host(args: argparse.Namespace, host, reader, profile: dict, sleep=ti
     else:
         print(host.run(f"{vh.SCRIPTS}/enable-elections.sh --name {shlex.quote(name)}"), end="")
         unit = host.run(f"systemctl is-active {ELECTIONS_UNIT} || true").strip()
+    if unit != "active":
+        raise lib.TestnetError(
+            f"{ELECTIONS_UNIT} is {unit or 'unknown'} after enable-elections.sh; check "
+            f"`journalctl -u {ELECTIONS_UNIT}` and rerun"
+        )
     return {
         "name": name,
         "operator_wallet": wallet,
@@ -584,7 +625,15 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("onboard")
     p.add_argument("--name", required=True, help="the node name (op-NAME, pool-NAME)")
     p.add_argument("--pool", required=True, help="the pool (validator id) as -1:<64 hex>")
-    p.add_argument("--owner", help="the pool owner the coordinator named, checked on chain")
+    p.add_argument(
+        "--owner", required=True, help="the pool owner the coordinator named, checked on chain"
+    )
+    p.add_argument(
+        "--tos-root",
+        type=Path,
+        default=DEFAULT_TOS_ROOT,
+        help="the tos checkout at the ceremony commit (for the pinned pool code)",
+    )
     p.add_argument("--rpc", help="this node's JSON-RPC (default: the loopback listener)")
     p.add_argument("--out", type=Path, help="also write the summary here (new file)")
     p.set_defaults(func=cmd_onboard)

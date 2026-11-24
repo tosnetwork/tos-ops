@@ -10,6 +10,9 @@ test_elections.py.
 import argparse
 import importlib.util
 import json
+import os
+import re
+import subprocess
 import sys
 
 import fakechain
@@ -46,7 +49,14 @@ def coordinator(b):
 
 
 def operator_args(b, **extra):
-    fields = {"name": "node-1", "pool": b["pool"], "owner": b["owner"], "rpc": None, "out": None}
+    fields = {
+        "name": "node-1",
+        "pool": b["pool"],
+        "owner": b["owner"],
+        "rpc": None,
+        "out": None,
+        "tos_root": b["tos"],
+    }
     fields.update(extra)
     return argparse.Namespace(**fields)
 
@@ -72,14 +82,71 @@ def external(boarding, monkeypatch):  # noqa: F811 (the imported fixture)
         raise AssertionError("the operator-run path constructed an SSH Host")
 
     monkeypatch.setattr(elections, "Host", no_host)
-    real_run = elections.subprocess.run
-
-    def no_ssh(argv, *args, **kwargs):
-        assert not (isinstance(argv, list) and argv and argv[0] == "ssh"), argv
-        return real_run(argv, *args, **kwargs)
-
-    monkeypatch.setattr(elections.subprocess, "run", no_ssh)
+    refuse_remote_shells(monkeypatch)
     return boarding
+
+
+REMOTE_TOOLS = ("ssh", "scp", "sftp")
+# A remote tool named as a word of a shell string: "ssh host", "x; /usr/bin/scp f h:".
+REMOTE_IN_SHELL = re.compile(r"(?:^|[\s;|&(/])(?:ssh|scp|sftp)(?:\s|$)")
+
+
+def names_remote_tool(command) -> bool:
+    if isinstance(command, (bytes, str, os.PathLike)):
+        text = os.fsdecode(command)
+        return os.path.basename(text) in REMOTE_TOOLS or bool(REMOTE_IN_SHELL.search(text))
+    parts = [os.fsdecode(c) for c in command if isinstance(c, (bytes, str, os.PathLike))]
+    return any(
+        os.path.basename(part) in REMOTE_TOOLS or REMOTE_IN_SHELL.search(part) for part in parts
+    )
+
+
+def refuse_remote_shells(monkeypatch):
+    """Every way this process could start ssh, scp or sftp fails the test instead:
+    subprocess (run, call, check_output and Popen all go through Popen),
+    os.system, and the os.exec* / os.spawn* / os.posix_spawn* families."""
+    real_popen = subprocess.Popen
+
+    class GuardedPopen(real_popen):
+        def __init__(self, args, *rest, **kwargs):
+            assert not names_remote_tool(args), f"the operator-run path ran {args!r}"
+            super().__init__(args, *rest, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", GuardedPopen)
+
+    def guard(name):
+        real = getattr(os, name)
+
+        def call(*args, **kwargs):
+            # exec*/spawn*/posix_spawn*: (mode,) path, argv, ...; system: the command.
+            for arg in args:
+                if isinstance(arg, (str, bytes, os.PathLike, list, tuple)):
+                    assert not names_remote_tool(arg), f"the operator-run path ran {args!r}"
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(os, name, call)
+
+    for name in dir(os):
+        if name == "system" or re.fullmatch(r"(exec|spawn)[lv]p?e?|posix_spawnp?", name):
+            guard(name)
+
+
+def test_the_remote_shell_guard_refuses_every_spelling(monkeypatch):
+    refuse_remote_shells(monkeypatch)
+    for attempt in (
+        lambda: subprocess.run(["ssh", "-V"]),
+        lambda: subprocess.run(["/usr/bin/ssh", "-V"]),
+        lambda: subprocess.Popen(["/usr/bin/scp", "a", "b:"]),
+        lambda: subprocess.run("true; /usr/bin/ssh -V", shell=True),
+        lambda: subprocess.check_output(["bash", "-c", "sftp host"]),
+        lambda: os.system("ssh -V"),
+        lambda: os.execv("/usr/bin/ssh", ["ssh", "-V"]),
+        lambda: os.spawnv(os.P_WAIT, "/usr/bin/ssh", ["ssh", "-V"]),
+        lambda: os.posix_spawn("/usr/bin/ssh", ["ssh", "-V"], {}),
+    ):
+        with pytest.raises(AssertionError, match="operator-run path ran"):
+            attempt()
+    assert subprocess.run(["true"]).returncode == 0
 
 
 def coordinator_until_hand_off(b):
@@ -123,6 +190,9 @@ def test_one_hand_off_onboards_an_operator_run_host(external):
     done = coordinator(b)
     assert done["operator_state"] == "active"
     assert done["pool_nanotos"] == (E["pool_deploy_tos"] + E["pool_tos"]) * NANO
+    # The host's binding and election task are not on chain before an election.
+    assert done["host_binding_and_election_task"] == "UNVERIFIED"
+    assert "Elector" in done["next"]
     assert len(chain.sent) == len(ALL_STEPS) + 1
 
 
@@ -347,7 +417,7 @@ def test_the_operator_script_checks_its_arguments(external, extra, message):
 
 def test_the_operator_command_needs_root(monkeypatch, capsys):
     monkeypatch.setattr(operator_tool.os, "geteuid", lambda: 1000)
-    argv = ["onboard", "--name", "node-1", "--pool", "-1:" + "5c" * 32]
+    argv = ["onboard", "--name", "node-1", "--pool", "-1:" + "5c" * 32, "--owner", HOST_WALLET]
     assert operator_tool.main(argv) == 1
     assert "as root" in capsys.readouterr().err
 
@@ -387,3 +457,227 @@ def test_local_host_reports_a_failed_command():
 
     with pytest.raises(lib.TestnetError, match="boom"):
         elections.vh.LocalHost(run).run("false")
+
+
+def test_the_operator_command_needs_the_owner(capsys):
+    argv = ["onboard", "--name", "node-1", "--pool", "-1:" + "5c" * 32]
+    with pytest.raises(SystemExit):
+        operator_tool.main(argv)
+    assert "--owner" in capsys.readouterr().err
+
+
+def test_a_pool_with_other_code_is_refused_on_the_host(external, tmp_path):
+    b = external
+    coordinator_until_hand_off(b)
+    other = tmp_path / "tos"
+    (other / operator_tool.SINGLE_NOMINATOR_CODE).parent.mkdir(parents=True)
+    (other / operator_tool.SINGLE_NOMINATOR_CODE).write_text(
+        lib.serialize_boc(lib.cell_from_bits("1")).hex()
+    )
+    with pytest.raises(lib.TestnetError, match="not the pinned single-nominator code"):
+        operator(b, tos_root=other)
+    assert b["host"].config == {"pools": {}, "bindings": {}}
+    with pytest.raises(lib.TestnetError, match="cannot read the pinned pool code"):
+        operator(b, tos_root=tmp_path / "missing")
+
+
+@pytest.mark.parametrize("already_running", [False, True])
+def test_elections_must_be_active_at_the_end(external, monkeypatch, already_running):
+    b = external
+    coordinator_until_hand_off(b)
+    host = b["host"]
+    host.elections_on = already_running
+    real = host.run
+
+    def run(command, timeout=300):
+        out = real(command, timeout)
+        if command.startswith("systemctl is-active tos-testnet-elections.service"):
+            # Active when first asked (already running), then found failed at the end;
+            # or never active after enable-elections.sh.
+            calls.append(command)
+            if not already_running or len(calls) > 1:
+                return "failed\n"
+        return out
+
+    calls = []
+    monkeypatch.setattr(host, "run", run)
+    if already_running:
+        # Already active: nothing restarts it, and the summary reports it active.
+        assert operator(b)["elections_unit"] == "active"
+        assert not any("enable-elections.sh" in c for c in host.commands)
+        return
+    with pytest.raises(lib.TestnetError, match="is failed after enable-elections.sh"):
+        operator(b)
+    assert sum("enable-elections.sh" in c for c in host.commands) == 1
+
+
+# ---------------------------------------------------------------- pool deployment settlement
+
+
+def flaky_pool_reads(monkeypatch, b, failures):
+    """verify_pool_both raises a read error (an HTTP 502) while `failures[0]` > 0 once
+    the pool is active, as a validator's JSON-RPC behind a proxy does."""
+    real = elections.verify_pool_both
+
+    def verify(operations, tos_root, pool, owner, operator):
+        if failures[0] > 0 and b["chain"].account(pool)["state"] == "active":
+            failures[0] -= 1
+            raise lib.TestnetError("http://a getAddressInformation: HTTP 502")
+        return real(operations, tos_root, pool, owner, operator)
+
+    monkeypatch.setattr(elections, "verify_pool_both", verify)
+
+
+def test_a_read_error_after_delivery_is_pending_then_settles(external, monkeypatch):
+    b = external
+    failures = [3]
+    flaky_pool_reads(monkeypatch, b, failures)
+    coordinator_until_hand_off(b)
+    record = b["ops"].journal.record("deploy-pool-node-1")
+    assert record["state"] == "settled" and failures == [0]
+    assert not any(r and r["state"] == "failed" for r in b["ops"].journal.all())
+
+
+def test_a_read_error_that_outlasts_the_watch_stays_open_and_is_recorded_later(
+    external, monkeypatch
+):
+    b = external
+    failures = [10**6]
+    flaky_pool_reads(monkeypatch, b, failures)
+    with pytest.raises(lib.TestnetError, match="broadcast but not settled"):
+        coordinator(b)
+    record = b["ops"].journal.record("deploy-pool-node-1")
+    assert record["state"] == "broadcast"
+    with pytest.raises(lib.TestnetError, match="not settled: pending"):
+        evidence = b["ops"].settle(record, elections.expect_for(b["args"], record))[1]
+        b["ops"].record_settled(
+            "deploy-pool-node-1", "00" * 32, elections.expect_for(b["args"], record)
+        )
+    failures[0] = 0
+    expect = elections.expect_for(b["args"], record)
+    evidence = b["ops"].settle(record, expect)[1]
+    b["ops"].record_settled("deploy-pool-node-1", evidence["wallet_tx"], expect)
+    coordinator_until_hand_off(b)
+    assert settled_ids(b) == sorted(ALL_STEPS)
+
+
+def test_a_definite_mismatch_after_delivery_still_fails(external, monkeypatch):
+    b = external
+
+    def wrong_roles(self, address):
+        return HOST_WALLET, HOST_WALLET
+
+    monkeypatch.setattr(elections.Chain, "pool_roles", wrong_roles)
+    with pytest.raises(lib.TestnetError, match="failed"):
+        coordinator(b)
+    record = b["ops"].journal.record("deploy-pool-node-1")
+    assert record["state"] == "failed" and record["evidence"]["form"] == "b"
+    assert "reports roles" in record["evidence"]["reason"]
+
+
+def test_the_outcome_separates_read_errors_from_mismatches(monkeypatch):
+    evidence = {"wallet_tx": "ab"}
+    for error, outcome in (
+        (elections.ops.Unknown("the validators disagree"), "pending"),
+        (lib.TestnetError("HTTP 502"), "pending"),
+        (lib.TestnetError("-1:5c is uninitialized, not active"), "pending"),
+        (elections.PoolMismatch("reports roles"), "failed"),
+    ):
+
+        def verify(*args, error=error):
+            raise error
+
+        monkeypatch.setattr(elections, "verify_pool_both", verify)
+        assert elections.pool_deployment_outcome(None, None, "p", "o", "v", evidence)[0] == outcome
+    monkeypatch.setattr(elections, "verify_pool_both", lambda *args: None)
+    assert elections.pool_deployment_outcome(None, None, "p", "o", "v", evidence) == (
+        "settled",
+        evidence,
+    )
+
+
+def test_a_read_error_in_a_team_host_deployment_is_pending_too(boarding, monkeypatch):  # noqa: F811
+    b = boarding
+    failures = [3]
+    flaky_pool_reads(monkeypatch, b, failures)
+    onboard(b)
+    assert b["ops"].journal.record("deploy-pool-node-1")["state"] == "settled"
+    assert failures == [0]
+
+
+# ---------------------------------------------------------------- replacing a team-host deployment
+
+
+def ssh_deploy_record(b, *states):
+    """An operator-wallet deploy-pool attempt in the journal, through `states`."""
+    journal = b["ops"].journal
+    params = {
+        "kind": "deploy-pool",
+        "wallet": b["host"].operator,
+        "destination": b["pool"],
+        "value": E["pool_deploy_tos"] * NANO,
+        "bounce": False,
+        "body_hash": elections.EMPTY_BODY_HASH,
+        "state_init_hash": "00" * 32,
+        "name": "node-1",
+        "subwallet": 698983191,
+        "owner": b["owner"],
+    }
+    journal.append("deploy-pool-node-1", dict(params, state="planned"))
+    for state in states:
+        extra = {"evidence": {"form": "a", "reason": "the wallet emitted two messages"}}
+        journal.append(
+            "deploy-pool-node-1", dict({"state": state}, **(extra if state == "failed" else {}))
+        )
+
+
+def test_a_failed_team_host_deployment_is_succeeded_by_the_owner(external):
+    b = external
+    ssh_deploy_record(b, "failed")
+    coordinator_until_hand_off(b)
+    journal = b["ops"].journal
+    assert journal.newest("deploy-pool-node-1") == "deploy-pool-node-1.attempt-2"
+    successor = journal.record("deploy-pool-node-1.attempt-2")
+    assert successor["kind"] == elections.OWNER_DEPLOY_KIND and successor["state"] == "settled"
+    assert successor["predecessor"] == "deploy-pool-node-1"
+    assert "failed" in successor["reason"]
+    assert journal.record("deploy-pool-node-1")["state"] == "failed"
+    sent = list(b["chain"].sent)
+    coordinator_until_hand_off(b)
+    assert b["chain"].sent == sent
+    assert journal.newest("deploy-pool-node-1") == "deploy-pool-node-1.attempt-2"
+
+
+@pytest.mark.parametrize(
+    "states,message",
+    [
+        ((), "never signed: finish it with `onboard --host --ssh-key`"),
+        (("signed",), "`resubmit --id deploy-pool-node-1`"),
+        (("signed", "broadcast"), "`testnet-elections.py reconcile`"),
+    ],
+)
+def test_an_unfinished_team_host_deployment_still_refuses(external, states, message):
+    b = external
+    ssh_deploy_record(b, *states)
+    with pytest.raises(lib.TestnetError, match=re.escape(message)):
+        coordinator(b)
+    assert b["ops"].journal.newest("deploy-pool-node-1") == "deploy-pool-node-1"
+    assert b["chain"].account(b["pool"])["state"] != "active"
+
+
+def test_a_successor_needs_a_failed_attempt_of_the_named_kind(external):
+    b = external
+    ops_ = b["ops"]
+    with pytest.raises(lib.TestnetError, match="has no attempt"):
+        ops_.successor_with(
+            "deploy-pool-node-1", {"kind": "owner-deploy-pool"}, "r", ("deploy-pool",)
+        )
+    ssh_deploy_record(b, "signed")
+    with pytest.raises(lib.TestnetError, match="only a failed"):
+        ops_.successor_with(
+            "deploy-pool-node-1", {"kind": "owner-deploy-pool"}, "r", ("deploy-pool",)
+        )
+    with pytest.raises(lib.TestnetError, match="needs a reason"):
+        ops_.successor_with(
+            "deploy-pool-node-1", {"kind": "owner-deploy-pool"}, " ", ("deploy-pool",)
+        )

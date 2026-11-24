@@ -79,15 +79,21 @@ judged against the same profile floors; the operator sends the JSON report
 (`tos-testnet.preflight-local.v1`, public facts only) to the coordinator, who
 reviews it before step 1: `passed` true, no FAIL, and the expected name,
 address and floors. A waiver the coordinator records for such a host is passed
-by the operator as `--waive CHECK=REASON` and shows in the report.
+by the operator as `--waive CHECK=REASON` and shows in the report's `waive`
+entries. Those entries are self-attested: the coordinator compares them with its
+own recorded decision and rejects a report carrying any other waiver or reason.
+`passed` means no FAIL among the checks that were not waived.
 
 The UDP mesh cannot be run without logging in to both ends, so for an external
 host ingress is proven by a listener and a sender instead: the operator
-captures with `--local --listen-seconds N --expect-from SENDER`, and a second
-machine (one the operator controls, or the coordinator's own) runs
-`preflight.py --send-probes --name SENDER --to <PUBLIC_IPV4> --role validator`.
-Sending probes to a public port needs no access to the host. Each role port
-must PASS for each expected sender. Without that test the report's `udp` line is
+captures with `--local --listen-seconds N --expect-from SENDER@<SENDER_IPV4>`,
+and a different machine (one the operator controls, or the coordinator's own)
+runs `preflight.py --send-probes --name SENDER --to <PUBLIC_IPV4> --role
+validator`. Sending probes to a public port needs no access to the host. The
+listener captures on the interface of the host's IPv4 default route (not `any`)
+and does not count a probe whose source is a loopback address, an address of the
+host itself, or, with `@<SENDER_IPV4>`, any other address, so a host cannot pass
+by probing itself. Each role port must PASS for each expected sender. Without that test the report's `udp` line is
 a WARN: syncing later shows only that the node reaches the network, not that
 the network reaches it, so ingress stays unproven until the node validates.
 
@@ -450,9 +456,9 @@ and runs nothing on the host. The operator runs the host-side steps
 | 1c | | `deploy-pool-<name>` (kind `owner-deploy-pool`): `pool_deploy_tos` with the pool's StateInit, from the owner | the owner active on both validators, and keeping the principal, both fees and a withdrawal message |
 | 1d | | `principal-<name>`: `pool_tos` from the owner | the pool active with the pinned code and the two roles |
 | 2 | Coordinator | exits with status 3 and prints the operator's command; sends it, the pool and the owner through the agreed channel | the pool holds two stakes above its reserve |
-| 3 | Operator | `sudo python3 /opt/tos-testnet/scripts/testnet-operator.py onboard --name <name> --pool <pool> --owner <owner>` on their host | on their own node: the pool active, its validator role their wallet, two stakes in it, fee money in the wallet; then the custody line names the pool (host log) |
+| 3 | Operator | `sudo python3 /opt/tos-testnet/scripts/testnet-operator.py onboard --name <name> --pool <pool> --owner <owner>` on their host | on their own node: the pool active with the pinned code, its owner `--owner` and its validator role their wallet, two stakes in it, fee money in the wallet; then the custody line names the pool (host log), and the election unit is active at the end |
 | 4 | Operator | sends the printed JSON summary | (informational: the coordinator decides from the chain) |
-| 5 | Coordinator | `onboard --no-host` again: all operations settled, nothing is sent | the pool's code, roles and two stakes unchanged, and the operator wallet active holding at least a stake order (`stake_order_nanotos`) and its fee |
+| 5 | Coordinator | `onboard --no-host` again: all operations settled, nothing is sent | the pool's code, roles and two stakes unchanged, and the operator wallet active holding at least a stake order (`stake_order_nanotos`) and its fee. It reports the host's binding and election task as UNVERIFIED: they are verified only when the pool's stake appears in the Elector |
 
 ```bash
 python3 /opt/tos-testnet/scripts/testnet-elections.py onboard \
@@ -479,7 +485,9 @@ stake in the Elector and then in ConfigParam 34, which `sweep`'s prerequisites
 and the live checks read. A wrong binding loses nothing: the pool keeps the
 principal and only its owner can withdraw it.
 
-The operator's script refuses, and changes nothing, until the coordinator's
+The operator's script first runs `init-operator.sh` (idempotent: it completes
+`tos-ctl` on the host and creates nothing that already exists), then refuses, and
+moves no value and configures no pool or election task, until the coordinator's
 steps are visible on the operator's own node; a pool whose validator role is not
 the host's wallet is refused there (the operator reports it; `change-validator`
 is the coordinator's remedy). A host that kept `/var/lib/tos-ctl` over a reset

@@ -2210,7 +2210,7 @@ M += [
     (
         "OB2 the pool's owner not compared on the host",
         OPERATOR,
-        "    if expected_owner is not None and owner != expected_owner:",
+        "    if owner != expected_owner:",
         "    if False:",
     ),
     (
@@ -2252,7 +2252,7 @@ M += [
     (
         "PL2 local listen ignores a missing sender",
         PREFLIGHT,
-        "        missing = [s for s in expect_from if (s, port) not in got]",
+        "        missing = [s for s in names if (s, port) not in accepted]",
         "        missing = []",
     ),
     (
@@ -2260,6 +2260,87 @@ M += [
         PREFLIGHT,
         '    if os.geteuid() != 0:\n        raise lib.TestnetError("run --local as root',
         '    if False:\n        raise lib.TestnetError("run --local as root',
+    ),
+    # Review fixes: settlement of pool deployments, the no-SSH guard, the listener's
+    # sources, successors of a failed team-host deployment and the operator's checks.
+    (
+        "RV1 onboard --no-host calls ssh",
+        EL,
+        '    step(f"operator wallet {operator}, staking pool {pool} (operator-run host, no access)")\n',
+        '    step(f"operator wallet {operator}, staking pool {pool} (operator-run host, no access)")\n'
+        '    subprocess.run(["/usr/bin/ssh", "-V"], capture_output=True)\n',
+    ),
+    (
+        "RV2 a read error fails a delivered pool deployment",
+        EL,
+        '        return "pending", dict(evidence, reason=f"the pool could not be read yet: {exc}")',
+        '        return "failed", dict(evidence, form="b", reason=str(exc))',
+    ),
+    (
+        "RV3 a definite pool mismatch stays pending",
+        EL,
+        '    except PoolMismatch as exc:\n        return "failed", dict(evidence, form="b", reason=str(exc))',
+        '    except PoolMismatch as exc:\n        return "pending", dict(evidence, reason=str(exc))',
+    ),
+    (
+        "RV4 wrong pool roles read as a read error",
+        EL,
+        '        raise PoolMismatch(f"{pool} reports roles',
+        '        raise lib.TestnetError(f"{pool} reports roles',
+    ),
+    (
+        "RV5 the listener counts loopback probes",
+        PREFLIGHT,
+        '    if ipaddress.IPv4Address(source).is_loopback:\n        return "sent over loopback"',
+        '    if False:\n        return "sent over loopback"',
+    ),
+    (
+        "RV6 the listener counts probes from this host's addresses",
+        PREFLIGHT,
+        "    if source in local:\n",
+        "    if False:\n",
+    ),
+    (
+        "RV7 the listener ignores the named sender address",
+        PREFLIGHT,
+        "    if expected is not None and source != expected:",
+        "    if False:",
+    ),
+    (
+        "RV8 the listener captures on any interface",
+        PREFLIGHT,
+        "    proc = run(host, capture_command(ports, seconds, interface), seconds + 20)",
+        "    proc = run(host, capture_command(ports, seconds), seconds + 20)",
+    ),
+    (
+        "RV9 an unfinished team-host deployment is succeeded",
+        EL,
+        '        if state != "failed":\n            how = (',
+        "        if False:\n            how = (",
+    ),
+    (
+        "RV10 a successor of an attempt that did not fail",
+        OPS,
+        '            if state_of(record) != "failed" or record.get("kind") not in from_kinds:',
+        "            if False:",
+    ),
+    (
+        "RV11 the operator script ends with the election unit inactive",
+        OPERATOR,
+        '    if unit != "active":\n        raise lib.TestnetError(',
+        "    if False:\n        raise lib.TestnetError(",
+    ),
+    (
+        "RV12 the operator script trusts the pool's code",
+        OPERATOR,
+        "    if code_hash != pinned_code:",
+        "    if False:",
+    ),
+    (
+        "RV13 the coordinator calls the host side verified",
+        EL,
+        '        "host_binding_and_election_task": "UNVERIFIED",',
+        '        "host_binding_and_election_task": "verified",',
     ),
 ]
 

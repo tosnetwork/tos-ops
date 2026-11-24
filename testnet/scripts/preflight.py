@@ -3,8 +3,8 @@
 
   preflight.py --inventory hosts.json [--json] [--accept-new-host-keys] [--install-tools]
   preflight.py --local --name NAME --role ROLE [--role ROLE] --public-ip IPV4
-               [--waive CHECK=REASON]... [--listen-seconds N --expect-from SENDER]...
-               [--out FILE] [--json]
+               [--waive CHECK=REASON]...
+               [--listen-seconds N --expect-from SENDER[@IPV4]...] [--out FILE] [--json]
   preflight.py --send-probes --name SENDER --to IPV4 --role ROLE [--role ROLE]
 
 The inventory mode runs on the coordinator's machine for hosts the team operates.
@@ -16,17 +16,24 @@ host: nobody else logs in to it. It reads the same facts with the same script an
 judges them against the same profile floors. It prints the report and, with --out,
 writes it as JSON (public facts only) for the operator to send to the
 coordinator. A floor waiver is the coordinator's recorded decision, passed as
---waive CHECK=REASON, with the same rules as an inventory waiver.
+--waive CHECK=REASON, with the same rules as an inventory waiver. The waiver is
+self-attested in the report: the coordinator compares the report's `waive`
+entries with its own record and rejects any other. `passed` means no FAIL among
+the checks that were not waived.
 
 Provider ingress cannot be proven from inside one host. In --local mode the udp
 check is therefore one of:
-  --listen-seconds N   capture on the role's UDP ports for N seconds while a
-                       second machine runs --send-probes to this host's public
-                       address; every --expect-from SENDER must be seen on every
-                       role port, or that port FAILs. The sender can be any
-                       machine the operator controls, or the coordinator's own
-                       machine: sending packets to a public port needs no access
-                       to the host.
+  --listen-seconds N   capture on the role's UDP ports for N seconds, on the
+                       interface of the IPv4 default route (not `any`, which
+                       also sees loopback), while a different machine runs
+                       --send-probes to this host's public address. Every
+                       --expect-from SENDER must be seen on every role port, or
+                       that port FAILs. A probe whose source is a loopback
+                       address or an address of this host is not counted, nor,
+                       with SENDER@IPV4, one from any other source. The sender
+                       can be any machine the operator controls, or the
+                       coordinator's own machine: sending packets to a public
+                       port needs no access to the host.
   (neither)            a WARN saying ingress is unproven. It then stays unproven
                        until the node validates: syncing shows that the node
                        reaches the network, not that the network reaches it (a
@@ -119,6 +126,8 @@ echo "mem_kib=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
 d=/var/lib; [ -d /var/lib/tos ] && d=/var/lib/tos
 echo "disk_free_kib=$(df -Pk "$d" | awk 'NR==2 {print $4}')"
 echo "ipv4=$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | tr '\n' ' ')"
+echo "ipv4_all=$(ip -4 -o addr show | awk '{print $4}' | cut -d/ -f1 | tr '\n' ' ')"
+echo "default_dev=$(ip -4 route show default 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "dev") {print $(i + 1); exit}}')"
 echo "ntp=$(timedatectl show -p NTPSynchronized --value 2>/dev/null)"
 # The kernel flag alone can stay "yes" while the daemon has no server at all (seen with ntpsec
 # preferring unreachable IPv6 servers), so also count the daemon's selected source.
@@ -396,12 +405,38 @@ def evaluate_host(host: Host, facts: dict[str, str], profile: dict) -> list[Resu
 # ---------------------------------------------------------------- UDP reachability
 
 
-def capture_command(ports: list[int], seconds: int) -> str:
+INTERFACE = re.compile(r"[A-Za-z0-9_.:@-]{1,32}")
+
+
+def capture_command(ports: list[int], seconds: int, interface: str = "any") -> str:
+    if not INTERFACE.fullmatch(interface):
+        raise lib.TestnetError(f"not an interface name: {interface!r}")
     port_expr = " or ".join(f"dst port {p}" for p in ports)
     return (
-        f"timeout {seconds} tcpdump -n -l -A -i any "
+        f"timeout {seconds} tcpdump -n -l -A -i {interface} "
         f"'udp and ({port_expr}) and {PROBE_MAGIC_BPF}' 2>/dev/null; true"
     )
+
+
+# A tcpdump -n header line: "... IP <src>.<sport> > <dst>.<dport>: UDP, length N".
+CAPTURE_HEADER = re.compile(
+    r"\bIP (\d{1,3}(?:\.\d{1,3}){3})\.\d+ > (\d{1,3}(?:\.\d{1,3}){3})\.(\d+): UDP"
+)
+PROBE_PAYLOAD = re.compile(r"PROB:([A-Za-z0-9_.-]+):(\d+)")
+
+
+def received_probes_with_source(capture: str) -> set[tuple[str, int, str | None]]:
+    """(sender, port, source address) of each probe in a tcpdump -n -A capture: the
+    payload is attributed to the packet header printed before it (None if none)."""
+    found = set()
+    source = None
+    for line in capture.splitlines():
+        header = CAPTURE_HEADER.search(line)
+        if header:
+            source = header.group(1)
+        for m in PROBE_PAYLOAD.finditer(line):
+            found.add((m.group(1), int(m.group(2)), source))
+    return found
 
 
 def probe_command(sender: str, targets: list[tuple[str, int]]) -> str:
@@ -574,24 +609,73 @@ def local_host(name: str, roles: list[str], public_ip: str, waive: dict[str, str
     )
 
 
+def parse_expect_from(value: str) -> tuple[str, str | None]:
+    """--expect-from SENDER or SENDER@IPV4: the probe's name and, optionally, the only
+    source address its packets may come from."""
+    name, sep, address = value.partition("@")
+    check_name(name, "--expect-from")
+    if not sep:
+        return name, None
+    try:
+        return name, str(ipaddress.IPv4Address(address))
+    except ValueError as exc:
+        raise lib.TestnetError(f"--expect-from {value!r}: not an IPv4 address") from exc
+
+
+def probe_refusal(source: str | None, local: set[str], expected: str | None) -> str | None:
+    """Why a captured probe does not prove ingress from another machine (None if it does)."""
+    if source is None:
+        return "no packet header before the payload"
+    if ipaddress.IPv4Address(source).is_loopback:
+        return "sent over loopback"
+    if source in local:
+        return "sent from an address of this host"
+    if expected is not None and source != expected:
+        return f"not from {expected}"
+    return None
+
+
 def check_listen(
-    host: Host, profile: dict, seconds: int, expect_from: list[str], run: Runner
+    host: Host,
+    profile: dict,
+    seconds: int,
+    expect_from: list[tuple[str, str | None]],
+    run: Runner,
+    facts: dict[str, str],
 ) -> list[Result]:
-    """Capture probes on every role port; each expected sender must reach each port."""
+    """Capture probes on every role port, on the default-route interface (never `any`,
+    which also sees this host's own loopback traffic); each expected sender must
+    reach each port from another machine's address."""
     ports = role_udp_ports(host.roles, profile)
-    proc = run(host, capture_command(ports, seconds), seconds + 20)
-    got = received_probes(proc.stdout)
+    interface = facts.get("default_dev", "")
+    if not interface:
+        return [Result(host.name, "udp", "FAIL", "no IPv4 default route to capture on")]
+    proc = run(host, capture_command(ports, seconds, interface), seconds + 20)
+    local = {host.address, *facts.get("ipv4", "").split(), *facts.get("ipv4_all", "").split()}
+    expected_ip = dict(expect_from)
+    accepted: set[tuple[str, int]] = set()
+    refused: set[str] = set()
+    for sender, port, source in received_probes_with_source(proc.stdout):
+        why = probe_refusal(source, local, expected_ip.get(sender))
+        if why:
+            refused.add(f"{sender} from {source}: {why}")
+        else:
+            accepted.add((sender, port))
+    names = [name for name, _ in expect_from]
     out = []
     for port in ports:
-        seen = sorted({sender for sender, p in got if p == port})
-        missing = [s for s in expect_from if (s, port) not in got]
+        seen = sorted({sender for sender, p in accepted if p == port})
+        missing = [s for s in names if (s, port) not in accepted]
         if missing:
             detail = (
-                f"UDP {port} not reached from {missing} (seen: {seen}): dropped before the "
-                "host (provider security group, ACL or routing), or the sender did not run"
+                f"UDP {port} on {interface} not reached from {missing} (seen: {seen}): dropped "
+                "before the host (provider security group, ACL or routing), or the sender did "
+                "not run"
             )
         else:
-            detail = f"UDP {port} reached from {expect_from}"
+            detail = f"UDP {port} on {interface} reached from {names}"
+        if refused:
+            detail += f"; not counted: {sorted(refused)}"
         out.append(Result(host.name, f"udp:{port}", "FAIL" if missing else "PASS", detail))
     return out
 
@@ -601,7 +685,7 @@ def run_local(
     profile: dict,
     run: Runner,
     listen_seconds: int = 0,
-    expect_from: list[str] | None = None,
+    expect_from: list[tuple[str, str | None]] | None = None,
 ) -> list[Result]:
     """Every per-host check, read on this machine; nothing is changed or installed."""
     expect_from = list(expect_from or [])
@@ -620,7 +704,7 @@ def run_local(
                 host.name,
                 "udp",
                 "WARN",
-                "provider ingress not tested: rerun with --listen-seconds while another "
+                "provider ingress not tested: rerun with --listen-seconds while a different "
                 "machine runs --send-probes to this address",
             )
         )
@@ -629,7 +713,7 @@ def run_local(
             Result(host.name, "udp", "FAIL", "tcpdump is missing: apt-get install tcpdump")
         )
     else:
-        results.extend(check_listen(host, profile, listen_seconds, expect_from, run))
+        results.extend(check_listen(host, profile, listen_seconds, expect_from, run, facts))
     return results
 
 
@@ -742,7 +826,7 @@ def main_local(args: argparse.Namespace, profile: dict, run: Runner | None = Non
         raise lib.TestnetError("run --local as root: ufw and the port owners are read as root")
     if args.listen_seconds < 0 or args.listen_seconds > 600:
         raise lib.TestnetError("--listen-seconds must be between 0 and 600")
-    expect_from = [check_name(s, "--expect-from") for s in args.expect_from]
+    expect_from = [parse_expect_from(s) for s in args.expect_from]
     if args.listen_seconds and not expect_from:
         raise lib.TestnetError("--listen-seconds needs at least one --expect-from SENDER")
     if expect_from and not args.listen_seconds:

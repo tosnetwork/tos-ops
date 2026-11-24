@@ -395,12 +395,18 @@ def test_main_refuses_a_bad_waiver_as_a_usage_error(tmp_path, capsys):
 # ---------------------------------------------------------------- operator-local mode
 
 
+LOCAL_FACTS = {"default_dev": "eth0", "ipv4_all": "127.0.0.1 203.0.113.10 172.17.0.1 "}
+OTHER_MACHINE = "198.51.100.7"
+
+
 class LocalMachine:
-    """Stands in for the operator's own host: the facts script and a tcpdump capture."""
+    """Stands in for the operator's own host: the facts script and a tcpdump capture
+    on the interface it is asked for. A probe is (sender, port) from OTHER_MACHINE,
+    or (sender, port, source address)."""
 
     def __init__(self, facts=None, probes=()):
-        self.facts = dict(GOOD_FACTS, **(facts or {}))
-        self.probes = list(probes)
+        self.facts = {**GOOD_FACTS, **LOCAL_FACTS, **(facts or {})}
+        self.probes = [p if len(p) == 3 else (*p, OTHER_MACHINE) for p in probes]
         self.commands = []
 
     def __call__(self, h, command, timeout):
@@ -411,7 +417,15 @@ class LocalMachine:
             )
         if command.startswith("timeout"):
             ports = [int(p) for p in re.findall(r"dst port (\d+)", command)]
-            lines = [f"PROB:{s}:{p}" for s, p in self.probes if p in ports]
+            interface = re.search(r" -i (\S+) ", command).group(1)
+            lines = []
+            for s, p, source in self.probes:
+                # On `any` tcpdump also sees loopback; on eth0 only what arrives there,
+                # which a probe to the host's own address does not.
+                via = "lo" if source.startswith("127.") or source == "203.0.113.10" else "eth0"
+                if p in ports and interface in (via, "any"):
+                    lines.append(f"06:10:01.1 IP {source}.40123 > 203.0.113.10.{p}: UDP, length 20")
+                    lines.append(f"E..0..@.@.....PROB:{s}:{p}")
             return subprocess.CompletedProcess([], 0, "\n".join(lines), "")
         raise AssertionError(command)
 
@@ -535,6 +549,81 @@ def test_local_listen_names_the_port_and_sender_that_did_not_arrive(as_root, mon
     failed = [r for r in report["results"] if r["status"] == "FAIL"]
     assert [r["check"] for r in failed] == ["udp:31001"]
     assert "['probe-b']" in failed[0]["detail"]
+
+
+def test_local_listen_captures_on_the_default_route_interface(as_root, monkeypatch, capsys):
+    machine = LocalMachine(probes=[("probe-a", 30001), ("probe-a", 31001)])
+    argv = local_argv("--listen-seconds", "5", "--expect-from", "probe-a")
+    assert run_local_main(argv, machine, monkeypatch) == 0
+    [capture] = [c for c in machine.commands if c.startswith("timeout")]
+    assert " -i eth0 " in capture and " -i any " not in capture
+
+
+@pytest.mark.parametrize(
+    "source,why",
+    [
+        ("127.0.0.1", "sent over loopback"),
+        ("127.0.1.1", "sent over loopback"),
+        ("172.17.0.1", "sent from an address of this host"),
+        ("203.0.113.10", "sent from an address of this host"),
+    ],
+)
+def test_local_listen_does_not_count_probes_from_this_host(
+    as_root, monkeypatch, capsys, source, why
+):
+    """Even a capture that sees them (tcpdump on `any`) never counts its own probes."""
+    real = preflight.capture_command
+    monkeypatch.setattr(
+        preflight, "capture_command", lambda ports, seconds, interface: real(ports, seconds, "any")
+    )
+    probes = [("probe-a", 30001, source), ("probe-a", 31001, source)]
+    argv = local_argv("--listen-seconds", "5", "--expect-from", "probe-a", "--json")
+    assert run_local_main(argv, LocalMachine(probes=probes), monkeypatch) == 1
+    report = json.loads(capsys.readouterr().out)
+    udp = [r for r in report["results"] if r["check"].startswith("udp")]
+    assert {r["status"] for r in udp} == {"FAIL"}
+    assert all(why in r["detail"] for r in udp)
+
+
+def test_local_listen_with_a_sender_address_counts_only_that_source(as_root, monkeypatch, capsys):
+    probes = [("probe-a", 30001, "198.51.100.9"), ("probe-a", 31001, OTHER_MACHINE)]
+    argv = local_argv(
+        "--listen-seconds", "5", "--expect-from", f"probe-a@{OTHER_MACHINE}", "--json"
+    )
+    assert run_local_main(argv, LocalMachine(probes=probes), monkeypatch) == 1
+    report = json.loads(capsys.readouterr().out)
+    udp = {r["check"]: r for r in report["results"] if r["check"].startswith("udp")}
+    assert udp["udp:31001"]["status"] == "PASS"
+    assert udp["udp:30001"]["status"] == "FAIL"
+    assert f"not from {OTHER_MACHINE}" in udp["udp:30001"]["detail"]
+
+
+def test_local_listen_refuses_a_bad_sender_address(as_root, monkeypatch, capsys):
+    argv = local_argv("--listen-seconds", "5", "--expect-from", "probe-a@not-an-ip")
+    assert run_local_main(argv, LocalMachine(), monkeypatch) == 2
+    assert "not an IPv4 address" in capsys.readouterr().err
+
+
+def test_local_listen_without_a_default_route_fails(as_root, monkeypatch, capsys):
+    machine = LocalMachine({"default_dev": ""}, probes=[("probe-a", 30001)])
+    argv = local_argv("--listen-seconds", "5", "--expect-from", "probe-a")
+    assert run_local_main(argv, machine, monkeypatch) == 1
+    assert "no IPv4 default route" in capsys.readouterr().out
+    assert not any(c.startswith("timeout") for c in machine.commands)
+
+
+def test_a_probe_is_attributed_to_the_header_before_it():
+    capture = (
+        "06:10:01.1 IP 198.51.100.7.40123 > 203.0.113.10.30001: UDP, length 20\n"
+        "E..0..@.@.....PROB:probe-a:30001\n"
+        "06:10:01.2 IP 127.0.0.1.40124 > 203.0.113.10.31001: UDP, length 20\n"
+        "E..0..@.@.....PROB:probe-b:31001\n"
+    )
+    assert preflight.received_probes_with_source(capture) == {
+        ("probe-a", 30001, "198.51.100.7"),
+        ("probe-b", 31001, "127.0.0.1"),
+    }
+    assert preflight.received_probes_with_source("PROB:x:1") == {("x", 1, None)}
 
 
 def test_local_listen_without_tcpdump_fails(as_root, monkeypatch, capsys):

@@ -604,6 +604,13 @@ def pool_address(code: lib.Cell, owner: str, validator: str) -> str:
     return f"-1:{pool_state_init(code, owner, validator).hash().hex()}"
 
 
+class PoolMismatch(lib.TestnetError):
+    """A definite answer that the account is not the expected pool: another
+    address, an active account running other code, or other roles. A failed read
+    (an RPC error, a timeout, validators that disagree, an account not active yet)
+    is never this."""
+
+
 def verify_pool(chain: Chain, tos_root: Path | str, pool: str, owner: str, operator: str) -> None:
     """Refuse unless `pool` is the single-nominator pool of exactly these roles.
 
@@ -617,19 +624,24 @@ def verify_pool(chain: Chain, tos_root: Path | str, pool: str, owner: str, opera
     pool = check_raw_address(pool)
     expected = pool_address(code, owner, operator)
     if pool != expected:
-        raise lib.TestnetError(
+        raise PoolMismatch(
             f"{pool} is not the pool of owner {owner} and validator {operator}; "
             f"that pool is {expected}"
         )
     state, code_hash = chain.code_hash(pool)
-    if state != "active" or code_hash != code.hash():
+    if state != "active":
         raise lib.TestnetError(
-            f"{pool} is {state} and runs code {code_hash.hex() if code_hash else None}, not "
-            f"the pinned single-nominator code {code.hash().hex()}"
+            f"{pool} is {state}, not active with the pinned single-nominator code "
+            f"{code.hash().hex()}"
+        )
+    if code_hash != code.hash():
+        raise PoolMismatch(
+            f"{pool} runs code {code_hash.hex() if code_hash else None}, not the pinned "
+            f"single-nominator code {code.hash().hex()}"
         )
     roles = chain.pool_roles(pool)
     if roles != (owner, operator):
-        raise lib.TestnetError(f"{pool} reports roles {roles}, not {(owner, operator)}")
+        raise PoolMismatch(f"{pool} reports roles {roles}, not {(owner, operator)}")
 
 
 def pool_owner_paths(ceremony: Path, name: str) -> dict[str, Path]:
@@ -852,9 +864,11 @@ def owner_transfer(
     bounce: bool = True,
     init: Path | None = None,
     admission_guard=None,
+    before_run=None,
 ) -> dict:
     """A transfer from the pool owner, signed here with its offline key: bounceable
-    to a pool, non-bounce (with a StateInit for a deployment) for owner-fund."""
+    to a pool, non-bounce (with a StateInit for a deployment) for owner-fund.
+    `before_run(params)` sees the operation's exact parameters before it runs."""
     ceremony = Path(args.ceremony)
     paths = pool_owner_paths(ceremony, name)
     if not paths["key"].is_file():
@@ -901,6 +915,8 @@ def owner_transfer(
         "subwallet": POOL_OWNER_SUBWALLET,
     }
     params.update(extra or {})
+    if before_run is not None:
+        before_run(params)
     return operations.run(
         op_id, params, sign, lambda decoded: None, prerequisites, expect, export=export
     )
@@ -924,6 +940,19 @@ def owner_role_check(operations: ops.Operations, tos_root, pool: str, owner: str
 def verify_pool_both(operations: ops.Operations, tos_root, pool, owner, operator):
     for node in operations.nodes:
         verify_pool(Chain(node.url, node.rpc), tos_root, pool, owner, operator)
+
+
+def pool_deployment_outcome(operations, tos_root, pool, owner, operator, evidence):
+    """A delivered pool deployment's settlement: settled when both validators read
+    the pool with the pinned code and roles, failed only on a definite mismatch,
+    and pending while a read fails, so a transient error never closes the step."""
+    try:
+        verify_pool_both(operations, tos_root, pool, owner, operator)
+    except PoolMismatch as exc:
+        return "failed", dict(evidence, form="b", reason=str(exc))
+    except lib.TestnetError as exc:
+        return "pending", dict(evidence, reason=f"the pool could not be read yet: {exc}")
+    return "settled", evidence
 
 
 def withdraw_id_record(operations: ops.Operations, args: argparse.Namespace) -> dict | None:
@@ -1921,11 +1950,7 @@ def onboard(
     ).decode()
 
     def pool_deployed(operations_, record, delivery, evidence):
-        try:
-            verify_pool_both(operations_, args.tos_root, pool, owner, operator)
-        except lib.TestnetError as exc:
-            return "failed", dict(evidence, form="b", reason=str(exc))
-        return "settled", evidence
+        return pool_deployment_outcome(operations_, args.tos_root, pool, owner, operator, evidence)
 
     if not settled(f"deploy-pool-{name}"):
         step(f"deploy the pool {pool} with {elections['pool_deploy_tos']} TOS")
@@ -2009,24 +2034,38 @@ def owner_deploys_pool(
     The pool's address is the hash of that StateInit (the pinned code and the two
     roles), so whoever sends it creates exactly this pool; the contract accepts an
     empty-body message from any sender. Skipped when the step was already settled
-    by the operator wallet (a host onboarded over SSH)."""
+    by the operator wallet (a host onboarded over SSH). When the newest attempt is
+    a failed operator-wallet deployment, the owner's deployment is its successor
+    attempt, naming it as predecessor; any other operator-wallet attempt refuses."""
     step, settled, require = steps
     op_id = f"deploy-pool-{name}"
     journal = operations.journal
     earlier = journal.record(journal.newest(op_id))
+    replaces = None
     if earlier is not None and earlier.get("kind") != OWNER_DEPLOY_KIND:
-        if ops.state_of(earlier) == "settled":
+        state = ops.state_of(earlier)
+        if state == "settled":
             return
-        raise lib.TestnetError(
-            f"{earlier['id']} is an operator-wallet deployment ({earlier.get('state')}); "
-            "resolve it with reconcile, record or resubmit before onboarding without the host"
-        )
+        if state != "failed":
+            how = (
+                "it was never signed: finish it with `onboard --host --ssh-key` on the team "
+                "host it was started for"
+                if state == "planned"
+                else "run `testnet-elections.py reconcile`, then `record --id "
+                f"{earlier['id']} --settled --hint TX` or `--failed FORM`, or `resubmit --id "
+                f"{earlier['id']}`"
+            )
+            raise lib.TestnetError(
+                f"{earlier['id']} is an operator-wallet deployment that is {state}; {how}; "
+                "then run onboard --no-host again"
+            )
+        replaces = earlier["id"]
     code = single_nominator_code(args.tos_root)
     state_init = pool_state_init(code, owner, operator)
     if pool_address(code, owner, operator) != pool:
         raise lib.TestnetError(f"{pool} is not the pool of owner {owner} and validator {operator}")
 
-    if earlier is None and operations.state(pool) == "active":
+    if (earlier is None or replaces) and operations.state(pool) == "active":
         # Deployed already, and not by an operation here: nothing of ours moved.
         # Its code and roles must be the expected ones; nothing more is sent.
         verify_pool_both(operations, args.tos_root, pool, owner, operator)
@@ -2042,11 +2081,21 @@ def owner_deploys_pool(
         owner_keeps(operations, owner, deploy_nanotos + principal + ops.FEE_ALLOWANCE_NANOTOS // 10)
 
     def deployed(operations_, record, delivery, evidence):
-        try:
-            verify_pool_both(operations_, args.tos_root, pool, owner, operator)
-        except lib.TestnetError as exc:
-            return "failed", dict(evidence, form="b", reason=str(exc))
-        return "settled", evidence
+        return pool_deployment_outcome(operations_, args.tos_root, pool, owner, operator, evidence)
+
+    def succeed_failed_attempt(params: dict) -> None:
+        # The failed operator-wallet attempt cannot run again without the host;
+        # the owner's deployment becomes the step's next attempt.
+        if replaces is None:
+            return
+        successor = operations.successor_with(
+            op_id,
+            params,
+            f"{replaces} (operator wallet) failed; the owner deploys the pool of an "
+            "operator-run host",
+            from_kinds=("deploy-pool",),
+        )
+        step(f"{successor['id']} succeeds the failed {replaces}")
 
     if not settled(op_id):
         step(f"the pool owner deploys the pool {pool} with {deploy_nanotos / NANO:.9f} TOS")
@@ -2068,6 +2117,7 @@ def owner_deploys_pool(
             expect=deployed,
             bounce=False,
             init=init,
+            before_run=succeed_failed_attempt,
         )
 
 
@@ -2152,13 +2202,21 @@ def onboard_external(
         "operator_state": state,
         "operator_nanotos": balance,
         "pool_nanotos": operations.balance(pool),
+        "coordinator_steps": "settled",
+        "operator_wallet": "active with fee money (read on chain)",
+        "host_binding_and_election_task": "UNVERIFIED",
         "next": (
-            "the operator's election task stakes from the pool at the next election; its "
-            "stake is proven on chain by the Elector (ConfigParam 34 / sweep prerequisites)"
+            "the node's binding to the pool and the election task are on the operator's "
+            "host and are not visible on chain yet; they are verified only when the pool's "
+            "stake appears in the Elector at the next election (then ConfigParam 34, "
+            "sweep prerequisites)"
         ),
     }
     print(json.dumps(result, indent=2))
-    step("done (coordinator side)")
+    step(
+        "coordinator steps settled and the operator wallet is active; the host's binding and "
+        "election task stay UNVERIFIED until the pool's stake appears in the Elector"
+    )
     return result
 
 
@@ -3852,17 +3910,9 @@ def expect_for(args: argparse.Namespace, record: dict):
             # The operator wallet sends a host-built deployment; the owner sends
             # the deployment of an operator-run host and records the operator.
             operator = rec["operator"] if rec["kind"] == OWNER_DEPLOY_KIND else rec["wallet"]
-            try:
-                verify_pool_both(
-                    operations,
-                    args.tos_root,
-                    rec["destination"],
-                    rec["owner"],
-                    operator,
-                )
-            except lib.TestnetError as exc:
-                return "failed", dict(evidence, form="b", reason=str(exc))
-            return "settled", evidence
+            return pool_deployment_outcome(
+                operations, args.tos_root, rec["destination"], rec["owner"], operator, evidence
+            )
 
         return deployed
     if kind == "change-validator":
