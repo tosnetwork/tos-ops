@@ -555,10 +555,24 @@ def max_factor_text(value: Fraction) -> str:
 
 
 def team_stake_multiple_rule(external: int) -> Fraction:
-    """The team's stake per pool in units of elections.stake_tos: E/2, so that the two
-    team pools stake as much as the E external pools together, and at least one
-    unit, the Elector's minimum."""
-    return max(Fraction(1), Fraction(external, 2))
+    """The team's stake per pool in units: (E+1)/2, and at least one (the Elector's
+    minimum). Both team pools then hold E+1 units against the E external ones,
+    just above half, and with one team pool absent the external pools hold
+    E/(E + (E+1)/2) = 2E/(3E+1), strictly below two thirds."""
+    return max(Fraction(1), Fraction(external + 1, 2))
+
+
+def team_stake_tos(multiple: Fraction, unit: int) -> int:
+    """The team pool's stake order in whole TOS: the Elector keeps 1 TOS of every
+    order, so a unit stands as unit - 1 TOS, and a team pool stands as `multiple`
+    such units, rounded down to whole TOS. The order is that plus the 1 TOS."""
+    return int(multiple * (unit - 1)) + 1
+
+
+def finalizes(weight: int, total: int) -> bool:
+    """TOS finalizes with at least two thirds of the weight (tos quorum.h
+    has_quorum: signed * 3 >= total * 2; Simplex's quorum threshold ceil(2t/3))."""
+    return 3 * weight >= 2 * total
 
 
 def multiple_text(value: Fraction) -> str:
@@ -624,9 +638,13 @@ def election_plan(
 
     Refuses unless: an election of the team pools alone concludes and elects
     them all (also for E = 0); with E external pools every pool is elected and no
-    team stake is cut by a max factor; with E >= 1 neither the team nor the
-    external validators alone hold more than two thirds of the weight; with
-    E >= 2 the team's weight share is elections.team_weight_percent."""
+    team stake is cut by a max factor; the external validators never hold two
+    thirds of the weight (TOS finalizes at two thirds, `finalizes`), with every
+    pool elected or with one team pool absent from the election; and with E >= 3
+    the team's share is in [elections.team_weight_percent, two thirds). The team
+    holding two thirds is allowed and reported (team_finalizes_alone: E = 0 and
+    1, or when few external validators stand), as are the partial sets and the
+    number of external validators the elected set needs online."""
     limits = genesis_limits(profile)
     e = profile.get("elections", {})
     unit = _whole(e.get("stake_tos"), "elections.stake_tos", 1)
@@ -747,10 +765,7 @@ def _plan_for(
 ) -> dict[str, Any]:
     team = limits["validators"]
     multiple = team_stake_multiple_rule(external)
-    team_stake = multiple * unit
-    if team_stake.denominator != 1:
-        raise TestnetError(f"a team stake of {multiple} x {unit} TOS is not whole TOS")
-    team_stake = int(team_stake)
+    team_stake = team_stake_tos(multiple, unit)
     if team_stake > limits["max_stake_tos"]:
         raise TestnetError(f"a team stake of {team_stake} TOS exceeds max_stake_tos")
     # Two stakes per pool (the first and the overlapping second election), and the
@@ -807,22 +822,42 @@ def _plan_for(
                 f"elections.max_factor {float(team_factor)}); the team's weight would fall "
                 "below its share"
             )
-    total = sum(m["weight"] for m in elected)
-    team_weight = sum(m["weight"] for m in elected if m["label"].startswith("team-"))
-    external_weight = total - team_weight
-    if external >= 1:
-        for side, weight in (("team", team_weight), ("external validators", external_weight)):
-            if 3 * weight > 2 * total:
-                raise TestnetError(
-                    f"with {external} external validators the {side} alone would hold more than "
-                    "two thirds of the weight and finalize without the other side"
-                )
+    team_weight, external_weight, total = side_weights(elected)
+    # The hard invariant: the external validators never hold two thirds, so they
+    # cannot finalize without the team, with every pool elected or with either team
+    # pool absent from the election.
+    if finalizes(external_weight, total):
+        raise TestnetError(
+            f"with {external} external validators they would hold at least two thirds of "
+            "the weight and finalize without the team"
+        )
+    one_team = _partial_election(team_members[:-1], external_members, limits)
+    if one_team["elected"] and one_team["external_finalizes_alone"]:
+        raise TestnetError(
+            f"with {external} external validators and one team pool absent the external "
+            "validators would hold at least two thirds of the weight and finalize alone"
+        )
     share = Fraction(100 * team_weight, total)
-    if external >= 2 and abs(share - target) > TEAM_WEIGHT_TOLERANCE:
+    if external >= 3 and not target <= share < Fraction(200, 3):
         raise TestnetError(
             f"with {external} external validators the team holds {float(share):.4f} % of the "
-            f"weight, not {target} %"
+            f"weight, outside [{target} %, two thirds)"
         )
+    partial = [
+        _partial_election(team_members, external_members[:k], limits) for k in range(external + 1)
+    ]
+    alone = [k for k, case in enumerate(partial) if case["team_finalizes_alone"]]
+    # Liveness of the elected set of all pools: how many external validators must be
+    # online for two thirds, with both team validators up and with one down.
+    each = elected[-1]["weight"] if external else 0
+    team_each = team_weight // team
+
+    def needed(team_up: int) -> int | None:
+        for k in range(external + 1):
+            if finalizes(team_up * team_each + k * each, total):
+                return k
+        return None
+
     return {
         "team_validators": team,
         "external_validators": external,
@@ -840,9 +875,44 @@ def _plan_for(
         "bootstrap_wallet_tos": bootstrap,
         "total_supply_tos": bootstrap + GENESIS_SYSTEM_ACCOUNTS_TOS,
         "team_weight_percent": float(share),
+        "team_finalizes_alone": finalizes(team_weight, total),
+        "external_finalizes_alone": False,
         "team_only_election": f"elects the {team} team pools",
+        "partial_sets": {
+            "externals_standing_with_both_team_pools": [
+                {"externals": k, **case} for k, case in enumerate(partial)
+            ],
+            "team_finalizes_alone_with_externals": alone,
+            "one_team_pool_absent": one_team,
+        },
+        "liveness": {
+            "externals_online_needed_both_team_up": needed(team),
+            "externals_online_needed_one_team_down": needed(team - 1),
+        },
         "team_max_factor": max_factor_text(team_factor),
         "external_max_factor": max_factor_text(external_factor),
+    }
+
+
+def side_weights(elected: list[dict[str, Any]]) -> tuple[int, int, int]:
+    """(team weight, external weight, total) of an elected set from simulate_election."""
+    total = sum(m["weight"] for m in elected)
+    team = sum(m["weight"] for m in elected if m["label"].startswith("team-"))
+    return team, total - team, total
+
+
+def _partial_election(team_members, external_members, limits) -> dict[str, Any]:
+    """What an election of only these members gives: whether it elects them all,
+    each side's share and whether either side finalizes alone."""
+    elected, why = simulate_election(team_members + external_members, limits)
+    if elected is None:
+        return {"elected": False, "why": why}
+    team, others, total = side_weights(elected)
+    return {
+        "elected": len(elected) == len(team_members) + len(external_members),
+        "team_weight_percent": float(Fraction(100 * team, total)),
+        "team_finalizes_alone": finalizes(team, total),
+        "external_finalizes_alone": finalizes(others, total),
     }
 
 
@@ -1638,6 +1708,11 @@ def zero_state_genesis_set(boc: bytes) -> dict[str, Any]:
         )
     if total != len(validators):
         raise TestnetError(f"ConfigParam 34 says {total} validators and holds {len(validators)}")
+    if total_weight != sum(v["weight"] for v in validators):
+        raise TestnetError(
+            f"ConfigParam 34 says total weight {total_weight}, but its validators weigh "
+            f"{sum(v['weight'] for v in validators)}"
+        )
     return {
         "validator_num": num,
         "stake_limits": stake,

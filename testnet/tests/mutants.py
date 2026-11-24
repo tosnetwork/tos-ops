@@ -1361,6 +1361,42 @@ M += [
         "            not_onboarded.append(name)\n",
         "            pass\n",
     ),
+    (
+        "P18 externals reaching two thirds of the full set are accepted",
+        LIB,
+        "    if finalizes(external_weight, total):\n",
+        "    if False:\n",
+    ),
+    (
+        "P19 externals reaching two thirds with one team pool absent are accepted",
+        LIB,
+        '    if one_team["elected"] and one_team["external_finalizes_alone"]:\n',
+        "    if False:\n",
+    ),
+    (
+        "P20 the team share bounds are not checked",
+        LIB,
+        "    if external >= 3 and not target <= share < Fraction(200, 3):\n",
+        "    if False:\n",
+    ),
+    (
+        "P21 an exclusion without a recorded pool is accepted",
+        EL,
+        "        if name not in pools:\n",
+        "        if False:\n",
+    ),
+    (
+        "P22 ConfigParam 34's total weight is not compared",
+        LIB,
+        '    if total_weight != sum(v["weight"] for v in validators):\n',
+        "    if False:\n",
+    ),
+    (
+        "P23 finality at more than two thirds",
+        LIB,
+        "    return 3 * weight >= 2 * total\n",
+        "    return 3 * weight > 2 * total\n",
+    ),
 ]
 
 

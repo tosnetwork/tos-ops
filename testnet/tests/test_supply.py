@@ -194,7 +194,7 @@ def test_the_genesis_check_reads_config_param_15_back():
 
 def test_the_profile_supply_targets_are_the_planned_ones():
     profile = planned_profile(2)
-    assert lib.genesis_supply_targets(profile) == (80_161 * NANO, 81_161 * NANO)
+    assert lib.genesis_supply_targets(profile) == (100_161 * NANO, 101_161 * NANO)
     profile["genesis"]["total_supply_tos"] = 81_150
     with pytest.raises(lib.TestnetError, match="plus 1000 TOS"):
         lib.genesis_supply_targets(profile)
@@ -415,6 +415,7 @@ def test_the_december_genesis_set_and_limits_reach_the_zero_state(tmp_path, exte
     }
     read = lib.zero_state_genesis_set(boc)
     assert read["main"] == 2 and len({v["weight"] for v in read["validators"]}) == 1
+    assert read["total_weight"] == sum(v["weight"] for v in read["validators"]) == 34
     # The read-back refuses another set, other limits or a second manifest order.
     with pytest.raises(lib.TestnetError, match="validator set is 2 validators other than"):
         lib.check_zero_state_genesis_set(boc, limits, records[::-1])
@@ -459,3 +460,38 @@ def test_the_patched_template_refuses_a_four_record_manifest(tmp_path):
     )
     assert run.returncode != 0
     assert "exactly 2 1376-byte records" in run.stdout + run.stderr
+
+
+def test_a_validator_set_whose_total_weight_disagrees_is_refused(tmp_path, monkeypatch):
+    """ConfigParam 34's total_weight must be the sum of its validators' weights."""
+    profile = planned_profile(0)
+    patched = lib.patch_genesis_set(
+        lib.patch_template(
+            tos_template(),
+            2,
+            EPOCH6_EPOCH,
+            lib.validator_schedule(profile),
+            lib.derive_auth_network_tag("tos-public-testnet", 2, 9),
+        ),
+        lib.genesis_limits(profile),
+        lib.election_plan(profile)["bootstrap_wallet_tos"],
+    )
+    december_state = create_state(tmp_path, patched, EPOCH6_EPOCH, validators=2)
+    assert lib.zero_state_genesis_set(december_state)["total_weight"] == 34
+    real = lib.zero_state_config
+
+    def tampered(boc):
+        root, global_id, params = real(boc)
+        cell = params[34]
+        s = lib.Slice(cell)
+        bits = "".join(str(s.bits(1)) for _ in range(cell.bits))
+        # validators_ext#12 since until total main | total_weight (64 bits at 8+64+32).
+        start = 8 + 64 + 32
+        weight = int(bits[start : start + 64], 2) + 1
+        bits = bits[:start] + format(weight, "064b") + bits[start + 64 :]
+        params = {**params, 34: lib.cell_from_bits(bits, cell.refs)}
+        return root, global_id, params
+
+    monkeypatch.setattr(lib, "zero_state_config", tampered)
+    with pytest.raises(lib.TestnetError, match="total weight"):
+        lib.zero_state_genesis_set(december_state)

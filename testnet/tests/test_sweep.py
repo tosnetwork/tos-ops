@@ -831,3 +831,12 @@ def test_an_exclusion_is_not_recorded_while_another_prerequisite_fails(world):
         run_sweep(world, exclude=["node-4"], reason="host never came up")
     assert not world.operations.journal.path("sweep-exclude-node-4").exists()
     assert world.signed == []
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_an_exclusion_of_a_name_without_a_pool_is_refused_up_front(world, dry_run):
+    without(world, "node-4")
+    with pytest.raises(lib.TestnetError, match="node-9 has no pool in pools.json"):
+        run_sweep(world, dry_run=dry_run, exclude=["node-9"], reason="unknown")
+    assert world.signed == [] and world.chain.sent == []
+    assert not world.operations.journal.path("sweep-exclude-node-9").exists()

@@ -24,11 +24,16 @@ Onboarding accepts any pool `genesis-records.json` names; a pool in
 
 ### Stake, weight and funding: set after registration closes
 
-Each external pool stakes one unit (`elections.stake_tos`, 10,002 TOS). Each team
-pool stakes `elections.team_stake_multiple` units: E/2, and at least one, so
-that the team holds about half of the weight once the external validators are
-elected and neither side alone holds more than two thirds (the chain needs both
-to finalize). E is known only when registration closes, so the profile ships
+Each external pool stakes one unit (`elections.stake_tos`, 10,002 TOS; the
+Elector keeps 1 TOS of every order, so a unit stands as 10,001). Each team pool
+stakes `elections.team_stake_multiple` = (E+1)/2 units, at least one: its order
+is that many units of 10,001 TOS, rounded down, plus the 1 TOS. TOS finalizes
+with **at least** two thirds of the weight (tos `quorum.h` `has_quorum`:
+signed x 3 >= total x 2). With both team pools elected the team holds E+1 units
+against E, just above half; with one team pool absent from an election the
+external validators hold 2E/(3E+1) of the weight, strictly below two thirds. So
+the external validators can never finalize without the team (the hard
+invariant), and with every pool elected neither side finalizes alone. E is known only when registration closes, so the profile ships
 with `elections.external_validators`, `elections.team_stake_multiple`,
 `elections.bootstrap_wallet_tos` and `genesis.total_supply_tos` set to `null`,
 and `manifest`, `genesis` and team onboarding refuse until they are set. After
@@ -43,8 +48,13 @@ and copies the four values it prints under `set_in_profile` into
 plan is `testnet_lib.election_plan`: it simulates the Elector's choice
 (`elector-code.fc` `try_elect`) and refuses unless an election of the two team
 pools alone concludes and elects both (E = 0 included), all 2 + E pools are
-elected with no team stake cut by a max factor, neither side holds more than two
-thirds of the weight, and from E = 2 the team holds `team_weight_percent` (50 %).
+elected with no team stake cut by a max factor, the external validators hold
+less than two thirds of the weight with every pool elected and with either team
+pool absent, and from E = 3 the team's share is in [50 % (`team_weight_percent`),
+two thirds). The team holding two thirds is the safe direction and is allowed:
+the plan reports it as `team_finalizes_alone` (at E = 0 and 1), and under
+`partial_sets` it reports every set of k standing external validators (for which
+k the team finalizes alone) and the set with one team pool absent.
 Every load of a profile with E set repeats the check, so a wrong bootstrap total
 or multiple refuses. The bootstrap wallet is every pool's operator funding and
 owner funding (principal + `pool_owner_reserve_tos` + `pool_deploy_tos`), a
@@ -54,20 +64,26 @@ transfer or a fee rise, happens per pool and the sweep burns what is left, and
 `bootstrap_transfer_fee_nanotos` for each of its 2 x (2 + E) + 1 transfers,
 rounded up.
 
-| E | team multiple | team stake (TOS) | bootstrap wallet (TOS) | team weight |
-|---|---|---|---|---|
-| 0 | 1 | 10,002 | 40,081 | 100 % |
-| 1 | 1 | 10,002 | 60,121 | 66.7 % (exactly two thirds: not enough to finalize alone) |
-| 2 | 1 | 10,002 | 80,161 | 50 % |
-| 3 | 1.5 | 15,003 | 120,205 | 50 % |
-| 4 | 2 | 20,004 | 160,249 | 50 % |
-| 5 | 2.5 | 25,005 | 200,293 | 50 % |
-| 10 | 5 | 50,010 | 400,513 | 50 % |
-| 19 | 9.5 | 95,019 | 760,909 | 50 % |
+| E | team multiple | team stake order (TOS) | bootstrap wallet (TOS) | team weight | team finalizes alone | externals' weight, one team pool absent |
+|---|---|---|---|---|---|---|
+| 0 | 1 | 10,002 | 40,081 | 100.0 % | yes | — |
+| 1 | 1 | 10,002 | 60,121 | 66.7 % | yes | 50.0 % |
+| 2 | 1.5 | 15,002 | 100,161 | 60.0 % | no | 57.1 % |
+| 3 | 2 | 20,003 | 140,205 | 57.1 % | no | 60.0 % |
+| 4 | 2.5 | 25,003 | 180,245 | 55.6 % | no | 61.5 % |
+| 5 | 3 | 30,004 | 220,289 | 54.5 % | no | 62.5 % |
+| 10 | 5.5 | 55,006 | 420,497 | 52.4 % | no | 64.5 % |
+| 19 | 10 | 100,011 | 780,877 | 51.3 % | no | 65.5 % |
+
+At E = 0 and E = 1 the team holds two thirds or more and finalizes alone; that
+is accepted degradation, the network then runs on the team. The same holds in
+any election in which few external validators stand: at E = 19 the team
+finalizes alone with up to 10 standing external validators.
 
 A team pool's stake orders carry max factor 10.0 (`elections.max_factor`), so a
-team stake of up to 9.5 units (E = 19) counts in full against the one-unit
-external stakes; ConfigParam 17 allows 10. This needs a tosctl that accepts a max
+team stake of up to 10 units (E = 19: 10 x 10,001 TOS as the Elector holds it,
+exactly the cap) counts in full against the one-unit external stakes;
+ConfigParam 17 allows 10. This needs a tosctl that accepts a max
 factor from 1.0 to 100.0 (the bound of upstream's `validator-elect-req.fif`);
 releases before that change stop at 3.0. Team onboarding probes the host's
 tosctl on a throwaway copy of its configuration before any value moves, and
@@ -504,6 +520,36 @@ places that do not share infrastructure (plan G0: two independent observers).
 After the first ordinary election, drop `--genesis-set`.
 
 ## 8. After genesis
+
+### Liveness: what keeps blocks final
+
+A block is final with at least two thirds of the elected set's weight. The plan
+reports, under `liveness`, how many external validators must be online:
+
+- **Before the first elected set (T to T + 6 h)** the set is the two team
+  validators: both must be up.
+- **Both team validators up:** the team holds just over half, so the chain
+  needs about a third of the external weight online. At E = 19 that is
+  6 of the 19 external validators.
+- **One team validator down:** the remaining team validator holds about a
+  quarter, so the chain needs most of the external weight. At E = 19 that is
+  16 of the 19.
+- **The first election elects every external that staked**, synchronized or
+  not: a pool whose node is not in sync stands with its weight and does not
+  sign, and counts as offline in the numbers above until it is.
+
+A halt shows first as head age. `watch-testnet.py` (`--max-head-age`, default
+120 s) reports `ANOMALY <host>:head_age=...` and, with `--stuck-samples`, a head
+seqno that stops moving, and the alert relay forwards it; `check-testnet.py`
+across independent nodes refuses with the lag of each node. An election that
+does not conclude keeps blocks going but makes no key block: the next set's
+`utime_since` does not arrive and the database grows. The recovery plan is the
+announcement's [stall section](ANNOUNCEMENT-20261205.md#if-elections-or-block-production-stall):
+operators keep their nodes and election services running and report free disk,
+and within 12 hours of the missed handover the coordinator announces whether the
+network continues, restarts from a new genesis or ends. Bring a downed team
+validator back first: with both team validators up the chain needs the fewest
+external validators.
 
 The schedule is `genesis` in `network/profile.json`, and `genesis.json` prints
 its times. Epoch 6 carries the 2 h ConfigParam 15 epoch 5 adopted by its live
@@ -1020,8 +1066,9 @@ contract (`-1:55…55`). The steps, and why each is shaped as it is:
 5. **Rounds.** A round is won when votes of more than 3/4 of the set's weight
    arrive; the proposal is adopted after ConfigParam 11's `min_wins` won rounds
    (2 ordinary, 3 critical), each under a different set. With the team holding
-   half of the weight, every round needs the team and more than half of the
-   external weight; before the first election the two genesis validators both vote.
+   a little over half of the weight, every round needs both team validators and
+   about half of the external weight; before the first election the two genesis
+   validators both vote.
 6. **Adopted.** `adopted` exits 0 only when both validators serve the new cell.
 
 ```bash

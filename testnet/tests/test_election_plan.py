@@ -49,8 +49,10 @@ def expected_bootstrap(p, external):
     """The bootstrap wallet, summed here independently of election_plan."""
     e = p["elections"]
     unit = e["stake_tos"]
-    multiple = max(Fraction(1), Fraction(external, 2))
-    team_principal = e["pool_tos"] + 2 * (int(multiple * unit) - unit)
+    multiple = max(Fraction(1), Fraction(external + 1, 2))
+    # The Elector keeps 1 TOS of each order: a unit stands as unit - 1.
+    team_stake = int(multiple * (unit - 1)) + 1
+    team_principal = e["pool_tos"] + 2 * (team_stake - unit)
     owner_extra = e["pool_owner_reserve_tos"] + e["pool_deploy_tos"]
     team = 2 * (e["operator_funding_tos"] + team_principal + owner_extra)
     others = external * (e["operator_funding_tos"] + e["pool_tos"] + owner_extra)
@@ -118,34 +120,52 @@ def test_no_external_validator_leaves_the_team_alone():
     assert plan["bootstrap_wallet_tos"] == expected_bootstrap(profile(), 0) == 40081
     assert plan["bootstrap_margin_tos"] == 26
     assert plan["total_supply_tos"] == 41081
-    assert plan["team_weight_percent"] == 100
+    assert plan["team_weight_percent"] == 100 and plan["team_finalizes_alone"] is True
+    # One team pool alone is fewer than min_validators: that election fails, and the
+    # genesis set or the previous set stays in office.
+    assert plan["partial_sets"]["one_team_pool_absent"]["elected"] is False
 
 
-def test_one_external_validator_leaves_the_team_at_exactly_two_thirds():
-    # The Elector's minimum keeps the team at one unit each: 2 of 3 units is two
-    # thirds, which is not more than two thirds, so neither side finalizes alone.
+def test_one_external_validator_leaves_the_team_finalizing_alone():
+    # (1+1)/2 = 1 unit each: 2 of 3 units is two thirds, and TOS finalizes at two
+    # thirds, so the team finalizes alone (allowed: the safe direction). The
+    # external validator never does.
     plan = lib.election_plan(profile(), external=1)
     assert plan["team_stake_multiple"] == "1"
     assert plan["bootstrap_wallet_tos"] == expected_bootstrap(profile(), 1) == 60121
     assert Fraction(plan["team_weight_percent"]).limit_denominator(1000) == Fraction(200, 3)
+    assert plan["team_finalizes_alone"] is True and plan["external_finalizes_alone"] is False
+    one = plan["partial_sets"]["one_team_pool_absent"]
+    assert one["elected"] and not one["external_finalizes_alone"]
 
 
-def test_five_external_validators_give_the_team_half_the_weight():
+def test_five_external_validators_give_the_team_just_over_half():
     plan = lib.election_plan(profile(), external=5)
-    assert plan["team_stake_multiple"] == "2.5" and plan["team_stake_tos"] == 25005
-    assert plan["team_pool_principal_tos"] == 20010 + 2 * 15003 == 50016
-    assert plan["team_owner_funding_tos"] == 50016 + 5 + 2
+    # (5+1)/2 = 3 units of 10,001 TOS as the Elector holds them, plus its 1 TOS.
+    assert plan["team_stake_multiple"] == "3" and plan["team_stake_tos"] == 30004
+    assert plan["team_pool_principal_tos"] == 20010 + 2 * 20002 == 60014
+    assert plan["team_owner_funding_tos"] == 60014 + 5 + 2
     assert plan["external_owner_funding_tos"] == 20010 + 5 + 2
-    assert plan["bootstrap_wallet_tos"] == expected_bootstrap(profile(), 5) == 200293
-    assert abs(plan["team_weight_percent"] - 50) < 0.01
+    assert plan["bootstrap_wallet_tos"] == expected_bootstrap(profile(), 5) == 220289
+    # 6 units against 5.
+    assert abs(plan["team_weight_percent"] - 600 / 11) < 0.01
+    assert plan["team_finalizes_alone"] is False
 
 
 def test_nineteen_external_validators_with_max_factor_10():
     plan = lib.election_plan(profile(), external=19)
-    assert plan["team_stake_multiple"] == "9.5" and plan["team_stake_tos"] == 95019
+    # Ten units as the Elector holds them, 100,010 TOS: exactly ConfigParam 17's cap.
+    assert plan["team_stake_multiple"] == "10" and plan["team_stake_tos"] == 100011
     assert plan["team_max_factor"] == "10.0" and plan["external_max_factor"] == "3.0"
-    assert plan["bootstrap_wallet_tos"] == expected_bootstrap(profile(), 19) == 760909
-    assert abs(plan["team_weight_percent"] - 50) < 0.01
+    assert plan["bootstrap_wallet_tos"] == expected_bootstrap(profile(), 19) == 780877
+    assert abs(plan["team_weight_percent"] - 2000 / 39) < 0.01
+    partial = plan["partial_sets"]
+    assert partial["team_finalizes_alone_with_externals"] == list(range(11))
+    assert abs(100 - partial["one_team_pool_absent"]["team_weight_percent"] - 3800 / 58) < 0.01
+    assert plan["liveness"] == {
+        "externals_online_needed_both_team_up": 6,
+        "externals_online_needed_one_team_down": 16,
+    }
     with pytest.raises(lib.TestnetError, match="exceed the 19 seats"):
         lib.election_plan(profile(), external=20)
 
@@ -154,8 +174,9 @@ def test_nineteen_external_validators_with_max_factor_10():
 def test_every_e_is_planned(external):
     plan = lib.election_plan(profile(), external=external)
     assert plan["bootstrap_wallet_tos"] == expected_bootstrap(profile(), external)
-    if external >= 2:
-        assert abs(plan["team_weight_percent"] - 50) < 0.01
+    if external >= 3:
+        assert 50 <= plan["team_weight_percent"] < 200 / 3
+    assert plan["team_finalizes_alone"] is (external <= 1)
 
 
 @pytest.mark.parametrize("external", range(6, 20))
@@ -186,33 +207,85 @@ def test_external_pools_keep_the_tosctl_default():
 # ---------------------------------------------------------------- the weights, as the Elector sets them
 
 
-def weights(p, external):
-    """Team and external weight from the Elector simulation, as election_plan uses it."""
+def elector_sets(p, external):
+    """(both team pools, one team pool absent) elected sets, simulated here from the
+    plan's stake orders: each order less the Elector's 1 TOS, integer weights."""
     limits = lib.genesis_limits(p)
     plan = lib.election_plan(p, external=external)
     ft = int(lib.tosctl_max_factor(p) * lib.MAX_FACTOR_ONE)
     fe = int(lib.tosctl_max_factor(p, "external_max_factor") * lib.MAX_FACTOR_ONE)
     team = [("team-%d" % i, plan["team_stake_tos"] * NANO - NANO, ft) for i in range(2)]
     others = [("ext-%d" % i, plan["unit_stake_tos"] * NANO - NANO, fe) for i in range(external)]
-    elected, why = lib.simulate_election(team + others, limits)
-    assert elected is not None, why
-    team_w = sum(m["weight"] for m in elected if m["label"].startswith("team"))
+    both, why = lib.simulate_election(team + others, limits)
+    assert both is not None and len(both) == 2 + external, why
+    one, _ = lib.simulate_election(team[:1] + others, limits)
+    return both, one
+
+
+def shares(elected):
+    team = sum(m["weight"] for m in elected if m["label"].startswith("team"))
     total = sum(m["weight"] for m in elected)
-    return team_w, total - team_w, total, len(elected)
+    return team, total - team, total
 
 
-@pytest.mark.parametrize("external", range(1, 20))
-def test_neither_side_alone_reaches_more_than_two_thirds(external):
-    team, others, total, count = weights(profile(), external)
-    assert count == 2 + external
-    assert 3 * team <= 2 * total and 3 * others <= 2 * total
-    # And the chain needs both: neither side's weight is above the finality cutoff.
-    assert team < total and others < total
+@pytest.mark.parametrize("external", range(0, 20))
+def test_the_external_validators_never_reach_two_thirds(external):
+    """The hard invariant, pinned with the exact Elector arithmetic: strictly below
+    two thirds (TOS finalizes at signed * 3 >= total * 2), in the full set and with
+    either team pool absent."""
+    both, one = elector_sets(profile(), external)
+    _, others, total = shares(both)
+    assert 3 * others < 2 * total
+    # Every stake counts in full: no max factor cuts the team.
+    assert all(m["true_stake_nanotos"] == m["stake_nanotos"] for m in both)
+    if one is not None:
+        _, others, total = shares(one)
+        assert 3 * others < 2 * total
+    else:
+        assert external == 0  # one pool is fewer than min_validators
+    # With every pool elected the team finalizes alone only below E = 2.
+    team, _, total = shares(both)
+    assert (3 * team >= 2 * total) is (external <= 1)
 
 
 def test_the_team_alone_elects_itself_and_holds_everything():
-    team, others, total, count = weights(profile(), 0)
-    assert count == 2 and others == 0 and team == total
+    both, one = elector_sets(profile(), 0)
+    team, others, total = shares(both)
+    assert len(both) == 2 and others == 0 and team == total and one is None
+
+
+# ---------------------------------------------------------------- the two-thirds guards
+
+
+def test_externals_reaching_two_thirds_with_every_pool_elected_are_refused(monkeypatch):
+    # A rule that leaves the team at one unit: 19 external units against 2.
+    monkeypatch.setattr(lib, "team_stake_multiple_rule", lambda external: Fraction(1))
+    with pytest.raises(lib.TestnetError, match="finalize without the team"):
+        lib.election_plan(profile(), external=19)
+
+
+def test_externals_reaching_two_thirds_with_one_team_pool_absent_are_refused(monkeypatch):
+    # A team just under the earlier E/2 rule: with both team pools the external
+    # validators hold about half, but with one absent 4 units against 1.9, more
+    # than two thirds. (At exactly E/2 the integer weights round the external
+    # side just below two thirds.)
+    monkeypatch.setattr(
+        lib,
+        "team_stake_multiple_rule",
+        lambda external: max(Fraction(1), Fraction(external, 2) - Fraction(1, 10)),
+    )
+    with pytest.raises(lib.TestnetError, match="one team pool absent"):
+        lib.election_plan(profile(), external=4)
+
+
+def test_a_team_share_outside_half_to_two_thirds_is_refused_from_three_externals(monkeypatch):
+    monkeypatch.setattr(lib, "team_stake_multiple_rule", lambda external: Fraction(external + 1))
+    with pytest.raises(lib.TestnetError, match=r"outside \[50 %, two thirds\)"):
+        lib.election_plan(profile(), external=3)
+
+
+def test_finality_is_at_two_thirds_inclusive():
+    assert lib.finalizes(2, 3) and lib.finalizes(200, 300) and not lib.finalizes(199, 300)
 
 
 # ---------------------------------------------------------------- election limits
@@ -242,9 +315,9 @@ def test_min_validators_above_the_genesis_set_is_refused():
 def test_a_config_param_17_max_factor_of_one_cuts_the_team_stake():
     p = profile()
     p["genesis"]["stake_limits"]["max_factor"] = 1
-    lib.election_plan(p, external=2)  # one unit each: nothing to cut
+    lib.election_plan(p, external=1)  # one unit each: nothing to cut
     with pytest.raises(lib.TestnetError, match="counts at most 1.0 units"):
-        lib.election_plan(p, external=3)
+        lib.election_plan(p, external=2)
 
 
 def test_a_tosctl_max_factor_outside_its_range_is_refused():
@@ -282,9 +355,9 @@ def test_a_planned_profile_loads_and_any_wrong_value_refuses():
     p = planned(5)
     assert lib.election_plan(p)["external_validators"] == 5
     for section, key, value in (
-        ("elections", "bootstrap_wallet_tos", 200292),
-        ("elections", "team_stake_multiple", "2"),
-        ("genesis", "total_supply_tos", 200293),
+        ("elections", "bootstrap_wallet_tos", 220288),
+        ("elections", "team_stake_multiple", "2.5"),
+        ("genesis", "total_supply_tos", 220289),
         ("elections", "external_validators", 4),
     ):
         wrong = copy.deepcopy(p)
@@ -312,8 +385,8 @@ def test_load_profile_refuses_a_wrong_bootstrap_total(tmp_path):
 def test_pool_amounts_per_role():
     p = planned(4)
     team, other = lib.pool_amounts(p, True), lib.pool_amounts(p, False)
-    assert team["stake"] == 20004 * NANO and team["principal"] == 40014 * NANO
-    assert team["owner_funding"] == (40014 + 5 + 2) * NANO
+    assert team["stake"] == 25003 * NANO and team["principal"] == 50012 * NANO
+    assert team["owner_funding"] == (50012 + 5 + 2) * NANO
     assert team["max_factor"] == "10.0" and other["max_factor"] == "3.0"
     assert other["stake"] == 10002 * NANO and other["principal"] == 20010 * NANO
     assert other["owner_funding"] == (20010 + 5 + 2) * NANO
@@ -336,11 +409,11 @@ def test_the_plan_command_writes_a_planned_copy(tmp_path, capsys):
     printed = json.loads(capsys.readouterr().out.split("\nwrote ")[0])
     assert printed["set_in_profile"] == {
         "elections.external_validators": 3,
-        "elections.team_stake_multiple": "1.5",
+        "elections.team_stake_multiple": "2",
         "elections.bootstrap_wallet_tos": expected_bootstrap(profile(), 3),
         "genesis.total_supply_tos": expected_bootstrap(profile(), 3) + 1000,
     }
-    assert lib.election_plan(lib.load_profile(out))["team_stake_tos"] == 15003
+    assert lib.election_plan(lib.load_profile(out))["team_stake_tos"] == 20003
     # Never overwritten, and an impossible E is refused.
     assert coordinator.main(["plan", "--external-validators", "3", "--write", str(out)]) == 1
     assert coordinator.main(["plan", "--external-validators", "20"]) == 1

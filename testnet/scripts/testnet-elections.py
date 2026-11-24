@@ -1648,10 +1648,15 @@ def requested_exclusions(args: argparse.Namespace) -> dict[str, str]:
         return {}
     if not reason:
         raise lib.TestnetError("--exclude needs --reason TEXT: the journal records why")
+    pools = read_pools(Path(args.ceremony))
     for name in names:
         if not SAFE_NAME.match(name):
             raise lib.TestnetError(f"not a node name: {name!r}")
         sweep_exclusion_id(name)
+        if name not in pools:
+            raise lib.TestnetError(
+                f"{name} has no pool in {POOLS_FILE}: only a recorded pool can be excluded"
+            )
     return {name: reason for name in names}
 
 

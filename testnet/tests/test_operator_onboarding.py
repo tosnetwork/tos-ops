@@ -766,12 +766,12 @@ def test_a_team_pool_stakes_the_team_multiple(boarding):  # noqa: F811
     name_in_genesis_set(b)
     profile = planned_profile(4)
     team = lib.election_plan(profile)
-    assert team["team_stake_tos"] == 20004
+    assert team["team_stake_tos"] == 25003
     elections.onboard(b["args"], b["ops"], 2, profile)
     principal = team["team_pool_principal_tos"]
     assert b["chain"].account(b["pool"])["balance"] == (E["pool_deploy_tos"] + principal) * NANO
     assert b["ops"].journal.record("principal-node-1")["value"] == principal * NANO
-    assert b["host"].commands[-1].endswith("--name node-1 --stake-tos 20004 --max-factor 10.0")
+    assert b["host"].commands[-1].endswith("--name node-1 --stake-tos 25003 --max-factor 10.0")
     # The host's tosctl was probed for the team's max factor before anything moved.
     probes = [c for c in b["host"].commands if elections.vh.MAX_FACTOR_MARKER in c]
     assert len(probes) == 1 and "max-factor 10.0" in probes[0]

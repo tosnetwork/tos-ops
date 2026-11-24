@@ -97,7 +97,7 @@ If the previous election schedule is retained, the first election opens **five h
 
 ### How the network depends on you
 
-The launch set is the team's two validators, so the chain starts without waiting for anyone. From the first election on, the team's validators together hold about half of the voting weight and external validators the other half. A block is final only with more than two thirds of the weight, so neither side can finalize alone: **the network moves forward only while enough external validators are online.** A validator that goes offline is left out of the next election, two hours later.
+The launch set is the team's two validators, so the chain starts without waiting for anyone. From the first election on, the team's validators together hold a little over half of the voting weight and external validators the rest. A block is final only with at least two thirds of the weight, so neither side can finalize alone: **the network moves forward only while enough external validators are online.** A validator that goes offline is left out of the next election, two hours later.
 
 ### If elections or block production stall
 
