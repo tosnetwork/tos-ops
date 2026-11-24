@@ -158,7 +158,9 @@ scripts refuse or flag it rather than choose silently.
 | D03 global id | `network/profile.json` `global_id` | 2, `CONFIRMED` 2026-10-12 (mainnet 1). The scripts refuse 1 and 3, and `genesis` refuses any global id not marked `CONFIRMED` |
 | D03 genesis epoch | `testnet-coordinator.py genesis --epoch` | chosen at the ceremony; refused if older than one hour or more than 14 days ahead |
 | D03 validator schedule | `network/profile.json` `genesis.initial_set_valid_for_seconds` and `genesis.election_params`; `genesis` replaces the two template lines and records them in `genesis.json` | epochs 6 and 7 (CFG-01, test lead 2026-10-28): initial set 21,600 s, ConfigParam 15 = 7,200 / 3,600 / 900 / 3,600, the 2 h schedule epoch 5 adopted by its live vote (first election T + 5 h to T + 5 h 45 min, a new set and a key block every 2 h); `genesis` reads ConfigParam 15 back from the state. `network/profile-production-timing.json` keeps the canonical schedule for a production-timing rehearsal. The canonical 131,072 s / 65,536 s schedule left the first epoch without GC for 34 h |
-| Genesis supply and burning (ConfigParam 5) | `network/profile.json` `elections.bootstrap_wallet_tos`, `genesis.total_supply_tos`; the values themselves come from the tos template | 80,151 TOS bootstrap wallet, 81,151 TOS total; ConfigParam 5 = blackhole `-1:ff…ff`, fees burned 0/1, critical. `genesis` refuses any other state; the bootstrap wallet is swept to the blackhole after the second elected set (CEREMONY.md, "Sweeping the bootstrap wallet") |
+| Genesis set and external validators | `network/profile.json` `genesis.validators`, `elections.external_validators`, `elections.max_external_validators`; `manifest` writes `genesis-set.json` and `genesis-records.json` | December 5 (owner and coordinator 2026-11-24): the genesis set is the team's 2 validators; up to 19 external validators register a record and a pool before genesis and stand from the first election. E (`external_validators`) is set after registration closes on November 30; until then it is `null` and `manifest`, `genesis` and team onboarding refuse (CEREMONY.md, "Stake, weight and funding") |
+| Election limits (ConfigParam 16 and 17) and weights | `network/profile.json` `genesis.validator_num`, `genesis.stake_limits`, `elections.team_stake_multiple`, `elections.max_factor`; `genesis` replaces the template lines and reads them back | ConfigParam 16 = 21 / 21 / 2, ConfigParam 17 = 10,000 / 10,000,000 / 20,000 / 10 (the template's 40,000 minimum total would stall a team-only election). External pools stake 10,002, each team pool E/2 times that (at least once), so the team holds about 50 %. tosctl caps a stake order's max factor at 3.0, so `election_plan` refuses E > 5 until tosctl accepts more |
+| Genesis supply and burning (ConfigParam 5) | `network/profile.json` `elections.bootstrap_wallet_tos`, `genesis.total_supply_tos`; derived and checked by `testnet_lib.election_plan` (`testnet-coordinator.py plan`), written into the template by `genesis` | the funding of 2 + E pools plus the margin and the transfer fees (40,105 TOS for E = 0, 200,252 TOS for E = 5), total 1,000 TOS more; ConfigParam 5 = blackhole `-1:ff…ff`, fees burned 0/1, critical. `genesis` refuses any other state; the bootstrap wallet is swept to the blackhole after the second elected set (CEREMONY.md, "Sweeping the bootstrap wallet") |
 | Validator retention | `network/profile.json` `retention`, `systemd/tos-testnet-validator.service` | `state_ttl` 86,400 s, `archive_ttl` 86,400 s, as upstream TON's validator settings (mytonctrl validator mode, upstream docker); full node `archive_ttl` 2,592,000 s, as mytonctrl's liteserver mode. A test keeps the units and the profile equal |
 | D05 privacy | the template deploys no pool; `network/profile.json` `features.shielded_pool` and `shielded_pool_record` | epochs 7 and 8: `disabled`, no record. Epoch 6 carried `restricted-epoch-6-test` (memo STATUS 13.250, 13.267–13.269): one bounded PRI-01..03 test from three fresh test wallets, 150 TOS budget, with a record bound to the epoch-6 AUTH tag and zero state (its last copy is in git history before this change). A restricted status needs such a record; it is metadata that deploys and protects nothing, and `load_profile` refuses a record bound to another global id, epoch or AUTH tag, or an address that is not the StateInit hash. The pool is not part of Gate C or D, so a later test needs a new record bound to its epoch and a new approval. Version 16 without `quantum-admission-candidate` |
 | AUTH network tag (ConfigParam 48) | `network/profile.json` `genesis.auth_network_tag`, given to `genesis` as `TOS_AUTH_NETWORK_TAG` | epoch 8 (2026-11-22; the owner may replace the rule): SHA-256 of `TOS-AUTH-NETWORK-TAG-v1;network=tos-public-testnet;global_id=2;epoch=8` = `b7d72ce5…2011`, a new tag every epoch. Version 16 makes ConfigParam 48 mandatory and critical; tos assigns no tag (CEREMONY.md section 5) |
@@ -298,8 +300,9 @@ trailing TSV column, so start a new series. Beyond 2.0 s the extra watch
 refuses with "Host observation dated in the future" and watch-testnet.py keeps
 the negative age (reported as unobserved under `--require-load-metrics`).
 
-After each rotation, confirm the elected set with the same records file used
-at genesis:
+After each rotation, confirm the elected set with the registered records
+(once every external validator is elected; otherwise a file of the records you
+expect in the set):
 
 ```bash
 TOS_ROOT=$TOS_ROOT "$TOS_ROOT/.venv/bin/python" testnet/scripts/check-testnet.py \
@@ -506,11 +509,13 @@ is not deployed.
 
 ## Verification
 
-`scripts/rehearse-loopback.sh` runs every script above on one host with four
-operators and two DHT nodes, then starts the four validators and requires
+`scripts/rehearse-loopback.sh` runs every script above on one host with one
+operator per genesis validator (`genesis.validators`, two) and two DHT nodes,
+then starts those validators and requires
 `check-testnet.py` to see one zero state, one full block id at height 20 or
-more, the testnet global id and ConfigParam 34 equal to the four genesis
-identities:
+more, the testnet global id and ConfigParam 34 equal to the genesis set's
+identities. A profile whose `external_validators` is still `null` is planned for
+none first (`plan --external-validators 0 --write`):
 
 ```bash
 TOS_ROOT=$TOS_ROOT TOS_BUILD=$TOS_ROOT/build testnet/scripts/rehearse-loopback.sh /path/to/new/workdir

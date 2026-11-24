@@ -44,7 +44,7 @@ def test_repository_profile_loads():
     profile = lib.load_profile()
     assert profile["global_id"]["value"] == 2
     assert lib.confirmed_global_id(profile) == 2
-    assert profile["genesis"]["validators"] == 4
+    assert profile["genesis"]["validators"] == 2
     assert profile["features"]["shielded_pool"] == "disabled"
     assert "shielded_pool_record" not in profile["features"]
     assert lib.shielded_pool_record(profile) is None
@@ -321,11 +321,16 @@ def test_record_with_extra_field_is_refused():
         lib.check_operator_record(record)
 
 
-def test_operator_set_must_have_four():
-    with pytest.raises(lib.TestnetError, match="exactly four"):
-        lib.check_operator_set([public_record(n) for n in range(1, 4)])
-    with pytest.raises(lib.TestnetError, match="exactly four"):
-        lib.check_operator_set([public_record(n) for n in range(1, 6)])
+def test_operator_set_has_the_count_it_is_given():
+    with pytest.raises(lib.TestnetError, match="exactly 2 operator records, not 3"):
+        lib.check_operator_set([public_record(n) for n in range(1, 4)], 2)
+    with pytest.raises(lib.TestnetError, match="exactly 4 operator records, not 5"):
+        lib.check_operator_set([public_record(n) for n in range(1, 6)], 4)
+    with pytest.raises(lib.TestnetError, match="nonempty"):
+        lib.check_operator_set([])
+    # Without a count any number of distinct records is a set: the registered
+    # records hold the genesis set and every external validator.
+    assert len(lib.check_operator_set([public_record(n) for n in range(1, 8)])) == 7
 
 
 @pytest.mark.parametrize("field", ["validator_id", "adnl_id", "operator", "address"])

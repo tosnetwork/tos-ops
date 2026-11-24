@@ -92,6 +92,10 @@ class Sweep:
                 bytes.fromhex(owner_of(name).split(":")[1]) + (-1).to_bytes(4, "big", signed=True)
             )
         (ceremony / "pools.json").write_text(json.dumps(pools))
+        # Every pool is a registered validator; the first two are the genesis set.
+        records = [{"validator_id": pool_of(name).split(":")[1]} for name in NAMES]
+        (ceremony / "genesis-records.json").write_text(json.dumps(records))
+        (ceremony / "genesis-set.json").write_text(json.dumps(records[:2]))
         self.operations = ops.Operations(
             ceremony,
             [chain.node("http://a"), chain.node("http://b")],
@@ -286,6 +290,20 @@ def damage_three_pools(w):
     (w.ceremony / "pools.json").write_text(json.dumps(pools))
 
 
+def damage_an_unregistered_pool(w):
+    # The same count, but one pool is no registered validator.
+    pools = json.loads((w.ceremony / "pools.json").read_text())
+    pools["node-4"]["pool"] = "-1:" + "cd" * 32
+    (w.ceremony / "pools.json").write_text(json.dumps(pools))
+
+
+def damage_one_more_registered(w):
+    # An external validator registered at genesis that pools.json does not hold.
+    path = w.ceremony / "genesis-records.json"
+    records = json.loads(path.read_text()) + [{"validator_id": "ce" * 32}]
+    path.write_text(json.dumps(records))
+
+
 @pytest.mark.parametrize(
     "damage, message",
     [
@@ -295,7 +313,7 @@ def damage_three_pools(w):
         (damage_fee_burn, "burns 1/2"),
         (damage_second_set_missing, "ConfigParam 32 is not an installed validator set"),
         (damage_previous_is_the_genesis_set, "no single Elector result"),
-        (damage_set_misses_a_pool, "not the four pools"),
+        (damage_set_misses_a_pool, "not the 4 registered pools"),
         (damage_stake_missing, "no frozen, unbanned stake"),
         (damage_stake_banned, "no frozen, unbanned stake"),
         (damage_two_results_for_one_set, "no single Elector result"),
@@ -303,7 +321,9 @@ def damage_three_pools(w):
         (damage_operator_below_floor, "first recovery"),
         (damage_onboarding_open, "principal-node-2.attempt-2 is not settled"),
         (damage_bootstrap_operation_open, "fund-extra is open"),
-        (damage_three_pools, "records 3 pools"),
+        (damage_three_pools, "records 3 pools; the sweep waits for all 4"),
+        (damage_an_unregistered_pool, "records 4 pools; the sweep waits for all 4"),
+        (damage_one_more_registered, "the sweep waits for all 5"),
     ],
 )
 def test_a_sweep_waits_for_every_prerequisite(world, damage, message):

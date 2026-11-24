@@ -7,7 +7,9 @@
 # REHEARSAL_PROFILE names another network profile (default network/profile.json),
 # such as network/profile-production-timing.json for a rehearsal of the bootstrap
 # flow at production ConfigParam 15 timing; genesis, pool and the node copies all
-# read it.
+# read it. A profile whose elections.external_validators is still null is
+# planned for no external validators into WORKDIR/profile.json first
+# (testnet-coordinator.py plan --write); the rehearsal runs the genesis set only.
 #
 # With REHEARSAL_HOLD_SECONDS=N the network stays up for N seconds after the
 # check passes, for fault experiments: each validator's exact command is in
@@ -16,8 +18,8 @@
 # process, restarted ones included, is stopped on exit.
 #
 # It runs the same scripts the operators and the coordinator run, in the same
-# order, with four operators, two DHT nodes and the testnet global id from
-# network/profile.json:
+# order, with one operator per genesis validator (genesis.validators), two DHT
+# nodes and the testnet global id from network/profile.json:
 #
 #   operators   first start on a placeholder config, consensus seed generated
 #               in the node directory
@@ -29,8 +31,8 @@
 #               TOS_AUTH_NETWORK_TAG, global config
 #   operators   zero state placed, bind-node, console added, engine started
 #   checker     check-testnet.py: one zero state, one full block id at the
-#               common head, the testnet global id, ConfigParam 34 = the four
-#               genesis identities, live ConfigParam 48 = the genesis tag,
+#               common head, the testnet global id, ConfigParam 34 = the
+#               genesis set's identities, live ConfigParam 48 = the genesis tag,
 #               mandatory and critical
 #
 # Differences from a real ceremony, all forced by running on one host: the
@@ -100,11 +102,17 @@ EOF
 
 OP="$HERE/testnet-operator.py"
 CO="$HERE/testnet-coordinator.py"
+if python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["elections"]["external_validators"] is None else 1)' "$PROFILE"; then
+  python3 "$CO" --profile "$PROFILE" plan --external-validators 0 \
+    --write "$WORK/profile.json" >"$WORK/plan.json"
+  PROFILE="$WORK/profile.json"
+fi
+NODES=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["genesis"]["validators"])' "$PROFILE")
 python3 "$OP" pregenesis-config "$WORK/pregenesis.json"
 
 log "operators: first start, consensus key; coordinator: pool; operators: record"
 EL="$HERE/testnet-elections.py"
-for i in 1 2 3 4; do
+for i in $(seq 1 "$NODES"); do
   db="$WORK/node$i"
   node_profile "$i"
   "$TOS_BIN/validator-engine" -C "$WORK/pregenesis.json" -D "$db" -I "127.0.0.1:$(port "$i" 0)" \
@@ -131,8 +139,10 @@ for d in 1 2; do
 done
 
 log "coordinator: manifest, genesis, global config"
+records=()
+for i in $(seq 1 "$NODES"); do records+=("$WORK/record-$i.json"); done
 python3 "$CO" --profile "$PROFILE" manifest --ceremony "$WORK/ceremony" --tos-root "$TOS_ROOT" \
-  "$WORK"/record-{1,2,3,4}.json
+  "${records[@]}"
 EPOCH=$(($(date +%s) + 30))
 # The coordinator exports the announced AUTH network tag by hand; here it is
 # read from the profile, unless the caller set one (which genesis then checks).
@@ -151,7 +161,7 @@ for d in 1 2; do
 done
 
 log "operators: zero state, bind-node, console, start"
-for i in 1 2 3 4; do
+for i in $(seq 1 "$NODES"); do
   db="$WORK/node$i"
   mkdir -m 0700 "$db/static"
   for name in zerostate basestate0; do
@@ -178,8 +188,8 @@ for i in 1 2 3 4; do
 done
 
 log "waiting up to $RUN_SECONDS s for a common, fresh head"
-args=(--genesis "$WORK/ceremony/genesis.json" --genesis-set "$WORK/ceremony/genesis-records.json" --max-age 30)
-for i in 1 2 3 4; do args+=(--rpc "http://127.0.0.1:$(port "$i" 4)"); done
+args=(--genesis "$WORK/ceremony/genesis.json" --genesis-set "$WORK/ceremony/genesis-set.json" --max-age 30)
+for i in $(seq 1 "$NODES"); do args+=(--rpc "http://127.0.0.1:$(port "$i" 4)"); done
 # Decoding ConfigParam 34 needs the tos Python environment. A tos worktree has
 # no .venv of its own; REHEARSAL_PYTHON names another checkout's.
 CHECK_PY="${REHEARSAL_PYTHON:-$TOS_ROOT/.venv/bin/python}"
@@ -195,7 +205,7 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
   sleep 10
 done
 cat "$WORK/check.json"
-for i in 1 2 3 4; do
+for i in $(seq 1 "$NODES"); do
   grep -m1 "post-quantum consensus custody" "$WORK/log$i/node.log"* 2>/dev/null | sed "s/^/node$i: /" || true
 done
 if [ "$result" = 0 ]; then log "REHEARSAL PASSED"; else log "REHEARSAL FAILED (evidence in $WORK)"; fi

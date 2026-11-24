@@ -3,8 +3,14 @@
 [2026-12-05 public testnet genesis and validator invitation](ANNOUNCEMENT-20261205.md)
 
 Use this guide to run your own validator in a coordinated public testnet
-ceremony. You need a dedicated Ubuntu 24.04 host you administer and a place in
-the testnet's genesis validator set. The coordinator handles genesis, staking
+ceremony. You need a dedicated Ubuntu 24.04 host you administer and a registered
+seat: on December 5, 2026 the genesis validator set is the team's two
+validators, and an external validator registers its public record and pool
+before genesis (registration closes on November 30), is written to the
+ceremony's `genesis-records.json` but not to the zero state, and stands from the
+first election (opens at T + 5 h; the elected set takes office at T + 6 h). Your
+pool stakes one unit (`elections.stake_tos`, 10,002 TOS), funded by the
+coordinator. The coordinator handles genesis, staking
 funds and its side of election onboarding. You administer the host alone, run
 every step on it yourself, and hold its consensus key and operator wallet. The
 coordinator never logs in to your host.
@@ -19,7 +25,8 @@ coordinator never logs in to your host.
    the expected zero-state root and file hashes.
 2. **Confirm your route.** For a new genesis, reserve a seat with the
    coordinator and follow sections 1–7 in order. For an epoch already running,
-   ask whether your pool is in its genesis records. The supplied
+   ask whether your pool is in its genesis records (`genesis-records.json`; an
+   external validator is there but not in `genesis-set.json`). The supplied
    `testnet-elections.py onboard` requires that entry. If you are a new
    participant in a running epoch, you can [run an observer](#a-new-full-node-from-a-published-snapshot)
    with the coordinator's full-node instructions while waiting for a genesis
@@ -216,8 +223,8 @@ node from a backup while the first can still sign.
 
 The validator is named by its **staking account**: a single-nominator pool whose
 owner is an offline wallet the coordinator keeps and whose validator role is
-your operator wallet on this host. Genesis records the pool's address as the
-validator id, the node is bound to it, and it signs stake authorizations only
+your operator wallet on this host. The genesis records (`genesis-records.json`)
+name the pool's address as the validator id, the node is bound to it, and it signs stake authorizations only
 for it. The pool is derived from the two wallets, so the operator wallet is made
 before genesis.
 
@@ -352,7 +359,7 @@ result is already there, so a rerun changes nothing:
 4. `tosctl config pool add` and `config bind add` for `pool-<NODE_NAME>`;
 5. the node's latest `post-quantum consensus custody` line must name the pool;
 6. `enable-elections.sh --name <NODE_NAME>` installs and starts the election
-   task, unless it is already running (a rerun never restarts it); it refuses
+   task with a fixed stake of `elections.stake_tos` and the profile's max factor, unless it is already running (a rerun never restarts it); it refuses
    unless `tos-testnet-elections` is active at the end.
 
 A refusal names what is missing. A pool whose validator role is not your wallet

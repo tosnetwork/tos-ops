@@ -23,6 +23,7 @@ import time
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +32,6 @@ PROFILE_PATH = HERE.parent / "network" / "profile.json"
 
 MAINNET_GLOBAL_ID = 1
 LOCAL_GLOBAL_ID = 3
-GENESIS_VALIDATORS = 4
 PQ_PUBLIC_KEY_BYTES = 1312
 HASH_BYTES = 32
 MASTERCHAIN = -1
@@ -102,10 +102,10 @@ def load_profile(path: Path = PROFILE_PATH) -> dict[str, Any]:
         raise TestnetError(f"{path}: unsupported schema_version")
     global_id = profile.get("global_id", {}).get("value")
     check_global_id(global_id)
-    genesis = profile.get("genesis", {})
-    if genesis.get("validators") != GENESIS_VALIDATORS:
-        raise TestnetError("the canonical genesis commits exactly four validators")
     validator_schedule(profile)
+    # The limits and the stake rule are checked on every load; the ceremony values
+    # (the external count and what follows from it) once they are set.
+    election_plan(profile, required=False)
     ports = profile.get("ports", {})
     required = (
         "adnl_udp",
@@ -447,6 +447,395 @@ def validator_schedule(profile: dict[str, Any]) -> dict[str, int]:
     return values
 
 
+# ---------------------------------------------------------------- election plan
+
+# The genesis set is the team's validators only. External validators register
+# their records and pools before genesis and join from the first election; how
+# many there are (E) is known only when registration closes, so the ceremony sets
+# elections.external_validators, and with it the team stake multiple, the bootstrap
+# wallet and the genesis supply, which election_plan() derives and checks.
+
+# tosctl's election task refuses a max factor outside 1.0..3.0 (tos tosctl
+# node-control: ElectionsConfig::validate, `config elections max-factor`, and the
+# runner before it signs a stake), whatever ConfigParam 17 allows.
+TOSCTL_MAX_FACTOR = Fraction(3)
+# The Elector keeps 1 TOS of every stake message for its confirmation
+# (elector-code.fc process_new_stake): a member stands with its order less this.
+ELECTOR_CONFIRMATION_NANOTOS = 10**9
+# The template's stake-limit ceilings: Tomi values are VarUInteger 16, max_factor
+# is a 16.16 fraction in 32 bits.
+MAX_FACTOR_ONE = 1 << 16
+VALIDATOR_NUM_FIELDS = ("max_validators", "max_main_validators", "min_validators")
+STAKE_LIMIT_FIELDS = ("min_stake_tos", "max_stake_tos", "min_total_stake_tos", "max_factor")
+# What the ceremony sets once registration closes, all together or none.
+PLAN_INPUTS = (
+    ("elections", "external_validators"),
+    ("elections", "team_stake_multiple"),
+    ("elections", "bootstrap_wallet_tos"),
+    ("genesis", "total_supply_tos"),
+)
+# How far the team's weight share may sit from elections.team_weight_percent, in
+# percentage points: the Elector's 1 TOS confirmation and integer weights move it
+# by a few thousandths.
+TEAM_WEIGHT_TOLERANCE = Fraction(1, 100)
+
+
+def _whole(value: Any, where: str, minimum: int = 0) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+        raise TestnetError(
+            f"profile {where} must be a whole number of at least {minimum}: {value!r}"
+        )
+    return value
+
+
+def genesis_limits(profile: dict[str, Any]) -> dict[str, int]:
+    """The genesis set size, ConfigParam 16 and ConfigParam 17 the profile decides.
+
+    Returns {"validators", "max_validators", "max_main_validators",
+    "min_validators", "min_stake_tos", "max_stake_tos", "min_total_stake_tos",
+    "max_factor"} (max_factor a whole multiple). The genesis set must be able to
+    conclude an election on its own (min_validators <= the genesis set) and fit
+    among the main validators."""
+    genesis = profile.get("genesis", {})
+    count = _whole(genesis.get("validators"), "genesis.validators", 1)
+    values: dict[str, int] = {"validators": count}
+    for section, fields in (
+        ("validator_num", VALIDATOR_NUM_FIELDS),
+        ("stake_limits", STAKE_LIMIT_FIELDS),
+    ):
+        block = genesis.get(section)
+        if not isinstance(block, dict) or set(block) != set(fields):
+            raise TestnetError(f"profile genesis.{section} must name exactly {fields}")
+        for name in fields:
+            values[name] = _whole(block[name], f"genesis.{section}.{name}", 1)
+    if values["max_validators"] >= 1 << 16:
+        raise TestnetError("genesis.validator_num.max_validators does not fit 16 bits")
+    if (
+        not values["min_validators"]
+        <= count
+        <= values["max_main_validators"]
+        <= values["max_validators"]
+    ):
+        raise TestnetError(
+            "genesis.validator_num needs min_validators <= genesis.validators <= "
+            "max_main_validators <= max_validators, so that the genesis set alone "
+            f"concludes an election: {values}"
+        )
+    if values["min_stake_tos"] > values["max_stake_tos"]:
+        raise TestnetError("genesis.stake_limits.min_stake_tos is above max_stake_tos")
+    if values["max_factor"] * MAX_FACTOR_ONE >= 1 << 32:
+        raise TestnetError("genesis.stake_limits.max_factor does not fit ConfigParam 17")
+    return values
+
+
+def tosctl_max_factor(profile: dict[str, Any]) -> Fraction:
+    """elections.max_factor, what enable-elections.sh gives tosctl, as a fraction."""
+    text = profile.get("elections", {}).get("max_factor")
+    try:
+        value = Fraction(text) if isinstance(text, str) else None
+    except (ValueError, ZeroDivisionError):
+        value = None
+    if value is None or not 1 <= value <= TOSCTL_MAX_FACTOR:
+        raise TestnetError(
+            f"profile elections.max_factor {text!r} must be a decimal string from 1.0 to "
+            f"{float(TOSCTL_MAX_FACTOR)}: tosctl's election task refuses any other"
+        )
+    return value
+
+
+def team_stake_multiple_rule(external: int) -> Fraction:
+    """The team's stake per pool in units of elections.stake_tos: E/2, so that the two
+    team pools stake as much as the E external pools together, and at least one
+    unit, the Elector's minimum."""
+    return max(Fraction(1), Fraction(external, 2))
+
+
+def multiple_text(value: Fraction) -> str:
+    return str(value.numerator) if value.denominator == 1 else str(float(value))
+
+
+def simulate_election(
+    members: list[tuple[str, int, int]], limits: dict[str, int]
+) -> tuple[list[dict[str, Any]] | None, str]:
+    """The Elector's choice (elector-code.fc conduct_elections and try_elect) for
+    `members`, each (label, stake as the Elector holds it in nanotos, max factor in
+    16.16). Returns (elected, "") or (None, why the election fails). Ties are
+    ordered by label; the Elector orders them by stake time."""
+    min_stake = limits["min_stake_tos"] * NANOTOS
+    max_stake = limits["max_stake_tos"] * NANOTOS
+    min_total = limits["min_total_stake_tos"] * NANOTOS
+    max_factor = limits["max_factor"] * MAX_FACTOR_ONE
+    admitted = [m for m in members if m[1] >= min_stake]
+    total = sum(m[1] for m in admitted)
+    if total < min_total:
+        return None, f"the total stake {total / NANOTOS} TOS is below min_total_stake"
+    ordered = sorted(admitted, key=lambda m: (-m[1], m[0]))
+    n = min(len(ordered), limits["max_validators"])
+    least = max(limits["min_validators"], 1)
+    if n < least:
+        return None, f"{n} stakes, fewer than min_validators {least}"
+    capped = [(label, min(stake, max_stake), min(f, max_factor)) for label, stake, f in ordered]
+    best, chosen = 0, 0
+    for i in range(least, n + 1):
+        floor = capped[i - 1][1]
+        if floor < min_stake:
+            continue
+        candidate = sum(min(s, (f * floor) >> 16) for _, s, f in capped[:i])
+        if candidate > best:
+            best, chosen = candidate, i
+    if chosen == 0 or best < min_total:
+        return None, f"the best set stakes {best / NANOTOS} TOS, below min_total_stake"
+    floor = capped[chosen - 1][1]
+    elected = []
+    for label, stake, f in capped[:chosen]:
+        true_stake = min(stake, (f * floor) >> 16)
+        elected.append(
+            {
+                "label": label,
+                "stake_nanotos": stake,
+                "true_stake_nanotos": true_stake,
+                "weight": (true_stake << 60) // best,
+            }
+        )
+    return elected, ""
+
+
+def election_plan(
+    profile: dict[str, Any], required: bool = True, external: int | None = None
+) -> dict[str, Any] | None:
+    """What the profile's election parameters imply for E external validators, checked.
+
+    E is `external` when given (the coordinator's `plan` command), else the
+    profile's elections.external_validators. With the profile's E, the profile's
+    team_stake_multiple, bootstrap_wallet_tos and genesis.total_supply_tos must be
+    exactly the derived values. Before the ceremony sets E (null) only the
+    limits are checked, and the result is None unless `required`, which refuses.
+
+    Refuses unless: an election of the team pools alone concludes and elects
+    them all (also for E = 0); with E external pools every pool is elected and no
+    team stake is cut by a max factor; with E >= 1 neither the team nor the
+    external validators alone hold more than two thirds of the weight; with
+    E >= 2 the team's weight share is elections.team_weight_percent."""
+    limits = genesis_limits(profile)
+    e = profile.get("elections", {})
+    unit = _whole(e.get("stake_tos"), "elections.stake_tos", 1)
+    pool_tos = _whole(e.get("pool_tos"), "elections.pool_tos", 1)
+    if pool_tos < 2 * unit:
+        raise TestnetError("elections.pool_tos must hold two stakes of elections.stake_tos")
+    reserve = _whole(e.get("pool_owner_reserve_tos"), "elections.pool_owner_reserve_tos")
+    deploy = _whole(e.get("pool_deploy_tos"), "elections.pool_deploy_tos", 1)
+    operator = _whole(e.get("operator_funding_tos"), "elections.operator_funding_tos", 1)
+    margin = _whole(e.get("bootstrap_margin_tos"), "elections.bootstrap_margin_tos")
+    transfer_fee = _whole(
+        e.get("bootstrap_transfer_fee_nanotos"), "elections.bootstrap_transfer_fee_nanotos", 1
+    )
+    target = _whole(e.get("team_weight_percent"), "elections.team_weight_percent", 1)
+    if target >= 100:
+        raise TestnetError("elections.team_weight_percent must be below 100")
+    factor = tosctl_max_factor(profile)
+    team = limits["validators"]
+    max_external = _whole(e.get("max_external_validators"), "elections.max_external_validators")
+    if max_external != limits["max_validators"] - team:
+        raise TestnetError(
+            f"elections.max_external_validators {max_external} is not max_validators "
+            f"{limits['max_validators']} less the genesis set's {team}"
+        )
+    given = {key: profile.get(section, {}).get(key) for section, key in PLAN_INPUTS}
+    from_profile = external is None
+    if from_profile:
+        if given["external_validators"] is None:
+            if any(value is not None for value in given.values()):
+                raise TestnetError(
+                    f"profile {[k for k, v in given.items() if v is not None]} are set but "
+                    "elections.external_validators is not; the ceremony sets them together"
+                )
+            # The team alone must always be able to elect itself.
+            _plan_for(
+                limits,
+                unit,
+                pool_tos,
+                reserve,
+                deploy,
+                operator,
+                margin,
+                transfer_fee,
+                target,
+                factor,
+                0,
+            )
+            if required:
+                raise TestnetError(
+                    "profile elections.external_validators is not set: the ceremony sets it, "
+                    "with the values `testnet-coordinator.py plan` derives, once external "
+                    "registration closes"
+                )
+            return None
+        external = given["external_validators"]
+    external = _whole(external, "elections.external_validators")
+    if external > max_external:
+        raise TestnetError(
+            f"{external} external validators exceed the {max_external} seats beside the "
+            f"genesis set's {team}"
+        )
+    # The team-only election is checked whatever E is: an election no external
+    # validator joins must still conclude.
+    _plan_for(
+        limits, unit, pool_tos, reserve, deploy, operator, margin, transfer_fee, target, factor, 0
+    )
+    plan = _plan_for(
+        limits,
+        unit,
+        pool_tos,
+        reserve,
+        deploy,
+        operator,
+        margin,
+        transfer_fee,
+        target,
+        factor,
+        external,
+    )
+    if from_profile:
+        try:
+            multiple = Fraction(str(given["team_stake_multiple"]))
+        except (ValueError, ZeroDivisionError):
+            multiple = None
+        if multiple != Fraction(plan["team_stake_multiple"]):
+            raise TestnetError(
+                f"profile elections.team_stake_multiple {given['team_stake_multiple']!r} is not "
+                f"{plan['team_stake_multiple']}, the multiple for {external} external validators"
+            )
+        for section, key in PLAN_INPUTS[2:]:
+            if given[key] != plan[key]:
+                raise TestnetError(
+                    f"profile {section}.{key} {given[key]!r} is not {plan[key]}, what "
+                    f"{external} external validators need (testnet-coordinator.py plan)"
+                )
+    return plan
+
+
+def _plan_for(
+    limits,
+    unit,
+    pool_tos,
+    reserve,
+    deploy,
+    operator,
+    margin,
+    transfer_fee,
+    target,
+    factor,
+    external,
+) -> dict[str, Any]:
+    team = limits["validators"]
+    multiple = team_stake_multiple_rule(external)
+    team_stake = multiple * unit
+    if team_stake.denominator != 1:
+        raise TestnetError(f"a team stake of {multiple} x {unit} TOS is not whole TOS")
+    team_stake = int(team_stake)
+    if team_stake > limits["max_stake_tos"]:
+        raise TestnetError(f"a team stake of {team_stake} TOS exceeds max_stake_tos")
+    # Two stakes per pool (the first and the overlapping second election), and the
+    # unit pool's headroom above its two stakes.
+    team_principal = pool_tos + 2 * (team_stake - unit)
+    # Every pool owner may deploy its own pool (onboard --no-host), so each owner
+    # gets the deployment on top of its reserve: what it keeps for a withdrawal is
+    # then the reserve however the pool was deployed.
+    team_owner = team_principal + reserve + deploy
+    external_owner = pool_tos + reserve + deploy
+    pools = team + external
+    # fund-op- and fund-owner- for every pool, and the sweep.
+    transfers = 2 * pools + 1
+    fees = -(-transfers * transfer_fee // NANOTOS)
+    bootstrap = (
+        team * (operator + team_owner) + external * (operator + external_owner) + margin + fees
+    )
+    f16 = int(factor * MAX_FACTOR_ONE)
+    order = ELECTOR_CONFIRMATION_NANOTOS
+    team_members = [(f"team-{i}", team_stake * NANOTOS - order, f16) for i in range(team)]
+    external_members = [(f"external-{i}", unit * NANOTOS - order, f16) for i in range(external)]
+    alone, why = simulate_election(team_members, limits)
+    if alone is None or len(alone) != team:
+        raise TestnetError(
+            f"an election of the {team} team pools alone at {team_stake} TOS each would fail "
+            f"({why or 'not every team pool elected'}); check genesis.validator_num and "
+            "genesis.stake_limits (min_total_stake_tos)"
+        )
+    elected, why = simulate_election(team_members + external_members, limits)
+    if elected is None or len(elected) != pools:
+        raise TestnetError(
+            f"an election of {team} team and {external} external pools would not elect them all "
+            f"({why or 'some left out'})"
+        )
+    for member in elected:
+        if (
+            member["label"].startswith("team-")
+            and member["true_stake_nanotos"] != member["stake_nanotos"]
+        ):
+            limit = min(Fraction(limits["max_factor"]), factor)
+            raise TestnetError(
+                f"with {external} external validators the team stakes {multiple_text(multiple)} "
+                f"units, but a max factor of {float(limit)} counts at most {float(limit)} units "
+                f"(ConfigParam 17 allows {limits['max_factor']}, tosctl's election task at most "
+                f"{float(TOSCTL_MAX_FACTOR)}); the team's weight would fall below its share"
+            )
+    total = sum(m["weight"] for m in elected)
+    team_weight = sum(m["weight"] for m in elected if m["label"].startswith("team-"))
+    external_weight = total - team_weight
+    if external >= 1:
+        for side, weight in (("team", team_weight), ("external validators", external_weight)):
+            if 3 * weight > 2 * total:
+                raise TestnetError(
+                    f"with {external} external validators the {side} alone would hold more than "
+                    "two thirds of the weight and finalize without the other side"
+                )
+    share = Fraction(100 * team_weight, total)
+    if external >= 2 and abs(share - target) > TEAM_WEIGHT_TOLERANCE:
+        raise TestnetError(
+            f"with {external} external validators the team holds {float(share):.4f} % of the "
+            f"weight, not {target} %"
+        )
+    return {
+        "team_validators": team,
+        "external_validators": external,
+        "team_stake_multiple": multiple_text(multiple),
+        "unit_stake_tos": unit,
+        "team_stake_tos": team_stake,
+        "team_pool_principal_tos": team_principal,
+        "external_pool_principal_tos": pool_tos,
+        "team_owner_funding_tos": team_owner,
+        "external_owner_funding_tos": external_owner,
+        "operator_funding_tos": operator,
+        "bootstrap_transfers": transfers,
+        "bootstrap_transfer_fees_tos": fees,
+        "bootstrap_margin_tos": margin,
+        "bootstrap_wallet_tos": bootstrap,
+        "total_supply_tos": bootstrap + GENESIS_SYSTEM_ACCOUNTS_TOS,
+        "team_weight_percent": float(share),
+        "team_only_election": f"elects the {team} team pools",
+    }
+
+
+def pool_amounts(profile: dict[str, Any], team: bool) -> dict[str, int]:
+    """One pool's onboarding amounts in nanotos: {"stake", "principal", "owner_funding",
+    "operator_funding", "deploy"}. A team pool's needs the ceremony's plan; an
+    external pool's are the unit amounts and do not."""
+    e = profile["elections"]
+    if team:
+        plan = election_plan(profile)
+        stake, principal = plan["team_stake_tos"], plan["team_pool_principal_tos"]
+    else:
+        stake, principal = int(e["stake_tos"]), int(e["pool_tos"])
+    deploy = int(e["pool_deploy_tos"])
+    return {
+        "stake": stake * NANOTOS,
+        "principal": principal * NANOTOS,
+        "owner_funding": (principal + int(e["pool_owner_reserve_tos"]) + deploy) * NANOTOS,
+        "operator_funding": int(e["operator_funding_tos"]) * NANOTOS,
+        "deploy": deploy * NANOTOS,
+    }
+
+
 def confirmed_global_id(profile: dict[str, Any]) -> int:
     """The global id a genesis may be generated with: valid, and confirmed by the owner.
 
@@ -711,9 +1100,17 @@ def check_operator_record(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def check_operator_set(records: list[Any]) -> list[dict[str, Any]]:
-    if not isinstance(records, list) or len(records) != GENESIS_VALIDATORS:
-        raise TestnetError("the genesis set is exactly four operator records")
+def check_operator_set(records: list[Any], count: int | None = None) -> list[dict[str, Any]]:
+    """Validate a list of operator records that must not share any identity or host.
+
+    `count`, when given, is the exact number of records (the genesis set is
+    genesis.validators); otherwise any nonempty list is accepted."""
+    if not isinstance(records, list) or not records:
+        raise TestnetError("an operator record set is a nonempty JSON list")
+    if count is not None and len(records) != count:
+        raise TestnetError(
+            f"the genesis set is exactly {count} operator records, not {len(records)}"
+        )
     checked = [check_operator_record(r) for r in records]
     for field in ("operator", "validator_id", "adnl_id", "key_id", "address"):
         values = [r[field] for r in checked]
@@ -984,15 +1381,26 @@ def manifest_input(records: list[dict[str, Any]]) -> list[dict[str, str]]:
     ]
 
 
+MANIFEST_RECORD_BYTES = HASH_BYTES * 2 + PQ_PUBLIC_KEY_BYTES
+
+
 def pack_manifest(records: list[dict[str, Any]]) -> bytes:
-    """The 5,504-byte validator-pq.pub, computed independently of the tos packer."""
+    """validator-pq.pub, one 1,376-byte record per genesis validator in index order,
+    computed independently of the tos packer."""
+    if not records:
+        raise TestnetError("a manifest needs at least one genesis validator")
+    # The tos packer's field rules: every field nonzero and unique.
+    for name in ("validator_id", "adnl_id", "public_key"):
+        values = [bytes.fromhex(r[name]) for r in records]
+        if not all(any(v) for v in values) or len(set(values)) != len(values):
+            raise TestnetError(f"manifest {name} values must be nonzero and unique")
     out = b"".join(
         bytes.fromhex(r["validator_id"])
         + bytes.fromhex(r["adnl_id"])
         + bytes.fromhex(r["public_key"])
         for r in records
     )
-    if len(out) != GENESIS_VALIDATORS * (HASH_BYTES * 2 + PQ_PUBLIC_KEY_BYTES):
+    if len(out) != len(records) * MANIFEST_RECORD_BYTES:
         raise TestnetError("manifest has the wrong size")
     return out
 
@@ -1063,6 +1471,182 @@ def patch_template(
         f"0x{tag.hex()} constant {AUTH_TAG_CONSTANT}   // TOS public testnet AUTH network tag",
     )
     return "\n".join(lines)
+
+
+# The canonical lines that fix the genesis set at four validators, the election
+# limits (ConfigParam 16 and 17) and the bootstrap wallet's balance. A testnet
+# genesis replaces exactly these; each must occur exactly once.
+TEMPLATE_VALIDATOR_NUM_LINE = "21 21 4 config.validator_num!"
+TEMPLATE_STAKE_LIMITS_LINE = "TM$10000 TM$10000000 TM$40000 sg~1 config.validator_stake_limits!"
+TEMPLATE_BOOTSTRAP_LINE = "TM$80151 constant main_wallet_genesis_balance"
+TEMPLATE_MANIFEST_SIZE_LINE = (
+    '  dup Blen 5504 <> abort"PQ manifest must contain exactly four 1376-byte records"'
+)
+TEMPLATE_MANIFEST_LOOP_LINE = "  } 4 times drop"
+TEMPLATE_MANIFEST_END_LINE = "} : load-pq-keys-from-file"
+GENESIS_SET_REPLACED = [
+    "genesis set size (manifest length and loader loop)",
+    "ConfigParam 16 (validator counts)",
+    "ConfigParam 17 (stake limits and max factor)",
+    "bootstrap wallet balance",
+]
+
+
+def patch_genesis_set(text: str, limits: dict[str, int], bootstrap_tos: int) -> str:
+    """Return `text` (patch_template's output) with the genesis set size, ConfigParam
+    16, ConfigParam 17 and the bootstrap wallet's balance replaced.
+
+    `limits` is what genesis_limits() returns, `bootstrap_tos` the plan's
+    bootstrap_wallet_tos. The manifest loader reads genesis.validators records,
+    each registered with the template's equal weight. The words that write
+    ConfigParam 16 and 17 and bind the balance must appear only on the replaced
+    lines, so nothing in the template overrides them."""
+    count = limits["validators"]
+    if not isinstance(bootstrap_tos, int) or isinstance(bootstrap_tos, bool) or bootstrap_tos <= 0:
+        raise TestnetError(
+            f"the bootstrap wallet balance must be positive whole TOS: {bootstrap_tos!r}"
+        )
+    lines = text.split("\n")
+
+    def only(line: str) -> int:
+        hits = [i for i, candidate in enumerate(lines) if candidate == line]
+        if len(hits) != 1:
+            raise TestnetError(f"template line not found exactly once: {line!r}")
+        return hits[0]
+
+    for word, line in (
+        ("config.validator_num!", TEMPLATE_VALIDATOR_NUM_LINE),
+        ("config.validator_stake_limits!", TEMPLATE_STAKE_LIMITS_LINE),
+        ("constant main_wallet_genesis_balance", TEMPLATE_BOOTSTRAP_LINE),
+        ("times drop", TEMPLATE_MANIFEST_LOOP_LINE),
+    ):
+        uses = [candidate for candidate in lines if word in candidate]
+        if uses != [line]:
+            raise TestnetError(f"the template uses {word!r} other than on {line!r}: {uses}")
+    loop = only(TEMPLATE_MANIFEST_LOOP_LINE)
+    size = only(TEMPLATE_MANIFEST_SIZE_LINE)
+    if not size < loop or lines[loop + 1] != TEMPLATE_MANIFEST_END_LINE:
+        raise TestnetError("the template's manifest loader is not the reviewed one")
+    replacements = (
+        (
+            TEMPLATE_VALIDATOR_NUM_LINE,
+            f"{limits['max_validators']} {limits['max_main_validators']} "
+            f"{limits['min_validators']} config.validator_num!",
+        ),
+        (
+            TEMPLATE_STAKE_LIMITS_LINE,
+            f"TM${limits['min_stake_tos']} TM${limits['max_stake_tos']} "
+            f"TM${limits['min_total_stake_tos']} sg~{limits['max_factor']} "
+            "config.validator_stake_limits!",
+        ),
+        (TEMPLATE_BOOTSTRAP_LINE, f"TM${bootstrap_tos} constant main_wallet_genesis_balance"),
+        (
+            TEMPLATE_MANIFEST_SIZE_LINE,
+            f"  dup Blen {count * MANIFEST_RECORD_BYTES} <> "
+            f'abort"PQ manifest must contain exactly {count} 1376-byte records"',
+        ),
+        (TEMPLATE_MANIFEST_LOOP_LINE, f"  }} {count} times drop"),
+    )
+    for old, new in replacements:
+        lines[only(old)] = new
+    return "\n".join(lines)
+
+
+VALIDATOR_PQ_TAG = 0xB3
+VALIDATORS_EXT_TAG = 0x12
+
+
+def zero_state_genesis_set(boc: bytes) -> dict[str, Any]:
+    """ConfigParam 16, ConfigParam 17 and the validator set (ConfigParam 34) of a zero
+    state: {"validator_num": {...}, "stake_limits": {... in nanotos, max_factor
+    16.16}, "validators": [{"validator_id", "key_id", "adnl_id", "weight"}, ...],
+    "main": n, "total_weight": w}."""
+    params = zero_state_config(boc)[2]
+    for number in (16, 17, 34):
+        if number not in params:
+            raise TestnetError(f"the zero state has no ConfigParam {number}")
+    s = Slice(params[16])
+    num = dict(zip(VALIDATOR_NUM_FIELDS, (s.bits(16), s.bits(16), s.bits(16)), strict=True))
+    if not s.end():
+        raise TestnetError("ConfigParam 16 has data after its three counts")
+    s = Slice(params[17])
+    stake = {
+        "min_stake_nanotos": read_grams(s),
+        "max_stake_nanotos": read_grams(s),
+        "min_total_stake_nanotos": read_grams(s),
+        "max_factor": s.bits(32),
+    }
+    if not s.end():
+        raise TestnetError("ConfigParam 17 has data after its four values")
+    s = Slice(params[34])
+    if s.bits(8) != VALIDATORS_EXT_TAG:
+        raise TestnetError("ConfigParam 34 is not a validators_ext set")
+    s.bits(64)  # utime_since, utime_until
+    total, main, total_weight = s.bits(16), s.bits(16), s.bits(64)
+    validators = []
+    entries = hashmap_items(s.take_ref(), 16) if s.bits(1) else {}
+    for index in sorted(entries):
+        v = entries[index]
+        if v.bits(8) != VALIDATOR_PQ_TAG:
+            raise TestnetError(f"validator {index} is not a post-quantum descriptor")
+        validator_id = v.bits(256)
+        v.bits(16)  # algorithm
+        key_id = v.bits(256)
+        v.take_ref()  # public key
+        weight, adnl = v.bits(64), v.bits(256)
+        validators.append(
+            {
+                "validator_id": f"{validator_id:064x}",
+                "key_id": f"{key_id:064x}",
+                "adnl_id": f"{adnl:064x}",
+                "weight": weight,
+            }
+        )
+    if total != len(validators):
+        raise TestnetError(f"ConfigParam 34 says {total} validators and holds {len(validators)}")
+    return {
+        "validator_num": num,
+        "stake_limits": stake,
+        "validators": validators,
+        "main": main,
+        "total_weight": total_weight,
+    }
+
+
+def check_zero_state_genesis_set(
+    boc: bytes, limits: dict[str, int], records: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Refuse a zero state whose ConfigParam 16, 17 or validator set is not the
+    profile's limits and the genesis set `records` (index order); return what
+    genesis.json records."""
+    found = zero_state_genesis_set(boc)
+    num = {name: limits[name] for name in VALIDATOR_NUM_FIELDS}
+    if found["validator_num"] != num:
+        raise TestnetError(f"ConfigParam 16 is {found['validator_num']}, expected {num}")
+    stake = {
+        "min_stake_nanotos": limits["min_stake_tos"] * NANOTOS,
+        "max_stake_nanotos": limits["max_stake_tos"] * NANOTOS,
+        "min_total_stake_nanotos": limits["min_total_stake_tos"] * NANOTOS,
+        "max_factor": limits["max_factor"] * MAX_FACTOR_ONE,
+    }
+    if found["stake_limits"] != stake:
+        raise TestnetError(f"ConfigParam 17 is {found['stake_limits']}, expected {stake}")
+    expected = [(r["validator_id"], r["key_id"], r["adnl_id"]) for r in records]
+    actual = [(v["validator_id"], v["key_id"], v["adnl_id"]) for v in found["validators"]]
+    if actual != expected:
+        raise TestnetError(
+            f"the zero state's validator set is {len(actual)} validators other than the "
+            f"{len(expected)} genesis records"
+        )
+    if found["main"] != len(records) or len({v["weight"] for v in found["validators"]}) != 1:
+        raise TestnetError("the genesis validators are not all main validators of equal weight")
+    return {
+        "config_param_16": found["validator_num"],
+        "config_param_17": found["stake_limits"],
+        "validators": len(actual),
+        "validator_ids": [v[0] for v in actual],
+        "weight_each": found["validators"][0]["weight"],
+    }
 
 
 # ---------------------------------------------------------------- AUTH network tag

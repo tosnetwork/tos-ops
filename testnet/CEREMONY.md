@@ -1,8 +1,79 @@
 # Genesis ceremony and validator bring-up
 
-The order of work for the four genesis operators (O1–O4), the DHT hosts and
-the coordinator (C). Every artifact that crosses between parties is public;
-each party keeps its own secrets on its own machines.
+The order of work for the genesis operators, the external validator operators,
+the DHT hosts and the coordinator (C). Every artifact that crosses between
+parties is public; each party keeps its own secrets on its own machines.
+
+The December 5, 2026 network has two kinds of registered validator:
+
+- **The genesis set** (`genesis.validators` = 2): the team's two validator
+  hosts (O1, O2). They are the zero state's validator set (ConfigParam 34) and
+  validate alone until the first election's set takes office at T + 6 h.
+- **External validators** (E of them, at most `elections.max_external_validators`
+  = 19): operators who register a record and a pool before genesis
+  (registration closes on November 30) exactly like O1 and O2, but are not in
+  the zero state. They are onboarded after genesis by
+  `testnet-elections.py onboard --no-host` and `testnet-operator.py onboard`
+  ([Onboarding an operator-run host](#onboarding-an-operator-run-host)) and stand
+  from the first election (opens at T + 5 h).
+
+`manifest` writes both: `genesis-set.json` (the zero state's set) and
+`genesis-records.json` (every registered record, the genesis set first).
+Onboarding accepts any pool `genesis-records.json` names; a pool in
+`genesis-set.json` is a team pool and stakes the team multiple (below).
+
+### Stake, weight and funding: set after registration closes
+
+Each external pool stakes one unit (`elections.stake_tos`, 10,002 TOS). Each team
+pool stakes `elections.team_stake_multiple` units: E/2, and at least one, so
+that the team holds about half of the weight once the external validators are
+elected and neither side alone holds more than two thirds (the chain needs both
+to finalize). E is known only when registration closes, so the profile ships
+with `elections.external_validators`, `elections.team_stake_multiple`,
+`elections.bootstrap_wallet_tos` and `genesis.total_supply_tos` set to `null`,
+and `manifest`, `genesis` and team onboarding refuse until they are set. After
+November 30 the coordinator runs
+
+```bash
+python3 $S/testnet-coordinator.py plan --external-validators <E>
+```
+
+and copies the four values it prints under `set_in_profile` into
+`network/profile.json` (reviewed and committed like any profile change). The
+plan is `testnet_lib.election_plan`: it simulates the Elector's choice
+(`elector-code.fc` `try_elect`) and refuses unless an election of the two team
+pools alone concludes and elects both (E = 0 included), all 2 + E pools are
+elected with no team stake cut by a max factor, neither side holds more than two
+thirds of the weight, and from E = 2 the team holds `team_weight_percent` (50 %).
+Every load of a profile with E set repeats the check, so a wrong bootstrap total
+or multiple refuses. The bootstrap wallet is every pool's operator funding and
+owner funding (principal + `pool_owner_reserve_tos` + `pool_deploy_tos`), the
+50 TOS margin, and `bootstrap_transfer_fee_nanotos` for each of its 2 x (2 + E) + 1
+transfers, rounded up.
+
+| E | team multiple | team stake (TOS) | bootstrap wallet (TOS) | team weight |
+|---|---|---|---|---|
+| 0 | 1 | 10,002 | 40,105 | 100 % |
+| 1 | 1 | 10,002 | 60,132 | 66.7 % (exactly two thirds: not enough to finalize alone) |
+| 2 | 1 | 10,002 | 80,159 | 50 % |
+| 3 | 1.5 | 15,003 | 120,190 | 50 % |
+| 4 | 2 | 20,004 | 160,221 | 50 % |
+| 5 | 2.5 | 25,005 | 200,252 | 50 % |
+| 6–19 | refused | | | |
+
+E above 5 is refused: tosctl's election task accepts a max factor of at most
+3.0 (`elections.max_factor`), and the Elector counts a stake at most at the max
+factor times the smallest elected stake, so a team stake above about three units
+would be cut and the team would fall below half. ConfigParam 17 already allows
+10; E up to 19 needs a tos release whose tosctl accepts a max factor up to 10,
+then `elections.max_factor` "10.0".
+
+The election limits are genesis values (`genesis.validator_num`,
+`genesis.stake_limits`): ConfigParam 16 is 21 / 21 / 2 (an election the team
+alone stands in concludes), and ConfigParam 17 is 10,000 / 10,000,000 /
+**20,000** / 10. The template's `min_total_stake` of 40,000 TOS would postpone a
+team-only election, whose two unit stakes are 20,002 TOS in the Elector; 20,000
+is the floor at which two minimum stakes still elect.
 
 ```
 O: prepare host -> O: operator wallet -> C: pool -> O: record --\
@@ -36,8 +107,9 @@ world-readable) and release binaries in `/usr/local/bin`.
   binaries from that commit (step 1). The coordinator builds `create-state`,
   `fift` and `gen_fif` from the same commit
   (`cmake --build build --target create-state gen_fif fift`).
-- Confirm the four operators' identities out of band. The ceremony checks that
-  each record is self-consistent; it cannot prove who sent it.
+- Confirm every registered operator's identity out of band, the team's and
+  each external one's. The ceremony checks that each record is self-consistent;
+  it cannot prove who sent it.
 
 ## 0.4 Every host: set the clock first
 
@@ -149,7 +221,7 @@ migrated to an older CPU keeps working. It needs about 2.5 GiB of memory per
 compile job and takes tens of minutes on a 6-core VM. To replace the binaries
 of a prepared node later, stop it and run
 `install-node.sh binaries --role <role> --release <dir> --rev <COMMIT>`.
-`--rev` refuses a release whose `BUILD-INFO` names another commit. The four
+`--rev` refuses a release whose `BUILD-INFO` names another commit. All
 validators' `SHA256SUMS` for one commit are identical (build timestamps take
 the commit time); compare them after building, before installing.
 
@@ -231,15 +303,23 @@ coordinator.
 
 ## 5. Coordinator: manifest, genesis, global config
 
-The record order is the validator index order; fix it before you start. The
-ceremony directory holds only what step 2 wrote; `manifest` refuses anything
-else in it, and a record whose validator id is not one of the pools recorded in
-`ceremony/pools.json`.
+The positional records are the genesis set, exactly `genesis.validators` of them,
+in validator index order; fix it before you start. Each external validator's
+record is an `--external` record, exactly `elections.external_validators` of
+them. The ceremony directory holds only what step 2 wrote; `manifest` refuses
+anything else in it, a record whose validator id is not one of the pools
+recorded in `ceremony/pools.json`, a recorded pool no record names, and two
+records that share an identity or a host. The tos packer
+(`scripts/prepare-pq-genesis-manifest.py`) takes exactly four records, so a
+two-validator `validator-pq.pub` is packed by the coordinator alone; `genesis`
+then reads the validator set back from the zero state and refuses unless it is
+exactly `genesis-set.json`.
 
 ```bash
 S=/opt/tos-testnet/scripts
 python3 $S/testnet-coordinator.py manifest --ceremony ./ceremony --tos-root "$TOS_ROOT" \
-  record-o1.json record-o2.json record-o3.json record-o4.json
+  record-o1.json record-o2.json \
+  --external record-x1.json --external record-x2.json   # one per external validator
 export TOS_AUTH_NETWORK_TAG="$(python3 -c 'import json; print(json.load(open("/opt/tos-testnet/network/profile.json"))["genesis"]["auth_network_tag"]["value"])')"
 python3 $S/testnet-coordinator.py genesis --ceremony ./ceremony --tos-root "$TOS_ROOT" \
   --tos-build "$TOS_ROOT/build" --epoch <EPOCH>
@@ -266,7 +346,12 @@ named with `--previous-ceremony` recorded it. It defines the tag on the line
 after the template's first, as tos expects of a wrapper.
 
 `genesis` refuses a dirty tos checkout and a template whose mainnet lines
-changed. It generates the zero state twice and compares the outputs. Then it
+changed. Besides the mainnet pins and the schedule it replaces the genesis set
+size (the manifest loader's length check and loop), ConfigParam 16, ConfigParam
+17 and the bootstrap balance (`testnet_lib.patch_genesis_set`), and it reads
+ConfigParam 16 and 17 and the validator set back from the zero state: the
+profile's limits, and exactly the genesis set in order, all main validators of
+equal weight (`genesis.json` `genesis_set`, with the plan as `election_plan`). It generates the zero state twice and compares the outputs. Then it
 reads the zero state back (its cell parser checked against create-state's root
 hash first) and refuses unless ConfigParam 8 is version 16, ConfigParam 48 is
 the initial policy for this tag (sequence 0, nothing retired, no deadline, the
@@ -278,12 +363,12 @@ staking from the operator's own account.
 It refuses a genesis that is not the decided supply (CFG-01, memo STATUS 13.254):
 ConfigParam 5 must name the blackhole `-1:ff…ff`, burn no fees (0/1) and be
 critical (ConfigParam 10); the bootstrap wallet `-1:111…1` must hold exactly
-`elections.bootstrap_wallet_tos` (80,151 TOS) and the state exactly
-`genesis.total_supply_tos` (81,151 TOS: the wallet plus the Elector's and the
+`elections.bootstrap_wallet_tos` (the plan's, set after registration) and the
+state exactly `genesis.total_supply_tos` (the wallet plus the Elector's and the
 Config contract's 500 each), each account's balance, the accounts dictionary and
 `total_balance` agreeing; and ConfigParam 15 read back from the state must be the
-profile's schedule. These values come from the canonical template, so `--tos-root`
-must be at a tos commit that carries them. `genesis.json` records the result as
+profile's schedule. ConfigParam 5 comes from the canonical template, so
+`--tos-root` must be at a tos commit that carries it. `genesis.json` records the result as
 `bootstrap` (the ConfigParam 5 cell hash, the blackhole, the balances and the
 read-back schedule).
 create-state itself runs the node's configuration check (`valid_config_data`,
@@ -296,9 +381,10 @@ the two runs it derives the bootstrap wallet's public key from the new
 `--previous-ceremony` used. It records the key as `main_wallet_public_key` in
 `genesis.json`, in `main-wallet.pub` and as `bootstrap` in `wallets.json`. It
 moves `main-wallet.pk`, the only secret output, to `ceremony/secret/`. Take that key
-offline: it funds the four operator wallets and pool owners for the first
-elections (tos `doc/validator-genesis-bootstrap.md`, "First ordinary elections")
-and nothing else; once two elected sets hold the four stakes, the
+offline: it funds every registered validator's operator wallet and pool owner
+for the first elections (tos `doc/validator-genesis-bootstrap.md`, "First
+ordinary elections") and nothing else; once two elected sets hold every
+registered pool's stake, the
 [sweep](#sweeping-the-bootstrap-wallet) burns what is left and deletes the wallet.
 
 AUTH validation and the complete summary are checked in `run-a` before any
@@ -311,7 +397,7 @@ last published artifact and marks completion.
 Publish, together and signed or attested by the release process:
 
 - `global-config.json` and `global-config.json.sha256`
-- `genesis.json`, `genesis-records.json`, `validator-pq.pub`
+- `genesis.json`, `genesis-set.json`, `genesis-records.json`, `validator-pq.pub`
 - `main-wallet.pub`, `wallets.json` and `pools.json` (public keys and addresses
   only; `wallets.json` grows as `load` adds its wallets, and the next reset
   reads it)
@@ -396,13 +482,13 @@ packet was dropped outside the VM.
 
 ```bash
 TOS_ROOT=$TOS_ROOT "$TOS_ROOT/.venv/bin/python" /opt/tos-testnet/scripts/check-testnet.py \
-  --genesis ceremony/genesis.json --genesis-set ceremony/genesis-records.json \
+  --genesis ceremony/genesis.json --genesis-set ceremony/genesis-set.json \
   --rpc http://127.0.0.1:18081 --rpc http://127.0.0.1:28081    # SSH tunnels to two nodes
 ```
 
 It passes only when the nodes share the ceremony's zero state and one full
 block id at the common head, that block carries the testnet global id and is
-fresh, ConfigParam 34 is the four genesis identities, and (for a genesis.json
+fresh, ConfigParam 34 is the genesis set's identities, and (for a genesis.json
 with `auth_policy`) live ConfigParam 48 carries the genesis tag and is
 mandatory and critical, with ConfigParam 8 at version 16 or later. Run it from two
 places that do not share infrastructure (plan G0: two independent observers).
@@ -413,9 +499,10 @@ After the first ordinary election, drop `--genesis-set`.
 The schedule is `genesis` in `network/profile.json`, and `genesis.json` prints
 its times. Epoch 6 carries the 2 h ConfigParam 15 epoch 5 adopted by its live
 vote (7,200 / 3,600 / 900 / 3,600). The bootstrap set is valid for 21,600 s after
-the epoch T, and each elected set for 7,200 s. The four validators must be
-onboarded (operator wallets and pool owners funded, pools deployed and holding the
-principal) and stake through two overlapping elections (Production-Node.md
+the epoch T, and each elected set for 7,200 s. Every registered validator, the
+two team ones and each external one, must be onboarded (operator wallets and pool
+owners funded, pools deployed and holding the principal) and stake through two
+overlapping elections (Production-Node.md
 section 9). The first election opens at T + 5 h and closes at T + 5 h 45 min; the
 elected set takes office at T + 6 h. The next election opens at T + 7 h, its set
 takes office at T + 8 h, and the set rotates every 2 h after that, each rotation a
@@ -474,10 +561,15 @@ sender carrying that StateInit creates exactly this pool, and the contract
 accepts an empty-body message from anyone. Deploying from the owner keeps every
 onboarding payment signed and journaled here, needs no message from the
 operator wallet before the principal, and leaves the operator a single step
-after a single hand-off. The 2 TOS come out of the owner's reserve
-(`pool_owner_reserve_tos`); the deployment is refused unless the owner keeps the
-principal, its fee and a withdrawal message afterwards. The operator wallet's
-fee money is unchanged, so it has 2 TOS more headroom than on a team host.
+after a single hand-off. Every owner is funded with `pool_deploy_tos` on top of
+the principal and its reserve (`pool_owner_reserve_tos`), so the 2 TOS do not
+come out of the reserve: after an owner deployment the owner still keeps the
+whole reserve less its transfer fees, which covers a later withdrawal message.
+The deployment is refused unless the owner keeps the principal, its fee and a
+withdrawal message afterwards. The operator wallet's fee money is unchanged, so
+it has 2 TOS more headroom than on a team host. This form takes only an external
+pool (one `genesis-records.json` names outside `genesis-set.json`): a team pool
+stakes the team multiple, which only the SSH form gives `enable-elections.sh`.
 
 Whether the node is bound to the pool and the election task runs cannot be read
 on chain before an election. They show at the first election as the pool's
@@ -505,8 +597,10 @@ python3 /opt/tos-testnet/scripts/testnet-elections.py onboard \
 ```
 
 It refuses unless `ceremony/pools.json` records the validator's pool, the pool
-derives from its recorded owner and operator wallet, and the genesis records
-name it as a validator id. It runs `init-operator.sh` on the host (vault,
+derives from its recorded owner and operator wallet, and `genesis-records.json`
+names it as a validator id. A pool in `genesis-set.json` (a team pool) needs the
+ceremony's plan and stakes `team_stake_multiple` x `stake_tos`; any other pool
+stakes `stake_tos`. It runs `init-operator.sh` on the host (vault,
 console key, node registration, tosctl's master wallet, operator wallet) and refuses unless the host's
 operator wallet is the one the pool was derived from (a host that kept
 `/var/lib/tos-ctl` over a reset still has the old wallet key). Then it runs these
@@ -515,18 +609,20 @@ steps, in order:
 1. it funds the operator wallet from the bootstrap wallet with fee money only
    (`operator_funding_tos`, 10: the measured epoch-5 operator spend through the
    first returned stake plus one failed submission) and activates it;
-2. it funds the pool's **owner** with the principal and a reserve (`pool_tos` +
-   `pool_owner_reserve_tos`) and activates it; the owner's key stays on the
-   coordinator (below);
+2. it funds the pool's **owner** with the principal, a reserve and the deployment
+   (the pool's principal + `pool_owner_reserve_tos` + `pool_deploy_tos`) and
+   activates it; the owner's key stays on the coordinator (below). The principal
+   is two stakes and the pool's headroom: `pool_tos` for one unit, and for a team
+   pool `pool_tos` + 2 x (team stake - `stake_tos`);
 3. it deploys the pool with 2 TOS from the operator wallet;
 4. it configures the pool and the binding in tosctl on the host
    (`config pool add --address --owner`, `config bind add --pool`);
-5. the owner sends the stake principal (`pool_tos`) to the pool;
-6. it checks readiness: the pool holds at least two stakes (`stake_tos`) above
+5. the owner sends the stake principal to the pool;
+6. it checks readiness: the pool holds at least two of its stakes above
    its storage reserve, and the node's latest `post-quantum consensus custody`
    line names the pool as its validator id (the Elector refuses a stake signed
    for another account);
-7. it runs `enable-elections.sh`, which installs
+7. it runs `enable-elections.sh --stake-tos <the pool's stake>`, which installs
    `systemd/tos-testnet-elections.service` (`Restart=always`).
 
 The election task (`tosctl service`) refuses to start without a master wallet
@@ -782,7 +878,7 @@ run them as part of deployment verification.
 #### Sweeping the bootstrap wallet
 
 The bootstrap wallet is one-time (memo STATUS 13.155/13.254). Once the second
-elected set is installed and holds all four stakes, its remaining balance (the
+elected set is installed and holds every registered pool's stake, its remaining balance (the
 margin less what top-ups used, and the rounding) is sent with wallet-v3 send mode
 160 (128: the whole remaining balance; 32: delete the account once empty), value
 0, non-bounce, to the ConfigParam 5 blackhole `-1:ff…ff`, where the credit phase
@@ -791,8 +887,10 @@ from `-1:111…1` again: the account is gone and its address is no StateInit's.
 
 `sweep` refuses unless, read on both validators: live ConfigParam 5 names the
 blackhole and burns 0/1 (without it the transfer would create an ordinary account
-holding the funds); the four `fund-op-`, `fund-owner-` and `principal-` operations
-are settled; ConfigParam 34 and 32 are both elected sets of exactly the four pools,
+holding the funds); `pools.json` records exactly the pools `genesis-records.json`
+registers, the genesis set's and every external validator's, and their `fund-op-`,
+`fund-owner-` and `principal-` operations are settled; ConfigParam 34 and 32 are
+both elected sets of exactly those pools,
 each matched by an Elector result (the genesis set has none) and the previous one
 older; each pool holds a frozen, unbanned stake in both results; each operator
 wallet holds at least the measured first-recovery cash (0.203224039 TOS) plus the
@@ -883,8 +981,9 @@ contract (`-1:55…55`). The steps, and why each is shaped as it is:
    a validator that already voted in the round.
 5. **Rounds.** A round is won when votes of more than 3/4 of the set's weight
    arrive; the proposal is adopted after ConfigParam 11's `min_wins` won rounds
-   (2 ordinary, 3 critical), each under a different set. With four equal
-   validators every round needs all four votes.
+   (2 ordinary, 3 critical), each under a different set. With the team holding
+   half of the weight, every round needs the team and more than half of the
+   external weight; before the first election the two genesis validators both vote.
 6. **Adopted.** `adopted` exits 0 only when both validators serve the new cell.
 
 ```bash

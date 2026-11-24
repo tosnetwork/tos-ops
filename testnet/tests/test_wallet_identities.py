@@ -31,6 +31,7 @@ def load_script(name: str, module: str):
 elections = load_script("testnet-elections.py", "testnet_elections_wallets")
 coordinator = load_script("testnet-coordinator.py", "testnet_coordinator_wallets")
 REAL_BOOTSTRAP_CHECK = lib.zero_state_bootstrap
+REAL_LIMITS = lib.genesis_limits
 
 KEY_A = "pubkey:" + "a1" * 32
 KEY_B = "pubkey:" + "b2" * 32
@@ -215,6 +216,21 @@ def test_public_key_matches_an_independent_ed25519_derivation(tmp_path):
 
 
 PROFILE_TAG = lib.load_profile()["genesis"]["auth_network_tag"]["value"]
+# The ceremony's profile once registration closed: two external validators.
+PLANNED_EXTERNAL = 2
+
+
+def planned_profile(tmp_path) -> Path:
+    path = tmp_path / "planned-profile.json"
+    if not path.exists():
+        profile = json.loads(lib.PROFILE_PATH.read_text())
+        plan = lib.election_plan(lib.load_profile(), external=PLANNED_EXTERNAL)
+        profile["elections"]["external_validators"] = PLANNED_EXTERNAL
+        profile["elections"]["team_stake_multiple"] = plan["team_stake_multiple"]
+        profile["elections"]["bootstrap_wallet_tos"] = plan["bootstrap_wallet_tos"]
+        profile["genesis"]["total_supply_tos"] = plan["total_supply_tos"]
+        path.write_text(json.dumps(profile))
+    return path
 
 
 def genesis_setup(tmp_path, monkeypatch, wallet_key: bytes):
@@ -223,6 +239,8 @@ def genesis_setup(tmp_path, monkeypatch, wallet_key: bytes):
     ceremony = tmp_path / "ceremony"
     ceremony.mkdir()
     (ceremony / "validator-pq.pub").write_bytes(b"manifest")
+    genesis_set = [json.loads(p.read_text()) for p in manifest_records(tmp_path)[:2]]
+    (ceremony / "genesis-set.json").write_text(json.dumps(genesis_set))
     tos_root = tmp_path / "tos"
     template = tos_root / "crypto" / "smartcont" / "gen-zerostate.fif"
     template.parent.mkdir(parents=True)
@@ -243,6 +261,12 @@ def genesis_setup(tmp_path, monkeypatch, wallet_key: bytes):
     monkeypatch.setattr(coordinator, "create_state", create_state)
     monkeypatch.setattr(coordinator, "tos_revision", lambda root: "0" * 40)
     monkeypatch.setattr(lib, "patch_template", lambda text, *rest: text + "patched\n")
+    monkeypatch.setattr(lib, "patch_genesis_set", lambda text, *rest: text + "genesis set\n")
+    monkeypatch.setattr(
+        lib,
+        "check_zero_state_genesis_set",
+        lambda boc, limits, records: {"validators": len(records)},
+    )
     monkeypatch.setenv(lib.AUTH_NETWORK_TAG_ENV, PROFILE_TAG)
 
     def auth_policy(boc, root_hash, global_id, version, tag):
@@ -264,6 +288,8 @@ def genesis_setup(tmp_path, monkeypatch, wallet_key: bytes):
         lambda fift, fift_lib, key: hashlib.sha256(key.read_bytes()).digest(),
     )
     args = [
+        "--profile",
+        str(planned_profile(tmp_path)),
         "genesis",
         "--ceremony",
         str(ceremony),
@@ -629,9 +655,9 @@ def test_a_retired_config_param_publishes_nothing(tmp_path, monkeypatch, capsys)
 # ---------------------------------------------------------------- manifest after pool
 
 
-def manifest_records(tmp_path) -> list[Path]:
+def manifest_records(tmp_path, count=4) -> list[Path]:
     paths = []
-    for n in range(1, 5):
+    for n in range(1, count + 1):
         public = hashlib.shake_256(b"public-%d" % n).digest(lib.PQ_PUBLIC_KEY_BYTES)
         record = {
             "operator": f"operator-{n}",
@@ -666,14 +692,37 @@ def pool_ceremony(tmp_path, count=4) -> Path:
     return ceremony
 
 
-def manifest(tmp_path, ceremony):
+def manifest(tmp_path, ceremony, records=None, team=2):
+    """The manifest step with the first `team` records as the genesis set and the
+    rest as external validators, under a profile planned for two external ones."""
     root = Path(os.environ.get("TOS_ROOT", Path.home() / "tos"))
     if not (root / "scripts/prepare-pq-genesis-manifest.py").is_file():
         pytest.skip("TOS_ROOT has no genesis manifest packer")
+    records = manifest_records(tmp_path) if records is None else records
     args = coordinator.argparse.Namespace(
-        ceremony=ceremony, tos_root=root, previous=[], records=manifest_records(tmp_path)
+        profile=planned_profile(tmp_path),
+        ceremony=ceremony,
+        tos_root=root,
+        previous=[],
+        records=records[:team],
+        external=records[team:],
     )
     coordinator.cmd_manifest(args)
+
+
+def test_a_four_record_genesis_set_is_still_packed_by_tos(tmp_path, monkeypatch):
+    # The tos packer takes exactly four records; with a four-validator genesis
+    # set the coordinator still runs it and compares its bytes.
+    planned_profile(tmp_path)
+    monkeypatch.setattr(lib, "genesis_limits", lambda p: dict(REAL_LIMITS(p), validators=4))
+    monkeypatch.setattr(lib, "election_plan", lambda p, **k: {"external_validators": 0})
+    ran = []
+    real_run = lib.run
+    monkeypatch.setattr(lib, "run", lambda argv, **k: ran.append(argv) or real_run(argv, **k))
+    ceremony = pool_ceremony(tmp_path)
+    manifest(tmp_path, ceremony, team=4)
+    assert len(ran) == 1 and ran[0][1].endswith("prepare-pq-genesis-manifest.py")
+    assert len((ceremony / "validator-pq.pub").read_bytes()) == 4 * 1376
 
 
 def test_manifest_follows_the_pool_step_and_names_its_pools(tmp_path):
@@ -684,6 +733,61 @@ def test_manifest_follows_the_pool_step_and_names_its_pools(tmp_path):
     assert [r["validator_id"] for r in records] == [
         pools[f"node-{n}"]["pool"].split(":")[1] for n in range(1, 5)
     ]
+
+
+def test_manifest_separates_the_genesis_set_from_the_registered_records(tmp_path):
+    ceremony = pool_ceremony(tmp_path)
+    manifest(tmp_path, ceremony)
+    records = json.loads((ceremony / "genesis-records.json").read_text())
+    genesis_set = json.loads((ceremony / "genesis-set.json").read_text())
+    # Every registered record, the genesis set first; the zero state gets the two.
+    assert genesis_set == records[:2] and len(records) == 4
+    assert [r["validator_id"] for r in json.loads((ceremony / "operators.json").read_text())] == [
+        r["validator_id"] for r in genesis_set
+    ]
+    packed = (ceremony / "validator-pq.pub").read_bytes()
+    assert packed == lib.pack_manifest(genesis_set) and len(packed) == 2 * 1376
+    # The onboarding tools tell the two apart from these files.
+    for record, role in zip(records, ("team", "team", "external", "external"), strict=True):
+        assert elections.genesis_staking_account(ceremony, "-1:" + record["validator_id"]) == role
+
+
+@pytest.mark.parametrize(
+    "team, message",
+    [
+        (1, "genesis.validators = 2 records, not 1"),
+        (3, "genesis.validators = 2 records, not 3"),
+    ],
+)
+def test_manifest_needs_the_genesis_set_size(tmp_path, team, message):
+    ceremony = pool_ceremony(tmp_path)
+    with pytest.raises(lib.TestnetError, match=message):
+        manifest(tmp_path, ceremony, team=team)
+    assert not (ceremony / "genesis-records.json").exists()
+
+
+def test_manifest_needs_exactly_the_profiles_external_count(tmp_path):
+    ceremony = pool_ceremony(tmp_path, count=3)
+    with pytest.raises(lib.TestnetError, match="registers 2 external validators .* not the 1"):
+        manifest(tmp_path, ceremony, records=manifest_records(tmp_path)[:3])
+    assert not (ceremony / "genesis-records.json").exists()
+
+
+def test_manifest_refuses_a_recorded_pool_no_record_names(tmp_path):
+    ceremony = pool_ceremony(tmp_path, count=5)
+    with pytest.raises(lib.TestnetError, match="pools no record names"):
+        manifest(tmp_path, ceremony)
+    assert not (ceremony / "genesis-records.json").exists()
+
+
+def test_manifest_refuses_an_external_validator_on_a_team_host(tmp_path):
+    ceremony = pool_ceremony(tmp_path)
+    paths = manifest_records(tmp_path)
+    record = json.loads(paths[3].read_text())
+    record["address"] = "44.0.0.1:30002"
+    paths[3].write_text(json.dumps(record))
+    with pytest.raises(lib.TestnetError, match="share one host"):
+        manifest(tmp_path, ceremony, records=paths)
 
 
 def test_manifest_refuses_a_validator_id_no_pool_recorded(tmp_path):
@@ -741,10 +845,22 @@ def test_genesis_records_the_bootstrap_check(tmp_path, monkeypatch):
 
     monkeypatch.setattr(lib, "zero_state_bootstrap", bootstrap)
     assert coordinator.main(args) == 0
-    profile = lib.load_profile()
-    assert seen == [(80_151 * 10**9, 81_151 * 10**9, lib.validator_schedule(profile))]
-    recorded = json.loads((ceremony / "genesis.json").read_text())["bootstrap"]
-    assert recorded == {"bootstrap_wallet_nanotos": 80_151 * 10**9, "blackhole": lib.BLACKHOLE}
+    profile = lib.load_profile(planned_profile(tmp_path))
+    plan = lib.election_plan(profile)
+    wallet = plan["bootstrap_wallet_tos"] * 10**9
+    assert wallet == 80_159 * 10**9
+    assert seen == [(wallet, wallet + 1000 * 10**9, lib.validator_schedule(profile))]
+    genesis = json.loads((ceremony / "genesis.json").read_text())
+    assert genesis["bootstrap"] == {"bootstrap_wallet_nanotos": wallet, "blackhole": lib.BLACKHOLE}
+    assert genesis["election_plan"] == plan and genesis["genesis_set"] == {"validators": 2}
+    assert genesis["template"]["replaced"][-4:] == lib.GENESIS_SET_REPLACED
+
+
+def test_genesis_refuses_until_the_ceremony_sets_the_external_count(tmp_path, monkeypatch, capsys):
+    ceremony, args, runs = genesis_setup(tmp_path, monkeypatch, b"\x0b" * 32)
+    assert coordinator.main(args[2:]) == 1  # the repository profile, E still null
+    assert "external_validators is not set" in capsys.readouterr().err
+    assert runs == [] and published(ceremony) == []
 
 
 def test_a_genesis_without_the_decided_bootstrap_publishes_nothing(tmp_path, monkeypatch, capsys):

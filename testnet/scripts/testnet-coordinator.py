@@ -7,25 +7,51 @@ wallets.json (wallet label -> public key or address) is only ever extended:
 testnet-elections.py adds the operator and load-test wallets to it, and a
 later reset reads it through --previous-ceremony to refuse reused wallet keys.
 
-  manifest --ceremony DIR --tos-root DIR [--previous FILE ...] RECORD RECORD RECORD RECORD
-      Check the four operator records (testnet-operator.py record) and pack
-      validator-pq.pub with tos scripts/prepare-pq-genesis-manifest.py. The
-      record order is the validator index order. DIR holds only what
+  plan --external-validators E [--write FILE]
+      Print what the profile's election parameters imply for E external
+      validators (testnet_lib.election_plan): the team stake multiple and
+      stake, every pool's principal and funding, the bootstrap wallet, the
+      genesis supply and the resulting weight split, after checking that a
+      team-only election concludes and that E external pools are all elected
+      with the team's stakes counted in full. Refused when no such plan
+      exists. The ceremony copies elections.external_validators,
+      elections.team_stake_multiple, elections.bootstrap_wallet_tos and
+      genesis.total_supply_tos from it into the profile; --write FILE writes
+      a copy of the profile with them set (a new file only).
+
+  manifest --ceremony DIR --tos-root DIR [--previous FILE ...]
+           [--external RECORD ...] RECORD [RECORD ...]
+      Check the operator records (testnet-operator.py record): the positional
+      ones are the genesis set, exactly genesis.validators of them in
+      validator index order (the team's validators); each --external one is
+      a registered external validator, exactly elections.external_validators
+      of them, which stands from the first election and is not in the zero
+      state. Pack validator-pq.pub from the genesis set: with tos
+      scripts/prepare-pq-genesis-manifest.py checked against an independent
+      packing when the set is four records, which is all that packer takes,
+      and otherwise with the independent packing alone (genesis reads the
+      set back from the zero state either way). DIR holds only what
       `testnet-elections.py pool` wrote before it (pools.json, wallets.json,
-      the pool owners' public files and keys), and every record's validator
-      id must be one of the staking pools recorded there. The packed bytes are checked
-      against an independent packing of the same records. After a reset, pass
-      every earlier epoch's genesis-records.json with --previous: all epochs
-      share global id 2, so no validator id, consensus key id or ADNL id may
-      be reused. Wallet keys are checked by genesis, onboard and load
-      (--previous-ceremony).
+      the pool owners' public files and keys), and the records' validator ids
+      must be exactly the staking pools recorded there. Writes
+      genesis-set.json (the genesis set) and genesis-records.json (every
+      registered record, the genesis set first): onboarding accepts a pool
+      genesis-records.json names, and stakes a team multiple for one in
+      genesis-set.json. No two records may share an identity or a host. After
+      a reset, pass every earlier epoch's genesis-records.json with
+      --previous: all epochs share global id 2, so no validator id, consensus
+      key id or ADNL id may be reused. Wallet keys are checked by genesis,
+      onboard and load (--previous-ceremony).
 
   genesis --ceremony DIR --tos-root DIR --tos-build DIR --epoch UNIX_SECONDS
           [--previous-ceremony DIR ...]
       Copy the canonical template gen-zerostate.fif, replace only its mainnet
       global id and genesis epoch and the profile's validator schedule
       (ConfigParam 15 and the initial set's lifetime), define the AUTH
-      network tag (testnet_lib.patch_template), and run create-state with
+      network tag (testnet_lib.patch_template), replace the genesis set size,
+      ConfigParam 16 and 17 and the bootstrap balance with the profile's
+      (testnet_lib.patch_genesis_set; refused until the ceremony has set
+      elections.external_validators and the plan values), and run create-state with
       SOURCE_DATE_EPOCH. The tag comes from TOS_AUTH_NETWORK_TAG (64
       hexadecimal digits, as tos tooling takes it) and must equal the
       profile's genesis.auth_network_tag, which is SHA-256 of its rule; a
@@ -47,7 +73,10 @@ later reset reads it through --previous-ceremony to refuse reused wallet keys.
       exactly elections.bootstrap_wallet_tos and the state exactly
       genesis.total_supply_tos (the wallet plus the Elector's and the Config
       contract's 500 TOS each), the balances adding up; and ConfigParam 15 read
-      from the state is the profile's schedule. Writes genesis.json (with
+      from the state is the profile's schedule; and ConfigParam 16 and 17 are
+      the profile's limits and the validator set is exactly the genesis set
+      of genesis-set.json, in order, all main validators of equal weight.
+      Writes genesis.json (with
       main_wallet_public_key, auth_policy: the tag, its rule and the ConfigParam
       48 cell hash, and bootstrap: the ConfigParam 5 cell hash, the blackhole and
       the balances), main-wallet.pub and wallets.json.
@@ -57,9 +86,9 @@ later reset reads it through --previous-ceremony to refuse reused wallet keys.
       (testnet-dht.py prepare), and its SHA-256.
 
 The epoch is the chain's genesis time: blocks cannot be produced before it,
-and the four genesis validators are authorized for the profile's
+and the genesis validators are authorized for the profile's
 genesis.initial_set_valid_for_seconds after it. Choose
-it so that the four nodes are installed and started before it, and announce it.
+it so that the genesis set's nodes are installed and started before it, and announce it.
 """
 
 from __future__ import annotations
@@ -101,6 +130,9 @@ MAX_EPOCH_AHEAD = 14 * 86400
 MAX_EPOCH_BEHIND = 3600
 
 
+# The genesis set size tos scripts/prepare-pq-genesis-manifest.py packs.
+TOS_PACKER_RECORDS = 4
+
 # What `testnet-elections.py pool` writes into the ceremony before the manifest.
 STAKING_ENTRIES = {"pools.json", "wallets.json", ".wallets.json.lock", "pool-owners", "secret"}
 STAKING_SECRET = re.compile(r"^pool-owner-[A-Za-z0-9_-]+\.pk$")
@@ -136,9 +168,49 @@ def recorded_staking_accounts(ceremony: Path) -> set[str]:
     }
 
 
+def cmd_plan(args: argparse.Namespace) -> None:
+    profile = lib.load_profile(args.profile)
+    plan = lib.election_plan(profile, external=args.external_validators)
+    settings = {
+        "elections.external_validators": plan["external_validators"],
+        "elections.team_stake_multiple": plan["team_stake_multiple"],
+        "elections.bootstrap_wallet_tos": plan["bootstrap_wallet_tos"],
+        "genesis.total_supply_tos": plan["total_supply_tos"],
+    }
+    print(json.dumps({"plan": plan, "set_in_profile": settings}, indent=2))
+    if args.write:
+        planned = json.loads(Path(args.profile).read_text())
+        for dotted, value in settings.items():
+            section, key = dotted.split(".")
+            planned[section][key] = value
+        # The written profile must load and pass the same check before it is used.
+        lib.write_new_json(args.write, planned)
+        lib.load_profile(args.write)
+        lib.election_plan(lib.load_profile(args.write))
+        print(f"wrote {args.write}")
+
+
 def cmd_manifest(args: argparse.Namespace) -> None:
+    profile = lib.load_profile(args.profile)
+    limits = lib.genesis_limits(profile)
+    plan = lib.election_plan(profile)
     ceremony = staking_ceremony(args.ceremony)
-    records = lib.check_operator_set([json.loads(Path(p).read_text()) for p in args.records])
+    genesis_set = [json.loads(Path(p).read_text()) for p in args.records]
+    external = [json.loads(Path(p).read_text()) for p in args.external]
+    if len(genesis_set) != limits["validators"]:
+        raise lib.TestnetError(
+            f"the genesis set is genesis.validators = {limits['validators']} records, "
+            f"not {len(genesis_set)}"
+        )
+    if len(external) != plan["external_validators"]:
+        raise lib.TestnetError(
+            f"the profile registers {plan['external_validators']} external validators "
+            f"(elections.external_validators), not the {len(external)} --external records given"
+        )
+    # One check over every registered record: no identity or host is shared
+    # between the genesis set and the external validators either.
+    records = lib.check_operator_set(genesis_set + external)
+    genesis_set = records[: len(genesis_set)]
     staking = recorded_staking_accounts(ceremony)
     for record in records:
         if record["validator_id"] not in staking:
@@ -146,25 +218,44 @@ def cmd_manifest(args: argparse.Namespace) -> None:
                 f"{record['operator']} names validator id {record['validator_id']}, which is "
                 "no staking pool `testnet-elections.py pool` recorded in this ceremony"
             )
+    unnamed = staking - {r["validator_id"] for r in records}
+    if unnamed:
+        raise lib.TestnetError(
+            f"pools.json records pools no record names: {sorted(v[:16] for v in unnamed)}; "
+            "every recorded pool must be a registered validator"
+        )
     previous = [json.loads(Path(p).read_text()) for p in args.previous]
     lib.check_fresh_identities(records, previous)
-    lib.write_new_json(ceremony / "operators.json", lib.manifest_input(records))
+    lib.write_new_json(ceremony / "operators.json", lib.manifest_input(genesis_set))
+    lib.write_new_json(ceremony / "genesis-set.json", genesis_set)
     lib.write_new_json(ceremony / "genesis-records.json", records)
-    packer = args.tos_root / "scripts/prepare-pq-genesis-manifest.py"
-    lib.run(
-        [
-            sys.executable,
-            str(packer),
-            str(ceremony / "operators.json"),
-            str(ceremony / "validator-pq.pub"),
-        ]
-    )
-    packed = (ceremony / "validator-pq.pub").read_bytes()
-    if packed != lib.pack_manifest(records):
-        raise lib.TestnetError("the tos packer and the independent packing disagree")
-    for index, record in enumerate(records):
+    independent = lib.pack_manifest(genesis_set)
+    if len(genesis_set) == TOS_PACKER_RECORDS:
+        packer = args.tos_root / "scripts/prepare-pq-genesis-manifest.py"
+        lib.run(
+            [
+                sys.executable,
+                str(packer),
+                str(ceremony / "operators.json"),
+                str(ceremony / "validator-pq.pub"),
+            ]
+        )
+        packed = (ceremony / "validator-pq.pub").read_bytes()
+        if packed != independent:
+            raise lib.TestnetError("the tos packer and the independent packing disagree")
+    else:
+        # The tos packer accepts exactly four records. Another genesis set is packed
+        # here only; genesis then reads the validator set back from the zero state
+        # and refuses unless it is exactly these records in this order.
+        lib.write_new(ceremony / "validator-pq.pub", independent)
+    for index, record in enumerate(genesis_set):
         print(
             f"validator {index}: {record['operator']} key_id {record['key_id']} at {record['address']}"
+        )
+    for record in records[len(genesis_set) :]:
+        print(
+            f"external (from the first election): {record['operator']} validator id "
+            f"{record['validator_id']} at {record['address']}"
         )
     print(f"validator-pq.pub sha256 {lib.sha256_file(ceremony / 'validator-pq.pub')}")
 
@@ -265,11 +356,22 @@ def cmd_genesis(args: argparse.Namespace) -> None:
             raise lib.TestnetError(
                 f"{earlier} already used AUTH network tag {auth_tag.hex()}; every epoch needs its own"
             )
+    limits = lib.genesis_limits(profile)
+    plan = lib.election_plan(profile)
+    if not (ceremony / "genesis-set.json").is_file():
+        raise lib.TestnetError("genesis-set.json is missing; run the manifest step first")
+    genesis_set = lib.check_operator_set(
+        json.loads((ceremony / "genesis-set.json").read_text()), limits["validators"]
+    )
     revision = tos_revision(args.tos_root)
     template = args.tos_root / profile["genesis"]["template"]
     original = template.read_text()
     schedule = lib.validator_schedule(profile)
-    patched = lib.patch_template(original, global_id, args.epoch, schedule, auth_tag)
+    patched = lib.patch_genesis_set(
+        lib.patch_template(original, global_id, args.epoch, schedule, auth_tag),
+        limits,
+        plan["bootstrap_wallet_tos"],
+    )
 
     runs = [ceremony / "run-a", ceremony / "run-b"]
     for run_dir in runs:
@@ -312,6 +414,9 @@ def cmd_genesis(args: argparse.Namespace) -> None:
     bootstrap_check = lib.zero_state_bootstrap(
         (built / "zerostate.boc").read_bytes(), wallet_nanotos, total_nanotos, schedule
     )
+    genesis_set_check = lib.check_zero_state_genesis_set(
+        (built / "zerostate.boc").read_bytes(), limits, genesis_set
+    )
     valid_for = schedule["initial_set_valid_for"]
     utc = datetime.timezone.utc
 
@@ -334,6 +439,8 @@ def cmd_genesis(args: argparse.Namespace) -> None:
         "main_wallet_public_key": main_public.hex(),
         "auth_policy": auth,
         "bootstrap": bootstrap_check,
+        "genesis_set": genesis_set_check,
+        "election_plan": plan,
         "zero_state": lib.zero_state_entry(rhash, fhash),
         "zero_state_hex": {"root_hash": rhash.hex(), "file_hash": fhash.hex()},
         "basestate0_hex": {
@@ -360,6 +467,7 @@ def cmd_genesis(args: argparse.Namespace) -> None:
                 "election params",
                 "initial set lifetime",
                 "AUTH network tag (inserted after the first line)",
+                *lib.GENESIS_SET_REPLACED,
             ],
         },
         "tos_revision": revision,
@@ -422,9 +530,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--profile", type=Path, default=lib.PROFILE_PATH)
     sub = parser.add_subparsers(dest="command", required=True)
 
+    p = sub.add_parser("plan")
+    p.add_argument("--external-validators", type=int, required=True)
+    p.add_argument("--write", type=Path)
+    p.set_defaults(func=cmd_plan)
+
     p = sub.add_parser("manifest")
     p.add_argument("--ceremony", type=Path, required=True)
     p.add_argument("--tos-root", type=Path, required=True)
+    p.add_argument(
+        "--external",
+        type=Path,
+        action="append",
+        default=[],
+        help="an external validator's record (repeat for each): registered before genesis, "
+        "not in the zero state, elected from the first election",
+    )
     p.add_argument(
         "--previous",
         type=Path,
@@ -433,7 +554,7 @@ def main(argv: list[str] | None = None) -> int:
         help="genesis-records.json of an earlier testnet epoch (repeat for each); a reset "
         "genesis must reuse none of their identities",
     )
-    p.add_argument("records", nargs=4)
+    p.add_argument("records", nargs="+", help="the genesis set's records, in index order")
     p.set_defaults(func=cmd_manifest)
 
     p = sub.add_parser("genesis")

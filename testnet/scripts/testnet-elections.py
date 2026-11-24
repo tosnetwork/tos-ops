@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
-"""Bring the four genesis validators into ordinary elections (coordinator side),
+"""Bring the registered validators into ordinary elections (coordinator side),
 and drive load through a post-quantum high-volume wallet.
+
+The registered validators are every record in the ceremony's
+genesis-records.json: the genesis set (genesis-set.json, the team's validators,
+in the zero state) and the external validators registered before genesis, who
+stand from the first election. A pool's amounts follow from which it is
+(testnet_lib.pool_amounts): an external pool stakes elections.stake_tos, a team
+pool elections.team_stake_multiple times that, which the ceremony sets with
+elections.external_validators.
 
   fund    --ceremony DIR --tos-root DIR --fift PATH --rpc URL --confirm-rpc URL
           --to ADDRESS --amount TOS --label LABEL [--id ID] [--dry-run]
@@ -18,10 +26,12 @@ and drive load through a post-quantum high-volume wallet.
       sweep-bootstrap): wallet-v3 send mode 160 (128 + 32: all of the remaining
       balance, then the account is deleted), value 0, non-bounce, empty body, to
       the ConfigParam 5 blackhole -1:ff...ff. Refused unless, read on both
-      validators: live ConfigParam 5 names that blackhole and burns no fees; the
-      four validators' fund-op-, fund-owner- and principal- operations are
-      settled; ConfigParam 34 and 32 are both elected sets (each matched by an
-      Elector result) of exactly the four pools, the previous one older; every
+      validators: live ConfigParam 5 names that blackhole and burns no fees;
+      DIR/pools.json records exactly the pools genesis-records.json names (the
+      genesis set and every registered external validator), and their fund-op-,
+      fund-owner- and principal- operations are settled; ConfigParam 34 and 32
+      are both elected sets (each matched by an Elector result) of exactly those
+      pools, the previous one older; every
       pool holds a frozen, unbanned stake in both results; every operator wallet
       holds at least the first recovery's measured cash plus the fee allowance;
       and no other bootstrap operation is open. --dry-run checks all of that and
@@ -59,7 +69,7 @@ and drive load through a post-quantum high-volume wallet.
 
   pool    --name NAME --operator ADDRESS --ceremony DIR --tos-root DIR --fift PATH
           [--previous-ceremony DIR]...
-      Before genesis, for one genesis validator: record ADDRESS, the operator
+      Before genesis, for one validator, team or external: record ADDRESS, the operator
       wallet `init-operator.sh --wallet-only` printed on the host, as op-NAME
       in DIR/wallets.json; make the pool owner, a wallet v3 in the masterchain
       (subwallet 0x504F4F4C) whose key is created here in
@@ -75,17 +85,20 @@ and drive load through a post-quantum high-volume wallet.
   onboard --name NAME --host HOST --ssh-key FILE --ceremony DIR
           --tos-root DIR --fift PATH --rpc URL --confirm-rpc URL
           [--previous-ceremony DIR]...
-      For one genesis validator whose pool `pool` recorded and the genesis
-      records name as a validator id, in order, stopping at the first failure:
+      For one validator whose pool `pool` recorded and genesis-records.json
+      names as a validator id (a team pool, in genesis-set.json, stakes the
+      team multiple), in order, stopping at the first failure:
       init-operator.sh on the host, refusing unless its operator wallet is the
       recorded op-NAME; fund it from the bootstrap wallet with fee money only
       (operator_funding_tos) and activate it; fund the pool owner with the
-      stake money and activate it; deploy the pool (the StateInit derived here
+      stake money (the pool's principal, pool_owner_reserve_tos and
+      pool_deploy_tos) and activate it; deploy the pool (the StateInit derived here
       from the pinned code, the owner and the operator wallet) with
       pool_deploy_tos from the operator wallet; configure the pool and the
       binding in tosctl on the host; have the owner send the principal
-      (pool_tos); check that the pool holds two stakes and that the node
-      reports custody for the pool's id; enable-elections.sh.
+      (pool_tos, or the team pool's); check that the pool holds two of its
+      stakes and that the node reports custody for the pool's id;
+      enable-elections.sh with the pool's stake.
 
       Every step that moves value is an operation (testnet_ops.py; ids
       fund-op-, fund-owner-, activate-owner-, deploy-pool-, principal-NAME)
@@ -104,7 +117,10 @@ and drive load through a post-quantum high-volume wallet.
   onboard --name NAME --no-host --ceremony DIR --tos-root DIR --fift PATH
           --rpc URL --confirm-rpc URL [--previous-ceremony DIR]...
       For a validator whose host only its operator touches: nothing here logs
-      in to it. The coordinator's steps, as the same journaled operations:
+      in to it. It takes an external pool, one genesis-records.json names that
+      is not in the genesis set (a team pool is onboarded over SSH, since its
+      host must stake the team multiple). The coordinator's steps, as the same
+      journaled operations:
       fund-op- (fee money to the recorded operator wallet, which may still be
       undeployed), fund-owner-, activate-owner-, deploy-pool- (kind
       owner-deploy-pool: the owner sends the pool's StateInit with
@@ -1392,7 +1408,7 @@ def network_check():
 
 def elected_sets(operations: ops.Operations, pools: dict[str, str]) -> dict:
     """ConfigParam 32 and 34 as both validators serve them, each an elected set of
-    exactly the four pools with an Elector result, and every pool's stake frozen
+    exactly the registered pools with an Elector result, and every pool's stake frozen
     and unbanned in both results. The genesis set has no Elector result, so it can
     be neither. Returns the summary the dry run and the record print."""
     shared = network_check()
@@ -1418,7 +1434,8 @@ def elected_sets(operations: ops.Operations, pools: dict[str, str]) -> dict:
             ids = {v["id"] for v in decoded["validators"]}
             if ids != wanted:
                 raise lib.TestnetError(
-                    f"ConfigParam {number} is not the four pools: {sorted(i[:16] for i in ids)}"
+                    f"ConfigParam {number} is not the {len(wanted)} registered pools: "
+                    f"{sorted(i[:16] for i in ids)}"
                 )
             results = [p for p in elector["past"] if p["hash"] == decoded["hash"]]
             if len(results) != 1:
@@ -1457,12 +1474,18 @@ def sweep_prerequisites(args: argparse.Namespace, operations: ops.Operations) ->
     )
     ceremony = Path(args.ceremony)
     pools = read_pools(ceremony)
-    if len(pools) != lib.GENESIS_VALIDATORS or not all(
-        entry.get("pool") and entry.get("operator") for entry in pools.values()
-    ):
+    # Every registered validator, the genesis set and the external ones: the
+    # bootstrap wallet funded each of them, and the sweep waits until each stands.
+    registered = registered_validator_ids(ceremony)
+    recorded = {
+        str(entry.get("pool", "")).split(":")[-1]
+        for entry in pools.values()
+        if entry.get("pool") and entry.get("operator")
+    }
+    if len(pools) != len(registered) or recorded != registered:
         raise lib.TestnetError(
             f"{ceremony / POOLS_FILE} records {len(pools)} pools; the sweep waits for all "
-            f"{lib.GENESIS_VALIDATORS}"
+            f"{len(registered)} that genesis-records.json registers"
         )
     journal = operations.journal
     for name in sorted(pools):
@@ -1707,11 +1730,38 @@ def recorded_staking(ceremony: Path, name: str, tos_root) -> tuple[str, str, str
     return pool, owner, operator
 
 
-def genesis_staking_account(ceremony: Path, pool: str) -> None:
-    """Refuse a pool that is not a validator id of the genesis records."""
-    records = json.loads((Path(ceremony) / "genesis-records.json").read_text())
-    if pool.split(":")[1] not in {r.get("validator_id") for r in records}:
+GENESIS_RECORDS_FILE = "genesis-records.json"
+GENESIS_SET_FILE = "genesis-set.json"
+
+
+def _validator_ids(ceremony: Path, name: str) -> set[str]:
+    path = Path(ceremony) / name
+    if not path.is_file():
+        raise lib.TestnetError(f"{path} is missing; the coordinator's manifest step writes it")
+    records = json.loads(path.read_text())
+    if not isinstance(records, list) or not all(isinstance(r, dict) for r in records):
+        raise lib.TestnetError(f"{path} is not a list of operator records")
+    return {str(r.get("validator_id", "")).lower() for r in records}
+
+
+def registered_validator_ids(ceremony: Path) -> set[str]:
+    """Every registered validator id: genesis-records.json, the genesis set included."""
+    return _validator_ids(ceremony, GENESIS_RECORDS_FILE)
+
+
+def genesis_staking_account(ceremony: Path, pool: str) -> str:
+    """'team' for a pool of the genesis set (genesis-set.json), 'external' for one
+    genesis-records.json registers outside it; refuses any other pool."""
+    account = pool.split(":")[1].lower()
+    registered = registered_validator_ids(ceremony)
+    genesis_set = _validator_ids(ceremony, GENESIS_SET_FILE)
+    if not genesis_set <= registered:
+        raise lib.TestnetError(
+            f"{GENESIS_SET_FILE} names validators {GENESIS_RECORDS_FILE} does not register"
+        )
+    if account not in registered:
         raise lib.TestnetError(f"the pool {pool} is not a validator id in the genesis records")
+    return "team" if account in genesis_set else "external"
 
 
 def stake_pool(args: argparse.Namespace, global_id: int) -> dict:
@@ -1813,10 +1863,11 @@ def fund_and_activate_owner(
     name: str,
     owner: str,
     previous: list,
-    elections: dict,
+    amounts: dict,
     steps,
 ) -> int:
-    """fund-owner- (principal and reserve from the bootstrap wallet) and activate-owner-.
+    """fund-owner- (principal, reserve and the pool deployment from the bootstrap
+    wallet) and activate-owner-.
 
     The pool's owner holds the stake principal and is the only role that can take
     it out. Its key was made here before genesis and never leaves this machine;
@@ -1827,7 +1878,7 @@ def fund_and_activate_owner(
     if ensure_pool_owner(args, name, global_id, previous) != owner:
         raise lib.TestnetError(f"the pool owner key of {name} is not the recorded owner {owner}")
     step(f"pool owner {owner} (key offline in the ceremony's secret/)")
-    principal = int(elections["pool_tos"]) * NANO
+    principal = amounts["principal"]
     fund_from_bootstrap(
         args,
         operations,
@@ -1835,7 +1886,7 @@ def fund_and_activate_owner(
         steps,
         f"fund-owner-{name}",
         owner,
-        principal + int(elections["pool_owner_reserve_tos"]) * NANO,
+        amounts["owner_funding"],
         f"pool-owner-{name}",
     )
     init_boc = pool_owner_paths(ceremony, name)["init"].read_bytes()
@@ -1903,7 +1954,8 @@ def onboard(
     previous = previous_wallets(args)
     elections = profile["elections"]
     pool, owner, operator = recorded_staking(ceremony, name, args.tos_root)
-    genesis_staking_account(ceremony, pool)
+    role = genesis_staking_account(ceremony, pool)
+    amounts = lib.pool_amounts(profile, role == "team")
     host = Host(args.host, args.ssh_key)
     scripts = vh.SCRIPTS
     steps = journal_steps(operations, name)
@@ -1932,7 +1984,7 @@ def onboard(
         steps,
         f"fund-op-{name}",
         operator,
-        int(elections["operator_funding_tos"]) * NANO,
+        amounts["operator_funding"],
         f"op-{name}",
     )
     if operations.state(operator) != "active":
@@ -1942,7 +1994,7 @@ def onboard(
         operations.both(lambda node: Chain(node.url, node.rpc).wait_active(operator))
 
     principal = fund_and_activate_owner(
-        args, operations, global_id, name, owner, previous, elections, steps
+        args, operations, global_id, name, owner, previous, amounts, steps
     )
 
     pool_init_b64 = base64.b64encode(
@@ -1962,7 +2014,7 @@ def onboard(
         "deploy-pool",
         operator,
         pool,
-        int(elections["pool_deploy_tos"]) * NANO,
+        amounts["deploy"],
         state_init_b64=pool_init_b64,
         expect=pool_deployed,
         extra={"owner": owner},
@@ -1971,11 +2023,17 @@ def onboard(
 
     send_principal(args, operations, global_id, name, pool, owner, operator, principal, steps)
 
-    step("readiness: two stakes in the pool, the node bound to the pool")
-    staking_readiness(operations, host, pool, int(elections["stake_tos"]) * NANO)
+    step(f"readiness: two {role} stakes in the pool, the node bound to the pool")
+    staking_readiness(operations, host, pool, amounts["stake"])
 
-    step("election task")
-    print(host.run(f"{scripts}/enable-elections.sh --name {shlex.quote(name)}"), end="")
+    step(f"election task, a fixed stake of {amounts['stake'] // NANO} TOS")
+    print(
+        host.run(
+            f"{scripts}/enable-elections.sh --name {shlex.quote(name)} "
+            f"--stake-tos {amounts['stake'] // NANO}"
+        ),
+        end="",
+    )
     step("done")
 
 
@@ -2139,7 +2197,12 @@ def onboard_external(
     previous = previous_wallets(args)
     elections = profile["elections"]
     pool, owner, operator = recorded_staking(ceremony, name, args.tos_root)
-    genesis_staking_account(ceremony, pool)
+    if genesis_staking_account(ceremony, pool) == "team":
+        raise lib.TestnetError(
+            f"{name}'s pool {pool} is in the genesis set: a team pool stakes the team multiple, "
+            "which testnet-operator.py onboard does not set; onboard it with --host and --ssh-key"
+        )
+    amounts = lib.pool_amounts(profile, team=False)
     steps = journal_steps(operations, name)
     step = steps[0]
     step(f"operator wallet {operator}, staking pool {pool} (operator-run host, no access)")
@@ -2153,11 +2216,11 @@ def onboard_external(
         steps,
         f"fund-op-{name}",
         operator,
-        int(elections["operator_funding_tos"]) * NANO,
+        amounts["operator_funding"],
         f"op-{name}",
     )
     principal = fund_and_activate_owner(
-        args, operations, global_id, name, owner, previous, elections, steps
+        args, operations, global_id, name, owner, previous, amounts, steps
     )
     owner_deploys_pool(
         args,
@@ -2167,7 +2230,7 @@ def onboard_external(
         pool,
         owner,
         operator,
-        int(elections["pool_deploy_tos"]) * NANO,
+        amounts["deploy"],
         principal,
         steps,
     )
@@ -2175,8 +2238,7 @@ def onboard_external(
 
     step("readiness on chain: the pool's code, roles and two stakes")
     verify_pool_both(operations, args.tos_root, pool, owner, operator)
-    stake = int(elections["stake_tos"]) * NANO
-    pool_holds_two_stakes(operations, pool, stake)
+    pool_holds_two_stakes(operations, pool, amounts["stake"])
 
     step("the operator's steps, read on chain")
     state = operations.state(operator)

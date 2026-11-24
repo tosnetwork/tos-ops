@@ -937,7 +937,7 @@ M = [
     (
         "E10 readiness not checked",
         EL,
-        '    staking_readiness(operations, host, pool, int(elections["stake_tos"]) * NANO)',
+        '    staking_readiness(operations, host, pool, amounts["stake"])',
         "    pass",
     ),
     (
@@ -967,7 +967,7 @@ M = [
     (
         "E18 a pool genesis does not name is onboarded",
         EL,
-        '    if pool.split(":")[1] not in {r.get("validator_id") for r in records}:',
+        "    if account not in registered:",
         "    if False:",
     ),
     (
@@ -1257,6 +1257,61 @@ M += [
         OPS,
         '                if state_of(record) in ("planned", "signed", "broadcast"):',
         '                if state_of(record) in ("signed", "broadcast"):',
+    ),
+    # The December 5 plan: the genesis set, the election limits and the weights.
+    (
+        "P1 a team-only election is not simulated",
+        LIB,
+        "    if alone is None or len(alone) != team:\n",
+        "    if False:\n",
+    ),
+    (
+        "P2 min_total_stake ignored by the simulation",
+        LIB,
+        "    if total < min_total:\n",
+        "    if False:\n",
+    ),
+    (
+        "P3 a capped team stake is accepted",
+        LIB,
+        '            and member["true_stake_nanotos"] != member["stake_nanotos"]\n',
+        "            and False\n",
+    ),
+    (
+        "P4 the profile's bootstrap total is not compared",
+        LIB,
+        "            if given[key] != plan[key]:\n",
+        "            if False:\n",
+    ),
+    (
+        "P5 the manifest loop keeps four records",
+        LIB,
+        '        (TEMPLATE_MANIFEST_LOOP_LINE, f"  }} {count} times drop"),\n',
+        "",
+    ),
+    (
+        "P6 the genesis set is not read back",
+        LIB,
+        '    actual = [(v["validator_id"], v["key_id"], v["adnl_id"]) for v in found["validators"]]\n',
+        "    actual = expected\n",
+    ),
+    (
+        "P7 a team pool is onboarded without its host",
+        EL,
+        '    if genesis_staking_account(ceremony, pool) == "team":\n',
+        "    if False:\n",
+    ),
+    (
+        "P8 the sweep counts only pools.json",
+        EL,
+        "    if len(pools) != len(registered) or recorded != registered:\n",
+        "    if False:\n",
+    ),
+    (
+        "P9 a team pool stakes one unit",
+        LIB,
+        '        stake, principal = plan["team_stake_tos"], plan["team_pool_principal_tos"]\n',
+        '        stake, principal = int(e["stake_tos"]), int(e["pool_tos"])\n',
     ),
 ]
 
@@ -2192,7 +2247,7 @@ M += [
     (
         "NH5 hand-off before the pool holds two stakes",
         EL,
-        "    pool_holds_two_stakes(operations, pool, stake)\n",
+        '    pool_holds_two_stakes(operations, pool, amounts["stake"])\n',
         "",
     ),
     (
