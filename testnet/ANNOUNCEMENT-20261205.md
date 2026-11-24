@@ -240,5 +240,6 @@ Incident or unresolved item:
 After the coordinator announces the end of the test on December 19:
 
 1. Send your last cycle report and any unresolved items.
-2. Stop the services: `sudo systemctl stop tos-testnet-elections tos-testnet-validator`.
-3. Keep the database and logs for 7 days in case the coordinator asks for evidence, then delete them along with the testnet keys and vault. Testnet keys must not be reused on mainnet.
+2. Keep the node and election service running until the coordinator confirms that your validator has no current or pending duties and that your pool's held stakes have been recovered. Stopping a validator whose key is still in a set can halt the network.
+3. Then retire the host as the coordinator instructs, with the retirement script described in [leaving and retirement](OPERATOR.md#9-incidents-leaving-and-retirement). It archives the evidence first and then removes the node and operator state; do not delete the database, keys or vault by hand.
+4. Keep the evidence archive for 7 days in case the coordinator asks for it, then delete it. Testnet keys must never be reused on mainnet.
