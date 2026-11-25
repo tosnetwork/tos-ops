@@ -9,7 +9,7 @@
 - the entity that makes the payment;
 - the services agreement between that entity and each participant.
 
-If that review requires it, the team may change the eligibility, documentation or payment terms for any jurisdiction, and will announce the change.
+If that review requires it, the team may change the eligibility, documentation or payment terms for any jurisdiction, and will announce the change. After December 5, 2026, section 8 limits such changes.
 
 **This policy is not legal, tax or financial advice.** Ask your own advisers about your situation.
 
@@ -18,7 +18,7 @@ The campaign itself is described in the [validator invitation](ANNOUNCEMENT-2026
 ## 1. Definitions
 
 - **Campaign:** the public testnet validator campaign described in the invitation.
-- **Participant:** an individual or entity whose registration the coordinator has accepted.
+- **Participant:** an individual whose registration the coordinator has accepted. Companies and other entities may not register.
 - **Operator:** the person who actually controls a validator host and its consensus key. One operator is one participant, however many hosts, wallets, pools or validators they run.
 - **Paying entity:** the legal entity that will pay the reward and sign the services terms with each participant. It will be named in the final version of this policy.
 - **Reward:** 1,000 mainnet TOS per qualified participant, on the conditions below.
@@ -41,10 +41,10 @@ The campaign itself is described in the [validator invitation](ANNOUNCEMENT-2026
 - The reward is a fixed 1,000 TOS. The paying entity intends to fund it from the staking rewards that validators operated by the TOS team earn on mainnet. It is not new issuance or an allocation from the genesis supply.
 - The amount does not depend on how much those validators earn. Their earnings determine only when the instalments are paid.
 - Payment can therefore start only after mainnet launches, and may come in instalments.
-- Mainnet has no fixed launch date. The reward is not owed if mainnet never launches.
+- Mainnet has no fixed launch date. If mainnet has not launched by December 31, 2027, or the paying entity announces before then that it will not launch, no reward is payable under this campaign.
 
 **Limits.**
-- At most 21 participants can receive the reward in this campaign. If more than 21 qualify, the selection rule published before December 5 applies.
+- At most 19 participants can receive the reward in this campaign: one for each of the 19 external validator seats.
 - A participant can receive the reward only once, however many validators they operate.
 
 ## 3. Eligibility
@@ -124,7 +124,9 @@ The paying entity may disqualify a participant, withhold or reclaim a reward, an
 ## 8. Changes and cancellation
 
 - **Before December 5, 2026:** the team may change or cancel the campaign and this policy by announcing it in the official channels.
-- **After December 5, 2026:** the published rules change only to correct errors, to follow the law, or as the legal review described at the top of this policy requires. Every change is announced.
+- **After December 5, 2026:** the team changes the published rules only to correct errors or where the law requires it. Every change is announced.
+  - A change that reduces a participant's reward or adds conditions applies only if the law requires it.
+  - A participant who does not accept such a change may withdraw. They are then paid a pro-rata share of the reward, in proportion to the verified days of the 14-day test they completed, on the payment terms of section 6.
 - If the campaign does not proceed, for example because fewer than five qualified external applicants register by the deadline, no reward is owed under it.
 
 ## 9. Personal data
