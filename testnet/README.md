@@ -1,5 +1,8 @@
 # Public testnet
 
+[Settlement monitoring and funded refusal recovery](settlement-monitor.md)
+describes the per-actor and per-asset USDC/USDT alarms and incident runbook.
+
 [2026-12-05 public testnet genesis and validator invitation](ANNOUNCEMENT-20261205.md) · [Validator Reward Terms and Eligibility Policy](VALIDATOR-REWARD-TERMS.md) (draft, under legal review)
 
 Settings, scripts and units for the TOS public testnet: a multi-host network
