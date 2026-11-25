@@ -21,7 +21,11 @@ We invite external operators to run a validator in the next TOS public testnet. 
 If you read an earlier copy, check these changes:
 
 - **Election schedule.** The first election is now open from **12 to 22 hours after launch**, and the first elected set takes office **24 hours after launch**. It used to open about 5 hours after launch. After that, every elected set serves **24 hours**, instead of 2 hours. See [Activate and join the first election](#activate-and-join-the-first-election).
-- **Disk.** You now need **at least 160 GiB free**. A 250 GB SSD/NVMe is recommended, and 200 GB is the minimum. It used to be 60 GiB free. A 160 GB disk is not enough, because it cannot leave 160 GiB free once the system and the build are installed. See step 2 of [Register and prepare your VPS](#register-and-prepare-your-vps).
+- **Disk.** Plan for **at least 160 GiB free**. A 250 GB SSD/NVMe is recommended, and 200 GB is the minimum. The first version said 60 GiB free.
+  - **Why it went up:** the earlier figure came from a 4-validator network. Each finality certificate carries signatures from two thirds of the validators, and each post-quantum signature is 2,420 bytes. A set of 21 validators therefore writes consensus data about 4.7 times faster. Block archives are also kept about twice as long as first assumed.
+  - **The 160 GiB figure is for a full set of 21 validators.** The final floor is set in the December 1–4 packet, from the number of validators who actually register, and is not set below what that set needs. A smaller set needs less.
+  - **If you already rented a smaller disk,** most providers let you enlarge it or attach a volume without moving to a new server. Do that rather than replacing the host. Ask your coordinator if you are unsure.
+  - A 160 GB disk is below the full-set minimum, because it cannot leave 160 GiB free once the system and the build are installed. See step 2 of [Register and prepare your VPS](#register-and-prepare-your-vps).
 - **Clock.** NTP must stay on for the whole test, and the clock must stay within 100 ms (step 4 below).
 - **Reward terms.** One set of reward terms applies to every participant in every country: the [policy](VALIDATOR-REWARD-TERMS.md).
 
@@ -301,9 +305,11 @@ After the coordinator announces the end of the test on December 19:
 - Never send anything secret, in any channel: no mnemonic, consensus seed, wallet key, vault credential or password. Nobody from the team will ever ask for one.
 
 **Is a 160 GB disk enough?**
-- No. You need **at least 160 GiB free** after the system and the build are installed, so the disk must be at least **200 GB**; **250 GB** is recommended.
-- With all 21 validators elected, a node can hold about 128 GB at once.
-- The preflight refuses a host below 160 GiB free.
+- Not for a full set. With all 21 validators elected, a node can hold about 128 GB at once, so you need **at least 160 GiB free** after the system and the build are installed. The disk must be at least **200 GB**; **250 GB** is recommended.
+- The first version of this invitation said 60 GiB free. That figure came from a 4-validator network; see [What changed since the first version](#what-changed-since-the-first-version).
+- The final floor depends on how many validators register. It is set in the December 1–4 packet, and a smaller set needs less.
+- If your disk is smaller, enlarge it or attach a volume with your provider; you do not need a new server.
+- The preflight refuses a host below the floor in the packet.
 - After the coordinator has compared your release checksums, you may remove `/var/lib/tos-build` to free space.
 
 **How do I check that my CPU has the required SHA-256 acceleration?**
