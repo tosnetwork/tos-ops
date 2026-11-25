@@ -55,7 +55,7 @@ class FakeTos:
         self.accounts = {}
         self.swaps, self.watermark = {}, 0
         self.executed = []  # (wallet, seqno, dest, value)
-        self.externals = []  # (wallet, external message hash) that ran
+        self.externals = {}  # (wallet, external message hash) that ran: the messages it sent
         self.fail_send = 0  # raise before the next N broadcasts
         self.fail_wait = 0  # raise in the next N waits (after a broadcast ran)
 
@@ -100,8 +100,13 @@ class FakeTos:
             return  # a replay: the wallet refuses it
         account["seqno"] += 1
         account["active"] = True
-        self.externals.append((wallet, message.hash().hex()))
-        dest, value, inner = parse_internal(body.take_ref())
+        outgoing = body.take_ref()
+        dest, value, inner = parse_internal(outgoing)
+        if account["balance"] < value:
+            # Send mode 3 ignores errors: the seqno moves, nothing is sent.
+            self.externals[(wallet, message.hash().hex())] = []
+            return
+        self.externals[(wallet, message.hash().hex())] = [usdc.message_summary(outgoing)]
         account["balance"] -= value
         target = self.acct(dest)
         target["balance"] += value
@@ -121,9 +126,10 @@ class FakeTos:
                     self.watermark = n + 1
 
     def executed_external(self, address, message_hash, since):
-        if (address, message_hash) in self.externals:
-            return {"hash": message_hash}
-        return None
+        out = self.externals.get((address, message_hash))
+        if out is None:
+            return None
+        return {"hash": message_hash, "took_effect": True, "out": out}
 
     def wait(self, what, predicate, timeout=0, interval=0):
         if self.fail_wait:
@@ -584,3 +590,95 @@ def test_the_intent_is_durable_before_the_broadcast(tmp_path, monkeypatch):
     first_send = events.index(("send", "signed"))
     assert events[:3] == ["fsync-file", "rename", "fsync-dir"]
     assert first_send == 3  # the signed intent was on disk, synced, before the broadcast
+
+
+def test_a_send_skipped_for_lack_of_funds_is_accepted_not_sent_and_never_resigned(tmp_path):
+    # Signed while funded, interrupted before the broadcast, replayed after the
+    # balance dropped: the wallet takes the message and skips the send (mode 3).
+    chain, state = FakeTos(), tos_state(tmp_path)
+    genesis = usdc.Wallet(chain, b"\1" * 32, -1, "-1:" + "00" * 32)
+    chain.fund(genesis.address, 10 * NANO)
+    chain.fail_send = 1
+    with pytest.raises(Interrupted):
+        genesis.transfer(state, "a", "0:" + "11" * 32, 5 * NANO)
+    chain.accounts[genesis.address]["balance"] = NANO
+    with pytest.raises(usdc.Refused, match="accepted_not_sent"):
+        genesis.transfer(state, "a", "0:" + "11" * 32, 5 * NANO)
+    assert state.intent("a")["state"] == "accepted_not_sent"
+    seqno = chain.accounts[genesis.address]["seqno"]
+    # Funded again, a rerun still refuses: nothing is signed or sent again.
+    chain.accounts[genesis.address]["balance"] = 10 * NANO
+    with pytest.raises(usdc.Refused, match="never signed again automatically"):
+        genesis.transfer(state, "a", "0:" + "11" * 32, 5 * NANO)
+    assert chain.accounts[genesis.address]["seqno"] == seqno and chain.executed == []
+    # And the wallet takes no new send while that one is undecided.
+    with pytest.raises(usdc.Refused, match="unfinished send"):
+        genesis.transfer(state, "b", "0:" + "22" * 32, NANO)
+
+
+def test_a_transaction_with_a_skipped_action_shows_no_outputs():
+    # The synthetic control: a transaction that took its external message and sent
+    # nothing (the in-message present, no out-messages).
+    inbound = lib.cell_from_bits("10" + "00" + "100" + "1" * 8 + "0" * 256 + "0000" + "0" + "0")
+    msgs = lib.cell_from_bits("1" + "0", [inbound])
+    tx = lib.cell_from_bits("0111", [msgs])
+    assert usdc.out_messages(tx) == []
+
+
+def test_a_delivered_send_still_passes(tmp_path):
+    chain, state = FakeTos(), tos_state(tmp_path)
+    genesis = usdc.Wallet(chain, b"\1" * 32, -1, "-1:" + "00" * 32)
+    chain.fund(genesis.address, 10 * NANO)
+    body = usdc.Builder().uint(8, 32).end()
+    record = genesis.transfer(state, "a", "0:" + "11" * 32, 2 * NANO, body)
+    assert record["state"] == "done"
+    assert record["expected"] == {
+        "destination": "0:" + "11" * 32,
+        "value": 2 * NANO,
+        "body_hash": body.hash().hex(),
+    }
+    assert record["tx"]["out"] == [record["expected"]]
+
+
+def test_the_summary_ignores_what_the_wallet_fills_in():
+    body = usdc.Builder().uint(8, 32).end()
+    ours = usdc.internal("0:" + "11" * 32, 3 * NANO, True, body)
+    # As sent: a source, fees and times filled in by the wallet.
+    sent = (
+        usdc.Builder()
+        .bit(0)
+        .bit(1)
+        .bit(1)
+        .bit(0)
+        .addr("-1:" + "aa" * 32)
+        .addr("0:" + "11" * 32)
+        .coins(3 * NANO)
+        .bit(0)
+        .coins(7)
+        .coins(9)
+        .uint(123, 64)
+        .uint(456, 32)
+        .bit(0)
+        .bit(1)
+        .ref(body)
+        .end()
+    )
+    assert usdc.message_summary(ours) == usdc.message_summary(sent)
+    other = usdc.internal("0:" + "11" * 32, 3 * NANO + 1, True, body)
+    assert usdc.message_summary(other) != usdc.message_summary(sent)
+
+
+def test_an_aborted_action_phase_is_accepted_not_sent(tmp_path, monkeypatch):
+    chain, state = FakeTos(), tos_state(tmp_path)
+    genesis = usdc.Wallet(chain, b"\1" * 32, -1, "-1:" + "00" * 32)
+    chain.fund(genesis.address, 10 * NANO)
+    real = chain.executed_external
+
+    def aborted(address, message_hash, since):
+        tx = real(address, message_hash, since)
+        return dict(tx, took_effect=False) if tx else tx
+
+    monkeypatch.setattr(chain, "executed_external", aborted)
+    with pytest.raises(usdc.Refused, match="accepted_not_sent"):
+        genesis.transfer(state, "a", "0:" + "11" * 32, NANO)
+    assert state.intent("a")["state"] == "accepted_not_sent"

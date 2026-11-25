@@ -1414,7 +1414,13 @@ the same signed message or arguments; a used one counts only if it was this send
 the wallet's history must hold a transaction that took the journaled external
 message (by its hash), and the EVM transaction at the nonce must carry the
 journaled destination, calldata and no value. Anything else stops with an error and
-is not marked done. Nothing is ever paid, locked or voted twice. A rerun after adoption writes
+is not marked done. A TOS send counts as delivered only if that transaction took
+effect and its out-messages include the intended one (destination, value and body
+hash). The wallets send with mode 3, which ignores errors: a wallet whose balance
+dropped takes the message, advances its seqno and sends nothing. That case, and an
+aborted action phase, is recorded as `accepted_not_sent`. It stops with an error,
+is never signed again automatically, and blocks the wallet's later sends until a
+person decides. Nothing is ever paid, locked or voted twice. A rerun after adoption writes
 `config79-recheck.json` / `config84-recheck.json` and keeps the adoption's evidence.
 The 2026-11-25 local net's `config79.json` and `config84.json` were rebuilt from
 `state.json` and the run's output after a rerun of an earlier driver overwrote them.

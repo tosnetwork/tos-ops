@@ -216,6 +216,50 @@ def external(dest: str, body: lib.Cell, init: lib.Cell | None = None) -> lib.Cel
     return b.bit(1).ref(body).end()
 
 
+def message_summary(cell: lib.Cell) -> dict | None:
+    """An internal message's destination, value and body hash, read the same way
+    for the message a wallet is asked to send and for the one it sent (the wallet
+    fills in the source, the time and the fees; none of those is compared). None
+    for a message that is not internal."""
+    s = lib.Slice(cell)
+    if s.bits(1) != 0:
+        return None
+    s.bits(3)  # ihr_disabled, bounce, bounced
+    if s.bits(2) == 0b10:  # the source, filled in by the sender's wallet
+        s.bits(1 + 8 + 256)
+    require(s.bits(3) == 0b100, "a message to an address that is not addr_std")
+    wc = s.bits(8)
+    destination = f"{wc - 256 if wc >= 128 else wc}:{s.bytes(32).hex()}"
+    value = lib.read_grams(s)
+    if s.bits(1):
+        s.take_ref()  # extra currencies
+    lib.read_grams(s)
+    lib.read_grams(s)
+    s.bits(64 + 32)
+    if s.bits(1):  # StateInit
+        if s.bits(1):
+            s.take_ref()
+        else:
+            raise Refused("a StateInit in place is not read here")
+    if s.bits(1):
+        body = s.take_ref()
+    else:
+        rest = cell_bits(cell)[s.pos :]
+        body = lib.cell_from_bits(rest, cell.refs[s.ref :])
+    return {"destination": destination, "value": value, "body_hash": body.hash().hex()}
+
+
+def out_messages(tx: lib.Cell) -> list[dict | None]:
+    """Each message a transaction sent, summarized (message_summary)."""
+    m = lib.Slice(tx.refs[0])
+    if m.bits(1):
+        m.take_ref()  # the incoming message
+    if not m.bits(1):
+        return []
+    entries = lib.hashmap_items(m.take_ref(), 15)
+    return [message_summary(entries[k].take_ref()) for k in sorted(entries)]
+
+
 # ---------------------------------------------------------------- the local chain
 
 
@@ -259,8 +303,9 @@ class Chain:
 
     def executed_external(self, address: str, message_hash: str, since: int) -> dict | None:
         """The transaction of `address`, newer than `since`, that took the external
-        message `message_hash` and took effect; each transaction is decoded from its
-        own BOC (testnet_ops). The history is read one transaction at a time, newest
+        message `message_hash`: whether it took effect, and a summary of each
+        message it sent (message_summary). Each transaction is decoded from its own
+        BOC (testnet_ops). The history is read one transaction at a time, newest
         first, and stops at the match: older transactions may already be pruned.
         None when no such transaction is newer than `since`."""
         import testnet_ops as ops
@@ -277,12 +322,14 @@ class Chain:
             tx = ops.verify_transaction(
                 txs[0].get("data"), ops.b64hash(tid["hash"]).hex(), address, int(tid["lt"])
             )
-            if (
-                tx["in_kind"] == "external"
-                and tx["in_hash"] == message_hash
-                and ops.took_effect(tx)
-            ):
-                return {"hash": tx["hash"], "lt": tx["lt"], "utime": tx["utime"]}
+            if tx["in_kind"] == "external" and tx["in_hash"] == message_hash:
+                return {
+                    "hash": tx["hash"],
+                    "lt": tx["lt"],
+                    "utime": tx["utime"],
+                    "took_effect": ops.took_effect(tx),
+                    "out": out_messages(lib.parse_boc(base64.b64decode(txs[0]["data"]))),
+                }
             if tx["utime"] < since:
                 return None
             previous = page.get("previous_transaction_id") or {}
@@ -344,6 +391,15 @@ def slice_of(address: str) -> tuple[str, lib.Cell]:
 # ---------------------------------------------------------------- simple wallets
 
 
+def accepted_not_sent(intent: str, record: dict) -> str:
+    return (
+        f"{intent}: {record['wallet']} took the journaled message at seqno {record['seqno']} "
+        f"(transaction {record.get('tx', {}).get('hash')}) but did not send "
+        f"{record['expected']}; it is recorded as accepted_not_sent and is never signed "
+        "again automatically: inspect the wallet and decide by hand"
+    )
+
+
 class Wallet:
     """A simple wallet (seqno, public key): the Genesis wallet's code."""
 
@@ -382,7 +438,8 @@ class Wallet:
                     f"{self.address} has an unfinished send ({other}); run that step again first",
                 )
             seqno = self.seqno()
-            signed = Builder().uint(seqno, 32).uint(mode, 8).ref(build()).end()
+            outgoing = build()
+            signed = Builder().uint(seqno, 32).uint(mode, 8).ref(outgoing).end()
             body = Builder().raw(self.key.sign(signed.hash()).signature).append(signed).end()
             message = external(self.address, body, self.init if deploy else None)
             record = {
@@ -391,12 +448,16 @@ class Wallet:
                 "seqno": seqno,
                 "boc": boc64(message),
                 "hash": message.hash().hex(),
+                # What the wallet must send for the intent to count as delivered.
+                "expected": message_summary(outgoing),
                 "created_at": int(time.time()),
                 "state": "signed",
             }
             state.put_intent(intent, record)
         if record["state"] == "done":
             return record
+        if record["state"] == "accepted_not_sent":
+            raise Refused(accepted_not_sent(intent, record))
         seqno = record["seqno"]
         now = self.seqno()
         if now == seqno:
@@ -414,8 +475,16 @@ class Wallet:
             f"message {record['hash']}; inspect the wallet's history, nothing is marked done",
         )
         record["tx"] = tx
-        record["state"] = "done"
+        # The wallet took the message, but ignored errors (send mode 3): with the
+        # balance gone, it advances its seqno and skips the send, and an aborted
+        # action phase sends nothing either. Only the intended message among the
+        # transaction's outputs means delivered. Anything else is recorded as
+        # accepted_not_sent and never re-signed automatically.
+        delivered = tx["took_effect"] and record["expected"] in tx["out"]
+        record["state"] = "done" if delivered else "accepted_not_sent"
         state.put_intent(intent, record)
+        if not delivered:
+            raise Refused(accepted_not_sent(intent, record))
         return record
 
     def transfer(
