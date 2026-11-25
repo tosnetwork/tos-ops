@@ -614,6 +614,7 @@ FAKE_TIMEDATECTL = """#!/bin/sh
 echo yes
 """
 FAKE_NTPQ = """#!/bin/sh
+if [ "$1" = -c ]; then echo "offset=0.412"; exit 0; fi
 echo "     remote           refid      st t when poll reach   delay   offset   jitter"
 echo "*133.243.238.164 .NICT.           1 u   36   64  377   1.6920  -0.4120   0.1550"
 """

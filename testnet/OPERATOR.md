@@ -101,10 +101,13 @@ it is not a no-signing check and requires signing permission.
 **Operator prerequisites:** dedicated host, static public IPv4 or verified UDP
 forwarding/hairpin NAT, provider console access, root administration and enough
 NVMe endurance. The current validator preflight floors are **4 CPUs, 11 GiB
-MemTotal, 120 GiB free** on Ubuntu 24.04, on a recommended **200 GB SSD or
-NVMe**: a full 21-validator set is estimated to hold up to about 90 GB of
-consensus, state and archive data at once (about 30 h at 2.2-3 GB/h), and the
-load guard and the stall rules stop at 20 GiB free. These are installation floors, not a
+MemTotal, 160 GiB free** on Ubuntu 24.04, on a recommended **250 GB SSD or
+NVMe** (200 GB at least): a full 21-validator set is estimated to hold up to
+about 128 GB of consensus, state and archive data at once (consensus and states
+about 30 h, the archive about 54 h; CEREMONY.md section 8 has the
+arithmetic), and the load guard and the stall rules stop at 20 GiB free. Free
+space is checked before you build: remove the build tree under
+`/var/lib/tos-build` once the coordinator has compared your checksums. These are installation floors, not a
 production capacity guarantee. See [profile](network/profile.json) and
 [hardware proposal](../production/Hardware-and-Hosting.md).
 
@@ -138,13 +141,19 @@ production capacity guarantee. See [profile](network/profile.json) and
    nearby server instead, for example `setup-time.sh time.cloudflare.com`.
 
    **Keep the clock disciplined by NTP at all times, not only now.** Consensus
-   reads the local clock (a candidate is validated no earlier than 300 ms after
-   its parent; slots target 400 ms), so a validator whose clock drifts votes
-   late or not at all. Keep ntpsec (installed by `setup-time.sh`, which
-   `install-node.sh prepare` also runs) or chrony running with a selected
-   source, within **100 ms** of NTP time. `install-node.sh activate --role
-   validator` and `enable-elections.sh` refuse to start on a clock that fails
-   this check.
+   reads the local clock: a validator validates a candidate no earlier than 300 ms after its
+   parent's generation time by its own clock, so a clock behind NTP delays its
+   votes by the offset; as leader, a clock ahead of NTP gives its candidates
+   future timestamps that the other validators hold until their own clocks
+   reach them, slowing the chain (beyond 30 s they refuse them). Keep ntpsec, which
+   `setup-time.sh` installs and configures (`install-node.sh prepare` runs it),
+   running with a selected source, within **100 ms** of NTP time. ntpsec is the
+   supported path: `setup-time.sh` disables chrony and systemd-timesyncd, and
+   the checks accept only ntpd. The first `install-node.sh activate --role
+   validator` and every `enable-elections.sh` refuse to start on a clock that
+   fails this check; a service restart or a reboot is deliberately not gated (it
+   must not wait on NTP), so the daily check and the alarm below cover the
+   clock from then on.
 
    **All testnet times are UTC**, whatever your local time zone: launch,
    election windows, handovers and the times in your reports. Your host may keep
@@ -160,19 +169,22 @@ production capacity guarantee. See [profile](network/profile.json) and
    Expected, exit status 0:
 
    ```text
-   clock ok: ntpd with 1 selected source, offset -0.412 ms (limit 100 ms), NTPSynchronized=yes
+   clock ok: ntpd with 1 selected source, offset -0.412 ms (local minus NTP, limit 100 ms), NTPSynchronized=yes
    ```
 
-   Any `clock NOT OK: ...` line (exit status 1) names what is wrong: no
-   `NTPSynchronized=yes`, no ntpsec or chrony answering, no selected source, or
-   an offset beyond 100 ms. Rerun `setup-time.sh` (with a nearby server), check
+   The offset is ntpd's system offset (`ntpq -c "rv 0 offset"`, not one
+   peer's last sample), written as local clock minus NTP time: positive means
+   your clock is ahead. Any `clock NOT OK: ...` line (exit status 1) names what
+   is wrong: no `NTPSynchronized=yes`, ntpd not answering, no selected source,
+   or an offset beyond 100 ms. Rerun `setup-time.sh` (with a nearby server), check
    outbound UDP 123, and tell the coordinator if it does not recover.
 
    **Alarm.** Run the same check every 10 minutes from cron so a lapse reaches
-   you, not only the daily look; for example `/etc/cron.d/tos-clock`:
+   you, not only the daily look; for example `/etc/cron.d/tos-clock`, with a
+   15-minute grace after a boot while ntpd selects a source:
 
    ```text
-   */10 * * * * root python3 /opt/tos-testnet/scripts/check-clock.py --quiet || logger -p user.err -t tos-clock "clock not NTP-disciplined"
+   */10 * * * * root python3 /opt/tos-testnet/scripts/check-clock.py --quiet --boot-grace 900 || logger -p user.err -t tos-clock "clock not NTP-disciplined"
    ```
 
    and watch for `tos-clock` in `journalctl -p err`, or forward it to your own
@@ -189,7 +201,7 @@ production capacity guarantee. See [profile](network/profile.json) and
 
    It checks Ubuntu 24.04, the architecture and x86-64-v2 instructions, CPUs,
    memory and free disk against the validator floors, whether the public address
-   is on an interface (a WARN behind NAT), NTP (ntpsec or chrony with a selected
+   is on an interface (a WARN behind NAT), NTP (ntpsec's ntpd with a selected
    server, within 100 ms of NTP time; this check cannot be waived), ufw rules
    for UDP 30001/31001 with console 30002 closed, and whether another program
    holds those ports. Expected: no FAIL. Fix every FAIL and rerun with a new

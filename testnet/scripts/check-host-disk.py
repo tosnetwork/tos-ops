@@ -19,9 +19,10 @@ line:
   * from its loopback exporter: masterchain head age, shard client age, block
     download net failures and refused-answer counts;
   * with --cpu-sample N, host CPU busy and iowait percentages over N seconds;
-  * the clock's discipline: NTPSynchronized, the daemon (ntpd or chrony), its
-    selected sources and the offset from NTP time in ms (check-clock.py judges
-    them; watch-testnet.py raises clock anomalies from them).
+  * the clock's discipline: NTPSynchronized, ntpsec's ntpd, its selected
+    sources and the system clock offset in ms, local clock minus NTP time
+    (positive = ahead; check-clock.py judges them; watch-testnet.py raises
+    clock anomalies from them).
 
 A value that could not be observed is null, never 0: zero means an observed
 zero.
@@ -41,6 +42,7 @@ import argparse
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import time
@@ -179,47 +181,39 @@ def cpu_usage(seconds: float, sleep=time.sleep, read=cpu_times) -> dict:
 
 # ---------------------------------------------------------------- clock discipline
 
-# The largest clock offset from NTP a validator may run with. Consensus reads the
-# local clock: a candidate is validated no earlier than min_block_interval (300 ms)
-# after its parent's generation time, slots target 400 ms, and a leader's
-# first_block_timeout is 700 ms. 100 ms is a third of the minimum interval; a
-# disciplined VPS clock stays within a few milliseconds.
+# The largest clock offset from NTP time a validator may run with. Consensus reads
+# the local clock: a validator validates a candidate no earlier than
+# min_block_interval (300 ms) after its parent's generation time by its own clock,
+# so a clock behind NTP delays its votes by the offset; a leader's clock ahead of
+# NTP gives its candidates future timestamps that other validators hold until their
+# own clocks reach them (and refuse beyond 30 s). 100 ms is a third of the minimum
+# interval; a disciplined VPS clock stays within a few milliseconds.
 MAX_CLOCK_OFFSET_MS = 100.0
-# The daemons that discipline the clock continuously (setup-time.sh installs ntpsec).
-CLOCK_DAEMONS = ("ntpd", "chrony")
+# The supported discipline: ntpsec's ntpd, which setup-time.sh installs and
+# configures (it disables chrony and systemd-timesyncd).
+CLOCK_DAEMONS = ("ntpd",)
+# Offsets are reported as local clock minus NTP time: positive = local clock ahead.
+SYSTEM_OFFSET = re.compile(r"\boffset=([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)")
 
 
-def parse_ntpq(text: str) -> tuple[int, float | None]:
-    """(selected peers, offset in ms of the selected one) from `ntpq -pn`."""
-    selected = [line.split() for line in text.splitlines() if line.startswith("*")]
-    offset = None
-    if selected and len(selected[0]) >= 9:
-        try:
-            offset = float(selected[0][8])
-        except ValueError:
-            offset = None
-    return len(selected), offset
+def parse_ntpq_peers(text: str) -> int:
+    """Selected system peers (a line starting "*") in `ntpq -pn`."""
+    return sum(1 for line in text.splitlines() if line.startswith("*"))
 
 
-def parse_chrony_sources(text: str) -> int:
-    """Selected sources ("^*" or "=*") in `chronyc -n sources`."""
-    return sum(1 for line in text.splitlines() if line[1:2] == "*")
+def parse_ntpq_system_offset(text: str) -> float | None:
+    """The system clock offset in ms from `ntpq -c "rv 0 offset"`, as local clock
+    minus NTP time (positive = local clock ahead).
 
-
-def parse_chrony_tracking(text: str) -> float | None:
-    """The offset in ms on `chronyc -n tracking`'s "System time" line, positive when
-    the local clock is fast."""
-    for line in text.splitlines():
-        name, _, value = line.partition(":")
-        if name.strip() != "System time":
-            continue
-        words = value.split()
-        try:
-            seconds = float(words[0])
-        except (IndexError, ValueError):
-            return None
-        return round(seconds * 1000 * (-1 if "slow" in words else 1), 3)
-    return None
+    ntpd's system variable `offset` is the combined offset of its selected sources
+    relative to this host, i.e. NTP time minus local clock, so its sign is turned.
+    It is the offset the clock is being disciplined against, not one peer's last
+    sample, which jitters."""
+    match = SYSTEM_OFFSET.search(text)
+    if not match:
+        return None
+    value = float(match.group(1))
+    return round(-value, 3) if value else 0.0
 
 
 def _output(argv: list[str], run) -> str | None:
@@ -232,7 +226,8 @@ def _output(argv: list[str], run) -> str | None:
 
 def clock_facts(run=subprocess.run) -> dict:
     """How the clock is disciplined: {"clock_synced", "clock_daemon",
-    "clock_sources", "clock_offset_ms"}; a value that could not be read is None."""
+    "clock_sources", "clock_offset_ms"}, the offset as local clock minus NTP time
+    (positive = ahead); a value that could not be read is None."""
     synced = _output(["timedatectl", "show", "-p", "NTPSynchronized", "--value"], run)
     facts = {
         "clock_synced": None if synced is None else synced.strip() == "yes",
@@ -241,16 +236,12 @@ def clock_facts(run=subprocess.run) -> dict:
         "clock_offset_ms": None,
     }
     peers = _output(["ntpq", "-pn"], run)
-    if peers is not None:
-        facts["clock_daemon"] = "ntpd"
-        facts["clock_sources"], facts["clock_offset_ms"] = parse_ntpq(peers)
+    if peers is None:
         return facts
-    sources = _output(["chronyc", "-n", "sources"], run)
-    if sources is not None:
-        facts["clock_daemon"] = "chrony"
-        facts["clock_sources"] = parse_chrony_sources(sources)
-        tracking = _output(["chronyc", "-n", "tracking"], run)
-        facts["clock_offset_ms"] = None if tracking is None else parse_chrony_tracking(tracking)
+    facts["clock_daemon"] = "ntpd"
+    facts["clock_sources"] = parse_ntpq_peers(peers)
+    system = _output(["ntpq", "-c", "rv 0 offset"], run)
+    facts["clock_offset_ms"] = None if system is None else parse_ntpq_system_offset(system)
     return facts
 
 
@@ -260,14 +251,17 @@ def clock_problems(facts: dict, max_offset_ms: float = MAX_CLOCK_OFFSET_MS) -> l
     if facts.get("clock_synced") is not True:
         problems.append("the kernel does not report NTPSynchronized=yes")
     if facts.get("clock_daemon") not in CLOCK_DAEMONS:
-        problems.append("no ntpsec (ntpd) or chrony daemon answers")
+        problems.append("ntpsec's ntpd does not answer (run setup-time.sh)")
     elif not facts.get("clock_sources"):
-        problems.append(f"{facts['clock_daemon']} has no selected NTP source")
+        problems.append("ntpd has no selected NTP source")
     offset = facts.get("clock_offset_ms")
     if offset is None:
-        problems.append("the offset from NTP time could not be read")
+        problems.append("the system clock offset could not be read")
     elif abs(offset) > max_offset_ms:
-        problems.append(f"the clock is {offset:+.1f} ms from NTP time, beyond {max_offset_ms:g} ms")
+        side = "ahead of" if offset > 0 else "behind"
+        problems.append(
+            f"the clock is {abs(offset):.1f} ms {side} NTP time, beyond {max_offset_ms:g} ms"
+        )
     return problems
 
 

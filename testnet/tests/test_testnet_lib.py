@@ -1580,3 +1580,41 @@ def test_wrapping_twice_keeps_one_bound():
 def test_two_stakes_boundary_is_accepted():
     # stake_held_for + elections_start_before == elected_for: back just in time.
     assert lib.validator_schedule(schedule_profile(stake_held_for=43200))
+
+
+def test_the_48_hour_alternative_is_accepted():
+    """Owner-selectable: elections close 24 h before the term, so key blocks come
+    every 24 h and the GC point still trails by state_ttl."""
+    alternative = {
+        "initial_set_valid_for": 129600,
+        "elected_for": 172800,
+        "elections_start_before": 122400,
+        "elections_end_before": 86400,
+        "stake_held_for": 43200,
+    }
+    assert lib.validator_schedule(schedule_profile(**alternative)) == alternative
+    gap = max(alternative["elected_for"] - alternative["elections_end_before"], 86400)
+    assert gap == 86400  # within state_ttl
+    # Its initial set must leave the first election an hour after genesis.
+    with pytest.raises(lib.TestnetError, match="at least 3600"):
+        lib.validator_schedule(schedule_profile(**dict(alternative, initial_set_valid_for=125999)))
+
+
+def test_the_scaled_rehearsal_schedule_is_accepted():
+    """CEREMONY.md: the December rotation at 1/12 on the local net."""
+    scaled = {
+        "initial_set_valid_for": 7200,
+        "elected_for": 7200,
+        "elections_start_before": 3600,
+        "elections_end_before": 600,
+        "stake_held_for": 1800,
+    }
+    assert lib.validator_schedule(schedule_profile(**scaled)) == scaled
+    assert all(scaled[k] * 12 == DEC5_SCHEDULE[k] for k in scaled)
+
+
+def test_the_december_key_blocks_stay_within_state_ttl():
+    s = DEC5_SCHEDULE
+    gap = max(s["elected_for"] - s["elections_end_before"], s["elections_end_before"])
+    assert gap == 79200  # 22 h
+    assert gap <= lib.load_profile()["retention"]["validator"]["state_ttl"]

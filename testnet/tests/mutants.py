@@ -1443,7 +1443,7 @@ M += [
     (
         "C4 the watch raises no clock anomaly",
         W / "scripts/watch-testnet.py",
-        "            found.extend(clock_anomalies(name, current, args))\n",
+        "            found.extend(self.clock(name, current))\n",
         "",
     ),
     (
@@ -1463,6 +1463,30 @@ M += [
         LIB,
         '    if values["stake_held_for"] + values["elections_start_before"] > values["elected_for"]:\n',
         "    if False:\n",
+    ),
+    (
+        "C7 ntpd's system offset keeps its sign",
+        W / "scripts/check-host-disk.py",
+        "    return round(-value, 3) if value else 0.0\n",
+        "    return round(value, 3) if value else 0.0\n",
+    ),
+    (
+        "C8 a peer's last sample stands for the system offset",
+        W / "scripts/check-host-disk.py",
+        '    system = _output(["ntpq", "-c", "rv 0 offset"], run)\n',
+        '    system = "offset=%s" % -float(peers.split("*", 1)[1].split()[8]) if "*" in peers else None\n',
+    ),
+    (
+        "C9 clock_unsynced is not debounced",
+        W / "scripts/watch-testnet.py",
+        '                found.remove(f"{name}:clock_unsynced")\n',
+        "                pass\n",
+    ),
+    (
+        "C10 the boot grace passes at any uptime",
+        W / "scripts/check-clock.py",
+        "        if up is not None and up < args.boot_grace:\n",
+        "        if True:\n",
     ),
 ]
 

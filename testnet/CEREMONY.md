@@ -130,6 +130,14 @@ world-readable) and release binaries in `/usr/local/bin`.
 
 ## 0. Before anything (coordinator)
 
+- **The team's two validator hosts need at least 200 GB disks (250 GB
+  recommended), and the preflight must pass them at the 160 GiB floor with no
+  disk waiver. Owner action: budget.** The epoch-6 to 8 team VPSs had about 70
+  GiB free on about 98 GiB disks. The two team validators hold more than half of
+  the weight: a full disk on both halts the chain, and on either one leaves the
+  chain needing most of the external validators online (16 of 19 at E = 19).
+  Do not waive the floor for them.
+
 - Decision D03: the global id is 2, confirmed 2026-10-12 (`network/profile.json`,
   status `CONFIRMED`; `genesis` refuses any other status). Freeze the genesis
   epoch, and announce both.
@@ -194,7 +202,8 @@ servers, dropped them, and kept nothing.
 
 **Continuously, on every validator, team or external.** The validators come
 from many time zones, and every one keeps its clock disciplined by NTP for the
-whole test: ntpsec (`setup-time.sh`) or chrony running with a selected source,
+whole test: ntpsec (installed by `setup-time.sh`, the supported path) running
+with a selected source,
 within 100 ms of NTP time. The limit follows consensus timing: a candidate is
 validated no earlier than 300 ms (`min_block_interval`) after its parent by the
 local clock, and slots target 400 ms, so 100 ms is a third of the minimum
@@ -203,10 +212,14 @@ interval; a disciplined VPS clock stays within a few milliseconds.
 - **All times are UTC**, whatever an operator's local time zone; hosts may
   keep any time zone setting, since the kernel clock and NTP are UTC either way.
 - **Refused at start:** `preflight.py --local` fails the `time` check (not
-  waivable) on an unsynchronised clock, on a clock no ntpsec or chrony
-  disciplines (systemd-timesyncd alone is not enough), with no selected source
+  waivable) on an unsynchronised clock, on a clock ntpsec does not discipline
+  (chrony and systemd-timesyncd are not the supported path), with no selected source
   or beyond 100 ms; `install-node.sh activate --role validator` and
   `enable-elections.sh` refuse to start on a clock `check-clock.py` rejects.
+  They gate the first activation and every enabling of elections, not a
+  service restart or a reboot, which must not wait on NTP; the daily check,
+  the operators' cron alarm (`--boot-grace 900`) and the watch below cover
+  the clock from then on.
 - **Daily check** on every validator host: `python3
   /opt/tos-testnet/scripts/check-clock.py`, expected `clock ok: ntpd with 1
   selected source, offset ... ms (limit 100 ms), NTPSynchronized=yes`, exit 0
@@ -215,10 +228,15 @@ interval; a disciplined VPS clock stays within a few milliseconds.
 - **Monitoring, team hosts:** `watch-testnet.py` reads the clock in every
   round (`check-host-disk.py` reports `clock_synced`, `clock_daemon`,
   `clock_sources`, `clock_offset_ms`) and raises `<host>:clock_unsynced`
-  (NTPSynchronized not yes, no ntpsec or chrony, or no selected source) or
+  (NTPSynchronized not yes, no ntpd, or no selected source, for
+  `--clock-samples` rounds in a row, 3 by default, so a reboot's few minutes
+  before ntpd selects a source do not alarm) or
   `<host>:clock_offset=<ms>ms` beyond `--max-clock-offset-ms` (default 100), which
   the alert relay forwards like every anomaly. Treat either as an incident: the
-  host votes late or not at all until it is fixed.
+  host's votes lag by its offset (a clock behind) or its candidates are held
+  until the other clocks reach their timestamps (a clock ahead, refused beyond
+  30 s) until it is fixed. The offset is ntpd's system offset as local clock
+  minus NTP time: positive = ahead.
 
 ## 0.5 Preflight every host
 
@@ -599,6 +617,12 @@ reports, under `liveness`, how many external validators must be online:
 - **The first election elects every external that staked**, synchronized or
   not: a pool whose node is not in sync stands with its weight and does not
   sign, and counts as offline in the numbers above until it is.
+- **A validator that fails stays elected for up to about 36 h.** Its election
+  task stakes when the window opens, 12 h before the next term, so a validator
+  that fails after that is in the next set too: offline weight for the rest of
+  the current term and the whole next one, up to 12 h + 24 h. Bring a failed
+  validator back fast; it leaves the set only at the first term whose election
+  it did not stake in.
 
 **Both team pools absent from an election** is the one case the stakes do not
 cover. The hard invariant holds with either team pool absent, but if both team
@@ -626,6 +650,24 @@ task and let it resubmit while the window is open; if the window closes without
 both, announce it and decide before the set takes office whether to continue.
 No monitor raises this today (see [Known limits](#known-limits)).
 
+**An election that does not conclude is a stall at its close, not at the
+handover.** If no ConfigParam 36 (the next set) appears when the window closes,
+at H + 22 h for a handover due at H + 24 h, the election failed (too few stakes,
+or `min_total_stake` not met), and the current set will keep validating past
+its term with no key block, so GC stops and the disks fill. Check it at every
+close, 15 minutes after:
+
+```bash
+lite-client -C global-config.json -c 'getconfig 36'
+```
+
+`ConfigParam(36) = (null)` (no next set) at close + 15 min starts the stall
+procedure at once: the
+coordinator announces it in the official channel, then decides and announces
+within 12 hours of that close whether the network continues (the Elector
+retries the election when new stakes arrive), restarts from a new genesis or
+ends. No watch raises this today ([Known limits](#known-limits)).
+
 A halt shows first as head age. `watch-testnet.py` (`--max-head-age`, default
 120 s) reports `ANOMALY <host>:head_age=...` and, with `--stuck-samples`, a head
 seqno that stops moving, and the alert relay forwards it; `check-testnet.py`
@@ -634,8 +676,9 @@ does not conclude keeps blocks going but makes no key block: the next set's
 `utime_since` does not arrive and the database grows. The recovery plan is the
 announcement's [stall section](ANNOUNCEMENT-20261205.md#if-elections-or-block-production-stall):
 operators keep their nodes and election services running and report free disk,
-and within 12 hours of the missed handover the coordinator announces whether the
-network continues, restarts from a new genesis or ends. Bring a downed team
+and the coordinator announces whether the network continues, restarts from a new
+genesis or ends: within 12 hours of a halt, or of an election close with no
+ConfigParam 36 (above). Bring a downed team
 validator back first: with both team validators up the chain needs the fewest
 external validators.
 
@@ -682,24 +725,55 @@ retention was aligned with upstream TON (`state_ttl` 86,400 s) and the
 basechain starts as one shard. Every election result and every term start is a
 key block, so with 24 h terms key blocks come at most 22 h apart, shorter than
 `state_ttl`: the GC point trails the head by `state_ttl`, as it did with 2 h
-terms, and a validator holds the same about 24-30 h of data. 48 h terms would
-put key blocks up to 46 h apart and roughly double that; they stay an option if
-the measurement below shows lower growth.
+terms, and a validator holds the same about 24-30 h of states and consensus
+data. The longest gap is max(`elected_for` - `elections_end_before`,
+`elections_end_before`), so longer terms cost no extra disk as long as that
+stays within `state_ttl`.
+
+**The 48 h alternative (owner-selectable).** 172,800 / 122,400 / 86,400 /
+43,200, with an initial set of at least 126,000 s (for example 129,600 s: first
+election T + 2 h to T + 12 h, first elected set at T + 36 h). Its election
+closes 24 h before the term, so key blocks come every 24 h and the disk need
+is the same as with 24 h terms; `validator_schedule` accepts it. Its costs: the
+set is fixed 24 h before it takes office, a validator that fails after staking
+stays elected for up to about 72-82 h instead of about 36 h, and a 14-day test
+has about 7 terms instead of 13. Liveness matters more for this external test,
+so December runs 24 h terms.
+
+**Before December 5, rehearse the rotation scaled down** on the local net, at
+1/12 of the December schedule: 7,200 / 3,600 / 600 / 1,800 with an initial set
+of 7,200 s (`validator_schedule` accepts it: the first election opens 1 h after
+genesis, and two stakes per pool still suffice). Run it through at least three
+rotations, so the first stake is recovered and staked again, and confirm the
+key blocks at each close and each term start and the GC point following them.
 
 ### Disk: measure in the first 48 h
 
-The validator floor is 120 GiB free (`host_requirements`), on a recommended
-200 GB SSD or NVMe. It is an estimate: about 30 h of data held at 2.2-3 GB/h
-for a full 21-validator set (each slot stores certificates with ceil(2N/3)
-ML-DSA-44 signatures of 2,420 bytes: 14 at N = 21, 3 at N = 4, where 0.56-0.92
-GB/h was measured), 66-90 GB, plus about 10 GB of base database and logs and the
-20 GiB at which operators and the load guard stop. **In the first 48 h of the
-test, with the elected set, measure each team host's growth** (`watch-testnet.py`
-`free_gib` and `consensus_mb` every round, across at least one key block) and
-ask the operators for `df -h /var/lib/tos` at the same UTC times. If growth is
-above 3 GB/h, raise the floor and tell the operators before free space falls
-under 20 GiB anywhere; if it is well below, 48 h terms are worth reconsidering
-for a later epoch.
+The validator floor is 160 GiB free (`host_requirements`), on a recommended
+250 GB SSD or NVMe (200 GB at least). It is an estimate for a full 21-validator
+set at its worst point (`network/profile.json` `retention` and
+`host_requirements`):
+
+| Part | Held | Rate at N = 21 | Size |
+|---|---|---|---|
+| consensus data and states (GC point: `state_ttl` + serializer) | 30 h | 2.8 GB/h | 84 GB |
+| archive (GC point's time minus `archive_ttl`) | 54 h | 0.45 GB/h | 24 GB |
+| archive, two 4 h load windows at 200 transfers/s | | +1 GB/h | 8 GB |
+| base database, logs, binaries | | | 12 GB |
+| total, with 15 % headroom for the estimate | | | 128 GB, 147 GB (137 GiB) |
+| plus the 20 GiB at which operators and the load guard stop | | | 157 GiB, floor 160 GiB |
+
+The rates scale the measured 4-validator ones (0.56-0.62 GB/h of consensus
+data, about 0.25 GB/h of archive) by the signatures they carry: a certificate
+or a masterchain block proof holds ceil(2N/3) ML-DSA-44 signatures of 2,420
+bytes, 14 at N = 21 against 3 at N = 4. **In the first 48 h of the test, with
+the elected set, measure each team host's growth by part**: `consensus/`,
+`archive/` and the states (`celldb/`) separately, `du -s` of each under
+`/var/lib/tos/validator` every hour across at least one key block and one
+archive cut, beside `watch-testnet.py`'s `free_gib` and `consensus_mb`, and ask
+the operators for `df -h /var/lib/tos` at the same UTC times. If any part grows
+faster than its rate above, raise the floor and tell the operators before free
+space falls under 20 GiB anywhere.
 
 ### 8.1 Onboarding a genesis validator for elections
 
@@ -1418,6 +1492,16 @@ spending remains blocked. `reconcile` checks the same prefix without writing.
   watch reads an election's participants. The check that both team pools have
   staked before each election closes is a manual runbook step
   ([Liveness](#liveness-what-keeps-blocks-final)).
+- **No monitor raises "election closed with no ConfigParam 36".** The host
+  probe reads the hosts, not configuration: telling a failed election from one
+  still open would mean decoding ConfigParam 34 and 15 on each host as well. The
+  check at every close is the manual `getconfig 36` above
+  ([Liveness](#liveness-what-keeps-blocks-final)).
+- **The CON-01 history observer assumes 7,200 s terms by default.**
+  `acceptance/con01_history/observer.py` (the epoch-6 CON-01 record) checks each
+  incoming term's length against its configuration's `term_lengths`, which
+  defaults to `[7200]`. It is pinned evidence and is left as it is; a December
+  run passes `"term_lengths": [86400]` in its configuration.
 - **`scripts/check-validator-keys.py` is the epoch-6 gate.** It pins epoch 6's
   zero state and checks for four signers; it does not apply to a two-validator
   genesis set and has not been generalized. Use `check-testnet.py

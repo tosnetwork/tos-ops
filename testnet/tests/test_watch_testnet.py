@@ -383,7 +383,20 @@ def test_probe_retries_once_after_a_failed_read():
 def test_an_undisciplined_or_offset_clock_is_an_anomaly(tmp_path, changes, anomaly):
     judge = watch_testnet.Judge(make_args(tmp_path))
     current = watch_testnet.row(0.0, "node-1", dict(report(), **changes))
-    assert anomaly in judge(current)
+    rounds = [judge(current) for _ in range(watch_testnet.CLOCK_SAMPLES)]
+    assert anomaly in rounds[-1]
+    if anomaly.endswith("clock_unsynced"):
+        # Debounced like an unreachable host: ntpd needs minutes after a reboot.
+        assert all(anomaly not in r for r in rounds[:-1])
+
+
+def test_a_clock_that_recovers_within_the_samples_raises_nothing(tmp_path):
+    judge = watch_testnet.Judge(make_args(tmp_path, clock_samples=3))
+    lost = watch_testnet.row(0.0, "node-1", dict(report(), clock_sources=0))
+    good = watch_testnet.row(0.0, "node-1", report())
+    found = [judge(lost), judge(lost), judge(good), judge(lost), judge(lost)]
+    assert not any("node-1:clock_unsynced" in r for r in found)
+    assert "node-1:clock_unsynced" in judge(lost)
 
 
 def test_a_disciplined_clock_within_the_limit_raises_nothing(tmp_path):
@@ -402,5 +415,6 @@ def test_the_clock_limit_is_an_option(tmp_path):
 
 def test_a_clock_daemon_the_probe_never_reports_is_invalid():
     assert not watch_testnet.valid_report(dict(report(), clock_daemon="timesyncd"))
+    assert not watch_testnet.valid_report(dict(report(), clock_daemon="chrony"))
     assert not watch_testnet.valid_report(dict(report(), clock_synced="yes"))
     assert watch_testnet.valid_report(report())

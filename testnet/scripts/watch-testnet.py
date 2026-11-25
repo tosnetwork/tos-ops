@@ -5,7 +5,7 @@
                    [--interval 60] [--hosts node-1,node-4] [--cpu-sample 0]
                    [--duration SECONDS | --once] [--summary-every 900]
                    [--max-head-age 120] [--stuck-samples 3] [--net-failure-burst 5]
-                   [--min-free-gib 20] [--max-clock-offset-ms 100]
+                   [--min-free-gib 20] [--max-clock-offset-ms 100] [--clock-samples 3]
                    [--until-current HOST]
 
 Runs on the coordinator. Each round it pipes check-host-disk.py to every
@@ -19,6 +19,9 @@ need nothing installed, and appends one TSV row per host to --out:
   jsonrpc_active_requests  metrics_snapshot_age_s  metrics_generation
   missing_reason  future_skew_ms  clock_synced  clock_daemon  clock_sources
   clock_offset_ms
+
+clock_offset_ms is ntpd's system offset as local clock minus NTP time:
+positive = the host's clock is ahead.
 
 An unobserved value is written as `-`. A host that cannot be read is still
 written, every round, as a row with reachable False, every value `-` and a
@@ -40,10 +43,12 @@ Anomalies: host unreachable; unit not active; unit restart count changed;
 head age above --max-head-age; head seqno unchanged for --stuck-samples
 rounds; net failures up by --net-failure-burst or more in one round (single
 retried failures are normal); free space below --min-free-gib; the clock not
-NTP-disciplined (`clock_unsynced`: NTPSynchronized not yes, no ntpd or chrony,
-or no selected source) or further than --max-clock-offset-ms from NTP time
-(`clock_offset=...ms`; check-host-disk.py's MAX_CLOCK_OFFSET_MS, 100 ms, a
-third of consensus's 300 ms minimum block interval).
+NTP-disciplined for --clock-samples rounds in a row (`clock_unsynced`:
+NTPSynchronized not yes, no ntpd, or no selected source; debounced because
+ntpd needs a few minutes after a reboot to select a source) or, at once,
+further than --max-clock-offset-ms from NTP time (`clock_offset=...ms`, signed
+as above; check-host-disk.py's MAX_CLOCK_OFFSET_MS, 100 ms, a third of
+consensus's 300 ms minimum block interval).
 
 --until-current HOST records a restarted validator's catch-up: it exits 0
 once HOST's shard client age falls below 60 s, printing the time since the
@@ -97,6 +102,9 @@ def _probe_module():
 _HOST_PROBE = _probe_module()
 MAX_CLOCK_OFFSET_MS = _HOST_PROBE.MAX_CLOCK_OFFSET_MS
 CLOCK_DAEMONS = _HOST_PROBE.CLOCK_DAEMONS
+# Rounds in a row without NTP discipline before clock_unsynced (a reboot's ntpd
+# selects a source within a few minutes).
+CLOCK_SAMPLES = 3
 MIB = 1 << 20
 GIB = 1 << 30
 CURRENT_SHARD_AGE = 60
@@ -359,6 +367,7 @@ class Judge:
         self.previous: dict[str, dict] = {}
         self.stuck: dict[str, int] = {}
         self.unreachable: dict[str, int] = {}
+        self.unsynced: dict[str, int] = {}
 
     def __call__(self, current: dict) -> list[str]:
         args, found = self.args, []
@@ -414,8 +423,19 @@ class Judge:
                 found.append(f"{name}:net_failure_burst={current['net_failures']}")
             if current["free_gib"] is not None and current["free_gib"] < args.min_free_gib:
                 found.append(f"{name}:free={current['free_gib']}GiB")
-            found.extend(clock_anomalies(name, current, args))
+            found.extend(self.clock(name, current))
         self.previous[name] = current
+        return found
+
+    def clock(self, name: str, current: dict) -> list[str]:
+        """The clock's anomalies, `clock_unsynced` after --clock-samples rounds."""
+        found = clock_anomalies(name, current, self.args)
+        if f"{name}:clock_unsynced" in found:
+            self.unsynced[name] = self.unsynced.get(name, 0) + 1
+            if self.unsynced[name] < getattr(self.args, "clock_samples", CLOCK_SAMPLES):
+                found.remove(f"{name}:clock_unsynced")
+        else:
+            self.unsynced[name] = 0
         return found
 
 
@@ -576,6 +596,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--net-failure-burst", type=int, default=5)
     parser.add_argument("--min-free-gib", type=float, default=20.0)
     parser.add_argument("--max-clock-offset-ms", type=float, default=MAX_CLOCK_OFFSET_MS)
+    parser.add_argument("--clock-samples", type=int, default=CLOCK_SAMPLES)
     parser.add_argument("--until-current")
     args = parser.parse_args(argv)
     if args.interval < 1:
@@ -602,6 +623,7 @@ def main(argv: list[str] | None = None) -> int:
         or args.net_failure_burst < 1
         or args.max_head_age < 1
         or not 0 < args.max_clock_offset_ms <= 1000
+        or args.clock_samples < 1
     ):
         parser.error("thresholds must be positive")
     try:
