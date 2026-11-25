@@ -90,7 +90,7 @@ def test_chrony_is_not_the_supported_discipline():
 
 def test_systemd_timesyncd_alone_does_not_discipline_a_validator():
     """An SNTP client with a server is not the continuous discipline a validator
-    needs: ntpsec (setup-time.sh) or chrony is required."""
+    needs: ntpsec (setup-time.sh) is required."""
     facts = dict(GOOD_FACTS, ntp_source="timesyncd:1")
     result = [r for r in preflight.evaluate_host(host(), facts, PROFILE) if r.check == "time"]
     assert result[0].status == "FAIL" and "setup-time.sh" in result[0].detail

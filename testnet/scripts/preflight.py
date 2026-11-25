@@ -375,8 +375,8 @@ def evaluate_host(host: Host, facts: dict[str, str], profile: dict) -> list[Resu
         offset = -float(facts.get("ntp_system_offset_ms", "")) or 0.0
     except ValueError:
         offset = None
-    # A validator's clock must be disciplined continuously by ntpsec (setup-time.sh)
-    # or chrony, and close to NTP time (check-clock.py applies the same rule daily).
+    # A validator's clock must be disciplined continuously by ntpsec (setup-time.sh),
+    # and close to NTP time (check-clock.py applies the same rule daily).
     disciplined = daemon in CLOCK_DAEMONS
     close = offset is not None and abs(offset) <= MAX_CLOCK_OFFSET_MS
     why = ""

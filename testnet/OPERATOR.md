@@ -103,7 +103,7 @@ forwarding/hairpin NAT, provider console access, root administration and enough
 NVMe endurance. The current validator preflight floors are **4 CPUs, 11 GiB
 MemTotal, 160 GiB free** on Ubuntu 24.04, on a recommended **250 GB SSD or
 NVMe** (200 GB at least): a full 21-validator set is estimated to hold up to
-about 128 GB of consensus, state and archive data at once (consensus and states
+about 128 GB on disk at once, about 116 GB of it consensus, state and archive data (consensus and states
 about 30 h, the archive about 54 h; CEREMONY.md section 8 has the
 arithmetic), and the load guard and the stall rules stop at 20 GiB free. Free
 space is checked before you build: remove the build tree under
