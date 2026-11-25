@@ -896,3 +896,21 @@ def test_turns_carry_across_truncated_batches(tmp_path, monkeypatch):
         sendable, _ = monitor.reconcile(path, report, p)
         monitor.dispatch(path, ["approved-sender"], sendable, limit=1)
     assert sent == ["usdc", "usdt", "usdc", "usdt"]
+
+
+@pytest.mark.parametrize("content", ["[]", '{"last_asset": 7}', '{"last_asset": "usdc"'])
+def test_a_malformed_dispatch_cursor_refuses_dispatch(tmp_path, monkeypatch, capsys, content):
+    p, s = fixture()
+    refusals(s["assets"][0], 1)
+    cli = Cli(tmp_path, monkeypatch, p)
+    assert cli.run(s, "--initialize-baseline") == 2  # observer-only: query 0 prepared
+    capsys.readouterr()
+    (cli.state / "dispatch-cursor.json").write_text(content)
+    calls = []
+    monkeypatch.setattr(monitor.subprocess, "run", lambda argv, **kw: calls.append(kw))
+    assert cli.run(s, *SENDER) == 2
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "INCOMPLETE"
+    assert out["alarms"] == [dict(code="observation_invalid")]
+    assert calls == []
+    assert {e["state"] for e in cli.outbox().values()} == {"prepared"}

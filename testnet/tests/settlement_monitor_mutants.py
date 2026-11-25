@@ -71,6 +71,10 @@ MUTANTS = {
         "candidates = list(outbox)",
     ),
     "fair_cursor": ('last = cursor.get("last_asset")', "last = None"),
+    "cursor_shape": (
+        'if not isinstance(cursor, dict) or set(cursor) - {"last_asset"}:',
+        "if False:",
+    ),
 }
 
 

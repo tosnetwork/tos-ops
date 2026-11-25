@@ -540,6 +540,9 @@ def dispatch(path, adapter, eligible, *, limit=4, budget=60, timeout=20):
     started = monotonic()
     cursor_path = path.parent / "dispatch-cursor.json"
     cursor = read_json(cursor_path) if cursor_path.exists() else {}
+    # Corrupt state refuses the whole dispatch before any send, like the outbox.
+    if not isinstance(cursor, dict) or set(cursor) - {"last_asset"}:
+        raise Invalid("malformed dispatch cursor")
     last = cursor.get("last_asset")
     if last is not None:
         text(last, "last_asset")
