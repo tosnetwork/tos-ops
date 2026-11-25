@@ -219,38 +219,155 @@ def git_repo(tmp_path: Path, schema: str) -> tuple[Path, str]:
     return repo, run("rev-parse", "HEAD")
 
 
-def evidence(tmp_path: Path, commits: list[str]) -> str:
-    path = tmp_path / "releases.json"
-    path.write_text(
-        json.dumps({"validators": [{"name": f"v{i}", "commit": c} for i, c in enumerate(commits)]})
+SINCE = 1_800_000_000
+NOW = SINCE + 600
+
+
+def pq_descr(key_id: int) -> tuple[str, list]:
+    """validator_pq#b3 validator_id algorithm_id key_id ^public_key weight adnl_addr."""
+    body = (
+        bits(0xB3, 8)
+        + bits(key_id + 100, 256)
+        + bits(1, 16)
+        + bits(key_id, 256)
+        + bits(17, 64)
+        + bits(key_id + 200, 256)
     )
+    return body, [lib.cell_from_bits("1" * 8)]
+
+
+def ed_descr(key: int) -> tuple[str, list]:
+    return bits(0x53, 8) + bits(0x8E81278A, 32) + bits(key, 256) + bits(17, 64), []
+
+
+def cp34(descrs: dict[int, tuple[str, list]], tag=0x12) -> lib.Cell:
+    header = bits(tag, 8) + bits(SINCE, 32) + bits(SINCE + 600, 32) + bits(len(descrs), 16) * 2
+    if tag == 0x12:
+        return lib.cell_from_bits(header + bits(68, 64) + "1", [hashmap(descrs, 16)])
+    root = hashmap(descrs, 16)
+    return lib.cell_from_bits(header + cell_bits(root), root.refs)
+
+
+def cell_bits(cell: lib.Cell) -> str:
+    return format(int.from_bytes(cell.data, "big"), f"0{8 * len(cell.data)}b")[: cell.bits]
+
+
+MEMBERS = [f"{k:064x}" for k in (11, 12, 13, 14)]
+
+
+def current_set():
+    return gov.validator_set(cp34({i: pq_descr(11 + i) for i in range(4)}))
+
+
+def evidence(tmp_path: Path, commit: str, keys=MEMBERS, observed=NOW - 60, output=None) -> str:
+    path = tmp_path / "releases.json"
+    rows = [
+        {
+            "name": f"v{i}",
+            "public_key": k,
+            "commit": commit,
+            "observed_at": observed,
+            "version_output": output if output is not None else f"[ Commit: {commit}, Date: x]",
+        }
+        for i, k in enumerate(keys)
+    ]
+    path.write_text(json.dumps({"validators": rows}))
     return str(path)
 
 
-def test_the_rollout_precondition_needs_every_validator_on_the_schema(tmp_path):
+def test_the_validator_set_is_decoded_with_its_member_keys():
+    pq = current_set()
+    assert pq["total"] == 4 and pq["keys"] == MEMBERS and pq["utime_since"] == SINCE
+    ed = gov.validator_set(cp34({0: ed_descr(5), 1: ed_descr(6)}, tag=0x11))
+    assert ed["keys"] == [f"{5:064x}", f"{6:064x}"]
+    assert gov.validator_count(cp34({0: ed_descr(5)})) == 1
+
+
+def test_the_rollout_precondition_needs_every_member_on_the_schema(tmp_path):
     repo, commit = git_repo(tmp_path, "_ SettlementAssets = ConfigParam 84; // critical\n")
-    assert len(gov.check_node_releases(evidence(tmp_path, [commit] * 4), str(repo), 4)) == 4
+    rows = gov.check_node_releases(evidence(tmp_path, commit), str(repo), current_set(), now=NOW)
+    assert [r["public_key"] for r in rows] == MEMBERS
     with pytest.raises(lib.TestnetError, match="needs --node-release-evidence"):
-        gov.check_node_releases(None, str(repo), 4)
-    with pytest.raises(lib.TestnetError, match="names 3 validators; the current set has 4"):
-        gov.check_node_releases(evidence(tmp_path, [commit] * 3), str(repo), 4)
-    with pytest.raises(lib.TestnetError, match="not a full commit id"):
-        gov.check_node_releases(evidence(tmp_path, [commit[:12]] * 4), str(repo), 4)
+        gov.check_node_releases(None, str(repo), current_set(), now=NOW)
+
+
+@pytest.mark.parametrize(
+    "keys, reason",
+    [
+        ([MEMBERS[0]] * 4, "a second row"),  # four identical rows
+        (MEMBERS[:3], "no release evidence for current validators"),
+        (MEMBERS + [f"{99:064x}"], "is not in the current set"),  # an extra row
+        ([f"{99:064x}"] * 4, "is not in the current set"),  # a non-member
+    ],
+)
+def test_the_evidence_must_be_exactly_the_current_set(tmp_path, keys, reason):
+    repo, commit = git_repo(tmp_path, "_ SettlementAssets = ConfigParam 84;\n")
+    with pytest.raises(lib.TestnetError, match=reason):
+        gov.check_node_releases(evidence(tmp_path, commit, keys), str(repo), current_set(), now=NOW)
+
+
+@pytest.mark.parametrize(
+    "observed, now, reason",
+    [
+        (SINCE - 1, NOW, "before the current set took office"),
+        (NOW - 60, NOW + 25 * 3600, "not from the last 24 hours"),  # stale
+        (NOW + 3600, NOW, "not from the last 24 hours"),  # in the future
+        ("yesterday", NOW, "no observation time"),
+    ],
+)
+def test_stale_or_undated_evidence_is_refused(tmp_path, observed, now, reason):
+    repo, commit = git_repo(tmp_path, "_ SettlementAssets = ConfigParam 84;\n")
+    path = evidence(tmp_path, commit, observed=observed)
+    with pytest.raises(lib.TestnetError, match=reason):
+        gov.check_node_releases(path, str(repo), current_set(), now=now)
+
+
+def test_the_attested_output_must_name_the_commit(tmp_path):
+    repo, commit = git_repo(tmp_path, "_ SettlementAssets = ConfigParam 84;\n")
+    path = evidence(tmp_path, commit, output="[ Commit: 0000, Date: x]")
+    with pytest.raises(lib.TestnetError, match="does not name"):
+        gov.check_node_releases(path, str(repo), current_set(), now=NOW)
 
 
 def test_a_release_without_the_schema_is_refused(tmp_path):
     repo, commit = git_repo(tmp_path, "_ TokenBridgeParams = ConfigParam 79;\n")
     with pytest.raises(lib.TestnetError, match="no ConfigParam 84 schema"):
-        gov.check_node_releases(evidence(tmp_path, [commit] * 4), str(repo), 4)
+        gov.check_node_releases(evidence(tmp_path, commit), str(repo), current_set(), now=NOW)
 
 
-def test_the_validator_count_is_read_from_the_set_header():
-    cp34 = lib.cell_from_bits(bits(0x12, 8) + "0" * 64 + bits(4, 16) + bits(4, 16) + "0" * 64)
-    assert gov.validator_count(cp34) == 4
+def test_a_fork_with_a_trailing_bit_is_refused():
+    good = value({1: record(), 2: record()})
+    fork = good.refs[0]
+    bad = lib.cell_from_bits(cell_bits(fork) + "1", fork.refs)
+    with pytest.raises(lib.TestnetError, match="exactly its label and two references"):
+        gov.decode_settlement_assets(lib.cell_from_bits(cell_bits(good), [bad]))
+
+
+def test_a_fork_with_a_third_reference_is_refused():
+    good = value({1: record(), 2: record()})
+    fork = good.refs[0]
+    bad = lib.cell_from_bits(cell_bits(fork), [*fork.refs, lib.cell_from_bits("")])
+    with pytest.raises(lib.TestnetError, match="exactly its label and two references"):
+        gov.decode_settlement_assets(lib.cell_from_bits(cell_bits(good), [bad]))
+
+
+def test_an_over_long_label_is_refused():
+    body, refs = record()
+    # hml_long with n = 257 for a 256-bit key: 9 bits can say 257.
+    leaf = lib.cell_from_bits("10" + bits(257, 9) + "0" * 257 + body, refs)
+    with pytest.raises(lib.TestnetError, match="longer than its key"):
+        gov.decode_settlement_assets(lib.cell_from_bits(bits(1, 8) + "1", [leaf]))
 
 
 def test_pending_proposals_are_listed_with_their_parameter(monkeypatch):
-    def proposal(phash, param):
+    v = value({1: record()})
+
+    def proposal(phash, param, cell):
+        val = (
+            ["cell", {"bytes": base64.b64encode(lib.serialize_boc(cell)).decode()}]
+            if cell
+            else ["null"]
+        )
         return [
             "tuple",
             {
@@ -262,16 +379,7 @@ def test_pending_proposals_are_listed_with_their_parameter(monkeypatch):
                             "elements": [
                                 ["num", "1"],
                                 ["num", "-1"],
-                                [
-                                    "tuple",
-                                    {
-                                        "elements": [
-                                            ["num", str(param)],
-                                            ["cell", {"bytes": ""}],
-                                            ["null"],
-                                        ]
-                                    },
-                                ],
+                                ["tuple", {"elements": [["num", str(param)], val, ["null"]]}],
                             ]
                         },
                     ],
@@ -279,24 +387,127 @@ def test_pending_proposals_are_listed_with_their_parameter(monkeypatch):
             },
         ]
 
-    answer = {"exit_code": 0, "stack": [["list", {"elements": [proposal(5, 84), proposal(6, 79)]}]]}
+    answer = {
+        "exit_code": 0,
+        "stack": [["list", {"elements": [proposal(5, 84, v), proposal(6, 79, None)]}]],
+    }
     monkeypatch.setattr(gov.lib, "rpc", lambda *a, **kw: answer)
     assert gov.pending_params("http://x") == {f"{5:064x}": 84, f"{6:064x}": 79}
+    listed = gov.pending_proposals("http://x")
+    assert listed[f"{5:064x}"]["value"].hash() == v.hash() and listed[f"{6:064x}"]["value"] is None
     monkeypatch.setattr(gov.lib, "rpc", lambda *a, **kw: {"exit_code": 0, "stack": [["null"]]})
     assert gov.pending_params("http://x") == {}
 
 
-def test_a_second_pending_cp84_proposal_is_refused(monkeypatch):
-    monkeypatch.setattr(gov, "pending_params", lambda url: {"aa" * 32: 84})
-    args = type("A", (), {"rpc": "http://x"})()
+class Chain:
+    """Config reads and pending proposals for check_rules."""
+
+    def __init__(self, monkeypatch, config: dict, pending: dict):
+        self.config, self.pending = config, pending
+        monkeypatch.setattr(gov, "config_cell", lambda url, param: self.config.get(param))
+        monkeypatch.setattr(gov, "pending_proposals", lambda url: dict(self.pending))
+
+
+ARGS = type("A", (), {"rpc": "http://x"})()
+OLD_BRIDGE, NEW_BRIDGE = bridge_params(BRIDGE), bridge_params("ef" * 32)
+
+
+def test_a_second_pending_cp84_proposal_is_refused_but_the_same_one_resumes(monkeypatch):
+    v = value({1: record()})
+    Chain(monkeypatch, {}, {"aa" * 32: {"param": 84, "value": value({2: record()})}})
     with pytest.raises(lib.TestnetError, match="another ConfigParam 84 proposal is pending"):
-        gov.check_settlement_assets_proposal(args, value({1: record()}), None, critical=True)
+        gov.check_rules(ARGS, 84, v, "bb" * 32, critical=True)
+    # The identical proposal, already registered, is not counted against itself.
+    Chain(monkeypatch, {}, {"bb" * 32: {"param": 84, "value": v}})
+    assert gov.check_rules(ARGS, 84, v, "bb" * 32, critical=True)["change"]["action"] == "add"
 
 
-def test_cp84_must_be_critical():
-    args = type("A", (), {"rpc": "http://x"})()
+def test_cp84_must_be_critical(monkeypatch):
+    Chain(monkeypatch, {}, {})
     with pytest.raises(lib.TestnetError, match="must be listed in ConfigParam 10"):
-        gov.check_settlement_assets_proposal(args, value({1: record()}), None, critical=False)
+        gov.check_rules(ARGS, 84, value({1: record()}), "bb" * 32, critical=False)
+
+
+def test_cp84_waits_for_a_pending_bridge_change(monkeypatch):
+    Chain(monkeypatch, {79: OLD_BRIDGE}, {"aa" * 32: {"param": 79, "value": NEW_BRIDGE}})
+    with pytest.raises(lib.TestnetError, match="a bridge address change is pending"):
+        gov.check_rules(ARGS, 84, value({1: record()}), "bb" * 32, critical=True)
+    # A pending 79 proposal that keeps the bridge (a price change) does not block it.
+    Chain(monkeypatch, {79: OLD_BRIDGE}, {"aa" * 32: {"param": 79, "value": bridge_params(BRIDGE)}})
+    gov.check_rules(ARGS, 84, value({1: record()}), "bb" * 32, critical=True)
+
+
+def test_a_bridge_change_waits_for_a_pending_cp84_proposal(monkeypatch):
+    Chain(monkeypatch, {79: OLD_BRIDGE}, {"aa" * 32: {"param": 84, "value": value({1: record()})}})
+    with pytest.raises(lib.TestnetError, match="a ConfigParam 84 proposal is pending"):
+        gov.check_rules(ARGS, 79, NEW_BRIDGE, "bb" * 32, critical=False)
+    # The first installation of 79 replaces no bridge, and is not held back.
+    Chain(monkeypatch, {}, {"aa" * 32: {"param": 84, "value": value({1: record()})}})
+    gov.check_rules(ARGS, 79, NEW_BRIDGE, "bb" * 32, critical=False)
+
+
+def test_a_bridge_change_is_refused_against_the_adopted_record(monkeypatch):
+    Chain(monkeypatch, {79: OLD_BRIDGE, 84: value({1: record()})}, {})
+    with pytest.raises(lib.TestnetError, match="still lists active assets"):
+        gov.check_rules(ARGS, 79, NEW_BRIDGE, "bb" * 32, critical=False)
+
+
+def test_signing_revalidates_the_rules(monkeypatch, tmp_path):
+    # Registered while legal; a ConfigParam 84 proposal has appeared since.
+    v79 = NEW_BRIDGE
+    Chain(
+        monkeypatch,
+        {79: OLD_BRIDGE},
+        {
+            "bb" * 32: {"param": 79, "value": v79},
+            "aa" * 32: {"param": 84, "value": value({1: record()})},
+        },
+    )
+    monkeypatch.setattr(gov, "status", lambda url, p: {"critical": False, "wins": 0, "voters": []})
+    args = type(
+        "A",
+        (),
+        {
+            "rpc": "http://x",
+            "proposal": "bb" * 32,
+            "ceremony": str(tmp_path),
+            "local_network": None,
+            "inventory": None,
+        },
+    )()
+    with pytest.raises(lib.TestnetError, match="a ConfigParam 84 proposal is pending"):
+        gov.cmd_sign(args)
+    with pytest.raises(lib.TestnetError, match="a ConfigParam 84 proposal is pending"):
+        gov.revalidate(args, "bb" * 32)
+
+
+def test_a_first_installation_is_bound_to_the_absent_value(monkeypatch, tmp_path):
+    data = Path(__file__).resolve().parent / "data" / "governance"
+    cp10, cp11 = (lib.parse_boc((data / n).read_bytes()) for n in ("cp10.boc", "cp11.boc"))
+    Chain(monkeypatch, {10: cp10, 11: cp11}, {})
+    path = tmp_path / "v.boc"
+    path.write_bytes(lib.serialize_boc(NEW_BRIDGE))
+    args = type(
+        "A",
+        (),
+        {
+            "rpc": "http://x",
+            "param": 79,
+            "value_boc": str(path),
+            "ceremony": str(tmp_path / "c"),
+            "dry_run": True,
+            "expire_seconds": None,
+            "node_release_evidence": None,
+        },
+    )()
+    (tmp_path / "c").mkdir(mode=0o700)
+    assert gov.cmd_propose(args) == 0
+    plan = json.loads(
+        (next((tmp_path / "c" / "governance").iterdir()) / "proposal.json").read_text()
+    )
+    assert plan["current_hash"] is None and plan["if_hash_equal"] == "00" * 32
+    bound = gov.proposal_cell(79, NEW_BRIDGE, bytes(32)).hash().hex()
+    assert plan["proposal"] == bound != gov.proposal_cell(79, NEW_BRIDGE, None).hash().hex()
 
 
 def test_adopted_reads_every_named_node(monkeypatch, tmp_path, capsys):

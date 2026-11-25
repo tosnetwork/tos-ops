@@ -18,11 +18,21 @@
       lists it, the value decodes strictly (tags, statuses, origin kinds, no
       trailing data), holds at most 16 entries and fits the node's 1,024-cell
       validation budget, changes exactly one entry of the current value, no other
-      ConfigParam 84 proposal is pending, and --node-release-evidence FILE shows
-      every current validator running a tos commit whose block.tlb defines
-      ConfigParam 84 (a node without that schema halts on any ConfigParam 84). A
-      token bridge parameter (79, 81, 82, 83) whose bridge address changes is
-      refused while ConfigParam 84 still lists an active asset of the old bridge.
+      ConfigParam 84 proposal and no bridge address change is pending, and
+      --node-release-evidence FILE has exactly one row per member of the current
+      set (ConfigParam 34), keyed by its consensus public key (the Ed25519 key, or
+      the PQ key_id), each observed after the set took office and within 24 hours,
+      each naming a tos commit whose block.tlb defines ConfigParam 84 (a node
+      without that schema halts on any ConfigParam 84). A row is the operator's
+      attested `tos-validator-engine -V` output: this tool cannot prove which
+      binary a remote host runs. A token bridge parameter (79, 81, 82, 83) whose
+      bridge address changes is refused while ConfigParam 84 still lists an
+      active asset of the old bridge, or while a ConfigParam 84 proposal is
+      pending. These ordering rules are checked again before each round's votes
+      are signed and sent. An absent parameter is proposed with the Config
+      contract's absent-value hash (zero) as its precondition, so a first
+      installation cannot overwrite a concurrent one. Proposing a value that is
+      already registered resumes that proposal.
 
   sign     --ceremony DIR --inventory FILE --rpc URL --proposal HASH [--host NAME]...
       On each validator host, the node's console signs a vote for the proposal
@@ -113,6 +123,8 @@ ORIGIN_BITS = 8 + 256 + 32 + 160
 TOKEN_BRIDGE_PARAMS = {79: 1, 81: 56, 82: 137, 83: 728126428}
 # The schema line a node release must carry before any ConfigParam 84 value.
 SETTLEMENT_ASSETS_SCHEMA_LINE = "= ConfigParam 84;"
+# The hash the Config contract compares a precondition with when a parameter is absent.
+ABSENT_VALUE_HASH = bytes(32)
 
 
 # ---------------------------------------------------------------- cells
@@ -287,6 +299,34 @@ def decode_settlement_asset(s: lib.Slice) -> dict:
     }
 
 
+def strict_hashmap_items(root: lib.Cell, key_bits: int) -> dict[int, lib.Slice]:
+    """Every entry of a Hashmap key_bits X, decoded exactly (tos crypto/block/block.tlb):
+    hm_edge is a label of at most the remaining key length, then a node; hmn_fork
+    is exactly two references and nothing after the label; hmn_leaf is the value,
+    handed back as a slice positioned after the label for the caller to consume
+    exactly. Anything else, a trailing bit or a third reference at a fork
+    included, is refused."""
+    items: dict[int, lib.Slice] = {}
+    pending = [(root, 0, key_bits)]
+    while pending:
+        node, prefix, left = pending.pop()
+        if node.exotic:
+            raise lib.TestnetError("a dictionary holds an exotic cell")
+        s = lib.Slice(node)
+        label, length = lib.hashmap_label(s, left)
+        prefix, left = (prefix << length) | label, left - length
+        if left == 0:
+            items[prefix] = s
+            continue
+        if s.remaining() != 0 or len(node.refs) != 2:
+            raise lib.TestnetError(
+                "a dictionary fork must hold exactly its label and two references"
+            )
+        for branch in (0, 1):
+            pending.append((node.refs[branch], (prefix << 1) | branch, left - 1))
+    return items
+
+
 def decode_settlement_assets(cell: lib.Cell) -> dict[str, dict]:
     """settlement_assets_v1#01 assets:(HashmapE 256 SettlementAssetV1): every entry,
     keyed by the master's account id. Refuses a malformed value, more than 16
@@ -301,7 +341,7 @@ def decode_settlement_assets(cell: lib.Cell) -> dict[str, dict]:
         raise lib.TestnetError("ConfigParam 84: the value carries trailing data")
     if not present:
         return {}
-    entries = lib.hashmap_items(cell.refs[0], 256)
+    entries = strict_hashmap_items(cell.refs[0], 256)
     if len(entries) > SETTLEMENT_ASSETS_MAX_ENTRIES:
         raise lib.TestnetError(
             f"ConfigParam 84: {len(entries)} entries, more than {SETTLEMENT_ASSETS_MAX_ENTRIES}"
@@ -365,36 +405,116 @@ def check_bridge_migration(
         )
 
 
-def validator_count(cp34: lib.Cell) -> int:
-    """validators#11 or validators_ext#12: utime_since, utime_until, total."""
+def validator_set(cp34: lib.Cell) -> dict:
+    """ConfigParam 34 (validators#11 or validators_ext#12): utime_since, utime_until,
+    total and each member's key. A member is keyed by its consensus public key:
+    the Ed25519 key of validator#53 / validator_addr#73, or, for validator_pq#b3,
+    its key_id, the frozen derivation over the algorithm and the ML-DSA public key
+    that cannot fit a cell inline."""
     s = lib.Slice(cp34)
-    if s.bits(8) not in (0x11, 0x12):
+    tag = s.bits(8)
+    if tag not in (0x11, 0x12):
         raise lib.TestnetError("ConfigParam 34 is not a validator set")
-    s.bits(64)
-    return s.bits(16)
+    since, until, total, main = s.bits(32), s.bits(32), s.bits(16), s.bits(16)
+    if tag == 0x12:
+        s.bits(64)  # total_weight
+        root = s.take_ref() if s.bits(1) else None
+    else:
+        # validators#11 holds a Hashmap (not HashmapE) in place: the rest of the cell.
+        rest = format(int.from_bytes(cp34.data, "big"), f"0{8 * len(cp34.data)}b")[: cp34.bits]
+        root = lib.cell_from_bits(rest[s.pos :], cp34.refs[s.ref :])
+    keys = []
+    for _, entry in sorted((strict_hashmap_items(root, 16) if root is not None else {}).items()):
+        kind = entry.bits(8)
+        if kind in (0x53, 0x73):
+            if entry.bits(32) != 0x8E81278A:
+                raise lib.TestnetError("ConfigParam 34: a key that is not ed25519_pubkey")
+            keys.append(entry.bytes(32).hex())
+        elif kind == 0xB3:
+            entry.bytes(32)  # validator_id
+            entry.bits(16)  # algorithm_id
+            keys.append(entry.bytes(32).hex())  # key_id
+        else:
+            raise lib.TestnetError(f"ConfigParam 34: unknown validator descriptor {kind:#x}")
+    if len(keys) != total or len(set(keys)) != total:
+        raise lib.TestnetError("ConfigParam 34: the list does not hold total distinct members")
+    return {"utime_since": since, "utime_until": until, "total": total, "main": main, "keys": keys}
 
 
-def check_node_releases(evidence_path: str | None, tos_root: str, validators: int) -> list[dict]:
+def validator_count(cp34: lib.Cell) -> int:
+    return validator_set(cp34)["total"]
+
+
+# Release evidence older than this, or from before the current set took office, is stale.
+RELEASE_EVIDENCE_MAX_AGE = 24 * 3600
+RELEASE_EVIDENCE_CLOCK_SKEW = 300
+
+
+def check_node_releases(
+    evidence_path: str | None, tos_root: str, current: dict, now: float | None = None
+) -> list[dict]:
     """The rollout precondition of ConfigParam 84 (design 3.1): every current
-    validator runs a node whose schema has ConfigParam 84. The evidence names one
-    tos commit per validator; each must define ConfigParam 84 in its block.tlb,
-    read from the tos repository at --tos-root."""
+    validator runs a node whose schema has ConfigParam 84.
+
+    The evidence is one row per member of the current set (ConfigParam 34), keyed
+    by the member's consensus public key ("public_key", as validator_set reads
+    it), with the tos commit its operator attests the node runs ("commit", from
+    `tos-validator-engine -V`, kept in "version_output") and when it was observed
+    ("observed_at", Unix seconds). Every member has exactly one row, and no row
+    names anyone else. Each observation is after the current set took office and
+    at most 24 hours old, and each commit is in --tos-root and defines ConfigParam
+    84 in its block.tlb.
+
+    Limitation: this tool cannot prove which binary a remote host runs. A row is an
+    operator's attestation; the check binds it to the current set and to a commit
+    with the schema, nothing more."""
     if not evidence_path:
         raise lib.TestnetError(
             "ConfigParam 84 needs --node-release-evidence: a node without its schema halts on any "
             "ConfigParam 84 value, so every current validator's release must be shown first"
         )
+    now = time.time() if now is None else now
     rows = json.loads(Path(evidence_path).read_text()).get("validators")
-    if not isinstance(rows, list) or len(rows) < validators:
-        raise lib.TestnetError(
-            f"the release evidence names {len(rows) if isinstance(rows, list) else 0} validators; "
-            f"the current set has {validators}"
-        )
-    checked = []
+    if not isinstance(rows, list):
+        raise lib.TestnetError("the release evidence has no validators list")
+    members = set(current["keys"])
+    seen: dict[str, dict] = {}
     for row in rows:
+        key = str(row.get("public_key", "")).lower()
+        if key not in members:
+            raise lib.TestnetError(
+                f"{row.get('name')}: {key or 'no key'} is not in the current set"
+            )
+        if key in seen:
+            raise lib.TestnetError(f"{row.get('name')}: a second row for {key}")
+        seen[key] = row
+    missing = sorted(members - set(seen))
+    if missing:
+        raise lib.TestnetError(f"no release evidence for current validators {', '.join(missing)}")
+    checked = []
+    for key in current["keys"]:
+        row = seen[key]
+        observed = row.get("observed_at")
+        if not isinstance(observed, (int, float)) or isinstance(observed, bool):
+            raise lib.TestnetError(f"{row.get('name')}: no observation time")
+        if observed <= current["utime_since"]:
+            raise lib.TestnetError(
+                f"{row.get('name')}: observed before the current set took office; observe again"
+            )
+        if (
+            observed > now + RELEASE_EVIDENCE_CLOCK_SKEW
+            or now - observed > RELEASE_EVIDENCE_MAX_AGE
+        ):
+            raise lib.TestnetError(
+                f"{row.get('name')}: the observation is not from the last 24 hours"
+            )
         commit = str(row.get("commit", ""))
         if len(commit) != 40 or any(c not in "0123456789abcdef" for c in commit):
             raise lib.TestnetError(f"{row.get('name')}: not a full commit id: {commit!r}")
+        if commit not in str(row.get("version_output", "")):
+            raise lib.TestnetError(
+                f"{row.get('name')}: the attested -V output does not name {commit}"
+            )
         shown = subprocess.run(
             ["git", "-C", tos_root, "show", f"{commit}:crypto/block/block.tlb"],
             capture_output=True,
@@ -407,7 +527,9 @@ def check_node_releases(evidence_path: str | None, tos_root: str, validators: in
             raise lib.TestnetError(
                 f"{row.get('name')}: commit {commit} has no ConfigParam 84 schema; upgrade first"
             )
-        checked.append({"name": row.get("name"), "commit": commit})
+        checked.append(
+            {"name": row.get("name"), "public_key": key, "commit": commit, "observed_at": observed}
+        )
     return checked
 
 
@@ -484,8 +606,15 @@ def stack_list(entry) -> list:
     return out
 
 
-def pending_params(url: str) -> dict[str, int]:
-    """Every registered proposal and the parameter it sets (list_proposals)."""
+def stack_cell_or_none(entry) -> lib.Cell | None:
+    """A cell entry, or None for a TVM null (rendered as null or as an empty list)."""
+    if entry and entry[0] in ("cell", "slice"):
+        return lib.parse_boc(base64.b64decode(entry[1]["bytes"]))
+    return None
+
+
+def pending_proposals(url: str) -> dict[str, dict]:
+    """Every registered proposal (list_proposals): the parameter it sets and its value."""
     answer = lib.rpc(url, "runGetMethod", address=CONFIG_ADDRESS, method="list_proposals", stack=[])
     if answer.get("exit_code") != 0:
         raise lib.TestnetError(f"list_proposals exited {answer.get('exit_code')}")
@@ -494,8 +623,16 @@ def pending_params(url: str) -> dict[str, int]:
     for item in stack_list(stack[0]) if stack else []:
         phash, body = item[1]["elements"]
         params = body[1]["elements"][2][1]["elements"]
-        out[f"{int(phash[1], 0):064x}"] = int(params[0][1], 0)
+        out[f"{int(phash[1], 0):064x}"] = {
+            "param": int(params[0][1], 0),
+            "value": stack_cell_or_none(params[1]),
+        }
     return out
+
+
+def pending_params(url: str) -> dict[str, int]:
+    """Every registered proposal and the parameter it sets."""
+    return {h: p["param"] for h, p in pending_proposals(url).items()}
 
 
 def current_set_hash(url: str) -> str:
@@ -602,30 +739,65 @@ def network_global_id(args) -> int:
     return lib.LOCAL_GLOBAL_ID
 
 
-def check_settlement_assets_proposal(
-    args, value: lib.Cell, current: lib.Cell | None, critical: bool
-) -> dict:
-    """Every refusal design 3.1 asks of proposal tooling for ConfigParam 84."""
-    if not critical:
-        raise lib.TestnetError("ConfigParam 84 must be listed in ConfigParam 10 (critical)")
-    new = decode_settlement_assets(value)
-    old = decode_settlement_assets(current) if current is not None else {}
-    change = settlement_assets_change(old, new)
-    others = [h for h, p in pending_params(args.rpc).items() if p == SETTLEMENT_ASSETS_PARAM]
-    if others:
-        raise lib.TestnetError(
-            f"another ConfigParam 84 proposal is pending ({', '.join(others)}); "
-            "changes to ConfigParam 84 are serialized"
-        )
-    releases = check_node_releases(
-        args.node_release_evidence, args.tos_root, validator_count(config_cell(args.rpc, 34))
-    )
-    return {
-        "entries": len(new),
-        "validation_cells": validation_visits(value),
-        "change": change,
-        "node_releases": releases,
-    }
+def bridge_change(param: int, current: lib.Cell | None, value: lib.Cell | None) -> bool:
+    """Whether a token bridge parameter value replaces the bridge the current one names."""
+    old = bridge_address_of(current)
+    return old is not None and (value is None or bridge_address_of(value) != old)
+
+
+def check_rules(
+    args, param: int, value: lib.Cell | None, phash: str, critical: bool
+) -> dict | None:
+    """The rules a proposal must pass against the chain as it is now: at propose,
+    and again before each round's votes are signed, since other proposals may
+    have been registered or adopted in between.
+
+    ConfigParam 84 changes are serialized, and a bridge replacement never runs
+    alongside one: while a ConfigParam 84 proposal is pending a bridge address
+    change is refused, and while a bridge address change is pending a ConfigParam
+    84 proposal is refused (design 7.4). The proposal `phash` itself, when it is
+    already registered, is not counted against itself, so an interrupted
+    proposal resumes."""
+    pending = {h: p for h, p in pending_proposals(args.rpc).items() if h != phash}
+    current = config_cell(args.rpc, param)
+    if param == SETTLEMENT_ASSETS_PARAM:
+        if not critical:
+            raise lib.TestnetError("ConfigParam 84 must be listed in ConfigParam 10 (critical)")
+        if value is None:
+            raise lib.TestnetError("ConfigParam 84 is never removed by a proposal")
+        new = decode_settlement_assets(value)
+        old = decode_settlement_assets(current) if current is not None else {}
+        change = settlement_assets_change(old, new)
+        others = [h for h, p in pending.items() if p["param"] == SETTLEMENT_ASSETS_PARAM]
+        if others:
+            raise lib.TestnetError(
+                f"another ConfigParam 84 proposal is pending ({', '.join(others)}); "
+                "changes to ConfigParam 84 are serialized"
+            )
+        replacing = [
+            h
+            for h, p in pending.items()
+            if p["param"] in TOKEN_BRIDGE_PARAMS
+            and bridge_change(p["param"], config_cell(args.rpc, p["param"]), p["value"])
+        ]
+        if replacing:
+            raise lib.TestnetError(
+                f"a bridge address change is pending ({', '.join(replacing)}); "
+                "ConfigParam 84 waits until it is adopted or expires"
+            )
+        return {"entries": len(new), "validation_cells": validation_visits(value), "change": change}
+    if param in TOKEN_BRIDGE_PARAMS and bridge_change(param, current, value):
+        recognized = config_cell(args.rpc, SETTLEMENT_ASSETS_PARAM)
+        assets = decode_settlement_assets(recognized) if recognized is not None else {}
+        if value is not None:
+            check_bridge_migration(param, current, value, assets)
+        listed = [h for h, p in pending.items() if p["param"] == SETTLEMENT_ASSETS_PARAM]
+        if listed:
+            raise lib.TestnetError(
+                f"a ConfigParam 84 proposal is pending ({', '.join(listed)}); the bridge address "
+                f"change waits until it is adopted or expires"
+            )
+    return None
 
 
 def cmd_propose(args) -> int:
@@ -634,18 +806,20 @@ def cmd_propose(args) -> int:
     if current is not None and current.hash() == value.hash():
         raise lib.TestnetError(f"ConfigParam {args.param} already has this value")
     critical = args.param in signed_keys(config_cell(args.rpc, 10))
-    checks = None
+    # The precondition is the current value's hash; for an absent parameter it is
+    # the Config contract's absent-value hash, zero (config-code.fc accept_proposal),
+    # so two concurrent first installations cannot overwrite each other.
+    precondition = current.hash() if current is not None else ABSENT_VALUE_HASH
+    proposal = proposal_cell(args.param, value, precondition)
+    phash = proposal.hash().hex()
+    checks = check_rules(args, args.param, value, phash, critical)
     if args.param == SETTLEMENT_ASSETS_PARAM:
-        checks = check_settlement_assets_proposal(args, value, current, critical)
-    elif args.param in TOKEN_BRIDGE_PARAMS:
-        recognized = config_cell(args.rpc, SETTLEMENT_ASSETS_PARAM)
-        assets = decode_settlement_assets(recognized) if recognized is not None else {}
-        check_bridge_migration(args.param, current, value, assets)
+        checks["node_releases"] = check_node_releases(
+            args.node_release_evidence, args.tos_root, validator_set(config_cell(args.rpc, 34))
+        )
     setup = parse_vote_setup(config_cell(args.rpc, 11), critical)
     expire = args.expire_seconds or setup["min_store_sec"]
     price = proposal_price(value, setup, expire)
-    proposal = proposal_cell(args.param, value, current.hash() if current is not None else None)
-    phash = proposal.hash().hex()
     body = register_body(int(time.time()), expire, proposal, critical)
     plan = {
         "proposal": phash,
@@ -655,6 +829,7 @@ def cmd_propose(args) -> int:
         "attached_nanotos": price + REGISTER_HEADROOM,
         "expire_seconds": expire,
         "current_hash": current.hash().hex() if current is not None else None,
+        "if_hash_equal": precondition.hex(),
         "value_hash": value.hash().hex(),
         "min_wins": setup["min_wins"],
     }
@@ -768,10 +943,18 @@ def sign_local(args, proposal: str) -> dict:
     return votes
 
 
+def revalidate(args, proposal: str) -> None:
+    """The proposal's rules again, against the chain as it is now (check_rules)."""
+    registered = pending_proposals(args.rpc).get(proposal)
+    now = status(args.rpc, proposal)
+    if registered is None or now is None:
+        raise lib.TestnetError(f"proposal {proposal} is not registered")
+    check_rules(args, registered["param"], registered["value"], proposal, now["critical"])
+
+
 def cmd_sign(args) -> int:
     proposal = args.proposal.lower()
-    if status(args.rpc, proposal) is None:
-        raise lib.TestnetError(f"proposal {proposal} is not registered")
+    revalidate(args, proposal)
     set_hash = current_set_hash(args.rpc)
     if args.local_network:
         votes = sign_local(args, proposal)
@@ -838,6 +1021,7 @@ def cmd_vote(args) -> int:
     before = status(args.rpc, proposal)
     if before is None:
         raise lib.TestnetError(f"proposal {proposal} is not registered (or was already adopted)")
+    revalidate(args, proposal)
     for idx in sorted(round_["votes"], key=int):
         now = status(args.rpc, proposal)
         if now is None:
@@ -927,7 +1111,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--value-boc", required=True)
     p.add_argument("--expire-seconds", type=int)
     p.add_argument("--id")
-    p.add_argument("--node-release-evidence", help="ConfigParam 84: each validator's tos commit")
+    p.add_argument(
+        "--node-release-evidence",
+        help="ConfigParam 84: {validators: [{public_key, name, commit, version_output, "
+        "observed_at}]}, one row per current validator; each row is the operator's attested "
+        "tos-validator-engine -V output, which this tool cannot verify on the host",
+    )
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(fn=cmd_propose)
 

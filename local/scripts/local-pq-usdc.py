@@ -46,6 +46,7 @@ from __future__ import annotations
 import argparse
 import base64
 import fcntl
+import importlib.util
 import json
 import os
 import secrets
@@ -330,29 +331,74 @@ class Wallet:
             return 0
         return lib.Slice(from64(info["data"])).bits(32)
 
-    def send(self, message: lib.Cell, mode: int = 3, deploy: bool = False) -> int:
-        """Sign and send one message, then wait for the seqno to move."""
-        seqno = self.seqno()
-        signed = Builder().uint(seqno, 32).uint(mode, 8).ref(message).end()
-        body = Builder().raw(self.key.sign(signed.hash()).signature).append(signed).end()
-        self.chain.send(external(self.address, body, self.init if deploy else None))
-        self.chain.wait(f"{self.address} seqno {seqno + 1}", lambda: self.seqno() > seqno)
-        return seqno
+    def send_once(
+        self, state: State, intent: str, build, mode: int = 3, deploy: bool = False
+    ) -> dict:
+        """Send one message at most once, journaled as `intent`.
+
+        The signed external message is recorded in the state before it is
+        broadcast. On a rerun the record decides: if the wallet's seqno has moved
+        past the recorded one, the message ran and nothing is sent; if it has not,
+        the same signed message is broadcast again, which can run at most once
+        because it is bound to that seqno. `build` makes the internal message and
+        is called only when the intent is new."""
+        record = state.intent(intent)
+        if record is None:
+            for other, pending in state.intents().items():
+                require(
+                    pending.get("wallet") != self.address or pending.get("state") == "done",
+                    f"{self.address} has an unfinished send ({other}); run that step again first",
+                )
+            seqno = self.seqno()
+            signed = Builder().uint(seqno, 32).uint(mode, 8).ref(build()).end()
+            body = Builder().raw(self.key.sign(signed.hash()).signature).append(signed).end()
+            message = external(self.address, body, self.init if deploy else None)
+            record = {
+                "kind": "tos",
+                "wallet": self.address,
+                "seqno": seqno,
+                "boc": boc64(message),
+                "hash": message.hash().hex(),
+                "state": "signed",
+            }
+            state.put_intent(intent, record)
+        if record["state"] == "done":
+            return record
+        seqno = record["seqno"]
+        now = self.seqno()
+        if now == seqno:
+            self.chain.send(from64(record["boc"]))
+            self.chain.wait(f"{self.address} seqno {seqno + 1}", lambda: self.seqno() > seqno)
+            now = self.seqno()
+        require(now > seqno, f"{intent}: the wallet's seqno {now} is behind the recorded {seqno}")
+        record["state"] = "done"
+        state.put_intent(intent, record)
+        return record
 
     def transfer(
         self,
+        state: State,
+        intent: str,
         dest: str,
         value: int,
         body: lib.Cell | None = None,
         bounce: bool = True,
         init: lib.Cell | None = None,
-    ) -> int:
+        build_body=None,
+    ) -> dict:
+        """A transfer sent at most once (send_once); the balance is checked, and
+        `build_body` (a body made at signing time) called, only when the intent is
+        new."""
         require(value > 0, "a transfer must carry a positive value")
-        require(
-            self.chain.balance(self.address) > value + NANO // 10,
-            f"{self.address} cannot pay {value / NANO} TOS",
-        )
-        return self.send(internal(dest, value, bounce, body, init))
+
+        def build():
+            require(
+                self.chain.balance(self.address) > value + NANO // 10,
+                f"{self.address} cannot pay {value / NANO} TOS",
+            )
+            return internal(dest, value, bounce, build_body() if build_body else body, init)
+
+        return self.send_once(state, intent, build)
 
 
 # ---------------------------------------------------------------- state
@@ -375,6 +421,16 @@ class State:
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.data, indent=1, sort_keys=True) + "\n")
         os.replace(tmp, self.path)
+
+    def intents(self) -> dict:
+        return self.data.get("intents", {})
+
+    def intent(self, name: str) -> dict | None:
+        return self.intents().get(name)
+
+    def put_intent(self, name: str, record: dict) -> None:
+        """Journal a send before (and after) it is made: written to disk at once."""
+        self.set("intents", {**self.intents(), name: record})
 
     def evidence(self, name: str, value) -> Path:
         folder = self.root / "evidence"
@@ -476,35 +532,142 @@ def bridge_params_source(tools: Tools) -> Path:
     return found[0]
 
 
-def evm_accounts(tools: Tools) -> list[str]:
-    return json.loads(tools.cast_run("rpc", "eth_accounts").stdout)
+class Evm:
+    """The loopback EVM chain through cast: reads, simulations and nonce-pinned sends."""
+
+    def __init__(self, tools: Tools):
+        self.tools = tools
+
+    def rpc(self, method: str, *params) -> object:
+        out = self.tools.cast_run("rpc", "--raw", method, json.dumps(list(params)))
+        return json.loads(out.stdout)
+
+    def chain_id(self) -> int:
+        return int(self.tools.cast_run("chain-id").stdout.strip())
+
+    def accounts(self) -> list[str]:
+        return self.rpc("eth_accounts")
+
+    def code(self, address: str) -> str:
+        return self.tools.cast_run("code", address).stdout.strip()
+
+    def abi_encode(self, signature: str, *args: str) -> str:
+        return self.tools.cast_run("abi-encode", signature, *args).stdout.strip()
+
+    def call(self, to: str, signature: str, *args: str) -> str:
+        return self.tools.cast_run("call", to, signature, *args).stdout.strip()
+
+    def simulate(self, sender: str, to: str, signature: str, *args: str) -> tuple[bool, str]:
+        out = self.tools.cast_run("call", "--from", sender, to, signature, *args, check=False)
+        return out.returncode == 0, out.stderr.strip()
+
+    def nonce(self, sender: str) -> int:
+        return int(self.rpc("eth_getTransactionCount", sender, "pending"), 16)
+
+    def block_number(self) -> int:
+        return int(self.rpc("eth_blockNumber"), 16)
+
+    def broadcast(
+        self, sender: str, nonce: int, to: str | None, signature: str, args: list, gas: int | None
+    ) -> str | None:
+        """Send one transaction at exactly `nonce`; its hash, or None when cast
+        refused it before broadcasting (a failed estimate)."""
+        argv = ["send", "--unlocked", "--from", sender, "--nonce", str(nonce), "--json"]
+        if gas:
+            argv += ["--gas-limit", str(gas)]
+        argv += ["--create", signature] if to is None else [to, signature, *args]
+        out = self.tools.cast_run(*argv, check=False)
+        if out.returncode != 0:
+            return None
+        return json.loads(out.stdout)["transactionHash"]
+
+    def find(self, sender: str, nonce: int, from_block: int) -> str | None:
+        """The hash of the transaction `sender` made at `nonce`, searched from `from_block`."""
+        for number in range(from_block, self.block_number() + 1):
+            block = self.rpc("eth_getBlockByNumber", hex(number), True) or {}
+            for tx in block.get("transactions", []):
+                if tx["from"].lower() == sender.lower() and int(tx["nonce"], 16) == nonce:
+                    return tx["hash"]
+        return None
+
+    def receipt(self, tx: str) -> dict:
+        r = self.rpc("eth_getTransactionReceipt", tx)
+        require(r, f"no receipt for {tx}")
+        return {
+            "tx": tx,
+            "status": int(r["status"], 16),
+            "block": int(r["blockNumber"], 16),
+            "contract": r.get("contractAddress"),
+        }
 
 
-def evm_send(
-    tools: Tools,
+def evm_send_once(
+    evm: Evm,
+    state: State,
+    intent: str,
     sender: str,
-    to: str,
+    to: str | None,
     signature: str,
     *args: str,
     gas: int | None = None,
-    check: bool = True,
+    meta: dict | None = None,
+    build_args=None,
 ) -> dict:
-    argv = ["send", "--unlocked", "--from", sender, "--json", to, signature, *args]
-    if gas:
-        argv[1:1] = ["--gas-limit", str(gas)]
-    out = tools.cast_run(*argv, check=check)
-    if out.returncode != 0:
-        return {"refused": True, "error": out.stderr.strip()[-600:]}
-    receipt = json.loads(out.stdout)
-    return {
-        "tx": receipt["transactionHash"],
-        "status": int(receipt["status"], 16),
-        "block": int(receipt["blockNumber"], 16),
-    }
+    """One EVM transaction at most once, journaled as `intent`.
 
-
-def evm_call(tools: Tools, to: str, signature: str, *args: str) -> str:
-    return tools.cast_run("call", to, signature, *args).stdout.strip()
+    The intent (sender, nonce, call and its arguments) is written before anything
+    is sent, and the transaction is sent at exactly that nonce. On a rerun the
+    record decides: a recorded hash is read back; a nonce the account has
+    already used is the transaction, found on chain from the recorded block on;
+    an unused nonce is sent again, with the recorded arguments. A different
+    transaction can therefore never be sent in its place. `to=None` creates a
+    contract from `signature` (the init code). `build_args` makes the arguments
+    when the intent is new (for example oracle signatures)."""
+    record = state.intent(intent)
+    if record is None:
+        record = {
+            "kind": "evm",
+            "from": sender,
+            "nonce": evm.nonce(sender),
+            "from_block": evm.block_number(),
+            "to": to,
+            "signature": signature,
+            "args": list(build_args() if build_args else args),
+            "gas": gas,
+            "meta": meta or {},
+            "state": "pending",
+        }
+        state.put_intent(intent, record)
+    if record["state"] == "done":
+        return record
+    if not record.get("tx"):
+        used = evm.nonce(sender)
+        if used == record["nonce"]:
+            tx = evm.broadcast(
+                sender,
+                record["nonce"],
+                record["to"],
+                record["signature"],
+                record["args"],
+                record["gas"],
+            )
+            if tx is None:
+                require(
+                    evm.nonce(sender) == record["nonce"],
+                    f"{intent}: cast failed after the nonce was used; run the step again",
+                )
+                return dict(record, refused=True)
+        else:
+            require(used > record["nonce"], f"{intent}: the nonce is ahead of the account's")
+            tx = evm.find(sender, record["nonce"], record["from_block"])
+            require(
+                tx, f"{intent}: nonce {record['nonce']} is used but its transaction is not found"
+            )
+        record["tx"] = tx
+        state.put_intent(intent, record)
+    record.update(evm.receipt(record["tx"]), state="done")
+    state.put_intent(intent, record)
+    return record
 
 
 def evm_values(text: str) -> list[str]:
@@ -530,7 +693,7 @@ def oracle_keys(keys: Path) -> list[tuple[str, str]]:
     return sorted(out, key=lambda pair: int(pair[0], 16))
 
 
-def oracle_signatures(tools: Tools, keys: Path, digest: str) -> str:
+def oracle_signatures(keys: Path, digest: str) -> str:
     """A quorum of stand-in oracle signatures over `digest` (EIP-191 prefixed, as
     SignatureChecker recovers them), as the Signature[] argument."""
     rows = []
@@ -548,79 +711,95 @@ def oracle_signatures(tools: Tools, keys: Path, digest: str) -> str:
 
 
 def evm_vote(
-    tools: Tools,
+    evm: Evm,
     state: State,
     keys: Path,
+    intent: str,
     digest_fn: str,
     digest_args: list[str],
     vote_fn: str,
     vote_args: list[str],
 ) -> dict:
+    """An oracle-quorum vote on the EVM bridge, sent at most once (evm_send_once).
+    The signatures are made, and checked against the bridge's own checker, only
+    when the intent is new."""
     bridge = state["evm"]["bridge"]
-    digest = evm_call(tools, bridge, digest_fn, *digest_args)
-    signatures = oracle_signatures(tools, keys, digest)
-    # Each signature must verify against the bridge's own checker before any vote is sent.
-    for row in signatures[2:-2].split("),("):
-        signer, sig = row.split(",")
-        evm_call(
-            tools, bridge, "checkSignature(bytes32,(address,bytes))", digest, f"({signer},{sig})"
-        )
-    result = evm_send(tools, state["evm"]["deployer"], bridge, vote_fn, *vote_args, signatures)
-    require(result.get("status") == 1, f"{vote_fn} failed: {result}")
-    return dict(result, digest=digest)
 
+    def signed() -> list[str]:
+        digest = evm.call(bridge, digest_fn, *digest_args)
+        signatures = oracle_signatures(keys, digest)
+        for row in signatures[2:-2].split("),("):
+            signer, sig = row.split(",")
+            evm.call(bridge, "checkSignature(bytes32,(address,bytes))", digest, f"({signer},{sig})")
+        return [*vote_args, signatures]
 
-def evm_create(tools: Tools, deployer: str, name: str, signature: str, *ctor: str) -> str:
-    artifact = evm_artifact(tools, name)
-    encoded = tools.cast_run("abi-encode", signature, *ctor).stdout.strip()[2:]
-    out = tools.cast_run(
-        "send",
-        "--unlocked",
-        "--from",
-        deployer,
-        "--json",
-        "--create",
-        artifact["bytecode"] + encoded,
+    record = evm_send_once(
+        evm, state, intent, state["evm"]["deployer"], bridge, vote_fn, build_args=signed
     )
-    receipt = json.loads(out.stdout)
-    require(int(receipt["status"], 16) == 1, f"{name} deployment failed")
-    return receipt["contractAddress"]
+    require(record.get("status") == 1, f"{vote_fn} failed: {record}")
+    return record
 
 
-def deploy_token(tools: Tools, deployer: str) -> str:
+def evm_create(
+    evm: Evm, state: State, intent: str, deployer: str, name: str, signature: str, *ctor: str
+) -> str:
+    """Deploy `name` once (evm_send_once with no destination); its address."""
+    record = state.intent(intent)
+    if record is None:
+        init = evm_artifact(evm.tools, name)["bytecode"] + evm.abi_encode(signature, *ctor)[2:]
+    else:
+        init = record["signature"]
+    record = evm_send_once(evm, state, intent, deployer, None, init, meta={"contract": name})
+    require(record.get("status") == 1 and record.get("contract"), f"{name} deployment failed")
+    return record["contract"].lower()
+
+
+def deploy_token(evm: Evm, state: State, intent: str, deployer: str) -> str:
     """A test stand-in for a six-decimal stablecoin (TestFeeToken, its fee left at 0)."""
-    token = evm_create(tools, deployer, "TestFeeToken", "constructor(uint256)", str(TOKEN_SUPPLY))
-    require(
-        evm_call(tools, token, "decimals()(uint8)") == str(TOKEN_DECIMALS),
-        "the token is not 6 decimals",
+    token = evm_create(
+        evm, state, intent, deployer, "TestFeeToken", "constructor(uint256)", str(TOKEN_SUPPLY)
     )
-    require(evm_call(tools, token, "feeBasisPoints()(uint256)") == "0", "the token charges a fee")
+    require(
+        evm.call(token, "decimals()(uint8)") == str(TOKEN_DECIMALS), "the token is not 6 decimals"
+    )
+    require(evm.call(token, "feeBasisPoints()(uint256)") == "0", "the token charges a fee")
     return token
 
 
-def step_evm_deploy(args, state: State, tools: Tools, keys: Path) -> None:
-    require(
-        tools.cast_run("chain-id").stdout.strip() == str(EVM_CHAIN_ID),
-        f"the EVM chain at {tools.evm} must run chain id {EVM_CHAIN_ID}",
-    )
-    if state.get("evm"):
-        code = tools.cast_run("code", state["evm"]["bridge"]).stdout.strip()
-        require(code not in ("", "0x"), "the recorded EVM bridge is gone; the EVM chain was reset")
-        print(f"EVM bridge {state['evm']['bridge']} already deployed")
+def step_evm_deploy(args, state: State, evm: Evm, keys: Path) -> None:
+    require(evm.chain_id() == EVM_CHAIN_ID, f"the EVM chain must run chain id {EVM_CHAIN_ID}")
+    recorded = state.get("evm")
+    if recorded and state.intent("evm-deploy-token") is None:
+        # A deployment from before the send journal: checked, never redone.
+        require(
+            evm.code(recorded["bridge"]) not in ("", "0x"),
+            "the recorded EVM bridge is gone; the EVM chain was reset",
+        )
+        require(evm.call(recorded["bridge"], "allowLock()(bool)") == "true", "locking is closed")
+        print(f"EVM bridge {recorded['bridge']} already deployed")
         return
-    deployer, locker = evm_accounts(tools)[:2]
+    deployer, locker = evm.accounts()[:2]
     oracles = [address for address, _ in oracle_keys(keys)]
-    token = deploy_token(tools, deployer)
+    token = deploy_token(evm, state, "evm-deploy-token", deployer)
     bridge = evm_create(
-        tools,
+        evm,
+        state,
+        "evm-deploy-bridge",
         deployer,
         "Bridge",
         "constructor(address[],address[])",
         "[" + ",".join(oracles) + "]",
         "[]",
     )
-    funded = evm_send(
-        tools, deployer, token, "transfer(address,uint256)", locker, str(LOCKER_TOKENS)
+    funded = evm_send_once(
+        evm,
+        state,
+        "evm-fund-locker",
+        deployer,
+        token,
+        "transfer(address,uint256)",
+        locker,
+        str(LOCKER_TOKENS),
     )
     require(funded["status"] == 1, "funding the locker failed")
     state.set(
@@ -635,15 +814,16 @@ def step_evm_deploy(args, state: State, tools: Tools, keys: Path) -> None:
         },
     )
     opened = evm_vote(
-        tools,
+        evm,
         state,
         keys,
+        "evm-vote-switch-lock",
         "getNewLockStatusId(bool,uint256)(bytes32)",
         ["true", "1"],
         "voteForSwitchLock(bool,uint256,(address,bytes)[])",
         ["true", "1"],
     )
-    require(evm_call(tools, bridge, "allowLock()(bool)") == "true", "locking did not open")
+    require(evm.call(bridge, "allowLock()(bool)") == "true", "locking did not open")
     state.evidence(
         "evm-deploy",
         {
@@ -695,12 +875,39 @@ def payer_files(args, state: State, tools: Tools, keys: Path) -> dict:
     }
 
 
+def fund_wallets(state: State, chain: Chain, genesis: Wallet, targets: list) -> list[dict]:
+    """Pay each (intent, address, nanotos, StateInit) target from the Genesis wallet
+    once. A target already funded and holding no journaled intent is skipped; one
+    with an intent is reconciled from the chain (Wallet.send_once), never paid twice."""
+    receipts = []
+    for intent, address, amount, init in targets:
+        if state.intent(intent) is None and (chain.active(address) or chain.balance(address) > 0):
+            continue
+        record = genesis.transfer(state, intent, address, amount, bounce=False, init=init)
+        if init is not None:
+            chain.wait(f"{intent}: deployed", lambda a=address: chain.active(a))
+        else:
+            chain.wait(f"{intent}: funded", lambda a=address: chain.balance(a) > 0)
+        receipts.append(
+            {
+                "intent": intent,
+                "address": address,
+                "nanotos": amount,
+                "genesis_seqno": record["seqno"],
+            }
+        )
+    return receipts
+
+
 def step_fund(args, state: State, chain: Chain, tools: Tools, keys: Path) -> None:
     payer = payer_files(args, state, tools, keys)
     test_wallets = wallets(chain, keys)
     wanted = [w for w in test_wallets.values() if not chain.active(w.address)]
     payer_missing = not chain.active(payer["address"])
-    if not wanted and not payer_missing:
+    unfinished = [
+        n for n, r in state.intents().items() if n.startswith("fund-") and r["state"] != "done"
+    ]
+    if not wanted and not payer_missing and not unfinished:
         print("test wallets already funded")
         state.set(
             "wallets", {n: w.address for n, w in test_wallets.items()} | {"payer": payer["address"]}
@@ -726,32 +933,14 @@ def step_fund(args, state: State, chain: Chain, tools: Tools, keys: Path) -> Non
         except BlockingIOError:
             raise Refused("another driver holds the Genesis wallet (faucet lock)") from None
         genesis = faucet(chain, args.data)
-        for name, wallet in test_wallets.items():
-            if chain.active(wallet.address):
-                continue
-            amount = FUNDING[name][1] * NANO
-            seqno = genesis.transfer(wallet.address, amount, bounce=False, init=wallet.init)
-            chain.wait(f"{name} deployed", lambda w=wallet: chain.active(w.address))
-            receipts.append(
-                {
-                    "wallet": name,
-                    "address": wallet.address,
-                    "tos": FUNDING[name][1],
-                    "genesis_seqno": seqno,
-                }
-            )
-        if payer_missing:
-            if chain.balance(payer["address"]) < PAYER_TOS * NANO // 2:
-                seqno = genesis.transfer(payer["address"], PAYER_TOS * NANO, bounce=False)
-                receipts.append(
-                    {
-                        "wallet": "payer",
-                        "address": payer["address"],
-                        "tos": PAYER_TOS,
-                        "genesis_seqno": seqno,
-                    }
-                )
-                chain.wait("payer funded", lambda: chain.balance(payer["address"]) > 0)
+        targets = [
+            (f"fund-{name}", wallet.address, FUNDING[name][1] * NANO, wallet.init)
+            for name, wallet in test_wallets.items()
+        ]
+        targets.append(("fund-payer", payer["address"], PAYER_TOS * NANO, None))
+        receipts = fund_wallets(state, chain, genesis, targets)
+        if not chain.active(payer["address"]):
+            # The payer's creation query is an external bound to seqno 0: it runs once.
             chain.call("sendBoc", boc=base64.b64encode(Path(payer["query"]).read_bytes()).decode())
             chain.wait("payer deployed", lambda: chain.active(payer["address"]))
     finally:
@@ -880,18 +1069,21 @@ def step_tvm_deploy(args, state: State, chain: Chain, tools: Tools, keys: Path) 
         ("multisig", tvm["multisig"], MULTISIG_TOS, "oracles-create.boc"),
         ("bridge", tvm["bridge"], BRIDGE_TOS, "bridge-create.boc"),
     ):
-        if chain.active(address):
+        intent = f"deploy-fund-{name}"
+        if chain.active(address) and state.intent(intent) is None:
             continue
-        if chain.balance(address) < value * NANO // 2:
-            deployer.transfer(address, value * NANO, bounce=False)
+        if state.intent(intent) is not None or chain.balance(address) < value * NANO // 2:
+            deployer.transfer(state, intent, address, value * NANO, bounce=False)
             chain.wait(f"{name} funded", lambda a=address: chain.balance(a) > 0)
-        chain.call("sendBoc", boc=base64.b64encode((state.root / boc).read_bytes()).decode())
-        chain.wait(f"{name} active", lambda a=address: chain.active(a))
+        if not chain.active(address):
+            # The creation query is an external carrying the StateInit: it runs once.
+            chain.call("sendBoc", boc=base64.b64encode((state.root / boc).read_bytes()).decode())
+            chain.wait(f"{name} active", lambda a=address: chain.active(a))
     life = num(chain.get(tvm["bridge"], "get_bridge_state")[0])
-    if life == 0:
+    if life == 0 or state.intent("bridge-life") is not None:
         # The bridge's first internal transaction fixes its life; a plain top-up
         # is the only one that needs no ConfigParam 79.
-        deployer.transfer(tvm["bridge"], NANO, bounce=False)
+        deployer.transfer(state, "bridge-life", tvm["bridge"], NANO, bounce=False)
         life = chain.wait(
             "the bridge's life", lambda: num(chain.get(tvm["bridge"], "get_bridge_state")[0])
         )
@@ -1044,8 +1236,12 @@ def adopt(
     )
     plan = json.loads(dry.stdout[: dry.stdout.rindex("}") + 1])
     proposal = plan["proposal"]
+    # An interrupted run resumes the same registered proposal (same value and
+    # precondition, so the same hash): testnet-governance.py does not count it
+    # against itself, and the rounds it already won are kept.
     governance(args, "propose", *common, "--param", str(param), "--value-boc", str(value), *extra)
-    rounds = []
+    prior = state.get(f"proposal_{param}") or {}
+    rounds = list(prior.get("rounds", [])) if prior.get("proposal") == proposal else []
     deadline = time.monotonic() + args.governance_timeout
     while time.monotonic() < deadline:
         if governance(args, *adopted, check=False).returncode == 0:
@@ -1092,7 +1288,8 @@ def adopt(
 def step_config79(args, state: State, chain: Chain, tools: Tools) -> None:
     value = step_config79_build(args, state, chain, tools)
     result = adopt(args, state, chain, tools, BRIDGE_PARAM, value)
-    state.evidence("config79", result)
+    # A rerun after adoption records a recheck and keeps the adoption's own evidence.
+    state.evidence("config79-recheck" if result.get("already_adopted") else "config79", result)
 
 
 # ---------------------------------------------------------------- the oracle multisig
@@ -1119,46 +1316,53 @@ def multisig_query(keys: Path, message: lib.Cell, index: int) -> lib.Cell:
     return Builder().raw(root).append(signed).end()
 
 
-def oracle_vote(state: State, chain: Chain, keys: Path, voting: lib.Cell, index: int) -> dict:
-    """The stand-in oracle set votes: the multisig sends the vote to the bridge."""
+def oracle_vote(
+    state: State, chain: Chain, keys: Path, voting: lib.Cell, index: int, intent: str
+) -> dict:
+    """The stand-in oracle set votes: a submitter delivers the quorum query, and the
+    multisig sends the vote to the bridge. The delivery is journaled as `intent`
+    (Wallet.send_once): a rerun reconciles it and never delivers a second query.
+    The caller checks the vote's effect on the bridge."""
     tvm = state["tvm"]
     body = Builder().uint(OP_EXECUTE_VOTING, 32).uint(index, 64).append(voting).end()
     vote = internal(tvm["bridge"], VOTE_VALUE, True, body)
-    query = multisig_query(keys, vote, index)
     submitter = wallets(chain, keys)["submitter"]
-    before = chain.account(tvm["bridge"])["last_transaction_id"]["lt"]
-    seqno = submitter.transfer(tvm["multisig"], NANO // 2, query)
-    chain.wait(
-        "the vote at the bridge",
-        lambda: chain.account(tvm["bridge"])["last_transaction_id"]["lt"] != before,
-        timeout=90,
+    record = submitter.transfer(
+        state,
+        intent,
+        tvm["multisig"],
+        NANO // 2,
+        None,
+        True,
+        None,
+        build_body=lambda: multisig_query(keys, vote, index),
     )
     return {
-        "query_hash": query.hash().hex(),
         "vote_body_hash": body.hash().hex(),
-        "submitter_seqno": seqno,
+        "submitter_seqno": record["seqno"],
+        "external_hash": record["hash"],
     }
 
 
-def step_generation(args, state: State, chain: Chain, tools: Tools, keys: Path) -> None:
+def step_generation(args, state: State, chain: Chain, evm: Evm, keys: Path) -> None:
     tvm = state["tvm"]
     bridge_hash = "0x" + split(tvm["bridge"])[1].hex()
-    evm = state["evm"]
-    if evm_call(tools, evm["bridge"], "generation()(uint32)") == "0":
+    bridge = state["evm"]["bridge"]
+    if state.intent("evm-vote-generation") or evm.call(bridge, "generation()(uint32)") == "0":
+        args_ = [str(GENERATION), bridge_hash, str(tvm["life"]), "1"]
         vote = evm_vote(
-            tools,
+            evm,
             state,
             keys,
+            "evm-vote-generation",
             "getNewGenerationId(uint32,bytes32,uint64,uint256)(bytes32)",
-            [str(GENERATION), bridge_hash, str(tvm["life"]), "1"],
+            args_,
             "voteForNewGeneration(uint32,bytes32,uint64,uint256,(address,bytes)[])",
-            [str(GENERATION), bridge_hash, str(tvm["life"]), "1"],
+            args_,
         )
         state.evidence("evm-generation", vote)
     named, life, start = evm_values(
-        evm_call(
-            tools, evm["bridge"], "generations(uint32)(bytes32,uint64,uint64)", str(GENERATION)
-        )
+        evm.call(bridge, "generations(uint32)(bytes32,uint64,uint64)", str(GENERATION))
     )
     require(
         named == bridge_hash and int(life) == tvm["life"],
@@ -1166,7 +1370,7 @@ def step_generation(args, state: State, chain: Chain, tools: Tools, keys: Path) 
     )
     start = int(start)
     bridge_state = chain.get(tvm["bridge"], "get_bridge_state")
-    if num(bridge_state[5]) == 0:
+    if num(bridge_state[5]) == 0 or state.intent("oracle-query-activate") is not None:
         require(chain.config(BRIDGE_PARAM) is not None, "ConfigParam 79 must be adopted first")
         voting = (
             Builder()
@@ -1177,7 +1381,7 @@ def step_generation(args, state: State, chain: Chain, tools: Tools, keys: Path) 
             .uint(start, 64)
             .end()
         )
-        receipt = oracle_vote(state, chain, keys, voting, 1)
+        receipt = oracle_vote(state, chain, keys, voting, 1, "oracle-query-activate")
         bridge_state = chain.wait(
             "the generation active",
             lambda: s if num((s := chain.get(tvm["bridge"], "get_bridge_state"))[5]) != 0 else None,
@@ -1191,124 +1395,184 @@ def step_generation(args, state: State, chain: Chain, tools: Tools, keys: Path) 
 
 
 CAP_STATE = "getLockCapState(address)((uint128,uint128,uint128,uint128),uint256,uint256,uint256)"
+CAPS = "lockCaps(address)(uint128,uint128,uint128,uint128)"
 LOCK = "lock(address,uint256,bytes32)"
 
 
-def uncapped_lock_refused(tools: Tools, bridge: str, token: str, locker: str, to: str) -> dict:
+def lock_nonce(evm: Evm, bridge: str) -> int:
+    return int(evm_values(evm.call(bridge, "lockNonce()(uint64)"))[0])
+
+
+def uncapped_lock_refused(
+    evm: Evm, state: State, intent: str, bridge: str, token: str, locker: str, to: str
+) -> dict:
     """A lock of a token whose caps were never voted: the bridge refuses it for
-    that reason, both simulated and mined, and allocates no lock number."""
-    nonce_before = evm_call(tools, bridge, "lockNonce()(uint64)")
-    reason = tools.cast_run(
-        "call", "--from", locker, bridge, LOCK, token, str(LOCK_AMOUNT), to, check=False
-    )
-    mined = evm_send(
-        tools, locker, bridge, LOCK, token, str(LOCK_AMOUNT), to, gas=300_000, check=False
-    )
+    that reason, both simulated and mined (journaled as `intent`), and allocates
+    no lock number."""
+    ok, reason = evm.simulate(locker, bridge, LOCK, token, str(LOCK_AMOUNT), to)
     require(
-        reason.returncode != 0 and "no lock cap" in reason.stderr,
-        f"a lock without caps was not refused for that reason: {reason.stderr[-400:]}",
+        not ok and "no lock cap" in reason,
+        f"a lock without caps was not refused for that reason: {reason[-400:]}",
     )
-    require(mined.get("status") == 0 or mined.get("refused"), "a lock without caps was mined")
-    require(
-        evm_call(tools, bridge, "lockNonce()(uint64)") == nonce_before,
-        "an uncapped lock took a nonce",
-    )
-    return {
-        "token": token,
-        "cap_state": evm_call(tools, bridge, CAP_STATE, token),
-        "revert": reason.stderr.strip()[-300:],
-        "mined": mined,
-        "lock_nonce_unchanged": nonce_before,
-    }
-
-
-def step_lock(args, state: State, chain: Chain, tools: Tools, keys: Path) -> None:
-    evm = state["evm"]
-    if state.get("lock"):
-        print(f"lock n={state['lock']['n']} already made")
-        return
-    token, bridge, locker = evm["token"], evm["bridge"], evm["locker"]
-    buyer_hash = "0x" + split(state["wallets"]["buyer"])[1].hex()
-    # The locker must hold more than one lock's cap, so that the over-cap probe
-    # below is refused by the cap and not by the token balance.
-    held = int(evm_values(evm_call(tools, token, "balanceOf(address)(uint256)", locker))[0])
-    if held < LOCKER_TOKENS:
-        topped = evm_send(
-            tools,
-            evm["deployer"],
-            token,
-            "transfer(address,uint256)",
-            locker,
-            str(LOCKER_TOKENS - held),
-        )
-        require(topped["status"] == 1, "funding the locker failed")
-    approved = evm_send(tools, locker, token, "approve(address,uint256)", bridge, str(LOCK_CAPS[0]))
-    require(approved["status"] == 1, "approve failed")
-    caps_now = evm_values(
-        evm_call(tools, bridge, "lockCaps(address)(uint128,uint128,uint128,uint128)", token)
-    )
-    if caps_now[0] == "0":
-        # The test token itself, before its first lock: refused, and recorded
-        # before the cap vote so the evidence survives a later failure.
-        state.set(
-            "uncapped_refused", uncapped_lock_refused(tools, bridge, token, locker, buyer_hash)
-        )
-        nonce = (
-            int(evm_values(evm_call(tools, bridge, "lastLockCapNonce(address)(uint256)", token))[0])
-            + 1
-        )
-        caps = [str(c) for c in LOCK_CAPS]
-        vote = evm_vote(
-            tools,
-            state,
-            keys,
-            "getNewLockCapId(address,uint256,uint256,uint256,uint256,uint256)(bytes32)",
-            [token, *caps, str(nonce)],
-            "voteForLockCap(address,uint256,uint256,uint256,uint256,uint256,(address,bytes)[])",
-            [token, *caps, str(nonce)],
-        )
-        state.set("lock_cap_vote", vote)
-    # A second token that is never capped stays refused after the first is capped.
-    probe = evm.get("probe_token")
-    if not probe:
-        probe = deploy_token(tools, evm["deployer"])
-        evm["probe_token"] = probe
-        state.set("evm", evm)
-    sent = evm_send(
-        tools, evm["deployer"], probe, "transfer(address,uint256)", locker, str(LOCK_AMOUNT)
-    )
-    require(sent["status"] == 1, "funding the locker with the probe token failed")
-    approved = evm_send(tools, locker, probe, "approve(address,uint256)", bridge, str(LOCK_AMOUNT))
-    require(approved["status"] == 1, "approve of the probe token failed")
-    probe_refused = uncapped_lock_refused(tools, bridge, probe, locker, buyer_hash)
-    capped = evm_call(tools, bridge, CAP_STATE, token)
-    over = tools.cast_run(
-        "call",
-        "--from",
+    before = (state.intent(intent) or {}).get("meta", {}).get("lock_nonce", lock_nonce(evm, bridge))
+    mined = evm_send_once(
+        evm,
+        state,
+        intent,
         locker,
         bridge,
         LOCK,
         token,
-        str(LOCK_CAPS[1] + 1),
+        str(LOCK_AMOUNT),
+        to,
+        gas=300_000,
+        meta={"lock_nonce": before},
+    )
+    require(mined.get("status") == 0, f"a lock without caps was not refused on chain: {mined}")
+    require(lock_nonce(evm, bridge) == before, "an uncapped lock took a lock number")
+    return {
+        "token": token,
+        "cap_state": evm.call(bridge, CAP_STATE, token),
+        "revert": reason[-300:],
+        "mined": {k: mined.get(k) for k in ("tx", "block", "status")},
+        "lock_nonce_unchanged": before,
+    }
+
+
+def ensure_balance(
+    evm: Evm, state: State, intent: str, sender: str, token: str, holder: str, amount: int
+) -> None:
+    """Top `holder` up to `amount` of `token`, once."""
+    held = int(evm_values(evm.call(token, "balanceOf(address)(uint256)", holder))[0])
+    if state.intent(intent) is not None or held < amount:
+        sent = evm_send_once(
+            evm,
+            state,
+            intent,
+            sender,
+            token,
+            "transfer(address,uint256)",
+            holder,
+            str(max(amount - held, 1)),
+        )
+        require(sent["status"] == 1, f"{intent} failed")
+
+
+def step_lock(args, state: State, chain: Chain, evm: Evm, keys: Path) -> None:
+    if state.get("lock"):
+        print(f"lock n={state['lock']['n']} already made")
+        return
+    record = state["evm"]
+    token, bridge, locker, deployer = (
+        record["token"],
+        record["bridge"],
+        record["locker"],
+        record["deployer"],
+    )
+    buyer_hash = "0x" + split(state["wallets"]["buyer"])[1].hex()
+    # The locker holds more than one lock's cap, so that the over-cap probe below
+    # is refused by the cap and not by the token balance.
+    ensure_balance(evm, state, "evm-topup-locker", deployer, token, locker, LOCKER_TOKENS)
+    approved = evm_send_once(
+        evm,
+        state,
+        "evm-approve-usdc",
+        locker,
+        token,
+        "approve(address,uint256)",
+        bridge,
+        str(LOCK_CAPS[0]),
+    )
+    require(approved["status"] == 1, "approve failed")
+    target = [str(c) for c in LOCK_CAPS]
+    if evm_values(evm.call(bridge, CAPS, token)) != target or state.intent("evm-vote-lock-cap"):
+        uncapped = evm_values(evm.call(bridge, CAPS, token))[0] == "0"
+        if state.get("uncapped_refused") is None and (
+            uncapped or state.intent("evm-uncapped-lock-usdc") is not None
+        ):
+            # The test token itself, before its first lock: refused, and recorded
+            # before the cap vote so the evidence survives a later failure.
+            state.set(
+                "uncapped_refused",
+                uncapped_lock_refused(
+                    evm, state, "evm-uncapped-lock-usdc", bridge, token, locker, buyer_hash
+                ),
+            )
+        # The vote's nonce is fixed when its intent is made; a rerun reuses the
+        # journaled arguments (evm_send_once), so this value only names a new vote.
+        last = evm_values(evm.call(bridge, "lastLockCapNonce(address)(uint256)", token))[0]
+        nonce = str(int(last) + 1)
+        vote = evm_vote(
+            evm,
+            state,
+            keys,
+            "evm-vote-lock-cap",
+            "getNewLockCapId(address,uint256,uint256,uint256,uint256,uint256)(bytes32)",
+            [token, *target, nonce],
+            "voteForLockCap(address,uint256,uint256,uint256,uint256,uint256,(address,bytes)[])",
+            [token, *target, nonce],
+        )
+        state.set("lock_cap_vote", {k: vote.get(k) for k in ("tx", "block", "status")})
+    require(
+        evm_values(evm.call(bridge, CAPS, token)) == target,
+        "the token's caps are not the voted ones",
+    )
+    # A second token that is never capped stays refused after the first is capped.
+    probe = deploy_token(evm, state, "evm-deploy-probe", deployer)
+    ensure_balance(evm, state, "evm-fund-probe", deployer, probe, locker, LOCK_AMOUNT)
+    approved = evm_send_once(
+        evm,
+        state,
+        "evm-approve-probe",
+        locker,
+        probe,
+        "approve(address,uint256)",
+        bridge,
+        str(LOCK_AMOUNT),
+    )
+    require(approved["status"] == 1, "approve of the probe token failed")
+    probe_refused = uncapped_lock_refused(
+        evm, state, "evm-uncapped-lock-probe", bridge, probe, locker, buyer_hash
+    )
+    capped = evm.call(bridge, CAP_STATE, token)
+    ok, over = evm.simulate(locker, bridge, LOCK, token, str(LOCK_CAPS[1] + 1), buyer_hash)
+    require(
+        not ok and "per-lock cap" in over,
+        f"a lock above the per-lock cap was not refused: {over[-300:]}",
+    )
+    # The lock: its number is the bridge's next one, recorded with the intent.
+    planned = (state.intent("evm-lock") or {}).get("meta", {}).get("n", lock_nonce(evm, bridge))
+    locked = evm_send_once(
+        evm,
+        state,
+        "evm-lock",
+        locker,
+        bridge,
+        LOCK,
+        token,
+        str(LOCK_AMOUNT),
         buyer_hash,
-        check=False,
+        meta={"n": planned},
     )
-    require(
-        over.returncode != 0 and "per-lock cap" in over.stderr,
-        f"a lock above the per-lock cap was not refused: {over.stderr[-300:]}",
-    )
-    n = int(evm_values(evm_call(tools, bridge, "lockNonce()(uint64)"))[0])
-    locked = evm_send(tools, locker, bridge, LOCK, token, str(LOCK_AMOUNT), buyer_hash)
     require(locked["status"] == 1, f"the capped lock failed: {locked}")
-    record = evm_values(
-        evm_call(tools, bridge, "locks(uint64)(address,address,uint256,uint32,uint8)", str(n))
+    n = locked["meta"]["n"]
+    record_n = evm_values(
+        evm.call(bridge, "locks(uint64)(address,address,uint256,uint32,uint8)", str(n))
     )
-    amount = int(record[2])
     require(
-        int(record[3]) == GENERATION and int(record[4]) == 1,
+        record_n[0].lower() == locker.lower() and record_n[1].lower() == token.lower(),
+        f"lock {n} is not the locker's lock of the token",
+    )
+    require(
+        int(record_n[3]) == GENERATION and int(record_n[4]) == 1,
         f"lock {n} is not open in generation 1",
     )
-    lock = {"n": n, "amount": amount, "to_address_hash": buyer_hash, "tx": locked}
+    lock = {
+        "n": n,
+        "amount": int(record_n[2]),
+        "to_address_hash": buyer_hash,
+        "tx": {k: locked.get(k) for k in ("tx", "block", "status")},
+    }
     state.set("lock", lock)
     state.evidence(
         "lock",
@@ -1317,9 +1581,9 @@ def step_lock(args, state: State, chain: Chain, tools: Tools, keys: Path) -> Non
             "lock_cap_vote": state.get("lock_cap_vote"),
             "probe_token_refused": probe_refused,
             "caps_after_vote": capped,
-            "over_per_lock_refused": over.stderr.strip()[-200:],
+            "over_per_lock_refused": over[-200:],
             "lock": lock,
-            "record": record,
+            "record": record_n,
         },
     )
 
@@ -1331,40 +1595,37 @@ def swap_needs_payment(swap_state: int, n: int, watermark: int) -> bool:
     return swap_state == -1 and n >= watermark
 
 
-def step_mint(args, state: State, chain: Chain, tools: Tools, keys: Path) -> None:
-    tvm, lock = state["tvm"], state["lock"]
-    buyer = wallets(chain, keys)["buyer"]
-    minter = read_address(
-        stack_cell(chain.get(tvm["bridge"], "get_minter_address", token_data(state))[0])
-    )
-    swap = chain.get(tvm["bridge"], "get_swap", lock["n"])
-    receipts = state.get("mint_receipts", {})
-    # Below the watermark a lock is already consumed (or cancelled) and its
-    # record dropped: an absent record there must never be paid again.
+def pay_and_vote(
+    state: State, chain: Chain, keys: Path, buyer: Wallet, tvm: dict, lock: dict
+) -> dict:
+    """The mint's two sends, each at most once: the buyer pays the exact mint fee for
+    lock n (intent pay-swap-<n>), then the stand-in oracle votes the v5 swap
+    (intent oracle-query-swap-<n>). A rerun reconciles each from its journal and
+    the bridge's swap state; it never pays or votes a second time."""
+    n = lock["n"]
+    pay_intent, vote_intent = f"pay-swap-{n}", f"oracle-query-swap-{n}"
+    swap = num(chain.get(tvm["bridge"], "get_swap", n)[0])
     watermark = num(chain.get(tvm["bridge"], "get_bridge_state")[6])
-    if swap_needs_payment(num(swap[0]), lock["n"], watermark):
-        pay = (
-            Builder()
-            .uint(OP_PAY_SWAP, 32)
-            .uint(0, 64)
-            .uint(GENERATION, 32)
-            .uint(lock["n"], 64)
-            .end()
-        )
-        receipts["pay_swap_seqno"] = buyer.transfer(tvm["bridge"], MINT_FEE, pay)
-        state.set("mint_receipts", receipts)
-        swap = chain.wait(
-            "the swap paid",
-            lambda: (
-                s if num((s := chain.get(tvm["bridge"], "get_swap", lock["n"]))[0]) == 0 else None
-            ),
-        )
-    if num(swap[0]) == 0:
+    receipts = {}
+    if state.intent(pay_intent) is not None or swap_needs_payment(swap, n, watermark):
+        pay = Builder().uint(OP_PAY_SWAP, 32).uint(0, 64).uint(GENERATION, 32).uint(n, 64).end()
+        receipts["pay_swap"] = buyer.transfer(state, pay_intent, tvm["bridge"], MINT_FEE, pay)[
+            "seqno"
+        ]
+
+        def settled():
+            now = num(chain.get(tvm["bridge"], "get_swap", n)[0])
+            folded = num(chain.get(tvm["bridge"], "get_bridge_state")[6]) > n
+            return now in (0, 1, 2) or folded
+
+        chain.wait("the swap paid", settled)
+        swap = num(chain.get(tvm["bridge"], "get_swap", n)[0])
+    if swap == 0 or state.intent(vote_intent) is not None:
         voting = (
             Builder()
             .uint(VOTE_SWAP, 8)
             .uint(GENERATION, 32)
-            .uint(lock["n"], 64)
+            .uint(n, 64)
             .uint(EVM_CHAIN_ID, 32)
             .uint(int(state["evm"]["bridge"], 16), 160)
             .raw(split(buyer.address)[1])
@@ -1372,8 +1633,17 @@ def step_mint(args, state: State, chain: Chain, tools: Tools, keys: Path) -> Non
             .ref(token_data(state))
             .end()
         )
-        receipts["swap_vote"] = oracle_vote(state, chain, keys, voting, 100 + lock["n"])
-        state.set("mint_receipts", receipts)
+        receipts["swap_vote"] = oracle_vote(state, chain, keys, voting, 100 + n, vote_intent)
+    return receipts
+
+
+def step_mint(args, state: State, chain: Chain, tools: Tools, keys: Path) -> None:
+    tvm, lock = state["tvm"], state["lock"]
+    buyer = wallets(chain, keys)["buyer"]
+    minter = read_address(
+        stack_cell(chain.get(tvm["bridge"], "get_minter_address", token_data(state))[0])
+    )
+    receipts = pay_and_vote(state, chain, keys, buyer, tvm, lock)
     chain.wait("the minter deployed", lambda: chain.active(minter), timeout=120)
     wallet = read_address(
         stack_cell(chain.get(minter, "get_wallet_address", slice_of(buyer.address))[0])
@@ -1419,22 +1689,47 @@ def step_mint(args, state: State, chain: Chain, tools: Tools, keys: Path) -> Non
 # ---------------------------------------------------------------- ConfigParam 84
 
 
-def node_release_evidence(state: State) -> Path:
-    """Each local validator's running binary and the tos commit it reports (-V)."""
+def governance_module():
+    spec = importlib.util.spec_from_file_location(
+        "testnet_governance", TESTNET_SCRIPTS / "testnet-governance.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def node_release_evidence(state: State, chain: Chain, data: Path) -> Path:
+    """One row per member of the current set, keyed by its consensus key id: each
+    candidate node's running binary, its `-V` output and when it was read. Here
+    the binaries are on this host, so the rows are observed, not attested."""
+    members = set(governance_module().validator_set(chain.config(34))["keys"])
     rows = []
-    for unit in [f"tos-pq-validator@{i}" for i in (1, 2, 3, 4, 7)]:
+    for idx in (1, 2, 3, 4, 7):
+        key = json.loads((data / "elections" / f"candidate-{idx}.json").read_text())["key_id"]
+        if key not in members:
+            continue
+        unit = f"tos-pq-validator@{idx}"
         pid = subprocess.run(
             ["systemctl", "show", unit, "-p", "MainPID", "--value"], capture_output=True, text=True
         ).stdout.strip()
         require(pid not in ("", "0"), f"{unit} is not running")
         exe = os.readlink(f"/proc/{pid}/exe")
-        require(
-            not exe.endswith("(deleted)"),
-            f"{unit} runs a binary that was replaced since it started",
+        require(not exe.endswith("(deleted)"), f"{unit} runs a binary replaced since it started")
+        output = subprocess.run(
+            [exe, "-V"], capture_output=True, text=True, timeout=30
+        ).stdout.strip()
+        commit = output.split("Commit:")[1].split(",")[0].strip()
+        rows.append(
+            {
+                "name": unit,
+                "public_key": key,
+                "exe": exe,
+                "commit": commit,
+                "version_output": output,
+                "observed_at": int(time.time()),
+            }
         )
-        out = subprocess.run([exe, "-V"], capture_output=True, text=True, timeout=30).stdout
-        commit = out.split("Commit:")[1].split(",")[0].strip()
-        rows.append({"name": unit, "exe": exe, "commit": commit})
+    require(len(rows) == len(members), "a current validator is not one of the local nodes")
     path = state.root / "node-releases.json"
     path.write_text(json.dumps({"validators": rows}, indent=1) + "\n")
     return path
@@ -1483,7 +1778,7 @@ def step_config84(args, state: State, chain: Chain, tools: Tools) -> None:
     require(
         built.returncode == 0, f"tosctl settlement-assets build refused: {built.stderr[-1500:]}"
     )
-    releases = node_release_evidence(state)
+    releases = node_release_evidence(state, chain, args.data)
     result = adopt(args, state, chain, tools, 84, value, ["--node-release-evidence", str(releases)])
     result["tosctl_build"] = json.loads(built.stdout)
     config = tosctl_config(state, chain, tools)
@@ -1512,7 +1807,7 @@ def step_config84(args, state: State, chain: Chain, tools: Tools) -> None:
         verified.returncode == 0,
         f"tosctl settlement-assets verify refused: {verified.stderr[-1500:]}",
     )
-    state.evidence("config84", result)
+    state.evidence("config84-recheck" if result.get("already_adopted") else "config84", result)
 
 
 def tosctl_config(state: State, chain: Chain, tools: Tools) -> Path:
@@ -1595,7 +1890,7 @@ def main(argv: list[str] | None = None) -> int:
                 tvm_oracles(keys)
                 wallets(chain, keys)
             elif step == "evm-deploy":
-                step_evm_deploy(args, state, tools, keys)
+                step_evm_deploy(args, state, Evm(tools), keys)
             elif step == "fund":
                 step_fund(args, state, chain, tools, keys)
             elif step == "tvm-deploy":
@@ -1603,9 +1898,9 @@ def main(argv: list[str] | None = None) -> int:
             elif step == "config79":
                 step_config79(args, state, chain, tools)
             elif step == "generation":
-                step_generation(args, state, chain, tools, keys)
+                step_generation(args, state, chain, Evm(tools), keys)
             elif step == "lock":
-                step_lock(args, state, chain, tools, keys)
+                step_lock(args, state, chain, Evm(tools), keys)
             elif step == "mint":
                 step_mint(args, state, chain, tools, keys)
             elif step == "config84":

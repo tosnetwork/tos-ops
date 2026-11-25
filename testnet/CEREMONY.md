@@ -1304,23 +1304,46 @@ the journal) before running anything again.
 `propose` refuses, before anything is signed or sent:
 
 - a ConfigParam 84 value when ConfigParam 10 does not list 84 (it must be critical);
-- a value that does not decode exactly by the TL-B (tag, status 1-3, origin kind 1-2,
-  a non-zero minimal `Coins` cap, a 456-bit origin cell, no trailing data), that has
-  more than 16 entries, or that needs more than 1,024 cells of validation (counted
-  as the node counts them, every reference a visit). The node would refuse such a
-  configuration when installing it and the masterchain would halt;
+- a value that does not decode exactly by the TL-B: tag, status 1-3, origin kind 1-2,
+  a non-zero minimal `Coins` cap, a 456-bit origin cell, no trailing data, and every
+  dictionary node consumed exactly (`hm_edge` with a label no longer than the key
+  left; `hmn_fork` exactly its label and two references, so a trailing bit or a
+  third reference is refused). Also a value with more than 16 entries, or needing
+  more than 1,024 cells of validation (counted as the node counts them, every
+  reference a visit). The node would refuse such a configuration when installing
+  it and the masterchain would halt;
 - a change that adds, removes or changes more or fewer than one entry of the
-  current value, and a proposal while another ConfigParam 84 proposal is pending;
+  current value; a proposal while another ConfigParam 84 proposal is pending; and a
+  proposal while a bridge address change (79, 81, 82 or 83) is pending;
 - any ConfigParam 84 proposal without `--node-release-evidence FILE`:
-  `{"validators": [{"name": ..., "commit": "<40 hex>"}, ...]}`, at least one row
-  per member of the current set (ConfigParam 34), each commit present in
-  `--tos-root` and defining `= ConfigParam 84;` in its `crypto/block/block.tlb`. A
-  node without that schema halts on any ConfigParam 84 value, well-formed or not.
-  The evidence is collected from the hosts; the script checks the commits it
-  names, not which binary each host runs;
+
+  ```json
+  {"validators": [{"name": "...", "public_key": "<64 hex>", "commit": "<40 hex>",
+                   "version_output": "<tos-validator-engine -V output>", "observed_at": 1795600000}]}
+  ```
+
+  Exactly one row per member of the current set (ConfigParam 34), keyed by its
+  consensus public key: the Ed25519 key, or for a PQ validator its `key_id`. No
+  extra, duplicate or non-member row is accepted. Each row was observed after the
+  current set took office (`utime_since`) and at most 24 hours ago; its
+  `version_output` names its commit; and the commit is in `--tos-root` and defines
+  `= ConfigParam 84;` in its `crypto/block/block.tlb`. A node without that schema
+  halts on any ConfigParam 84 value, well-formed or not. **Limitation:** a row is
+  the operator's attested `-V` output. The script cannot prove which binary a remote
+  host runs; it binds the attestation to the current set and to a commit with the
+  schema;
 - a ConfigParam 79, 81, 82 or 83 value that changes the bridge address while
   ConfigParam 84 still lists an active (status 1) asset of the old bridge for that
-  chain. Adopt that record's status 2 or 3 first, by its own proposal.
+  chain (adopt that record's status 2 or 3 first, by its own proposal), or while a
+  ConfigParam 84 proposal is pending.
+
+The ordering rules (no ConfigParam 84 proposal beside a pending bridge address
+change, and the reverse, and the migration rule) are checked again by `sign` and
+`vote` before a round's votes are signed or sent, since other proposals may be
+registered in between. A parameter that is absent is proposed with the Config
+contract's absent-value hash (zero) as its precondition, so two first installations
+cannot overwrite each other. Proposing a value that is already registered (same
+value and precondition, so the same proposal hash) resumes it.
 
 `adopted --also-rpc URL` (repeatable) checks more nodes than the two validators;
 use it to show the value on every validator.
@@ -1373,8 +1396,25 @@ sudo systemctl stop tos-pq-elections     # quiet interval: after the round's sta
 ```
 
 Every step is idempotent: what is already done is checked against the chain and
-skipped. A restarted EVM chain loses the EVM bridge the TOS bridge is pinned to:
-reset the local network too, which also clears `/data/usdc`.
+skipped. Every value-moving send (each funding payment, deployment top-up, mint
+fee, oracle query, EVM deployment, transfer, approval, lock and oracle vote) is
+journaled in `/data/usdc/state.json` before it is made. A TOS send records its
+signed external message, bound to the wallet's seqno; an EVM send records its
+sender, nonce and arguments and goes out at exactly that nonce. After an
+interruption the rerun reconciles each journaled send from the chain: a used seqno
+or nonce means the send ran (the EVM transaction is found by its nonce), and an
+unused one is sent again with the same signed message or arguments. Nothing is
+ever paid, locked or voted twice. A rerun after adoption writes
+`config79-recheck.json` / `config84-recheck.json` and keeps the adoption's evidence.
+The 2026-11-25 local net's `config79.json` and `config84.json` were rebuilt from
+`state.json` and the run's output after a rerun of an earlier driver overwrote them.
+
+The `config84` step collects the release evidence from each current validator's
+running binary (`-V`) on this host, keyed by its PQ `key_id`. A rerun of an
+interrupted `config84` resumes the registered proposal and keeps its won rounds.
+
+A restarted EVM chain loses the EVM bridge the TOS bridge is pinned to: reset the
+local network too, which also clears `/data/usdc`.
 
 #### Public testnet: plan, NOT EXECUTED
 
@@ -1386,8 +1426,11 @@ halts on any ConfigParam 84 value, so a network started from an older commit mus
 first be upgraded on every validator.
 
 1. **Release.** Confirm every current validator runs a node built from a commit with
-   the ConfigParam 84 schema, and collect each one's `tos-validator-engine -V` commit
-   into the release evidence file. Confirm ConfigParam 10 lists 84; if it does not,
+   the ConfigParam 84 schema. Collect from each operator, after the current set took
+   office and within 24 hours of the proposal, an attested `tos-validator-engine -V`
+   output and the time it was read, keyed by the validator's ConfigParam 34 key, into
+   the release evidence file. The tool binds those attestations to the set; it cannot
+   verify the binary on a host it does not run. Confirm ConfigParam 10 lists 84; if it does not,
    adding it is its own critical proposal, first.
 2. **EVM side.** A public EVM test network whose chain id matches the ConfigParam 79
    bridge build (`MY_CHAIN_ID` in tos `crosschain/token-bridge/tvm/params`), or a
