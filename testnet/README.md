@@ -1,6 +1,6 @@
 # Public testnet
 
-[2026-12-05 public testnet genesis and validator invitation](ANNOUNCEMENT-20261205.md)
+[2026-12-05 public testnet genesis and validator invitation](ANNOUNCEMENT-20261205.md) · [Validator Reward Terms and Eligibility Policy](VALIDATOR-REWARD-TERMS.md) (draft, under legal review)
 
 Settings, scripts and units for the TOS public testnet: a multi-host network
 run by independent operators, between the single-host local network
