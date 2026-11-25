@@ -423,7 +423,8 @@ def reconcile(path, report, policy):
 
     Prepared entries follow current eligibility only: one that this observation no
     longer makes eligible is withdrawn with its reason, and returns to prepared only
-    if a later observation makes it eligible again. Unknown and submitted entries are
+    if a later observation makes it eligible again. A prepared entry still unsent
+    past the clearance bounds since it became prepared alarms. Unknown and submitted entries are
     never prepared again; they leave their state only when a later observation shows
     the S-side refusal record gone. Returns (sendable requests, alarms).
     """
@@ -439,7 +440,7 @@ def reconcile(path, report, policy):
     observed = {operation_key(r): r for r in report["refusal_records"]}
     outbox = read_json(path) if path.exists() else {}
     for key, request in eligible.items():
-        outbox.setdefault(key, dict(state="prepared", request=request))
+        outbox.setdefault(key, dict(state="prepared", request=request, prepared_since=point))
     rows = []
     for key, entry in sorted(outbox.items()):
         state, request = entry["state"], entry["request"]
@@ -450,7 +451,22 @@ def reconcile(path, report, policy):
                 # Never sent, so refreshing prices and checkpoint is safe.
                 if state == "withdrawn":
                     entry["last_withdrawn"] = entry.pop("withdrawn")
+                    entry["prepared_since"] = point
                 entry.update(state="prepared", request=eligible[key])
+                since = entry.setdefault("prepared_since", point)
+                waited = max(0, height - number(since["height"], "height", (1 << 64) - 1))
+                idle = max(0, utime - number(since["utime"], "utime", (1 << 64) - 1))
+                if waited > clear_blocks or idle > clear_seconds:
+                    # Deferred, budget-starved or sender-less: never wait silently.
+                    alarm(
+                        rows,
+                        *scope,
+                        "rereport_deferred",
+                        operation=key,
+                        query_id=request["query_id"],
+                        blocks=waited,
+                        seconds=idle,
+                    )
             else:
                 entry.update(
                     state="withdrawn",
@@ -494,32 +510,41 @@ def reconcile(path, report, policy):
     return sendable, rows
 
 
-def fair_order(outbox):
-    """Alternate assets so that one asset's backlog never starves another's sends."""
+def fair_order(outbox, eligible, last=None):
+    """Alternate assets over the entries sendable now, starting after `last`.
+
+    History (cleared, submitted, withdrawn) never takes a turn, and `last`, the asset
+    served last, carries the turn across batches that the count or time bound cut.
+    """
     ranked, seen = [], {}
-    for key, entry in sorted(
-        outbox.items(), key=lambda kv: (str(kv[1]["request"]["asset"]), str(kv[0]))
-    ):
-        asset = str(entry["request"]["asset"])
+    candidates = [k for k in outbox if k in eligible]
+    for key in sorted(candidates, key=lambda k: (str(outbox[k]["request"]["asset"]), k)):
+        asset = str(outbox[key]["request"]["asset"])
         index = seen.get(asset, 0)
         seen[asset] = index + 1
-        ranked.append((index, asset, key))
-    return [key for _, _, key in sorted(ranked)]
+        wrap = last is not None and asset <= last
+        ranked.append((index, wrap, asset, key))
+    return [key for *_, key in sorted(ranked)]
 
 
 def dispatch(path, adapter, eligible, *, limit=4, budget=60, timeout=20):
     """An approved adapter owns signing, reserves and transaction-proof reconciliation.
 
     Sends only prepared entries equal to this observation's eligible requests, at
-    most `limit` per call, and starts a send only while `timeout` still fits within
-    `budget` seconds. Unknown is durable BEFORE invoking it. A crash, timeout or
+    most `limit` per call, each with the remaining `budget` seconds as its timeout,
+    capped at `timeout`. Unknown is durable BEFORE invoking it. A crash, timeout or
     refusal never retries. Confirmed dispatch is not proof that the actor
     processed/cleared the refusal; reconcile() tracks that.
     """
     outbox = read_json(path)
     started = monotonic()
+    cursor_path = path.parent / "dispatch-cursor.json"
+    cursor = read_json(cursor_path) if cursor_path.exists() else {}
+    last = cursor.get("last_asset")
+    if last is not None:
+        text(last, "last_asset")
     attempted, submitted, deferred = [], [], []
-    for key in fair_order(outbox):
+    for key in fair_order(outbox, eligible, last):
         entry = outbox[key]
         if entry["state"] != "prepared":
             continue
@@ -528,19 +553,22 @@ def dispatch(path, adapter, eligible, *, limit=4, budget=60, timeout=20):
         if len(attempted) >= limit:
             deferred.append(key)
             continue
-        if monotonic() - started + timeout > budget:
+        remaining = budget - (monotonic() - started)
+        if remaining < 1:
             deferred.append(key)
             continue
+        allowed = min(timeout, int(remaining))
         attempted.append(key)
         entry["state"] = "unknown"
         atomic(path, outbox)
+        atomic(cursor_path, dict(last_asset=entry["request"]["asset"]))
         try:
             result = subprocess.run(
                 adapter,
                 input=json.dumps(dict(operation_id=key, **entry["request"])),
                 capture_output=True,
                 text=True,
-                timeout=timeout,
+                timeout=allowed,
                 check=False,
             )
             if result.returncode or len(result.stdout) > MAX_BYTES:
@@ -589,7 +617,10 @@ def main(argv=None):
     ap.add_argument("--rereport-adapter", nargs="+", help="explicitly approved funded sender argv")
     ap.add_argument("--rereport-max-per-run", type=int, default=4, help="sends per run (1-32)")
     ap.add_argument(
-        "--rereport-budget-seconds", type=int, default=60, help="dispatch time per run (1-600)"
+        "--rereport-budget-seconds",
+        type=int,
+        default=60,
+        help="dispatch time per run (at most 600, at least twice the send timeout)",
     )
     ap.add_argument(
         "--rereport-timeout-seconds", type=int, default=20, help="per-send timeout (1-60)"
@@ -599,8 +630,8 @@ def main(argv=None):
         limit = bounded(a.rereport_max_per_run, "rereport-max-per-run", 1, 32)
         budget = bounded(a.rereport_budget_seconds, "rereport-budget-seconds", 1, 600)
         timeout = bounded(a.rereport_timeout_seconds, "rereport-timeout-seconds", 1, 60)
-        if timeout > budget:
-            raise Invalid("send timeout exceeds dispatch budget")
+        if budget < 2 * timeout:
+            raise Invalid("dispatch budget must cover at least two send timeouts")
         a.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         state_stat = a.state_dir.lstat()
         if (

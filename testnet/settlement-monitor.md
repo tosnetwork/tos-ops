@@ -167,7 +167,7 @@ ID, and has one state:
 
 | State | Meaning | Next |
 | --- | --- | --- |
-| `prepared` | eligible in this observation, never sent | refreshed each run; sent when dispatch reaches it |
+| `prepared` | eligible in this observation, never sent | refreshed each run; sent when dispatch reaches it; alarms `rereport_deferred` while unsent more than `rereport_clear_blocks` blocks or `rereport_clear_seconds` chain seconds after it became prepared (deferred, budget-starved or no sender) |
 | `withdrawn` | prepared but no longer eligible; `withdrawn.reason` is `refusal_absent` (record gone) or `ineligible` (for example a `refusal_mismatch`), with `observed_amount` and checkpoint | prepared again only if a later observation makes it eligible (kept as `last_withdrawn`); never sent while withdrawn |
 | `unknown` | a send may have happened | alarms `rereport_unknown` every run, never sent again; becomes `cleared` only when a later observation shows the S-side record absent |
 | `submitted` | the adapter confirmed the send | becomes `cleared` when a later observation shows `get_refusal(query_id)` absent; alarms `rereport_overdue` while the record remains more than `rereport_clear_blocks` blocks or `rereport_clear_seconds` chain seconds after the send checkpoint |
@@ -179,11 +179,15 @@ operation is never replayed automatically: the operator reconciles it read-only
 Never edit an outbox entry simply to retry it.
 
 Dispatch is bounded per run: at most `--rereport-max-per-run` sends (default 4,
-at most 32), each with `--rereport-timeout-seconds` (default 20, at most 60), and
-a send starts only while its timeout still fits in `--rereport-budget-seconds`
-(default 60, at most 600). Assets alternate, so one asset's backlog never
-starves another's sends. Remaining requests stay prepared and are listed in
-`rereport_dispatch.deferred`; size the timer interval to the budget.
+at most 32) within `--rereport-budget-seconds` (default 60, at most 600). Each
+send's timeout is the remaining budget, capped at `--rereport-timeout-seconds`
+(default 20, at most 60); a send starts only while at least one second remains.
+The budget must be at least twice the send timeout, so setup time can never
+leave a run with no attempt. Turns alternate between assets over the requests
+sendable now (history never takes a turn), starting after the asset served
+last, which persists in `dispatch-cursor.json` across truncated batches.
+Remaining requests stay prepared and are listed in `rereport_dispatch.deferred`;
+size the timer interval to the budget.
 Without a sender, pending requests alarm `rereport_sender_missing`; this is an
 observer-only installation, not an enabled refusal-recovery service.
 

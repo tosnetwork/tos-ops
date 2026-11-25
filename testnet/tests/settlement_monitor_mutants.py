@@ -58,8 +58,19 @@ MUTANTS = {
         "pass",
     ),
     "dispatch_count": ("if len(attempted) >= limit:", "if False:"),
-    "dispatch_budget": ("if monotonic() - started + timeout > budget:", "if False:"),
-    "fair_order": ("ranked.append((index, asset, key))", "ranked.append((0, asset, key))"),
+    "fair_order": (
+        "ranked.append((index, wrap, asset, key))",
+        "ranked.append((0, wrap, asset, key))",
+    ),
+    "budget_remaining": ("allowed = min(timeout, int(remaining))", "allowed = timeout"),
+    "budget_floor": ("if remaining < 1:", "if False:"),
+    "budget_ratio": ("if budget < 2 * timeout:", "if False:"),
+    "deferred_alarm": ("waited > clear_blocks or idle > clear_seconds", "False"),
+    "fair_sendable_only": (
+        "candidates = [k for k in outbox if k in eligible]",
+        "candidates = list(outbox)",
+    ),
+    "fair_cursor": ('last = cursor.get("last_asset")', "last = None"),
 }
 
 

@@ -781,6 +781,8 @@ def test_dispatch_alternates_assets(tmp_path, monkeypatch):
         ["--rereport-budget-seconds", "601"],
         ["--rereport-timeout-seconds", "61"],
         ["--rereport-budget-seconds", "10", "--rereport-timeout-seconds", "20"],
+        ["--rereport-budget-seconds", "20", "--rereport-timeout-seconds", "20"],
+        ["--rereport-budget-seconds", "39"],
     ],
 )
 def test_cli_refuses_unbounded_dispatch_settings(tmp_path, monkeypatch, flags):
@@ -799,3 +801,98 @@ def test_clearance_thresholds_are_required_and_positive(key):
     del p["thresholds"][key]
     with pytest.raises(KeyError):
         codes(p, s)
+
+
+def test_setup_time_never_disables_dispatch(tmp_path, monkeypatch):
+    """Review reproduction: budget == timeout with any elapsed time sent nothing."""
+    p, s = fixture()
+    refusals(s["assets"][0], 3)
+    path = tmp_path / "outbox.json"
+    sendable, _ = monitor.reconcile(path, monitor.evaluate(p, s, now=NOW), p)
+    clock = [0]
+    timeouts = []
+
+    def tick():
+        clock[0] += 1  # every clock read costs one second of setup or bookkeeping
+        return clock[0]
+
+    def sender(argv, **kw):
+        timeouts.append(kw["timeout"])
+        clock[0] += kw["timeout"]
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    monkeypatch.setattr(monitor, "monotonic", tick)
+    monkeypatch.setattr(monitor.subprocess, "run", sender)
+    monitor.dispatch(path, ["approved-sender"], sendable, limit=4, budget=20, timeout=20)
+    assert timeouts == [19]  # the remaining budget, not zero attempts
+    sendable, _ = monitor.reconcile(path, monitor.evaluate(p, s, now=NOW), p)
+    timeouts.clear()
+    outcome = monitor.dispatch(path, ["approved-sender"], sendable, limit=4, budget=40, timeout=20)
+    assert timeouts == [20, 18]  # capped at the send timeout, then the remainder
+    assert len(outcome["deferred"]) == 0 and len(outcome["attempted"]) == 2
+
+
+def test_a_prepared_request_never_waits_silently(tmp_path, monkeypatch):
+    p, s = fixture()
+    refusals(s["assets"][0], 1)
+    cli = Cli(tmp_path, monkeypatch, p)
+    clock = [0]
+
+    def starved():
+        clock[0] += 100  # setup alone exhausts every dispatch budget
+        return clock[0]
+
+    calls = []
+    monkeypatch.setattr(monitor, "monotonic", starved)
+    monkeypatch.setattr(monitor.subprocess, "run", lambda argv, **kw: calls.append(kw))
+    assert cli.run(s, "--initialize-baseline", *SENDER) == 2
+    for _ in range(5):  # 1..5 blocks prepared: within the bound
+        assert cli.run(s, *SENDER) == 0
+        assert len(cli.report()["rereport_dispatch"]["deferred"]) == 1
+    assert cli.run(s, *SENDER) == 1
+    assert cli.codes() == [("usdc", "rereport_deferred")]
+    assert cli.report()["alarms"][0]["facts"]["blocks"] == 6
+    assert calls == []
+
+
+def test_history_never_takes_an_assets_turn(tmp_path, monkeypatch):
+    """Review reproduction: ten cleared USDC entries ahead of the one sendable USDC."""
+    p, s = fixture()
+    refusals(s["assets"][0], 11)
+    refusals(s["assets"][1], 4)
+    path = tmp_path / "outbox.json"
+    monitor.reconcile(path, monitor.evaluate(p, s, now=NOW), p)
+    box = monitor.read_json(path)
+    usdc = sorted(k for k, e in box.items() if e["request"]["asset"] == "usdc")
+    for key in usdc[:10]:  # history ranked ahead of the last (largest) key
+        box[key]["state"] = "cleared"
+    monitor.atomic(path, box)
+    sendable = {k: e["request"] for k, e in box.items() if e["state"] == "prepared"}
+    sent = []
+
+    def sender(argv, **kw):
+        sent.append(json.loads(kw["input"])["asset"])
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    monkeypatch.setattr(monitor.subprocess, "run", sender)
+    monitor.dispatch(path, ["approved-sender"], sendable)
+    assert sent == ["usdc", "usdt", "usdt", "usdt"]
+
+
+def test_turns_carry_across_truncated_batches(tmp_path, monkeypatch):
+    p, s = fixture()
+    refusals(s["assets"][0], 2)
+    refusals(s["assets"][1], 2)
+    path = tmp_path / "outbox.json"
+    report = monitor.evaluate(p, s, now=NOW)
+    sent = []
+
+    def sender(argv, **kw):
+        sent.append(json.loads(kw["input"])["asset"])
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    monkeypatch.setattr(monitor.subprocess, "run", sender)
+    for _ in range(4):
+        sendable, _ = monitor.reconcile(path, report, p)
+        monitor.dispatch(path, ["approved-sender"], sendable, limit=1)
+    assert sent == ["usdc", "usdt", "usdc", "usdt"]
