@@ -24,7 +24,21 @@ We invite external operators to run a validator in the next TOS public testnet. 
 
 **Where the reward comes from.** The reward is funded from the staking rewards that validators operated by the TOS team earn on mainnet. It is not a new issuance or an allocation from the genesis supply, and it does not change the token economics. It is paid out as those rewards accrue, so payment starts after mainnet launch and may arrive in instalments; mainnet has no fixed launch date. **At most 21 individuals can receive the reward in this campaign.** If more than 21 qualify, the team will publish how the 21 are chosen together with the rules before December 5.
 
-**Eligibility and terms.** You are responsible for any tax on the reward and for making sure you may lawfully take part and receive it where you live; the team may decline participants or payments where the law requires. The team collects a mainnet address for payment only after mainnet launch, through an announced channel; nobody will ask you for a key or a payment before then. The team may change or cancel this campaign before December 5 by announcing it in the official channels; after that, published rules change only to correct errors or to follow the law, and any change is announced.
+**Eligibility, tax and terms.** One set of rules applies to every participant in every country: the [Validator Reward Terms and Eligibility Policy](VALIDATOR-REWARD-TERMS.md). It is a draft under legal review and will be final before December 5. If it and this invitation differ on a reward, eligibility or tax question, the policy wins.
+
+- **United States residents are not excluded.** Like everyone else, they must meet the eligibility conditions, and before payment they must provide IRS Form W-9.
+- **Who cannot take part:**
+  - sanctioned persons, and people resident in comprehensively sanctioned countries or regions;
+  - the team's own members and contractors.
+- **Before payment:**
+  - identity verification, which enforces one reward per person and sanctions screening;
+  - tax documentation, for example Form W-9 or W-8BEN;
+  - a mainnet address you control.
+
+  These are collected only after mainnet launch, through an announced channel. Nobody will ask you for a key, a seed or a payment, before then or at any time.
+- **Tax is your responsibility.** Many tax authorities, the U.S. IRS among them, treat tokens received for services as income at their market value when received. The paying entity may report payments to tax authorities and withhold tax where the law requires. Nothing here is legal or tax advice.
+- **No legal conclusion yet.** No conclusion has been reached that the reward complies with the law of any particular jurisdiction. The token's classification, the reward source, the paying entity and the services terms are still under review, and the policy may change for a jurisdiction if that review requires it.
+- **Changes to the campaign.** The team may change or cancel this campaign before December 5 by announcing it in the official channels. After that, published rules change only to correct errors, to follow the law, or as the legal review requires, and every change is announced.
 
 **Costs and key safety.** No TOS purchase or mainnet deposit is required. Testnet TOS has no value, and the testnet may be paused, reset or ended early. Participants cover their own VPS and networking costs unless separately agreed. Never send the coordinator, support staff, or other participants your mnemonic, consensus seed, wallet private key or vault credentials.
 
