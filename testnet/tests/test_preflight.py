@@ -3,6 +3,7 @@ import json
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 import testnet_lib as lib
@@ -23,10 +24,13 @@ GOOD_FACTS = {
     "cpu_model": "Intel Xeon Processor (Icelake)",
     "cpu_flags": "fpu cx16 lahf_lm popcnt sse4_1 sse4_2 ssse3 avx2",
     "mem_kib": str(int(11.6 * 1048576)),
-    "disk_free_kib": str(88 * 1048576),
+    # A 250 GB disk before the build: above the 160 GiB validator floor.
+    "disk_free_kib": str(220 * 1048576),
     "ipv4": "203.0.113.10 ",
     "ntp": "yes",
     "ntp_source": "ntpd:1",
+    # ntpd's system offset (NTP time minus local clock), in ms.
+    "ntp_system_offset_ms": "0.412",
     "ufw": "Status: active||To Action From|-- ------ ----|OpenSSH ALLOW Anywhere|30001/udp ALLOW Anywhere|31001/udp ALLOW Anywhere|30001/udp (v6) ALLOW Anywhere (v6)|",
     # ss truncates process names to 15 characters, exactly as on the real hosts.
     "udp_listen": '0.0.0.0:30001@users:(("validator-engin",pid=1,fd=5)) 127.0.0.53%lo:53@users:(("systemd-resolve",pid=2,fd=3))',
@@ -72,10 +76,52 @@ def test_a_synchronized_flag_without_a_selected_server_fails(source):
     assert statuses(preflight.evaluate_host(host(), facts, PROFILE))["time"] == "FAIL"
 
 
-@pytest.mark.parametrize("source", ["ntpd:1", "chrony:1", "timesyncd:1"])
-def test_any_daemon_with_a_selected_server_passes(source):
-    facts = dict(GOOD_FACTS, ntp_source=source)
+def test_ntpsec_with_a_selected_server_passes():
+    facts = dict(GOOD_FACTS, ntp_source="ntpd:1")
     assert statuses(preflight.evaluate_host(host(), facts, PROFILE))["time"] == "PASS"
+
+
+def test_chrony_is_not_the_supported_discipline():
+    """setup-time.sh installs ntpsec and disables chrony; only ntpsec is supported."""
+    facts = dict(GOOD_FACTS, ntp_source="chrony:1")
+    result = [r for r in preflight.evaluate_host(host(), facts, PROFILE) if r.check == "time"]
+    assert result[0].status == "FAIL" and "run setup-time.sh (ntpsec)" in result[0].detail
+
+
+def test_systemd_timesyncd_alone_does_not_discipline_a_validator():
+    """An SNTP client with a server is not the continuous discipline a validator
+    needs: ntpsec (setup-time.sh) is required."""
+    facts = dict(GOOD_FACTS, ntp_source="timesyncd:1")
+    result = [r for r in preflight.evaluate_host(host(), facts, PROFILE) if r.check == "time"]
+    assert result[0].status == "FAIL" and "setup-time.sh" in result[0].detail
+
+
+@pytest.mark.parametrize(
+    "offset, status",
+    [("100", "PASS"), ("-100", "PASS"), ("100.5", "FAIL"), ("-250", "FAIL"), ("", "FAIL")],
+)
+def test_the_clock_must_be_within_100_ms_of_ntp_time(offset, status):
+    facts = dict(GOOD_FACTS, ntp_system_offset_ms=offset)
+    assert statuses(preflight.evaluate_host(host(), facts, PROFILE))["time"] == status
+
+
+def test_the_preflight_reports_the_offset_as_local_minus_ntp():
+    facts = dict(GOOD_FACTS, ntp_system_offset_ms="-12.5")
+    result = [r for r in preflight.evaluate_host(host(), facts, PROFILE) if r.check == "time"]
+    assert "offset=+12.500 ms (local minus NTP)" in result[0].detail
+    assert "rv 0 offset" in preflight.FACTS_SCRIPT
+
+
+def test_preflight_and_the_host_probe_apply_the_same_clock_rule():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "check_host_disk_rule", Path(preflight.__file__).with_name("check-host-disk.py")
+    )
+    probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+    assert preflight.MAX_CLOCK_OFFSET_MS == probe.MAX_CLOCK_OFFSET_MS == 100.0
+    assert preflight.CLOCK_DAEMONS == probe.CLOCK_DAEMONS == ("ntpd",)
 
 
 def test_a_4gb_vm_is_enough_for_dht_but_not_for_a_validator():
@@ -457,7 +503,7 @@ def test_local_mode_runs_every_host_check_without_ssh(as_root, monkeypatch, tmp_
     report = json.loads(out.read_text())
     assert report["version"] == "tos-testnet.preflight-local.v1"
     assert report["passed"] is True and report["name"] == "node-x"
-    assert report["floor"] == {"min_cpus": 4, "min_memory_gib": 11, "min_disk_free_gib": 60}
+    assert report["floor"] == {"min_cpus": 4, "min_memory_gib": 11, "min_disk_free_gib": 160}
     found = {r["check"]: r["status"] for r in report["results"]}
     for check in ("os", "arch", "cpu", "memory", "disk", "address", "time", "ufw", "ports"):
         assert found[check] == "PASS", check
@@ -476,6 +522,8 @@ def test_local_mode_runs_every_host_check_without_ssh(as_root, monkeypatch, tmp_
         ("disk_free_kib", str(10 * 1048576), "disk"),
         ("os_version", "22.04", "os"),
         ("ntp_source", "ntpd:0", "time"),
+        ("ntp_system_offset_ms", "512.0", "time"),
+        ("ntp", "no", "time"),
     ],
 )
 def test_local_mode_fails_below_the_same_floors(as_root, monkeypatch, tmp_path, key, value, check):

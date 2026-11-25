@@ -112,6 +112,11 @@ X86_64_V2 = ("cx16", "lahf_lm", "popcnt", "sse4_1", "sse4_2", "ssse3")
 PROBE_REPEATS = 3
 CAPTURE_SECONDS = 20
 PROBE_MAGIC_BPF = "udp[8:4] = 0x50524f42"  # "PROB" at the start of the UDP payload
+# The clock rule check-host-disk.py and check-clock.py apply (a test keeps them equal):
+# NTP-disciplined by ntpsec (setup-time.sh, the supported path), within 100 ms of NTP
+# time, a third of consensus's 300 ms minimum block interval.
+MAX_CLOCK_OFFSET_MS = 100.0
+CLOCK_DAEMONS = ("ntpd",)
 
 # Read-only facts, one key=value per line.
 FACTS_SCRIPT = r"""
@@ -133,8 +138,10 @@ echo "ntp=$(timedatectl show -p NTPSynchronized --value 2>/dev/null)"
 # preferring unreachable IPv6 servers), so also count the daemon's selected source.
 if command -v ntpq >/dev/null; then
   echo "ntp_source=ntpd:$(ntpq -pn 2>/dev/null | grep -c '^\*')"
+  # The system offset (NTP time minus local clock), turned to local minus NTP below.
+  echo "ntp_system_offset_ms=$(ntpq -c 'rv 0 offset' 2>/dev/null | sed -n 's/.*offset=\([-+0-9.eE]*\).*/\1/p' | head -n 1)"
 elif command -v chronyc >/dev/null; then
-  echo "ntp_source=chrony:$(chronyc -n sources 2>/dev/null | grep -c '^\^\*')"
+  echo "ntp_source=chrony:$(chronyc -n sources 2>/dev/null | grep -c '^.\*')"
 elif systemctl is-active --quiet systemd-timesyncd; then
   echo "ntp_source=timesyncd:$(timedatectl timesync-status 2>/dev/null | grep -c 'Server:')"
 else
@@ -362,15 +369,28 @@ def evaluate_host(host: Host, facts: dict[str, str], profile: dict) -> list[Resu
     )
     daemon, _, selected = facts.get("ntp_source", "none:0").partition(":")
     has_source = selected.isdigit() and int(selected) > 0
+    # ntpd's system offset is NTP time minus the local clock; reported here as local
+    # minus NTP (positive = local clock ahead), as check-clock.py does.
+    try:
+        offset = -float(facts.get("ntp_system_offset_ms", "")) or 0.0
+    except ValueError:
+        offset = None
+    # A validator's clock must be disciplined continuously by ntpsec (setup-time.sh),
+    # and close to NTP time (check-clock.py applies the same rule daily).
+    disciplined = daemon in CLOCK_DAEMONS
+    close = offset is not None and abs(offset) <= MAX_CLOCK_OFFSET_MS
+    why = ""
+    if not disciplined:
+        why = f" ({daemon} is not the supported discipline: run setup-time.sh (ntpsec))"
+    elif not has_source:
+        why = " (no server in use: check the daemon's servers and IPv4/IPv6 reachability)"
+    elif not close:
+        why = f" (offset not within {MAX_CLOCK_OFFSET_MS:g} ms of NTP time)"
     add(
         "time",
-        facts.get("ntp") == "yes" and has_source,
-        f"NTPSynchronized={facts.get('ntp')}, {daemon} selected sources={selected or 0}"
-        + (
-            ""
-            if has_source
-            else " (no server in use: check the daemon's servers and IPv4/IPv6 reachability)"
-        ),
+        facts.get("ntp") == "yes" and disciplined and has_source and close,
+        f"NTPSynchronized={facts.get('ntp')}, {daemon} selected sources={selected or 0}, "
+        f"offset={'-' if offset is None else f'{offset:+.3f}'} ms (local minus NTP)" + why,
     )
 
     ports = role_udp_ports(host.roles, profile)

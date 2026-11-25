@@ -1421,6 +1421,73 @@ M += [
         "    return stake_nanotos + surplus_nanotos\n",
         "    return stake_nanotos - ELECTOR_CONFIRMATION_NANOTOS\n",
     ),
+    # The clock discipline: NTP at all times, within 100 ms.
+    (
+        "C1 an unsynchronised clock passes the clock check",
+        W / "scripts/check-host-disk.py",
+        '    if facts.get("clock_synced") is not True:\n',
+        "    if False:\n",
+    ),
+    (
+        "C2 a clock beyond the offset limit passes the clock check",
+        W / "scripts/check-host-disk.py",
+        "    elif abs(offset) > max_offset_ms:\n",
+        "    elif False:\n",
+    ),
+    (
+        "C3 preflight ignores the clock offset and daemon",
+        PREFLIGHT,
+        '        facts.get("ntp") == "yes" and disciplined and has_source and close,\n',
+        '        facts.get("ntp") == "yes" and has_source,\n',
+    ),
+    (
+        "C4 the watch raises no clock anomaly",
+        W / "scripts/watch-testnet.py",
+        "            found.extend(self.clock(name, current))\n",
+        "",
+    ),
+    (
+        "C5 enable-elections starts on any clock",
+        W / "scripts/enable-elections.sh",
+        'python3 "$HERE/check-clock.py" \\\n',
+        'true "$HERE/check-clock.py" \\\n',
+    ),
+    (
+        "C6 a validator is activated on any clock",
+        INSTALL,
+        '    python3 "$HERE/check-clock.py" \\\n',
+        '    true "$HERE/check-clock.py" \\\n',
+    ),
+    (
+        "SC1 a schedule needing a third stake per pool is accepted",
+        LIB,
+        '    if values["stake_held_for"] + values["elections_start_before"] > values["elected_for"]:\n',
+        "    if False:\n",
+    ),
+    (
+        "C7 ntpd's system offset keeps its sign",
+        W / "scripts/check-host-disk.py",
+        "    return round(-value, 3) if value else 0.0\n",
+        "    return round(value, 3) if value else 0.0\n",
+    ),
+    (
+        "C8 a peer's last sample stands for the system offset",
+        W / "scripts/check-host-disk.py",
+        '    system = _output(["ntpq", "-c", "rv 0 offset"], run)\n',
+        '    system = "offset=%s" % -float(peers.split("*", 1)[1].split()[8]) if "*" in peers else None\n',
+    ),
+    (
+        "C9 clock_unsynced is not debounced",
+        W / "scripts/watch-testnet.py",
+        '                found.remove(f"{name}:clock_unsynced")\n',
+        "                pass\n",
+    ),
+    (
+        "C10 the boot grace passes at any uptime",
+        W / "scripts/check-clock.py",
+        "        if up is not None and up < args.boot_grace:\n",
+        "        if True:\n",
+    ),
 ]
 
 

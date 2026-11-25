@@ -380,6 +380,12 @@ install_resources() {
 
 activate() {
   check_resources
+  # prepare set the clock up (setup-time.sh); a validator starts only while it is
+  # still NTP-disciplined, since consensus reads it.
+  if [ "$ROLE" = validator ]; then
+    python3 "$HERE/check-clock.py" \
+      || die "the clock is not NTP-disciplined (above); run setup-time.sh before activating a validator"
+  fi
   if [ -n "$NO_START" ] && [ "$ROLE" != fullnode ]; then
     die "--no-start is for a full node that tosctl node sync bootstrap fills; a $ROLE is never bootstrapped"
   fi

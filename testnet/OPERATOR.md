@@ -8,7 +8,9 @@ seat: on December 5, 2026 the genesis validator set is the team's two
 validators, and an external validator registers its public record and pool
 before genesis (registration closes on November 30), is written to the
 ceremony's `genesis-records.json` but not to the zero state, and stands from the
-first election (opens at T + 5 h; the elected set takes office at T + 6 h). Your
+first election (open from T + 12 h to T + 22 h; the elected set takes office at
+T + 24 h). Each elected set then serves 24 h, and each election is open for 10 h
+ending 2 h before its term (all times UTC). Your
 pool stakes one unit (`elections.stake_tos`, 10,002 TOS), funded by the
 coordinator. The two team pools stake (E+1)/2 units each for E external
 validators, so the team holds a little over half of the weight and the external
@@ -99,7 +101,13 @@ it is not a no-signing check and requires signing permission.
 **Operator prerequisites:** dedicated host, static public IPv4 or verified UDP
 forwarding/hairpin NAT, provider console access, root administration and enough
 NVMe endurance. The current validator preflight floors are **4 CPUs, 11 GiB
-MemTotal, 60 GiB free** on Ubuntu 24.04. These are installation floors, not a
+MemTotal, 160 GiB free** on Ubuntu 24.04, on a recommended **250 GB SSD or
+NVMe** (200 GB at least): a full 21-validator set is estimated to hold up to
+about 128 GB on disk at once, about 116 GB of it consensus, state and archive data (consensus and states
+about 30 h, the archive about 54 h; CEREMONY.md section 8 has the
+arithmetic), and the load guard and the stall rules stop at 20 GiB free. Free
+space is checked before you build: remove the build tree under
+`/var/lib/tos-build` once the coordinator has compared your checksums. These are installation floors, not a
 production capacity guarantee. See [profile](network/profile.json) and
 [hardware proposal](../production/Hardware-and-Hosting.md).
 
@@ -128,7 +136,60 @@ production capacity guarantee. See [profile](network/profile.json) and
 
    Expected: ntpsec follows a selected reachable server (`*` in `ntpq`), using
    IPv4. `NTPSynchronized=yes` alone is insufficient. On failure fix clock/network
-   reachability; do not prepare a node with an unproven clock.
+   reachability; do not prepare a node with an unproven clock. `setup-time.sh`
+   adds `ntp.nict.jp` beside the Ubuntu pool; on another continent pass a
+   nearby server instead, for example `setup-time.sh time.cloudflare.com`.
+
+   **Keep the clock disciplined by NTP at all times, not only now.** Consensus
+   reads the local clock: a validator validates a candidate no earlier than 300 ms after its
+   parent's generation time by its own clock, so a clock behind NTP delays its
+   votes by the offset; as leader, a clock ahead of NTP gives its candidates
+   future timestamps that the other validators hold until their own clocks
+   reach them, slowing the chain (beyond 30 s they refuse them). Keep ntpsec, which
+   `setup-time.sh` installs and configures (`install-node.sh prepare` runs it),
+   running with a selected source, within **100 ms** of NTP time. ntpsec is the
+   supported path: `setup-time.sh` disables chrony and systemd-timesyncd, and
+   the checks accept only ntpd. The first `install-node.sh activate --role
+   validator` and every `enable-elections.sh` refuse to start on a clock that
+   fails this check; a service restart or a reboot is deliberately not gated (it
+   must not wait on NTP), so the daily check and the alarm below cover the
+   clock from then on.
+
+   **All testnet times are UTC**, whatever your local time zone: launch,
+   election windows, handovers and the times in your reports. Your host may keep
+   any time zone setting; the kernel clock and NTP are UTC either way. Convert
+   published times yourself (`date -u` prints UTC now).
+
+   **Daily check**, and after every reboot:
+
+   ```bash
+   python3 /opt/tos-testnet/scripts/check-clock.py
+   ```
+
+   Expected, exit status 0:
+
+   ```text
+   clock ok: ntpd with 1 selected source, offset -0.412 ms (local minus NTP, limit 100 ms), NTPSynchronized=yes
+   ```
+
+   The offset is ntpd's system offset (`ntpq -c "rv 0 offset"`, not one
+   peer's last sample), written as local clock minus NTP time: positive means
+   your clock is ahead. Any `clock NOT OK: ...` line (exit status 1) names what
+   is wrong: no `NTPSynchronized=yes`, ntpd not answering, no selected source,
+   or an offset beyond 100 ms. Rerun `setup-time.sh` (with a nearby server), check
+   outbound UDP 123, and tell the coordinator if it does not recover.
+
+   **Alarm.** Run the same check every 10 minutes from cron so a lapse reaches
+   you, not only the daily look; for example `/etc/cron.d/tos-clock`, with a
+   15-minute grace after a boot while ntpd selects a source:
+
+   ```text
+   */10 * * * * root python3 /opt/tos-testnet/scripts/check-clock.py --quiet --boot-grace 900 || logger -p user.err -t tos-clock "clock not NTP-disciplined"
+   ```
+
+   and watch for `tos-clock` in `journalctl -p err`, or forward it to your own
+   alerting. The coordinator's monitor raises the same condition for the team's
+   hosts.
 3. **Run the preflight on this host yourself.** It reads the same facts and
    applies the same floors as the coordinator's preflight of team hosts
    ([§0.5](CEREMONY.md#05-preflight-every-host)), locally, and changes nothing:
@@ -140,7 +201,8 @@ production capacity guarantee. See [profile](network/profile.json) and
 
    It checks Ubuntu 24.04, the architecture and x86-64-v2 instructions, CPUs,
    memory and free disk against the validator floors, whether the public address
-   is on an interface (a WARN behind NAT), NTP with a selected server, ufw rules
+   is on an interface (a WARN behind NAT), NTP (ntpsec's ntpd with a selected
+   server, within 100 ms of NTP time; this check cannot be waived), ufw rules
    for UDP 30001/31001 with console 30002 closed, and whether another program
    holds those ports. Expected: no FAIL. Fix every FAIL and rerun with a new
    `--out` file. Send the JSON report to the coordinator. If the coordinator

@@ -1,6 +1,6 @@
 # TOS Public Testnet Validator Invitation · December 5, 2026
 
-We invite external operators to run a validator in the next TOS public testnet. You register before genesis and join the validator set from the first election, about six hours after launch. You can apply even if you are new to TOS and have no wallet or tokens. You will need a Linux VPS you administer, time to prepare it before launch, and to be available for the first election. This is a new network with its own genesis; it does not continue any earlier TOS testnet.
+We invite external operators to run a validator in the next TOS public testnet. You register before genesis and join the validator set from the first election: it is open from 12 to 22 hours after launch, and the elected set takes office 24 hours after launch. You can apply even if you are new to TOS and have no wallet or tokens. You will need a Linux VPS you administer, time to prepare it before launch, and to be available for the first election. This is a new network with its own genesis; it does not continue any earlier TOS testnet.
 
 ## Official schedule (JST / UTC+9)
 
@@ -57,7 +57,7 @@ You can start with a zero-balance wallet. The coordinator allocates testnet TOS 
 ## Register and prepare your VPS
 
 1. Apply through the original recruitment channel or contact the team member who invited you. The official Discord entry is https://discord.tos.network. Share your operator name, time zone, availability during preparation and launch, and your VPS's operating system, CPU architecture, CPU count, memory and free disk space. Never submit passwords or private keys. Ask for help if you have never prepared a Linux server. The coordinator will confirm your seat before genesis.
-2. Use a dedicated VPS with Ubuntu 24.04, sudo access, provider console access, and a public IPv4 address or approved UDP forwarding. **Recruitment requirement: 8 vCPUs or more, 12 GB RAM or more (at least 11 GiB OS-visible memory), and an SSD/NVMe with at least 60 GiB free.** Allow capacity for database growth, logs and snapshots (100 GB or larger total storage recommended), with at least 10 Mbps symmetric bandwidth. If elections stall, the database grows quickly; see [If elections or block production stall](#if-elections-or-block-production-stall). The current automated CPU preflight floor is still **4 vCPUs**, but passing it alone does **not** meet this campaign's 8 vCPU recruitment minimum. Hardware SHA-256 acceleration is required. If you use arm64, confirm the supported build or release artifact with the coordinator before proceeding. [CPU requirements](https://github.com/tosnetwork/tos/blob/main/doc/Validator.md#cpu-instruction-set)
+2. Use a dedicated VPS with Ubuntu 24.04, sudo access, provider console access, and a public IPv4 address or approved UDP forwarding. **Recruitment requirement: 8 vCPUs or more, 12 GB RAM or more (at least 11 GiB OS-visible memory), and an SSD/NVMe with at least 160 GiB free.** Allow capacity for database growth, logs and snapshots (a 250 GB or larger SSD/NVMe recommended, 200 GB at least: with all 21 validators the node may use about 128 GB of disk at once, including logs and binaries), with at least 10 Mbps symmetric bandwidth. If elections stall, the database grows quickly; see [If elections or block production stall](#if-elections-or-block-production-stall). The current automated CPU preflight floor is still **4 vCPUs**, but passing it alone does **not** meet this campaign's 8 vCPU recruitment minimum. Hardware SHA-256 acceleration is required. If you use arm64, confirm the supported build or release artifact with the coordinator before proceeding. [CPU requirements](https://github.com/tosnetwork/tos/blob/main/doc/Validator.md#cpu-instruction-set)
 3. During December 1–4, get your node name, operator label and the pinned `tos` and `tos-ops` commits from the coordinator. Install the pinned operations bundle, synchronize the system clock, and prepare the validator and `tosctl` using the operator guide. You build the node and `tosctl` from source on your VPS; allow an hour or more for the build, and keep the build directory under `/var/lib/tos-build` until the coordinator has compared your release checksums. Allow inbound UDP 30001 and 31001 in both the provider and host firewalls. Keep console TCP 30002 closed to public traffic, and keep RPC 8081 and metrics 9100 on loopback. **The TOS team never logs in to, or runs commands on, your VPS.** You build, configure and run your node yourself, by hand or with the tos-ops scripts, and send the coordinator only the outputs and public records each step asks for. Do not give the team SSH or any other access, and do not run a command someone sends you unless it is in the operator guide or you understand what it does. Keep private keys and passwords private. Then check the host yourself and send the report to the coordinator:
 
    ```bash
@@ -66,6 +66,14 @@ You can start with a zero-balance wallet. The coordinator allocates testnet TOS 
    ```
 
    Fix every FAIL and rerun with a new `--out` file. The UDP line stays a warning until a probe from outside proves your ports are reachable; the coordinator can send probes from its own machine to your public address, which needs no access to your VPS. [Host preparation, preflight and the UDP probe test](OPERATOR.md#2-host-requirements-clock-and-preflight)
+
+4. **Keep your clock on NTP for the whole test.** Validators join from many time zones, and consensus reads each machine's clock, so every validator must keep its clock disciplined by NTP (ntpsec, which the setup installs and configures) with a selected time source, at all times and not only during setup, within 100 ms of NTP time. All testnet times are **UTC**, whatever your local time zone; your VPS may keep any time zone setting. Check it every day and after every reboot, and set the 10-minute alarm from the operator guide:
+
+   ```bash
+   python3 /opt/tos-testnet/scripts/check-clock.py
+   ```
+
+   Expected: one line starting `clock ok:` and exit status 0. A `clock NOT OK:` line means your validator's votes lag (a clock behind) or its blocks are held back by the others (a clock ahead): fix it and tell the coordinator. The first activation of the node and the start of the election service refuse a clock that fails this check; restarts and reboots are not gated, so keep checking daily. [Clock](OPERATOR.md#2-host-requirements-clock-and-preflight)
 
 ## Create your first operator wallet
 
@@ -107,11 +115,11 @@ Send **`/tmp/record.json`** to the coordinator and confirm receipt and validatio
    Send `/tmp/onboard-<YOUR_NODE_NAME>.json` to the coordinator, who checks the result on chain. The election service submits the pool's stake during the window. [Election onboarding and wallet balance check](OPERATOR.md#6-onboard-for-elections)
 4. **Confirm your term.** Ask the coordinator to verify that the Elector accepted your pool's stake for the first election and that your pool appears in the active validator set once the new term starts.
 
-If the previous election schedule is retained, the first election opens **five hours after genesis**, accepts stakes for **45 minutes**, and hands over to the elected set **six hours after genesis** if the election succeeds. Plan your availability using the final times confirmed by the coordinator.
+Each elected set serves **24 hours**. The first election opens **12 hours after genesis**, accepts stakes for **10 hours** (until 22 hours after genesis), and hands over to the elected set **24 hours after genesis** if the election succeeds. After that, an election opens every 24 hours, 12 hours before each handover, and closes 2 hours before it, so the window is longer than a night anywhere and every time zone has waking hours inside it; a 14-day test has about 13 terms. A stake is returned 6 hours after its term ends. All times are UTC. Plan your availability using the final times confirmed by the coordinator.
 
 ### How the network depends on you
 
-The launch set is the team's two validators, so the chain starts without waiting for anyone. From the first election on, the team's validators together hold a little over half of the voting weight and external validators the rest. A block is final only with at least two thirds of the weight. **External validators can never finalize blocks without the team. Once enough external validators are elected, the team cannot finalize alone either, and the network moves forward only while enough of them are online.** A validator that goes offline is left out of the next election, two hours later.
+The launch set is the team's two validators, so the chain starts without waiting for anyone. From the first election on, the team's validators together hold a little over half of the voting weight and external validators the rest. A block is final only with at least two thirds of the weight. **External validators can never finalize blocks without the team. Once enough external validators are elected, the team cannot finalize alone either, and the network moves forward only while enough of them are online.** The election service stakes as soon as each window opens, 12 hours before the next term, so a validator that fails after that is in the next set too: it counts as offline weight for up to about 36 hours. Keep your node up and report an outage at once.
 
 ### If elections or block production stall
 
@@ -119,11 +127,11 @@ Two things can stop the network. If too much weight is offline at once, blocks s
 
 - Keep the node and election service running. Do not delete the database, reinstall or rotate keys.
 - Watch free disk space every few hours and tell the coordinator before it falls below 20 GiB.
-- The coordinator announces in the official channel, within 12 hours of the missed handover, whether the network continues, restarts from a new genesis or ends. A restart means a new seat confirmation and a new public record; the coordinator will tell you which steps to repeat.
+- A stall starts when it is seen: an election window that closes (2 hours before its handover) with no next validator set, or blocks that stop. The coordinator announces it at once in the official channel, and within 12 hours of that moment whether the network continues, restarts from a new genesis or ends. A restart means a new seat confirmation and a new public record; the coordinator will tell you which steps to repeat.
 
 ## Monitor your validator during the test
 
-- Check node and election service status, chain progress, restarts, free disk space and operator wallet fee balance.
+- Check node and election service status, chain progress, restarts, free disk space, the clock (`check-clock.py`, daily) and operator wallet fee balance.
 - At each election, confirm stake acceptance and active-set membership. Check stake recovery when it is due. Report an expired term even if blocks are still advancing.
 - If chain progress stalls, an election fails, fees run low or disk usage grows unexpectedly, report the UTC time, node name, public pool address, last chain head and relevant sanitized log lines. If the outcome of a transaction is unclear, ask the coordinator to reconcile the original attempt before retrying.
 - Tell the coordinator before scheduled maintenance or leaving so they can check your active duties and outstanding stakes.
@@ -150,7 +158,7 @@ The team may declare this external-participation milestone **successful only whe
 
 ## Test plan for each election cycle
 
-The coordinator posts the election ID and the open, close and handover times with their time zone. Use the live schedule for each cycle. Pick a cycle you can observe in full. Keep the node running between checks and coordinate maintenance in advance. If you miss a checkpoint, mark it as missed and record what you can still verify.
+The coordinator posts the election ID and the open, close and handover times in UTC. Each cycle is 24 hours: the window opens 12 hours before the handover and closes 2 hours before it, and the stake from the previous term is recoverable 6 hours after that term ended. Use the live schedule for each cycle. Pick a cycle you can observe in full. Keep the node running between checks and coordinate maintenance in advance. If you miss a checkpoint, mark it as missed and record what you can still verify.
 
 | When | What you do | What counts as a pass |
 | --- | --- | --- |
@@ -228,7 +236,7 @@ Keep the success count, median and p95, first and last heights, and whether the 
 
 The coordinator publishes a UTC window, workload, rates, pass criteria and stop conditions. The coordinator operates the transaction generator and funds the designated load wallets. As a validator operator, keep your node online, take the local snapshot just before and after the window, and run the short read check when requested. Record head progress, read errors, memory, restarts and disk change. Report lag, sustained errors, a restart or an election delay immediately.
 
-For the first public load window, use the same workload at **50, 100 and 200 transfers per second**, advancing only after the previous step passes. Start after normal handovers are verified and schedule the initial run away from election and handover checkpoints. For a comparable short ramp, the coordinator records the offered and completed transfers, backlog change, verified inclusion/finality latency, and failures and duplicates. At 100 transfers per second, use the previous ramp's comparison criteria of at least 99% completion within the measurement window and backlog growth of at most 100 transfers, followed by full reconciliation. The coordinator publishes the exact measurement window and gates before the run. Keep a separate result for any later workload that overlaps a handover.
+For the first public load window, use the same workload at **50, 100 and 200 transfers per second**, advancing only after the previous step passes. Start after normal handovers are verified, and run each step between 7 and 11 hours after a handover: after the previous term's stake recovery (6 hours after the handover) and before the next election window opens (12 hours after it), away from both key blocks (the election result about 22 hours, and the handover 24 hours, after the previous handover). For a comparable short ramp, the coordinator records the offered and completed transfers, backlog change, verified inclusion/finality latency, and failures and duplicates. At 100 transfers per second, use the previous ramp's comparison criteria of at least 99% completion within the measurement window and backlog growth of at most 100 transfers, followed by full reconciliation. The coordinator publishes the exact measurement window and gates before the run. Keep a separate result for any later workload that overlaps a handover.
 
 Leave the workload rate and stop decision to the coordinator. Keep the operator wallet available for elections. Schedule restart or recovery exercises separately, after the coordinator verifies which validators can be taken offline while preserving quorum.
 

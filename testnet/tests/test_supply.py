@@ -259,7 +259,7 @@ def test_the_production_timing_profile_differs_only_in_its_schedule():
     for profile in (testnet, rehearsal):
         for key in ("status", "status_note"):
             profile.pop(key)
-        for key in ("election_params", "schedule_note"):
+        for key in ("election_params", "schedule_note", "initial_set_valid_for_seconds"):
             profile["genesis"].pop(key)
     assert rehearsal == testnet
 
@@ -355,8 +355,9 @@ def create_state(tmp_path, text, epoch, validators=4):
 
 
 def test_the_epoch6_profile_schedule_reaches_the_zero_state(tmp_path):
-    profile = lib.load_profile()
-    schedule = lib.validator_schedule(profile)
+    # The committed epoch-6 candidate was made with epoch 6's 2 h schedule; the
+    # December schedule reaches the zero state in the December test below.
+    schedule = EPOCH6
     tag = lib.derive_auth_network_tag("tos-public-testnet", 2, 6)
     patched = lib.patch_template(epoch6_candidate(tos_template()), 2, EPOCH6_EPOCH, schedule, tag)
     boc = create_state(tmp_path, patched, EPOCH6_EPOCH)
@@ -397,6 +398,8 @@ def test_the_december_genesis_set_and_limits_reach_the_zero_state(tmp_path, exte
     boc = create_state(tmp_path, patched, EPOCH6_EPOCH, validators=2)
     wallet, total = lib.genesis_supply_targets(profile)
     found = lib.zero_state_bootstrap(boc, wallet, total, schedule)
+    # The 24 h terms, read back from the generated state.
+    assert found["election_params_read_back"] == [86400, 43200, 7200, 21600]
     assert found["bootstrap_wallet_nanotos"] == plan["bootstrap_wallet_tos"] * NANO
     assert found["total_balance_nanotos"] == plan["total_supply_tos"] * NANO
     records = disposable_records(2)

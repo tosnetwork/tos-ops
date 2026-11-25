@@ -157,6 +157,8 @@ def host(tmp_path):
         ("install", FAKE_CHANGE),
         ("useradd", FAKE_CHANGE),
         ("runuser", FAKE_RUNUSER),
+        ("timedatectl", FAKE_TIMEDATECTL),
+        ("ntpq", FAKE_NTPQ),
     ):
         (fakebin / name).write_text(text)
         (fakebin / name).chmod(0o755)
@@ -607,6 +609,15 @@ FAKE_OK = """#!/bin/sh
 echo "$(basename "$0") $*" >> "$FAKE_LOG"
 exit 0
 """
+# A clock ntpsec disciplines, for check-clock.py: synchronized, one selected peer.
+FAKE_TIMEDATECTL = """#!/bin/sh
+echo yes
+"""
+FAKE_NTPQ = """#!/bin/sh
+if [ "$1" = -c ]; then echo "offset=0.412"; exit 0; fi
+echo "     remote           refid      st t when poll reach   delay   offset   jitter"
+echo "*133.243.238.164 .NICT.           1 u   36   64  377   1.6920  -0.4120   0.1550"
+"""
 # The engine's first start: config.json and a keyring, then exit 0.
 FAKE_ENGINE = """#!/bin/sh
 if [ "$1" = -V ]; then echo "validator-engine Commit: fake"; exit 0; fi
@@ -664,6 +675,8 @@ def fake_host(tmp_path):
         ("install", FAKE_INSTALL),
         ("useradd", FAKE_OK),
         ("runuser", FAKE_RUNUSER),
+        ("timedatectl", FAKE_TIMEDATECTL),
+        ("ntpq", FAKE_NTPQ),
     ):
         (fakebin / name).write_text(text)
         (fakebin / name).chmod(0o755)
