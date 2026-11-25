@@ -297,7 +297,9 @@ def test_the_rollout_precondition_needs_every_member_on_the_schema(tmp_path):
         ([MEMBERS[0]] * 4, "a second row"),  # four identical rows
         (MEMBERS[:3], "no release evidence for current validators"),
         (MEMBERS + [f"{99:064x}"], "is not in the current set"),  # an extra row
-        ([f"{99:064x}"] * 4, "is not in the current set"),  # a non-member
+        ([f"{99:064x}"] * 4, "a second row"),  # four identical rows of a non-member
+        ([f"{99 + i:064x}" for i in range(4)], "no release evidence"),  # four non-members
+        (MEMBERS[:3] + [f"{99:064x}"], f"current validators {MEMBERS[3]}"),  # one replaced
     ],
 )
 def test_the_evidence_must_be_exactly_the_current_set(tmp_path, keys, reason):
@@ -312,7 +314,14 @@ def test_the_evidence_must_be_exactly_the_current_set(tmp_path, keys, reason):
         (SINCE - 1, NOW, "before the current set took office"),
         (NOW - 60, NOW + 25 * 3600, "not from the last 24 hours"),  # stale
         (NOW + 3600, NOW, "not from the last 24 hours"),  # in the future
-        ("yesterday", NOW, "no observation time"),
+        ("yesterday", NOW, "must be whole Unix seconds"),
+        (float("nan"), NOW, "must be whole Unix seconds"),  # compares false with any bound
+        (float("inf"), NOW, "must be whole Unix seconds"),
+        (float("-inf"), NOW, "must be whole Unix seconds"),
+        (NOW - 60.5, NOW, "must be whole Unix seconds"),  # a fraction
+        (float(NOW - 60), NOW, "must be whole Unix seconds"),  # a float, even a whole one
+        (True, NOW, "must be whole Unix seconds"),
+        (None, NOW, "must be whole Unix seconds"),
     ],
 )
 def test_stale_or_undated_evidence_is_refused(tmp_path, observed, now, reason):
@@ -565,3 +574,55 @@ def test_the_local_network_writes_and_then_pins_its_zero_state(tmp_path):
     network.write_text(json.dumps({"global_id": 7, "scope": "testnet"}))
     with pytest.raises(lib.TestnetError, match="does not describe the local development network"):
         gov.network_global_id(args)
+
+
+def test_a_set_change_between_propose_and_vote_rechecks_the_releases(monkeypatch, tmp_path):
+    repo, commit = git_repo(tmp_path, "_ SettlementAssets = ConfigParam 84;\n")
+    phash = "cc" * 32
+    folder = tmp_path / "ceremony" / "governance" / phash
+    folder.mkdir(parents=True)
+    # Kept at propose: the old set (11..14).
+    (folder / "node-releases.json").write_text(Path(evidence(tmp_path, commit)).read_text())
+    v = value({1: record()})
+    old_set = cp34({i: pq_descr(11 + i) for i in range(4)})
+    chain = Chain(monkeypatch, {34: old_set}, {phash: {"param": 84, "value": v}})
+    monkeypatch.setattr(gov, "status", lambda url, p: {"critical": True, "wins": 1, "voters": []})
+    monkeypatch.setattr(gov.time, "time", lambda: NOW)
+    args = type(
+        "A",
+        (),
+        {
+            "rpc": "http://x",
+            "ceremony": str(tmp_path / "ceremony"),
+            "tos_root": str(repo),
+            "node_release_evidence": None,
+        },
+    )()
+    gov.revalidate(args, phash)  # the set that proposed: accepted
+    # The set rotates: member 14 leaves and 99 joins, with no evidence.
+    chain.config[34] = cp34({0: pq_descr(11), 1: pq_descr(12), 2: pq_descr(13), 3: pq_descr(99)})
+    with pytest.raises(
+        lib.TestnetError, match=f"no release evidence for current validators {99:064x}"
+    ):
+        gov.revalidate(args, phash)
+    # Fresh evidence for the new set, given to sign or vote, is accepted.
+    keys = [f"{k:064x}" for k in (11, 12, 13, 99)]
+    args.node_release_evidence = evidence(tmp_path, commit, keys)
+    gov.revalidate(args, phash)
+
+
+def test_a_cp84_round_needs_the_tos_root(monkeypatch, tmp_path):
+    Chain(monkeypatch, {}, {"cc" * 32: {"param": 84, "value": value({1: record()})}})
+    monkeypatch.setattr(gov, "status", lambda url, p: {"critical": True, "wins": 0, "voters": []})
+    args = type(
+        "A",
+        (),
+        {
+            "rpc": "http://x",
+            "ceremony": str(tmp_path),
+            "tos_root": None,
+            "node_release_evidence": None,
+        },
+    )()
+    with pytest.raises(lib.TestnetError, match="--tos-root is needed"):
+        gov.revalidate(args, "cc" * 32)

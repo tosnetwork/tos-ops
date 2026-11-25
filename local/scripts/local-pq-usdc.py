@@ -257,6 +257,38 @@ class Chain:
     def send(self, message: lib.Cell) -> None:
         self.call("sendBoc", boc=boc64(message))
 
+    def executed_external(self, address: str, message_hash: str, since: int) -> dict | None:
+        """The transaction of `address`, newer than `since`, that took the external
+        message `message_hash` and took effect; each transaction is decoded from its
+        own BOC (testnet_ops). The history is read one transaction at a time, newest
+        first, and stops at the match: older transactions may already be pruned.
+        None when no such transaction is newer than `since`."""
+        import testnet_ops as ops
+
+        last = self.account(address).get("last_transaction_id") or {}
+        lt, tx_hash = str(last.get("lt", "0")), last.get("hash", "")
+        for _ in range(64):
+            if lt == "0":
+                return None
+            page = self.call("getTransactionsStd", address=address, lt=lt, hash=tx_hash, limit=1)
+            txs = page.get("transactions") if isinstance(page, dict) else None
+            require(isinstance(txs, list) and txs, f"{address}: no transaction at lt {lt}")
+            tid = txs[0]["transaction_id"]
+            tx = ops.verify_transaction(
+                txs[0].get("data"), ops.b64hash(tid["hash"]).hex(), address, int(tid["lt"])
+            )
+            if (
+                tx["in_kind"] == "external"
+                and tx["in_hash"] == message_hash
+                and ops.took_effect(tx)
+            ):
+                return {"hash": tx["hash"], "lt": tx["lt"], "utime": tx["utime"]}
+            if tx["utime"] < since:
+                return None
+            previous = page.get("previous_transaction_id") or {}
+            lt, tx_hash = str(previous.get("lt", "0")), previous.get("hash", "")
+        return None
+
     def get(self, address: str, method: str, *args) -> list:
         stack = []
         for arg in args:
@@ -359,6 +391,7 @@ class Wallet:
                 "seqno": seqno,
                 "boc": boc64(message),
                 "hash": message.hash().hex(),
+                "created_at": int(time.time()),
                 "state": "signed",
             }
             state.put_intent(intent, record)
@@ -371,6 +404,16 @@ class Wallet:
             self.chain.wait(f"{self.address} seqno {seqno + 1}", lambda: self.seqno() > seqno)
             now = self.seqno()
         require(now > seqno, f"{intent}: the wallet's seqno {now} is behind the recorded {seqno}")
+        # The seqno moved, but only this exact message may count: the wallet's
+        # history must hold a transaction that took this external message (its
+        # hash binds the seqno, the destination, the value and the body).
+        tx = self.chain.executed_external(self.address, record["hash"], record["created_at"] - 60)
+        require(
+            tx is not None,
+            f"{intent}: seqno {seqno} of {self.address} was used, but not by the journaled "
+            f"message {record['hash']}; inspect the wallet's history, nothing is marked done",
+        )
+        record["tx"] = tx
         record["state"] = "done"
         state.put_intent(intent, record)
         return record
@@ -417,10 +460,26 @@ class State:
         return self.data.get(key, default)
 
     def set(self, key, value) -> None:
+        """Write the whole state durably before returning: the temporary file is
+        written and fsynced, renamed over the state, and the directory fsynced, so
+        a journaled intent survives a crash or power loss right after it, before
+        anything is broadcast."""
         self.data[key] = value
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.data, indent=1, sort_keys=True) + "\n")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            data = (json.dumps(self.data, indent=1, sort_keys=True) + "\n").encode()
+            while data:
+                data = data[os.write(fd, data) :]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
         os.replace(tmp, self.path)
+        directory = os.open(self.root, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
 
     def intents(self) -> dict:
         return self.data.get("intents", {})
@@ -590,6 +649,20 @@ class Evm:
                     return tx["hash"]
         return None
 
+    def calldata(self, signature: str, *args: str) -> str:
+        return self.tools.cast_run("calldata", signature, *args).stdout.strip()
+
+    def transaction(self, tx: str) -> dict:
+        t = self.rpc("eth_getTransactionByHash", tx)
+        require(t, f"no transaction {tx}")
+        return {
+            "from": t["from"],
+            "nonce": int(t["nonce"], 16),
+            "to": t.get("to"),
+            "input": t["input"],
+            "value": int(t["value"], 16),
+        }
+
     def receipt(self, tx: str) -> dict:
         r = self.rpc("eth_getTransactionReceipt", tx)
         require(r, f"no receipt for {tx}")
@@ -625,6 +698,16 @@ def evm_send_once(
     when the intent is new (for example oracle signatures)."""
     record = state.intent(intent)
     if record is None:
+        # A sender's nonces are reserved in order: no new intent while another of
+        # its intents is unresolved, so two intents never claim one nonce.
+        for other, pending in state.intents().items():
+            require(
+                pending.get("kind") != "evm"
+                or pending.get("from", "").lower() != sender.lower()
+                or pending.get("state") == "done",
+                f"{sender} has an unresolved EVM send ({other}); run that step again first",
+            )
+        call_args = list(build_args() if build_args else args)
         record = {
             "kind": "evm",
             "from": sender,
@@ -632,7 +715,9 @@ def evm_send_once(
             "from_block": evm.block_number(),
             "to": to,
             "signature": signature,
-            "args": list(build_args() if build_args else args),
+            "args": call_args,
+            # The exact calldata the transaction must carry: the init code for a creation.
+            "data": signature if to is None else evm.calldata(signature, *call_args),
             "gas": gas,
             "meta": meta or {},
             "state": "pending",
@@ -665,6 +750,29 @@ def evm_send_once(
             )
         record["tx"] = tx
         state.put_intent(intent, record)
+    # Only the journaled transaction may count: the one at that nonce must be from
+    # the sender, to the recorded destination, with the recorded calldata and no
+    # value. Anything else stops here and is not marked done.
+    found = evm.transaction(record["tx"])
+    expected = {
+        "from": sender.lower(),
+        "nonce": record["nonce"],
+        "to": (record["to"] or "").lower() or None,
+        "input": record["data"].lower(),
+        "value": 0,
+    }
+    actual = {
+        "from": found["from"].lower(),
+        "nonce": found["nonce"],
+        "to": (found["to"] or "").lower() or None,
+        "input": found["input"].lower(),
+        "value": found["value"],
+    }
+    require(
+        actual == expected,
+        f"{intent}: the transaction at nonce {record['nonce']} ({record['tx']}) is not the "
+        f"journaled one: {actual} against {expected}; inspect it, nothing is marked done",
+    )
     record.update(evm.receipt(record["tx"]), state="done")
     state.put_intent(intent, record)
     return record
@@ -1255,6 +1363,12 @@ def adopt(
         if any(r["set"] == set_hash for r in rounds):
             time.sleep(15)
             continue
+        # ConfigParam 84: each round's set is checked against release evidence
+        # read from the running nodes now, so a rotated-in node is covered too.
+        round_extra = []
+        if param == 84:
+            fresh = node_release_evidence(state, chain, args.data)
+            round_extra = ["--node-release-evidence", str(fresh)]
         signed = governance(
             args,
             "sign",
@@ -1264,12 +1378,15 @@ def adopt(
             urls[0],
             "--proposal",
             proposal,
+            "--tos-root",
+            str(tools.tos),
+            *round_extra,
             check=False,
         )
         if signed.returncode != 0:
             time.sleep(15)  # the set changed while signing: sign again under the next one
             continue
-        governance(args, "vote", *common, "--proposal", proposal)
+        governance(args, "vote", *common, "--proposal", proposal, *round_extra)
         after = json.loads(
             governance(args, "status", "--rpc", urls[0], "--proposal", proposal).stdout or "null"
         )

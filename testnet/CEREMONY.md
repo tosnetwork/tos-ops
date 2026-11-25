@@ -1325,7 +1325,8 @@ the journal) before running anything again.
   Exactly one row per member of the current set (ConfigParam 34), keyed by its
   consensus public key: the Ed25519 key, or for a PQ validator its `key_id`. No
   extra, duplicate or non-member row is accepted. Each row was observed after the
-  current set took office (`utime_since`) and at most 24 hours ago; its
+  current set took office (`utime_since`) and at most 24 hours ago, as whole Unix
+  seconds (an integer: a float, NaN, an infinity, a bool or a string is refused); its
   `version_output` names its commit; and the commit is in `--tos-root` and defines
   `= ConfigParam 84;` in its `crypto/block/block.tlb`. A node without that schema
   halts on any ConfigParam 84 value, well-formed or not. **Limitation:** a row is
@@ -1340,7 +1341,11 @@ the journal) before running anything again.
 The ordering rules (no ConfigParam 84 proposal beside a pending bridge address
 change, and the reverse, and the migration rule) are checked again by `sign` and
 `vote` before a round's votes are signed or sent, since other proposals may be
-registered in between. A parameter that is absent is proposed with the Config
+registered in between. For a ConfigParam 84 proposal `sign` and `vote` also read
+ConfigParam 34 again and check the release evidence against the set of that round:
+after a rotation, new members without evidence are refused by name. Pass the new
+set's evidence with `--node-release-evidence` (and `--tos-root` to `sign`); without
+it, the file kept with the proposal at registration is used. A parameter that is absent is proposed with the Config
 contract's absent-value hash (zero) as its precondition, so two first installations
 cannot overwrite each other. Proposing a value that is already registered (same
 value and precondition, so the same proposal hash) resumes it.
@@ -1398,19 +1403,25 @@ sudo systemctl stop tos-pq-elections     # quiet interval: after the round's sta
 Every step is idempotent: what is already done is checked against the chain and
 skipped. Every value-moving send (each funding payment, deployment top-up, mint
 fee, oracle query, EVM deployment, transfer, approval, lock and oracle vote) is
-journaled in `/data/usdc/state.json` before it is made. A TOS send records its
-signed external message, bound to the wallet's seqno; an EVM send records its
-sender, nonce and arguments and goes out at exactly that nonce. After an
-interruption the rerun reconciles each journaled send from the chain: a used seqno
-or nonce means the send ran (the EVM transaction is found by its nonce), and an
-unused one is sent again with the same signed message or arguments. Nothing is
-ever paid, locked or voted twice. A rerun after adoption writes
+journaled in `/data/usdc/state.json` before it is made; the journal is written to a
+temporary file, fsynced, renamed and its directory fsynced before any broadcast. A
+TOS send records its signed external message, bound to the wallet's seqno; an EVM
+send records its sender, nonce, destination and exact calldata and goes out at
+exactly that nonce. A sender with an unresolved send starts no other, so two
+intents never claim one seqno or nonce. After an interruption the rerun reconciles
+each journaled send from the chain: an unused seqno or nonce is sent again with
+the same signed message or arguments; a used one counts only if it was this send:
+the wallet's history must hold a transaction that took the journaled external
+message (by its hash), and the EVM transaction at the nonce must carry the
+journaled destination, calldata and no value. Anything else stops with an error and
+is not marked done. Nothing is ever paid, locked or voted twice. A rerun after adoption writes
 `config79-recheck.json` / `config84-recheck.json` and keeps the adoption's evidence.
 The 2026-11-25 local net's `config79.json` and `config84.json` were rebuilt from
 `state.json` and the run's output after a rerun of an earlier driver overwrote them.
 
 The `config84` step collects the release evidence from each current validator's
-running binary (`-V`) on this host, keyed by its PQ `key_id`. A rerun of an
+running binary (`-V`) on this host, keyed by its PQ `key_id`, at the proposal and
+again before every round's signing and votes. A rerun of an
 interrupted `config84` resumes the registered proposal and keeps its won rounds.
 
 A restarted EVM chain loses the EVM bridge the TOS bridge is pinned to: reset the

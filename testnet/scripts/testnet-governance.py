@@ -28,8 +28,10 @@
       binary a remote host runs. A token bridge parameter (79, 81, 82, 83) whose
       bridge address changes is refused while ConfigParam 84 still lists an
       active asset of the old bridge, or while a ConfigParam 84 proposal is
-      pending. These ordering rules are checked again before each round's votes
-      are signed and sent. An absent parameter is proposed with the Config
+      pending. These ordering rules, and for ConfigParam 84 the release evidence
+      against the set of the round (sign and vote take a newer
+      --node-release-evidence; the file kept with the proposal otherwise), are
+      checked again before each round's votes are signed and sent. An absent parameter is proposed with the Config
       contract's absent-value hash (zero) as its precondition, so a first
       installation cannot overwrite a concurrent one. Proposing a value that is
       already registered resumes that proposal.
@@ -481,22 +483,30 @@ def check_node_releases(
     seen: dict[str, dict] = {}
     for row in rows:
         key = str(row.get("public_key", "")).lower()
+        if key in seen:
+            raise lib.TestnetError(f"{row.get('name')}: a second row for {key}")
+        seen[key] = row
+    # Members without evidence are named first: after a rotation they are the
+    # validators whose release nobody has shown yet.
+    missing = sorted(members - set(seen))
+    if missing:
+        raise lib.TestnetError(f"no release evidence for current validators {', '.join(missing)}")
+    for key, row in seen.items():
         if key not in members:
             raise lib.TestnetError(
                 f"{row.get('name')}: {key or 'no key'} is not in the current set"
             )
-        if key in seen:
-            raise lib.TestnetError(f"{row.get('name')}: a second row for {key}")
-        seen[key] = row
-    missing = sorted(members - set(seen))
-    if missing:
-        raise lib.TestnetError(f"no release evidence for current validators {', '.join(missing)}")
     checked = []
     for key in current["keys"]:
         row = seen[key]
         observed = row.get("observed_at")
-        if not isinstance(observed, (int, float)) or isinstance(observed, bool):
-            raise lib.TestnetError(f"{row.get('name')}: no observation time")
+        # Whole Unix seconds only: a float (NaN and the infinities compare false
+        # with everything, so they would pass any window), a bool or a string is
+        # refused.
+        if type(observed) is not int:
+            raise lib.TestnetError(
+                f"{row.get('name')}: observed_at must be whole Unix seconds, got {observed!r}"
+            )
         if observed <= current["utime_since"]:
             raise lib.TestnetError(
                 f"{row.get('name')}: observed before the current set took office; observe again"
@@ -838,6 +848,10 @@ def cmd_propose(args) -> int:
     folder = lib.private_dir(lib.private_dir(Path(args.ceremony) / "governance") / phash)
     (folder / "proposal.json").write_text(json.dumps(plan, indent=1) + "\n")
     (folder / "value.boc").write_bytes(lib.serialize_boc(value))
+    if args.param == SETTLEMENT_ASSETS_PARAM:
+        # Kept with the proposal: sign and vote check it again against the set of
+        # their round, unless a newer file is given.
+        (folder / "node-releases.json").write_bytes(Path(args.node_release_evidence).read_bytes())
     print(json.dumps(plan, indent=1))
     if args.dry_run:
         print("dry run: nothing signed or sent")
@@ -944,12 +958,27 @@ def sign_local(args, proposal: str) -> dict:
 
 
 def revalidate(args, proposal: str) -> None:
-    """The proposal's rules again, against the chain as it is now (check_rules)."""
+    """The proposal's rules again, against the chain as it is now (check_rules).
+
+    For ConfigParam 84 that includes the rollout precondition: the set may have
+    rotated since the proposal was registered, so ConfigParam 34 is read again and
+    the release evidence (--node-release-evidence, or the file kept with the
+    proposal) must cover exactly the current set and be fresh. A new member
+    without evidence refuses the round by name."""
     registered = pending_proposals(args.rpc).get(proposal)
     now = status(args.rpc, proposal)
     if registered is None or now is None:
         raise lib.TestnetError(f"proposal {proposal} is not registered")
     check_rules(args, registered["param"], registered["value"], proposal, now["critical"])
+    if registered["param"] == SETTLEMENT_ASSETS_PARAM:
+        evidence = getattr(args, "node_release_evidence", None)
+        kept = Path(args.ceremony) / "governance" / proposal / "node-releases.json"
+        if not evidence and kept.is_file():
+            evidence = str(kept)
+        tos_root = getattr(args, "tos_root", None)
+        if not tos_root:
+            raise lib.TestnetError("ConfigParam 84: --tos-root is needed to check the releases")
+        check_node_releases(evidence, tos_root, validator_set(config_cell(args.rpc, 34)))
 
 
 def cmd_sign(args) -> int:
@@ -1127,12 +1156,25 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--proposal", required=True)
     p.add_argument("--host", action="append")
     p.add_argument("--console", default=LOCAL_CONSOLE, help="the local validator console")
+    p.add_argument(
+        "--tos-root", help="ConfigParam 84: the tos repository the releases are read from"
+    )
+    p.add_argument(
+        "--node-release-evidence",
+        help="ConfigParam 84: release evidence for the current set (default: the file kept "
+        "with the proposal); it must cover exactly the set signing this round",
+    )
     p.set_defaults(fn=cmd_sign)
 
     p = sub.add_parser("vote")
     payer(p)
     chain(p, confirm=True)
     p.add_argument("--proposal", required=True)
+    p.add_argument(
+        "--node-release-evidence",
+        help="ConfigParam 84: release evidence for the current set (default: the file kept "
+        "with the proposal)",
+    )
     p.set_defaults(fn=cmd_vote)
 
     p = sub.add_parser("status")
