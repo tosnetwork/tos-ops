@@ -19,7 +19,14 @@ def fixture():
         schema="tos-settlement-policy/1",
         network="a" * 64,
         max_age_seconds=120,
-        thresholds=dict(payout_blocks=10, returned_seconds=60, returned_count=2, refusals_count=24),
+        thresholds=dict(
+            payout_blocks=10,
+            returned_seconds=60,
+            returned_count=2,
+            refusals_count=24,
+            rereport_clear_blocks=5,
+            rereport_clear_seconds=300,
+        ),
         assets=[],
     )
     snapshot = dict(
@@ -331,9 +338,9 @@ def test_funded_outbox_is_durable_once_and_mismatches_are_not_cleared(tmp_path, 
         for r in report["rereports"]
     )
     path = tmp_path / "outbox.json"
-    monitor.enqueue(path, report["rereports"])
-    monitor.enqueue(path, report["rereports"])
-    assert len(monitor.read_json(path)) == 32
+    monitor.reconcile(path, report, p)
+    sendable, _ = monitor.reconcile(path, report, p)
+    assert len(monitor.read_json(path)) == 32 == len(sendable)
     calls = []
 
     def sender(argv, **kw):
@@ -353,8 +360,9 @@ def test_funded_outbox_is_durable_once_and_mismatches_are_not_cleared(tmp_path, 
         return subprocess.CompletedProcess(argv, 0, json.dumps(receipt), "")
 
     monkeypatch.setattr(monitor.subprocess, "run", sender)
-    assert len(monitor.dispatch(path, ["approved-sender"])) == 1
-    monitor.dispatch(path, ["approved-sender"])
+    unbounded = dict(limit=32, budget=600, timeout=1)
+    assert len(monitor.dispatch(path, ["approved-sender"], sendable, **unbounded)["unknown"]) == 1
+    monitor.dispatch(path, ["approved-sender"], sendable, **unbounded)
     assert len(calls) == 32  # unknown/submitted entries never sent again
     payout(s["assets"][0], 100)
     s["assets"][0]["actors"][0]["refusals"][1]["amount"] = 11
@@ -427,19 +435,20 @@ def test_cli_baseline_then_clear_and_emergency_stays_latched(tmp_path, monkeypat
 def test_outbox_refreshes_only_before_any_possible_send(tmp_path):
     p, s = fixture()
     refusals(s["assets"][0], 1)
-    requests = monitor.evaluate(p, s, now=NOW)["rereports"]
+    report = monitor.evaluate(p, s, now=NOW)
     path = tmp_path / "outbox.json"
-    monitor.enqueue(path, requests)
-    requests[0]["value_nanotos"] = 2222
-    monitor.enqueue(path, requests)
+    monitor.reconcile(path, report, p)
+    report["rereports"][0]["value_nanotos"] = 2222
+    monitor.reconcile(path, report, p)
     box = monitor.read_json(path)
     key = next(iter(box))
     assert box[key]["request"]["value_nanotos"] == 2222
     box[key]["state"] = "unknown"
     monitor.atomic(path, box)
-    requests[0]["value_nanotos"] = 3333
-    monitor.enqueue(path, requests)
+    report["rereports"][0]["value_nanotos"] = 3333
+    sendable, _ = monitor.reconcile(path, report, p)
     assert monitor.read_json(path)[key]["request"]["value_nanotos"] == 2222
+    assert not sendable  # an unknown entry is never prepared again
 
 
 def test_returned_claim_in_flight_does_not_double_count_its_liability():
@@ -491,7 +500,7 @@ def test_a_bad_sender_receipt_is_unknown_and_never_retried(tmp_path, monkeypatch
     p, s = fixture()
     refusals(s["assets"][0], 1)
     path = tmp_path / "outbox.json"
-    monitor.enqueue(path, monitor.evaluate(p, s, now=NOW)["rereports"])
+    sendable, _ = monitor.reconcile(path, monitor.evaluate(p, s, now=NOW), p)
     calls = []
 
     def sender(argv, **kw):
@@ -516,6 +525,277 @@ def test_a_bad_sender_receipt_is_unknown_and_never_retried(tmp_path, monkeypatch
         )
 
     monkeypatch.setattr(monitor.subprocess, "run", sender)
-    assert len(monitor.dispatch(path, ["approved-sender"])) == 1
-    assert len(monitor.dispatch(path, ["approved-sender"])) == 1
+    assert len(monitor.dispatch(path, ["approved-sender"], sendable)["unknown"]) == 1
+    assert not monitor.dispatch(path, ["approved-sender"], sendable)["attempted"]
     assert len(calls) == 1
+
+
+def confirm(payload):
+    return dict(
+        operation_id=payload["operation_id"],
+        status="confirmed",
+        transaction_hash="f" * 64,
+        compute_success=True,
+        action_success=True,
+        request_sha256=hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest(),
+    )
+
+
+class Cli:
+    """Runs main() on successive observations; every run advances the TOS checkpoint."""
+
+    def __init__(self, tmp_path, monkeypatch, policy):
+        self.now = NOW
+        self.state = tmp_path / "state"
+        self.policy = tmp_path / "policy.json"
+        self.snapshot = tmp_path / "snapshot.json"
+        self.policy.write_text(json.dumps(policy))
+        self.height = 100
+        monkeypatch.setattr(monitor.time, "time", lambda: self.now)
+
+    def run(self, s, *extra):
+        s["checkpoint"].update(height=self.height, hash=f"{self.height:064x}", utime=self.now)
+        s["source_checkpoint"]["utime"] = self.now
+        self.height += 1
+        self.snapshot.write_text(json.dumps(s))
+        args = ["--policy", str(self.policy), "--snapshot", str(self.snapshot)]
+        return monitor.main(args + ["--state-dir", str(self.state), *extra])
+
+    def outbox(self):
+        return monitor.read_json(self.state / "rereports.json")
+
+    def report(self):
+        return monitor.read_json(self.state / "report.json")
+
+    def codes(self):
+        return [(r["asset"], r["code"]) for r in self.report()["alarms"]]
+
+
+SENDER = ["--rereport-adapter", "approved-sender"]
+
+
+def test_prepared_request_is_revalidated_before_any_send(tmp_path, monkeypatch, capsys):
+    p, s = fixture()
+    refusals(s["assets"][0], 1)
+    cli = Cli(tmp_path, monkeypatch, p)
+    assert cli.run(s, "--initialize-baseline") == 2  # observer-only: query 0 prepared
+    ((key, entry),) = cli.outbox().items()
+    assert entry["state"] == "prepared"
+    calls = []
+
+    def sender(argv, **kw):
+        calls.append(json.loads(kw["input"]))
+        return subprocess.CompletedProcess(argv, 0, json.dumps(confirm(calls[-1])), "")
+
+    monkeypatch.setattr(monitor.subprocess, "run", sender)
+    actor = s["assets"][0]["actors"][0]
+    actor["payouts"] = [dict(id="0", amount=10, created_height=100)]
+    actor["token_ledger"]["in_flight"] = 10
+    actor["refusals"][0]["amount"] = 11
+    assert cli.run(s, *SENDER) == 1
+    assert ("usdc", "refusal_mismatch") in cli.codes()
+    assert calls == []  # the prepared request is no longer eligible
+    entry = cli.outbox()[key]
+    assert entry["state"] == "withdrawn"
+    assert entry["withdrawn"]["reason"] == "ineligible"
+    assert entry["withdrawn"]["observed_amount"] == 11
+    # The payout settled; the record is now a stale refusal and eligible again.
+    actor["payouts"] = []
+    actor["token_ledger"]["in_flight"] = 0
+    assert cli.run(s, *SENDER) == 0
+    assert [c["query_id"] for c in calls] == [0]
+    assert cli.outbox()[key]["state"] == "submitted"
+    assert cli.outbox()[key]["last_withdrawn"]["reason"] == "ineligible"
+
+
+def test_prepared_request_for_a_record_cleared_elsewhere_is_withdrawn(tmp_path, monkeypatch):
+    p, s = fixture()
+    refusals(s["assets"][0], 1)
+    cli = Cli(tmp_path, monkeypatch, p)
+    assert cli.run(s, "--initialize-baseline") == 2
+    calls = []
+    monkeypatch.setattr(monitor.subprocess, "run", lambda argv, **kw: calls.append(kw))
+    refusals(s["assets"][0], 0)
+    assert cli.run(s, *SENDER) == 0
+    assert calls == []
+    ((entry),) = cli.outbox().values()
+    assert entry["state"] == "withdrawn"
+    assert entry["withdrawn"]["reason"] == "refusal_absent"
+
+
+def test_dispatch_sends_only_requests_equal_to_the_current_eligible_set(tmp_path, monkeypatch):
+    p, s = fixture()
+    refusals(s["assets"][0], 2)
+    path = tmp_path / "outbox.json"
+    sendable, _ = monitor.reconcile(path, monitor.evaluate(p, s, now=NOW), p)
+    calls = []
+    monkeypatch.setattr(monitor.subprocess, "run", lambda argv, **kw: calls.append(kw))
+    assert not monitor.dispatch(path, ["approved-sender"], {})["attempted"]
+    changed = copy.deepcopy(sendable)
+    for request in changed.values():
+        request["value_nanotos"] += 1
+    assert not monitor.dispatch(path, ["approved-sender"], changed)["attempted"]
+    assert calls == []
+    assert {e["state"] for e in monitor.read_json(path).values()} == {"prepared"}
+
+
+@pytest.mark.parametrize("mode", ["blocks", "seconds"])
+def test_submitted_request_is_tracked_until_its_refusal_clears(tmp_path, monkeypatch, mode):
+    p, s = fixture()
+    refusals(s["assets"][0], 1)  # stale record: no payout, below the refusal threshold
+    cli = Cli(tmp_path, monkeypatch, p)
+    calls = []
+
+    def sender(argv, **kw):
+        calls.append(json.loads(kw["input"]))
+        return subprocess.CompletedProcess(argv, 0, json.dumps(confirm(calls[-1])), "")
+
+    monkeypatch.setattr(monitor.subprocess, "run", sender)
+    assert cli.run(s, "--initialize-baseline", *SENDER) == 2
+    ((key, entry),) = cli.outbox().items()
+    assert entry["state"] == "submitted" and len(calls) == 1
+    if mode == "blocks":
+        for _ in range(5):  # 1..5 blocks since the send: not yet overdue
+            assert cli.run(s, *SENDER) == 0
+    else:
+        cli.now += 300
+        assert cli.run(s, *SENDER) == 0
+        cli.now += 1  # two blocks, 301 chain seconds: overdue by seconds alone
+    assert cli.run(s, *SENDER) == 1
+    assert cli.codes() == [("usdc", "rereport_overdue")]
+    assert cli.report()["alarms"][0]["facts"]["operation"] == key
+    assert len(calls) == 1  # overdue alarms; it never replays the send
+    refusals(s["assets"][0], 0)
+    assert cli.run(s, *SENDER) == 0
+    entry = cli.outbox()[key]
+    assert entry["state"] == "cleared" and entry["cleared"]["previous"] == "submitted"
+    refusals(s["assets"][0], 1)  # a cleared query id must never return
+    assert cli.run(s, *SENDER) == 1
+    assert cli.codes() == [("usdc", "refusal_reappeared")]
+    assert len(calls) == 1
+
+
+def test_unknown_submission_needs_a_reconciled_observation(tmp_path, monkeypatch):
+    p, s = fixture()
+    refusals(s["assets"][0], 1)
+    cli = Cli(tmp_path, monkeypatch, p)
+    calls = []
+
+    def sender(argv, **kw):
+        calls.append(kw)
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    monkeypatch.setattr(monitor.subprocess, "run", sender)
+    assert cli.run(s, "--initialize-baseline", *SENDER) == 2
+    ((key, entry),) = cli.outbox().items()
+    assert entry["state"] == "unknown"
+    for _ in range(8):  # past every clearance bound: still unknown, never replayed
+        assert cli.run(s, *SENDER) == 1
+        assert cli.codes() == [("usdc", "rereport_unknown")]
+        assert cli.report()["unknown_rereports"] == [key]
+    assert len(calls) == 1
+    refusals(s["assets"][0], 0)
+    assert cli.run(s, *SENDER) == 0
+    entry = cli.outbox()[key]
+    assert entry["state"] == "cleared" and entry["cleared"]["previous"] == "unknown"
+    assert len(calls) == 1
+
+
+def test_emergency_is_published_before_any_dispatch_and_dispatch_is_bounded(
+    tmp_path, monkeypatch, capsys
+):
+    p, s = fixture()
+    cli = Cli(tmp_path, monkeypatch, p)
+    assert cli.run(s, "--initialize-baseline") == 2
+    assert cli.run(s) == 0  # the published report is healthy
+    seen = []
+
+    def sender(argv, **kw):
+        report = monitor.read_json(cli.state / "report.json")
+        incidents = monitor.read_json(cli.state / "incidents.json")
+        seen.append(
+            (
+                report["provider_pause_assets"],
+                ("usdt", "token_paused") in [(r["asset"], r["code"]) for r in report["alarms"]],
+                sorted(incidents),
+            )
+        )
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    monkeypatch.setattr(monitor.subprocess, "run", sender)
+    s["assets"][1]["paused"] = True
+    refusals(s["assets"][0], 31)
+    assert cli.run(s, *SENDER) == 1
+    assert len(seen) == 4  # default count bound per run
+    assert all(v == (["usdt"], True, ["usdt:token_paused"]) for v in seen)
+    report = cli.report()
+    assert len(report["rereport_dispatch"]["deferred"]) == 27
+    assert len(report["unknown_rereports"]) == 4
+    assert report["provider_pause_assets"] == ["usdt"]
+
+
+def test_dispatch_stops_at_its_time_budget(tmp_path, monkeypatch):
+    p, s = fixture()
+    refusals(s["assets"][0], 31)
+    path = tmp_path / "outbox.json"
+    sendable, _ = monitor.reconcile(path, monitor.evaluate(p, s, now=NOW), p)
+    clock = [0]
+    timeouts = []
+
+    def sender(argv, **kw):
+        timeouts.append(kw["timeout"])
+        clock[0] += kw["timeout"]  # every send times out
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    monkeypatch.setattr(monitor, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(monitor.subprocess, "run", sender)
+    outcome = monitor.dispatch(path, ["approved-sender"], sendable, limit=32, budget=60, timeout=20)
+    assert timeouts == [20, 20, 20]
+    assert len(outcome["deferred"]) == 28
+    states = [e["state"] for e in monitor.read_json(path).values()]
+    assert states.count("unknown") == 3 and states.count("prepared") == 28
+
+
+def test_dispatch_alternates_assets(tmp_path, monkeypatch):
+    p, s = fixture()
+    refusals(s["assets"][0], 3)
+    refusals(s["assets"][1], 1)
+    path = tmp_path / "outbox.json"
+    sendable, _ = monitor.reconcile(path, monitor.evaluate(p, s, now=NOW), p)
+    sent = []
+
+    def sender(argv, **kw):
+        sent.append(json.loads(kw["input"])["asset"])
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    monkeypatch.setattr(monitor.subprocess, "run", sender)
+    monitor.dispatch(path, ["approved-sender"], sendable, limit=2)
+    assert sent == ["usdc", "usdt"]
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ["--rereport-max-per-run", "0"],
+        ["--rereport-max-per-run", "33"],
+        ["--rereport-budget-seconds", "601"],
+        ["--rereport-timeout-seconds", "61"],
+        ["--rereport-budget-seconds", "10", "--rereport-timeout-seconds", "20"],
+    ],
+)
+def test_cli_refuses_unbounded_dispatch_settings(tmp_path, monkeypatch, flags):
+    p, s = fixture()
+    cli = Cli(tmp_path, monkeypatch, p)
+    assert cli.run(s, "--initialize-baseline", *flags) == 2
+    assert not cli.state.exists()
+
+
+@pytest.mark.parametrize("key", ["rereport_clear_blocks", "rereport_clear_seconds"])
+def test_clearance_thresholds_are_required_and_positive(key):
+    p, s = fixture()
+    p["thresholds"][key] = 0
+    with pytest.raises(monitor.Invalid, match="zero threshold"):
+        codes(p, s)
+    del p["thresholds"][key]
+    with pytest.raises(KeyError):
+        codes(p, s)

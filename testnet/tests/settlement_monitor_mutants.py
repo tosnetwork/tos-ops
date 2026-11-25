@@ -39,6 +39,27 @@ MUTANTS = {
     "inventory": ('unique(actors, "id") != unique(expected, "id")', "False"),
     "unknown_retry": ('if entry["state"] != "prepared":', "if False:"),
     "journal_before_send": ('entry["state"] = "unknown"', 'entry["state"] = "prepared"'),
+    "prepared_revalidation": ('state="withdrawn",', 'state="prepared",'),
+    "dispatch_eligibility": (
+        'if key not in eligible or eligible[key] != entry["request"]:',
+        "if False:",
+    ),
+    "unknown_reprepared": (
+        'if state in ("prepared", "withdrawn"):',
+        'if state in ("prepared", "withdrawn", "unknown"):',
+    ),
+    "unknown_alarm": ('if state == "unknown":', "if False:"),
+    "clearance": ("if record is None and later:", "if False:"),
+    "overdue_blocks": ("blocks > clear_blocks", "False"),
+    "overdue_seconds": ("seconds > clear_seconds", "False"),
+    "reappeared": ("if record is not None:", "if False:"),
+    "publish_before_dispatch": (
+        "atomic(report_path, report)  # published before any dispatch",
+        "pass",
+    ),
+    "dispatch_count": ("if len(attempted) >= limit:", "if False:"),
+    "dispatch_budget": ("if monotonic() - started + timeout > budget:", "if False:"),
+    "fair_order": ("ranked.append((index, asset, key))", "ranked.append((0, asset, key))"),
 }
 
 

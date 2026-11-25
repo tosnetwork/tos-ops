@@ -105,7 +105,14 @@ def evaluate(policy, observation, previous=None, now=None):
     height = checkpoint(observation["checkpoint"], now, age)
     checkpoint(observation["source_checkpoint"], now, age)
     limits = dict(policy["thresholds"])
-    for key in ("payout_blocks", "returned_seconds", "returned_count", "refusals_count"):
+    for key in (
+        "payout_blocks",
+        "returned_seconds",
+        "returned_count",
+        "refusals_count",
+        "rereport_clear_blocks",
+        "rereport_clear_seconds",
+    ):
         limits[key] = number(limits[key], key)
         if limits[key] == 0:
             raise Invalid("zero threshold")
@@ -129,7 +136,7 @@ def evaluate(policy, observation, previous=None, now=None):
         old = {a["id"]: a for a in previous["assets"]}
         if set(old) != set(pins):
             raise Invalid("asset inventory changed; review policy separately")
-    rows, requests = [], []
+    rows, requests, records = [], [], []
     recognition = items(observation, "recognition")
     unique(recognition, "master")
     if len(recognition) > 16:
@@ -254,6 +261,16 @@ def evaluate(policy, observation, previous=None, now=None):
             for refusal in refusals:
                 qid = number(refusal["query_id"], "query_id", (1 << 64) - 1)
                 total = number(refusal["amount"], "refusal amount")
+                records.append(
+                    dict(
+                        network=network,
+                        asset=aid,
+                        actor=actor_id,
+                        destination=actor["own_wallet"],
+                        query_id=qid,
+                        amount=total,
+                    )
+                )
                 match = [p for p in payouts if number(p["id"], "payout id") == qid]
                 if match and number(match[0]["amount"], "amount") != total:
                     alarm(rows, aid, actor_id, "refusal_mismatch", query_id=qid)
@@ -343,6 +360,7 @@ def evaluate(policy, observation, previous=None, now=None):
         checkpoint=observation["checkpoint"],
         alarms=rows,
         rereports=requests,
+        refusal_records=records,
         provider_pause_assets=sorted({a["asset"] for a in rows if a["code"] in EMERGENCIES}),
         baseline=previous is None,
     )
@@ -387,30 +405,133 @@ def atomic(path, value):
             os.unlink(name)
 
 
-def enqueue(path, requests):
-    """Durable funded outbox only. No automatic replay of a submitted/unknown operation."""
+IDENTITY = ("network", "asset", "actor", "destination", "query_id")
+
+
+def operation_key(record):
+    """Stable outbox key of one S-side refusal record."""
+    identity = [record[k] for k in IDENTITY]
+    return hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+
+
+def monotonic():
+    return time.monotonic()
+
+
+def reconcile(path, report, policy):
+    """Journal eligible requests and revalidate every outbox entry; never sends.
+
+    Prepared entries follow current eligibility only: one that this observation no
+    longer makes eligible is withdrawn with its reason, and returns to prepared only
+    if a later observation makes it eligible again. Unknown and submitted entries are
+    never prepared again; they leave their state only when a later observation shows
+    the S-side refusal record gone. Returns (sendable requests, alarms).
+    """
+    thresholds = policy["thresholds"]
+    clear_blocks = number(thresholds["rereport_clear_blocks"], "rereport_clear_blocks")
+    clear_seconds = number(thresholds["rereport_clear_seconds"], "rereport_clear_seconds")
+    if clear_blocks == 0 or clear_seconds == 0:
+        raise Invalid("zero clearance threshold")
+    point = report["checkpoint"]
+    height = number(point["height"], "height", (1 << 64) - 1)
+    utime = number(point["utime"], "utime", (1 << 64) - 1)
+    eligible = {operation_key(r): r for r in report["rereports"]}
+    observed = {operation_key(r): r for r in report["refusal_records"]}
     outbox = read_json(path) if path.exists() else {}
-    for request in requests:
-        identity = [request[k] for k in ("network", "asset", "actor", "destination", "query_id")]
-        key = hashlib.sha256(json.dumps(identity).encode()).hexdigest()
-        if key not in outbox:
-            outbox[key] = dict(state="prepared", request=request)
-        elif outbox[key]["state"] == "prepared":
-            # Refresh prices only before any possible submission.
-            outbox[key]["request"] = request
+    for key, request in eligible.items():
+        outbox.setdefault(key, dict(state="prepared", request=request))
+    rows = []
+    for key, entry in sorted(outbox.items()):
+        state, request = entry["state"], entry["request"]
+        record = observed.get(key)
+        scope = (request["asset"], request["actor"])
+        if state in ("prepared", "withdrawn"):
+            if key in eligible:
+                # Never sent, so refreshing prices and checkpoint is safe.
+                if state == "withdrawn":
+                    entry["last_withdrawn"] = entry.pop("withdrawn")
+                entry.update(state="prepared", request=eligible[key])
+            else:
+                entry.update(
+                    state="withdrawn",
+                    withdrawn=dict(
+                        reason="refusal_absent" if record is None else "ineligible",
+                        observed_amount=None if record is None else record["amount"],
+                        checkpoint=point,
+                    ),
+                )
+            continue
+        sent = request["checkpoint"]
+        later = height > number(sent["height"], "height", (1 << 64) - 1)
+        if state in ("unknown", "submitted"):
+            if record is None and later:
+                entry.update(state="cleared", cleared=dict(previous=state, checkpoint=point))
+                continue
+            if state == "unknown":
+                alarm(rows, *scope, "rereport_unknown", operation=key, query_id=request["query_id"])
+                continue
+            blocks = max(0, height - number(sent["height"], "height", (1 << 64) - 1))
+            seconds = max(0, utime - number(sent["utime"], "utime", (1 << 64) - 1))
+            if blocks > clear_blocks or seconds > clear_seconds:
+                alarm(
+                    rows,
+                    *scope,
+                    "rereport_overdue",
+                    operation=key,
+                    query_id=request["query_id"],
+                    blocks=blocks,
+                    seconds=seconds,
+                )
+            continue
+        if state == "cleared":
+            if record is not None:
+                # Query ids are never reused: a cleared record must not return.
+                alarm(rows, *scope, "refusal_reappeared", operation=key)
+            continue
+        raise Invalid("unknown outbox state")
     atomic(path, outbox)
+    sendable = {k: outbox[k]["request"] for k in eligible if outbox[k]["state"] == "prepared"}
+    return sendable, rows
 
 
-def dispatch(path, adapter):
+def fair_order(outbox):
+    """Alternate assets so that one asset's backlog never starves another's sends."""
+    ranked, seen = [], {}
+    for key, entry in sorted(
+        outbox.items(), key=lambda kv: (str(kv[1]["request"]["asset"]), str(kv[0]))
+    ):
+        asset = str(entry["request"]["asset"])
+        index = seen.get(asset, 0)
+        seen[asset] = index + 1
+        ranked.append((index, asset, key))
+    return [key for _, _, key in sorted(ranked)]
+
+
+def dispatch(path, adapter, eligible, *, limit=4, budget=60, timeout=20):
     """An approved adapter owns signing, reserves and transaction-proof reconciliation.
 
-    Unknown is durable BEFORE invoking it. A crash, timeout or refusal never retries.
-    Confirmed dispatch is not proof that the actor processed/cleared the refusal.
+    Sends only prepared entries equal to this observation's eligible requests, at
+    most `limit` per call, and starts a send only while `timeout` still fits within
+    `budget` seconds. Unknown is durable BEFORE invoking it. A crash, timeout or
+    refusal never retries. Confirmed dispatch is not proof that the actor
+    processed/cleared the refusal; reconcile() tracks that.
     """
     outbox = read_json(path)
-    for key, entry in outbox.items():
+    started = monotonic()
+    attempted, submitted, deferred = [], [], []
+    for key in fair_order(outbox):
+        entry = outbox[key]
         if entry["state"] != "prepared":
             continue
+        if key not in eligible or eligible[key] != entry["request"]:
+            continue
+        if len(attempted) >= limit:
+            deferred.append(key)
+            continue
+        if monotonic() - started + timeout > budget:
+            deferred.append(key)
+            continue
+        attempted.append(key)
         entry["state"] = "unknown"
         atomic(path, outbox)
         try:
@@ -419,7 +540,7 @@ def dispatch(path, adapter):
                 input=json.dumps(dict(operation_id=key, **entry["request"])),
                 capture_output=True,
                 text=True,
-                timeout=60,
+                timeout=timeout,
                 check=False,
             )
             if result.returncode or len(result.stdout) > MAX_BYTES:
@@ -439,9 +560,21 @@ def dispatch(path, adapter):
                 continue
             entry.update(state="submitted", transaction_hash=receipt["transaction_hash"])
             atomic(path, outbox)
+            submitted.append(key)
         except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
             continue
-    return sorted(k for k, e in outbox.items() if e["state"] == "unknown")
+    return dict(
+        attempted=attempted,
+        submitted=submitted,
+        unknown=[k for k in attempted if outbox[k]["state"] == "unknown"],
+        deferred=deferred,
+    )
+
+
+def bounded(value, name, low, high):
+    if type(value) is not int or not low <= value <= high:
+        raise Invalid(f"invalid {name}")
+    return value
 
 
 def main(argv=None):
@@ -454,8 +587,20 @@ def main(argv=None):
     )
     ap.add_argument("--collect", nargs="+", help="explicit read-only collector argv")
     ap.add_argument("--rereport-adapter", nargs="+", help="explicitly approved funded sender argv")
+    ap.add_argument("--rereport-max-per-run", type=int, default=4, help="sends per run (1-32)")
+    ap.add_argument(
+        "--rereport-budget-seconds", type=int, default=60, help="dispatch time per run (1-600)"
+    )
+    ap.add_argument(
+        "--rereport-timeout-seconds", type=int, default=20, help="per-send timeout (1-60)"
+    )
     a = ap.parse_args(argv)
     try:
+        limit = bounded(a.rereport_max_per_run, "rereport-max-per-run", 1, 32)
+        budget = bounded(a.rereport_budget_seconds, "rereport-budget-seconds", 1, 600)
+        timeout = bounded(a.rereport_timeout_seconds, "rereport-timeout-seconds", 1, 60)
+        if timeout > budget:
+            raise Invalid("send timeout exceeds dispatch budget")
         a.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         state_stat = a.state_dir.lstat()
         if (
@@ -483,18 +628,7 @@ def main(argv=None):
             if previous is None and not a.initialize_baseline:
                 raise Invalid("initial balance baseline needs approval")
             report = evaluate(policy, snapshot, previous)
-            enqueue(a.state_dir / "rereports.json", report["rereports"])
-            if a.rereport_adapter:
-                dispatch(a.state_dir / "rereports.json", a.rereport_adapter)
-            elif report["rereports"]:
-                alarm(report["alarms"], "operator", None, "rereport_sender_missing")
-            report["unknown_rereports"] = sorted(
-                key
-                for key, entry in read_json(a.state_dir / "rereports.json").items()
-                if entry["state"] == "unknown"
-            )
-            for key in report["unknown_rereports"]:
-                alarm(report["alarms"], "operator", None, "rereport_unknown", operation=key)
+            # Emergencies latch first: nothing below, dispatch included, may delay them.
             incidents_path = a.state_dir / "incidents.json"
             incidents = read_json(incidents_path) if incidents_path.exists() else {}
             for event in report["alarms"]:
@@ -506,7 +640,40 @@ def main(argv=None):
                 {event["alarm"]["asset"] for event in incidents.values()}
             )
             report["latched_incidents"] = sorted(incidents)
-            atomic(a.state_dir / "report.json", report)
+            outbox_path = a.state_dir / "rereports.json"
+            sendable, outbox_alarms = reconcile(outbox_path, report, policy)
+            report["alarms"].extend(outbox_alarms)
+            if sendable and not a.rereport_adapter:
+                alarm(report["alarms"], "operator", None, "rereport_sender_missing")
+            report["unknown_rereports"] = sorted(
+                key for key, entry in read_json(outbox_path).items() if entry["state"] == "unknown"
+            )
+            report_path = a.state_dir / "report.json"
+            atomic(report_path, report)  # published before any dispatch
+            if a.rereport_adapter and sendable:
+                outcome = dispatch(
+                    outbox_path,
+                    a.rereport_adapter,
+                    sendable,
+                    limit=limit,
+                    budget=budget,
+                    timeout=timeout,
+                )
+                report["rereport_dispatch"] = outcome
+                for key in outcome["unknown"]:
+                    request = sendable[key]
+                    alarm(
+                        report["alarms"],
+                        request["asset"],
+                        request["actor"],
+                        "rereport_unknown",
+                        operation=key,
+                        query_id=request["query_id"],
+                    )
+                report["unknown_rereports"] = sorted(
+                    set(report["unknown_rereports"]) | set(outcome["unknown"])
+                )
+                atomic(report_path, report)  # dispatch outcome added
             atomic(prior_path, snapshot)
             print(json.dumps(report, sort_keys=True))
             if report["baseline"]:

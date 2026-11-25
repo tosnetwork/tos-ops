@@ -39,9 +39,13 @@ there is no prior interval to reconcile. Do not use initialization to replace a
 lost baseline after an incident. Preserve state and reconcile that gap first.
 The state directory belongs to the operator, is private, and must not be writable
 by a service actor or by a collector running with less trust. One flock covers
-the complete read/check/outbox/report/baseline sequence. Each file is replaced
-atomically with file and parent-directory fsync. The report and outbox are durable
-before the next baseline is installed.
+the complete sequence: read and check, latch incidents, reconcile the outbox
+(no sends), publish `report.json`, bounded dispatch, republish the report with
+the dispatch outcome, then install the baseline. Alarms, incidents and the
+asset-scoped `provider_pause_assets` hook are therefore durable and published
+**before** any send, so one asset's refusal recovery never delays another
+asset's emergency. Each file is replaced atomically with file and
+parent-directory fsync.
 Inputs and state files are limited to 8 MiB; oversized writes refuse before
 replacing the readable previous file. Schedule reviewed archival before outbox
 growth reaches this bound; preserve unknown operations and deduplication history.
@@ -55,7 +59,8 @@ embedded. Policy schema is `tos-settlement-policy/1`:
 - `network`: approved zerostate root hash (64 lowercase hex digits).
 - `max_age_seconds`: positive, at most 3,600.
 - `thresholds`: positive `payout_blocks`, `returned_seconds`, `returned_count`,
-  `refusals_count` (at most 32).
+  `refusals_count` (at most 32), and the re-report clearance bounds
+  `rereport_clear_blocks` (TOS blocks) and `rereport_clear_seconds` (chain seconds).
 - `assets`: unique operator labels `id`, `symbol` (USDC or USDT), pinned `master`
   and `source_token`, pinned `implementation`, `min_lock_headroom` in atomic
   token units, and `occupancy_percent` (1 through 100).
@@ -153,12 +158,32 @@ Its sole stdout result is JSON: `operation_id`, `status: confirmed`,
 `action_success: true`, and `request_sha256` (SHA-256 of sorted-key JSON of the
 full input). These are trusted adapter attestations, not proofs checked here.
 No adapter stderr or raw error body is printed. Unknown is fsynced **before**
-invocation; timeout, crash or malformed answer leaves it unknown forever, never
-automatically resubmitted. A submitted receipt means dispatch, not clearance.
-Confirm `get_refusal(query_id)` absent in a subsequent observation. An unknown
-operation requires read-only reconciliation by the operator; never clear its
-outbox entry simply to retry. Prepared entries may refresh prices, unknown or
-submitted entries may not. Query IDs are never reused by this actor release.
+invocation; timeout, crash or malformed answer leaves it unknown, never
+automatically resubmitted. Query IDs are never reused by this actor release.
+
+Every run revalidates the whole outbox against the current observation before
+anything is sent. Each entry is keyed by network, asset, actor, wallet and query
+ID, and has one state:
+
+| State | Meaning | Next |
+| --- | --- | --- |
+| `prepared` | eligible in this observation, never sent | refreshed each run; sent when dispatch reaches it |
+| `withdrawn` | prepared but no longer eligible; `withdrawn.reason` is `refusal_absent` (record gone) or `ineligible` (for example a `refusal_mismatch`), with `observed_amount` and checkpoint | prepared again only if a later observation makes it eligible (kept as `last_withdrawn`); never sent while withdrawn |
+| `unknown` | a send may have happened | alarms `rereport_unknown` every run, never sent again; becomes `cleared` only when a later observation shows the S-side record absent |
+| `submitted` | the adapter confirmed the send | becomes `cleared` when a later observation shows `get_refusal(query_id)` absent; alarms `rereport_overdue` while the record remains more than `rereport_clear_blocks` blocks or `rereport_clear_seconds` chain seconds after the send checkpoint |
+| `cleared` | record absent after a send | terminal; the record reappearing alarms `refusal_reappeared` |
+
+A submitted receipt means dispatch, not clearance. An overdue or unknown
+operation is never replayed automatically: the operator reconciles it read-only
+(the adapter's journal, the wallet's transactions) and decides any new send.
+Never edit an outbox entry simply to retry it.
+
+Dispatch is bounded per run: at most `--rereport-max-per-run` sends (default 4,
+at most 32), each with `--rereport-timeout-seconds` (default 20, at most 60), and
+a send starts only while its timeout still fits in `--rereport-budget-seconds`
+(default 60, at most 600). Assets alternate, so one asset's backlog never
+starves another's sends. Remaining requests stay prepared and are listed in
+`rereport_dispatch.deferred`; size the timer interval to the budget.
 Without a sender, pending requests alarm `rereport_sender_missing`; this is an
 observer-only installation, not an enabled refusal-recovery service.
 
