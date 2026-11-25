@@ -14,6 +14,17 @@ We invite external operators to run a validator in the next TOS public testnet. 
 
 **Testing duration: 14 days (December 5–19, 2026).** The coordinator will confirm the precise start/end times and first election window during December 1–4. The dates above are Japan Standard Time (JST, UTC+9); election times and your reports use UTC.
 
+**This document is the authoritative version.** Read this invitation, the [operator guide](OPERATOR.md) and the [reward terms](VALIDATOR-REWARD-TERMS.md) on the `main` branch of `tosnetwork/tos-ops`. Copies on any other branch, in chats or in older posts may be out of date. During December 1–4 the coordinator gives you the exact `tos` and `tos-ops` commits to build and run. Those pinned commits are what you install, even if `main` moves on afterwards.
+
+### What changed since the first version
+
+If you read an earlier copy, check these changes:
+
+- **Election schedule.** The first election is now open from **12 to 22 hours after launch**, and the first elected set takes office **24 hours after launch**. It used to open about 5 hours after launch. After that, every elected set serves **24 hours**, instead of 2 hours. See [Activate and join the first election](#activate-and-join-the-first-election).
+- **Disk.** You now need **at least 160 GiB free**. A 250 GB SSD/NVMe is recommended, and 200 GB is the minimum. It used to be 60 GiB free. A 160 GB disk is not enough, because it cannot leave 160 GiB free once the system and the build are installed. See step 2 of [Register and prepare your VPS](#register-and-prepare-your-vps).
+- **Clock.** NTP must stay on for the whole test, and the clock must stay within 100 ms (step 4 below).
+- **Reward terms.** One set of reward terms applies to every participant in every country: the [policy](VALIDATOR-REWARD-TERMS.md).
+
 ## Registration, launch and reward conditions
 
 **Pre-launch recruitment threshold (November 30).** At least **five distinct independent external validator applicants** must register by the November 30 deadline and be confirmed as credible candidates. The TOS organizer, team-controlled nodes and duplicate accounts operated by the same person do not count. **If fewer than five qualify by the deadline, this public test campaign will not proceed, and no rewards will be paid under this campaign.** Five applications are a minimum recruitment gate, not proof of test success or a guarantee of launch; technical and safety readiness must also be confirmed.
@@ -265,3 +276,50 @@ After the coordinator announces the end of the test on December 19:
 2. Keep the node and election service running until the coordinator confirms that your validator has no current or pending duties and that your pool's held stakes have been recovered. Stopping a validator whose key is still in a set can halt the network.
 3. Then retire the host as the coordinator instructs, with the retirement script described in [leaving and retirement](OPERATOR.md#9-incidents-leaving-and-retirement). It archives the evidence first and then removes the node and operator state; do not delete the database, keys or vault by hand.
 4. Keep the evidence archive for 7 days in case the coordinator asks for it, then delete it. Testnet keys must never be reused on mainnet.
+
+## Frequently asked questions
+
+**Is this the final version of the guide, and which commits do I run?**
+- The authoritative documents are this invitation, the [operator guide](OPERATOR.md) and the [reward terms](VALIDATOR-REWARD-TERMS.md), on the `main` branch of `tosnetwork/tos-ops`.
+- During December 1–4 the coordinator sends every participant the same packet, with:
+  - the full 40-character `tos` and `tos-ops` commits to build;
+  - the global config and its SHA-256 checksum;
+  - the expected zero-state identity;
+  - the exact genesis time.
+- Build and install exactly those commits. If the documents change after you receive the packet, the coordinator tells you whether anything you must do has changed.
+
+**When are the genesis time and the first election window confirmed?**
+- During December 1–4, in that packet, in UTC.
+- With the current schedule the first election is open from 12 to 22 hours after genesis, and your pool takes office 24 hours after genesis.
+- Plan to be reachable for the first election window, and at genesis, if you can. Your node must be activated and synchronised before the window opens; being online when the window closes is less important.
+- Older copies said the first election opens 5–6 hours after launch. That schedule no longer applies.
+
+**Where do I send my preflight report, public wallet address and public record?**
+- Send them **privately to your coordinator**, by direct message or the channel the coordinator names. Do not post them in a group chat.
+- The preflight report shows your host's public IP and its configuration.
+- Your wallet address and `record.json` are public data, but the coordinator needs them in one place to build genesis and to check what you sent.
+- Never send anything secret, in any channel: no mnemonic, consensus seed, wallet key, vault credential or password. Nobody from the team will ever ask for one.
+
+**Is a 160 GB disk enough?**
+- No. You need **at least 160 GiB free** after the system and the build are installed, so the disk must be at least **200 GB**; **250 GB** is recommended.
+- With all 21 validators elected, a node can hold about 128 GB at once.
+- The preflight refuses a host below 160 GiB free.
+- After the coordinator has compared your release checksums, you may remove `/var/lib/tos-build` to free space.
+
+**How do I check that my CPU has the required SHA-256 acceleration?**
+- On x86-64, `grep -m1 -o sha_ni /proc/cpuinfo` must print `sha_ni`. The preflight does not check this, so run the command yourself.
+- On arm64, confirm the supported build with the coordinator before preparing the host.
+
+**My time zone is not UTC. Do I need to change it?**
+- No. Every time in this test is UTC; your VPS may keep any time zone setting.
+- What matters is that NTP keeps the clock accurate at all times: `check-clock.py` must print `clock ok:`.
+
+**Can the VPS run other software, or another node?**
+- Use a dedicated VPS for this validator.
+- Do not run another validator, another chain's node, or anything that competes for the disk, CPU or the UDP ports 30001 and 31001.
+- The coordinator assigns validator seats, normally one per operator. An operator counts once for the milestone and receives at most one reward, however many validators they run.
+
+**What if I cannot be online for part of the test?**
+- Tell your coordinator before scheduled maintenance.
+- Your node should stay online for the whole test; you do not have to watch it all the time.
+- If it goes down, report it at once. An offline validator can stay in the elected set for up to about 36 hours.
