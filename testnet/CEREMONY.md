@@ -1300,6 +1300,114 @@ python3 "$G" adopted --rpc "$RPC1" --confirm-rpc "$RPC2" --param 15 --value-boc 
 An exception after a broadcast is an unknown outcome: read the chain (`status`,
 the journal) before running anything again.
 
+**ConfigParam 84 (recognized settlement assets) and the token bridge parameters.**
+`propose` refuses, before anything is signed or sent:
+
+- a ConfigParam 84 value when ConfigParam 10 does not list 84 (it must be critical);
+- a value that does not decode exactly by the TL-B (tag, status 1-3, origin kind 1-2,
+  a non-zero minimal `Coins` cap, a 456-bit origin cell, no trailing data), that has
+  more than 16 entries, or that needs more than 1,024 cells of validation (counted
+  as the node counts them, every reference a visit). The node would refuse such a
+  configuration when installing it and the masterchain would halt;
+- a change that adds, removes or changes more or fewer than one entry of the
+  current value, and a proposal while another ConfigParam 84 proposal is pending;
+- any ConfigParam 84 proposal without `--node-release-evidence FILE`:
+  `{"validators": [{"name": ..., "commit": "<40 hex>"}, ...]}`, at least one row
+  per member of the current set (ConfigParam 34), each commit present in
+  `--tos-root` and defining `= ConfigParam 84;` in its `crypto/block/block.tlb`. A
+  node without that schema halts on any ConfigParam 84 value, well-formed or not.
+  The evidence is collected from the hosts; the script checks the commits it
+  names, not which binary each host runs;
+- a ConfigParam 79, 81, 82 or 83 value that changes the bridge address while
+  ConfigParam 84 still lists an active (status 1) asset of the old bridge for that
+  chain. Adopt that record's status 2 or 3 first, by its own proposal.
+
+`adopted --also-rpc URL` (repeatable) checks more nodes than the two validators;
+use it to show the value on every validator.
+
+### 8.3 Test USDC through the token bridge (USDC settlement T5)
+
+Test USDC is a six-decimal test token locked in a test `Bridge.sol` on an EVM chain
+and minted on TOS by a test token bridge, configured by ConfigParam 79 and
+recognized by ConfigParam 84. The relayer has no live path yet, so a **stand-in
+oracle** signs: three Ed25519 keys own the TOS oracle multisig (quorum 2) and three
+secp256k1 keys are the EVM bridge's oracle set. It signs v5 votes in the formats of
+tos `crosschain/token-bridge/SETTLEMENT-PROTOCOL.md` (sections 7.1 and 11). Every
+key is generated at run time, stays on the host that runs the step, and is test-only.
+
+#### Local network: executed 2026-11-25
+
+`local/scripts/local-pq-usdc.py` runs every step on the local PQ network
+([local/OPERATIONS.md](../local/OPERATIONS.md#test-usdc-through-the-token-bridge)).
+It was run on tos `b9a5a0406` (the node, `tosctl`, the token bridge and
+`Bridge.sol`), after `setup-testnet.sh --clean --rotate` with that build. Each step
+records its evidence under `/data/usdc/evidence/`; the keys under
+`/data/usdc/keys/` (0700) are private.
+
+| # | Step | Expected output (from the 2026-11-25 run) |
+|---|------|--------------------------------------------|
+| 0 | Genesis | ConfigParam 10 lists 84; 79 and 84 are absent; every validator's `tos-validator-engine -V` reports `b9a5a0406193d3577022b5c856bab9f77836f58b` |
+| 1 | `evm-deploy`: the test token (`TestFeeToken`, 6 decimals, fee 0) and `Bridge.sol` with the three stand-in oracles; `voteForSwitchLock(true, 1)` | `allowLock() = true` |
+| 2 | `fund`, with elections stopped in a quiet interval and started again | deployer 120, submitter 20, buyer 30 and the governance payer (a wallet v3) 150 TOS, each deployed |
+| 3 | `tvm-deploy`: the token bridge compiled with the ConfigParam 79 parameters; `new-multisig.fif` (2 of 3, the bridge as its only allowed destination) and `new-bridge.fif` (chain 1, the EVM bridge); a plain top-up fixes the bridge's life | the bridge account's code hash equals the compiled `token-bridge` hash, and its minter and wallet codes equal the compiled ones; the multisig allows only the bridge and holds no pending query |
+| 4 | `config79`: `build-config79.fif` (mint fee 5 TOS, above `get_mint_fee_floor`), then `testnet-governance.py propose`, `sign --local-network` and `vote` in each round | `adopted` prints `ConfigParam 79 = f0f4ed98…a7dd on all 5 nodes` (validators 1, 2, 3, 4 and 7) after 2 won rounds |
+| 5 | `generation`: `voteForNewGeneration(1, bridge, life, 1)` on the EVM side, then `activate_generation` (vote op 8) through the multisig | the TOS bridge's `get_bridge_state` shows generation 1, start 0, active |
+| 6 | `lock`: a lock of the token before any cap; `voteForLockCap(token, 100000e6, 10000e6, 20000e6, 50000e6, 1)`; a lock above the per-lock cap; a 25 tUSDC lock to the buyer | the uncapped lock reverts with `lock: token has no lock cap`, mined with status 0 and no lock number taken; so does a second, never-capped probe token after the first is capped; the over-cap lock reverts with `lock: over the per-lock cap`; lock `n = 0` is open in generation 1 |
+| 7 | `mint`: `pay_swap(1, 0)` with exactly the mint fee from the buyer, then the v5 swap vote (op 0: generation, n, chain 1, EVM bridge, recipient, amount, token data) through the multisig | the buyer's token wallet holds `25000000` (25 tUSDC); the minter's supply is 25000000; the swap is consumed and folded under the watermark (`swap_watermark = 1`) |
+| 8 | `config84`: `tosctl vote offer settlement-assets build` from the deployed bridge's minter and wallet code hashes; propose with `--node-release-evidence` (each validator's running binary and its `-V` commit); sign and vote each round (the local ConfigParam 11 asks 4 won rounds for a critical change; the public testnet's asks 3) | `adopted` prints `ConfigParam 84 = 3fe75614…f761 on all 5 nodes` after 4 won rounds; `tosctl vote offer settlement-assets verify --pin <master>` re-derives the master from the bridge's codes at one block and prints `"listed": true, "verified": true, "status": "active", "decimals": 6, "bridge_param": 79` |
+
+To re-run, from the tos-ops root, with the tos build the network runs and a
+loopback EVM chain of chain id 1 (the chain ConfigParam 79 serves):
+
+```bash
+anvil --host 127.0.0.1 --port 18545 --chain-id 1 --silent &
+(cd "$TOS_ROOT/crosschain/token-bridge/evm" && npm ci &&
+  PRIVATE_KEY=0x0000000000000000000000000000000000000000000000000000000000000001 npx hardhat compile)
+U=(sudo env TOS_ROOT="$TOS_ROOT" "$TOS_ROOT/.venv/bin/python" local/scripts/local-pq-usdc.py)
+"${U[@]}" keys && "${U[@]}" evm-deploy
+sudo systemctl stop tos-pq-elections     # quiet interval: after the round's stakes are accepted
+"${U[@]}" fund; sudo systemctl start tos-pq-elections
+"${U[@]}" tvm-deploy && "${U[@]}" config79 && "${U[@]}" generation
+"${U[@]}" lock && "${U[@]}" mint && "${U[@]}" config84
+"${U[@]}" status
+```
+
+Every step is idempotent: what is already done is checked against the chain and
+skipped. A restarted EVM chain loses the EVM bridge the TOS bridge is pinned to:
+reset the local network too, which also clears `/data/usdc`.
+
+#### Public testnet: plan, NOT EXECUTED
+
+The coordinator's decision: test USDC goes onto the December 5 public testnet only
+later, by governance vote, never at genesis. **The tos commit that network pins must
+include ConfigParam 84 support (tos #513, in `b9a5a0406` and later):** the schema,
+the ConfigParam 10 entry and the `tosctl` builder. A validator without the schema
+halts on any ConfigParam 84 value, so a network started from an older commit must
+first be upgraded on every validator.
+
+1. **Release.** Confirm every current validator runs a node built from a commit with
+   the ConfigParam 84 schema, and collect each one's `tos-validator-engine -V` commit
+   into the release evidence file. Confirm ConfigParam 10 lists 84; if it does not,
+   adding it is its own critical proposal, first.
+2. **EVM side.** A public EVM test network whose chain id matches the ConfigParam 79
+   bridge build (`MY_CHAIN_ID` in tos `crosschain/token-bridge/tvm/params`), or a
+   test bridge compiled for another slot. Deploy the test token and `Bridge.sol` with
+   a test oracle set of at least three keys, and open locking by vote.
+3. **TOS side.** Deploy the oracle multisig and the bridge with `new-multisig.fif` and
+   `new-bridge.fif`, checked as in step 3 above, from a coordinator wallet.
+4. **ConfigParam 79** through `testnet-governance.py` (ordinary, 2 won rounds), signed
+   on each validator host (`sign --inventory`); `adopted --also-rpc` on every team
+   validator.
+5. **Generation**, then **`voteForLockCap` for the test token before its first lock**,
+   with caps sized for the test; show an uncapped lock refused first.
+6. **A capped lock and its mint** to a test buyer wallet, voted by the stand-in oracle
+   until the relayer implements settlement v5.
+7. **ConfigParam 84** (critical, 3 won rounds under different sets), built with
+   `tosctl vote offer settlement-assets build` from the deployed bridge's codes and
+   proposed with `--node-release-evidence`; then `tosctl ... verify --pin`.
+
+None of these steps has been run on the public testnet.
+
 ## 9. Resetting the testnet
 
 A reset is a new genesis with the same global id 2, so it shares the old

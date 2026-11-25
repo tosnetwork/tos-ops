@@ -147,3 +147,23 @@ before restarting; do not clear a failure just to restart traffic. The first liv
 smoke test exposed an arbitrary-withdrawal-amount bug (exit 202), fixed by requiring
 configured denominations. Its failed receipt is retained separately and not counted
 as a successful withdrawal.
+
+## Test USDC through the token bridge
+
+`local-pq-usdc.py` brings a six-decimal test token across the token bridge onto
+this network: a loopback EVM chain (chain id 1, the chain ConfigParam 79 serves)
+with the test token and `Bridge.sol`, the TOS oracle multisig and bridge,
+ConfigParams 79 and 84 adopted through `testnet/scripts/testnet-governance.py`
+(`--local-network /data/network.json`, which signs each round's votes on the local
+consoles), a `voteForLockCap` before the token's first lock, and a mint to a buyer
+wallet. A stand-in oracle signs the v5 votes; its keys, and the test wallets', are
+generated under `/data/usdc/keys` (0700) at the first run and never leave the host.
+`fund` pays the test wallets from the Genesis wallet, so it needs the same
+quiet-interval stop of `tos-pq-elections` as the bootstrap above.
+
+The steps, their order, the commands and the expected outputs are in
+[testnet/CEREMONY.md 8.3](../testnet/CEREMONY.md#83-test-usdc-through-the-token-bridge-usdc-settlement-t5).
+Evidence is written to `/data/usdc/evidence/`, one JSON file per step; `status`
+prints the recorded facts and the live token balance and ConfigParams.
+Tests: `local/tests/test_local_pq_usdc.py` and
+`testnet/tests/test_governance_settlement_assets.py`.

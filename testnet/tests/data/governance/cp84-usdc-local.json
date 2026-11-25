@@ -1,0 +1,26 @@
+{
+  "param": 84,
+  "critical": true,
+  "rollout_precondition": "every validator must run a node whose schema has ConfigParam 84 before this value is proposed; propose it with vote offer create --param 84 --critical --assume-all-validators-upgraded",
+  "value_hash": "3fe75614b544685031b29a368afed76ce9d268a7592dc5a4d5bcbebad20bf761",
+  "value_boc": "te6ccgEBAwEArQABAwHAAQHToB5s2WZJn3AsP/QYq8AfUSixe4MWB+5+MWnt85SkUd9gwCAgzPJM0TsnyBZxoNfZduasSO+GW+kJ/t//buKpZjozSqKOp3vjr5360V/i+2wbsP+mylgk1sCLgoIUc1HpFytyWWoEqBfIAQIAcgFzOzIaCiVW7/VjfUDX4Fckpp+PpRyO19/SKYe6b+alsQAAAAFfvbIxVniv7LNn8DLZP2QvZBgKow==",
+  "value": {
+    "assets": [
+      {
+        "master": "f366cb324cfb8161ffa0c55e00fa89458bdc18b03f73f18b4f6f9ca5228efb06",
+        "status": "active",
+        "decimals": 6,
+        "minter_code_hash": "67926689d93e40b38d06becbb73562477c32df484ff6fffb77154b31d19a5514",
+        "wallet_code_hash": "753bdf1d7cefd68aff17db60dd87fd3652c126b6045c1410a39a8f48b95b92cb",
+        "max_liability_per_actor": "10000000000",
+        "uncapped": false,
+        "origin": {
+          "kind": "token_bridge",
+          "bridge_address": "733b321a0a2556eff5637d40d7e05724a69f8fa51c8ed7dfd22987ba6fe6a5b1",
+          "source_chain_id": 1,
+          "source_token": "5fbdb2315678afecb367f032d93f642f64180aa3"
+        }
+      }
+    ]
+  }
+}

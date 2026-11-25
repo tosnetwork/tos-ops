@@ -14,11 +14,31 @@
       broadcast, settled on both validators; it then counts only if the Config
       contract lists the proposal.
 
+      ConfigParam 84 (recognized settlement assets) is refused unless ConfigParam 10
+      lists it, the value decodes strictly (tags, statuses, origin kinds, no
+      trailing data), holds at most 16 entries and fits the node's 1,024-cell
+      validation budget, changes exactly one entry of the current value, no other
+      ConfigParam 84 proposal is pending, and --node-release-evidence FILE shows
+      every current validator running a tos commit whose block.tlb defines
+      ConfigParam 84 (a node without that schema halts on any ConfigParam 84). A
+      token bridge parameter (79, 81, 82, 83) whose bridge address changes is
+      refused while ConfigParam 84 still lists an active asset of the old bridge.
+
   sign     --ceremony DIR --inventory FILE --rpc URL --proposal HASH [--host NAME]...
       On each validator host, the node's console signs a vote for the proposal
       (`create-proposal-vote`) under the current validator set. Only the vote body
       leaves the host. The votes and the ConfigParam 34 they were signed under are
       written to DIR/governance/<proposal>/round-<set>.json.
+
+  sign     --ceremony DIR --local-network FILE --rpc URL --proposal HASH
+      The same on the local development network: each local validator's console
+      (its port in testnet-ports.json, its client key under elections/) signs; a
+      node outside the current set is skipped, and every member must sign.
+
+  --local-network FILE (before the command) runs propose and vote against the
+      local development network that FILE (its network.json) describes, instead
+      of the testnet profile: the global id is the local one, and the ceremony
+      directory's genesis.json is the local zero state.
 
   vote     --ceremony DIR --tos-root DIR --fift PATH --rpc URL --confirm-rpc URL
            --payer-key FILE --payer-addr FILE --payer-subwallet N --proposal HASH
@@ -32,8 +52,9 @@
       The proposal as the Config contract stores it: critical flag, parameter,
       remaining weight, rounds left, wins and losses (or "absent").
 
-  adopted  --rpc URL --confirm-rpc URL --param N --value-boc FILE
-      Exit 0 only if both validators serve ConfigParam N equal to FILE.
+  adopted  --rpc URL --confirm-rpc URL [--also-rpc URL]... --param N --value-boc FILE
+      Exit 0 only if every named node (both validators and each --also-rpc)
+      serves ConfigParam N equal to FILE.
 
 A proposal needs ConfigParam 11's min_wins winning rounds (2 ordinary, 3 critical),
 each under a different validator set, and a round is won when votes of more than
@@ -75,6 +96,23 @@ CONSOLE = (
     "-k /var/lib/tos/validator/console-client/client "
     "-p /var/lib/tos/validator/console-client/server.pub"
 )
+LOCAL_CONSOLE = "/usr/local/bin/tos-validator-console"
+
+# ConfigParam 84, the recognized settlement assets (tos crypto/block/block.tlb).
+SETTLEMENT_ASSETS_PARAM = 84
+SETTLEMENT_ASSETS_TAG = 0x01
+SETTLEMENT_ASSET_TAG = 0x01
+SETTLEMENT_ASSETS_MAX_ENTRIES = 16
+# check_one_config_param validates each parameter against 1,024 cells; a value
+# over it is refused when installed and the masterchain halts.
+CONFIG_PARAM_VALIDATION_CELLS = 1024
+ASSET_STATUSES = {1: "active", 2: "admission_suspended", 3: "retired"}
+ORIGIN_KINDS = {1: "token_bridge", 2: "native_issuance"}
+ORIGIN_BITS = 8 + 256 + 32 + 160
+# Each token bridge parameter serves one source chain (tos crosschain/token-bridge/tvm/params).
+TOKEN_BRIDGE_PARAMS = {79: 1, 81: 56, 82: 137, 83: 728126428}
+# The schema line a node release must carry before any ConfigParam 84 value.
+SETTLEMENT_ASSETS_SCHEMA_LINE = "= ConfigParam 84;"
 
 
 # ---------------------------------------------------------------- cells
@@ -181,11 +219,209 @@ def parse_vote(boc: bytes, proposal: str) -> tuple[int, lib.Cell]:
     return idx, cell
 
 
+# ---------------------------------------------------------------- ConfigParam 84
+
+
+def validation_visits(root: lib.Cell, limit: int = CONFIG_PARAM_VALIDATION_CELLS) -> int:
+    """The cells the node's validate_ref visits: every reference is a visit, so a
+    cell reached twice counts twice. Refuses a value above `limit`."""
+    visits, pending = 0, [root]
+    while pending:
+        cell = pending.pop()
+        if cell.exotic:
+            raise lib.TestnetError("a configuration value holds an exotic cell")
+        visits += 1
+        if visits > limit:
+            raise lib.TestnetError(
+                f"the value needs more than {limit} cells of validation; "
+                "the node would refuse to install it and the masterchain would halt"
+            )
+        pending.extend(cell.refs)
+    return visits
+
+
+def read_coins(s: lib.Slice) -> int:
+    """Coins with a minimal length, as the node's decoder requires."""
+    length = s.bits(4)
+    value = s.bits(8 * length)
+    if length and value >> (8 * length - 8) == 0:
+        raise lib.TestnetError("a Coins value has a non-minimal length")
+    return value
+
+
+def decode_settlement_asset(s: lib.Slice) -> dict:
+    """settlement_asset_v1#01: decoded exactly, refusing anything the node or a reader
+    would not reproduce."""
+    if s.bits(8) != SETTLEMENT_ASSET_TAG:
+        raise lib.TestnetError("ConfigParam 84: unknown settlement asset tag")
+    status = s.bits(8)
+    if status not in ASSET_STATUSES:
+        raise lib.TestnetError(f"ConfigParam 84: undefined status {status}")
+    decimals = s.bits(8)
+    minter_code_hash = s.bytes(32).hex()
+    wallet_code_hash = s.bytes(32).hex()
+    cap = read_coins(s)
+    if cap == 0:
+        raise lib.TestnetError("ConfigParam 84: max_liability_per_actor must be non-zero")
+    if s.remaining() != 0 or len(s.cell.refs) - s.ref != 1:
+        raise lib.TestnetError("ConfigParam 84: a record carries trailing data")
+    origin = s.take_ref()
+    if origin.bits != ORIGIN_BITS or origin.refs:
+        raise lib.TestnetError(f"ConfigParam 84: the origin cell is not exactly {ORIGIN_BITS} bits")
+    o = lib.Slice(origin)
+    kind = o.bits(8)
+    if kind not in ORIGIN_KINDS:
+        raise lib.TestnetError(f"ConfigParam 84: undefined origin kind {kind}")
+    return {
+        "status": ASSET_STATUSES[status],
+        "decimals": decimals,
+        "minter_code_hash": minter_code_hash,
+        "wallet_code_hash": wallet_code_hash,
+        "max_liability_per_actor": str(cap),
+        "origin": {
+            "kind": ORIGIN_KINDS[kind],
+            "bridge_address": o.bytes(32).hex(),
+            "source_chain_id": o.bits(32),
+            "source_token": o.bytes(20).hex(),
+        },
+    }
+
+
+def decode_settlement_assets(cell: lib.Cell) -> dict[str, dict]:
+    """settlement_assets_v1#01 assets:(HashmapE 256 SettlementAssetV1): every entry,
+    keyed by the master's account id. Refuses a malformed value, more than 16
+    entries and a value over the validation budget, the checks proposal tooling
+    owes the node (design 3.1)."""
+    validation_visits(cell)
+    s = lib.Slice(cell)
+    if s.bits(8) != SETTLEMENT_ASSETS_TAG:
+        raise lib.TestnetError("ConfigParam 84: not settlement_assets_v1#01")
+    present = s.bits(1)
+    if s.remaining() != 0 or len(cell.refs) != present:
+        raise lib.TestnetError("ConfigParam 84: the value carries trailing data")
+    if not present:
+        return {}
+    entries = lib.hashmap_items(cell.refs[0], 256)
+    if len(entries) > SETTLEMENT_ASSETS_MAX_ENTRIES:
+        raise lib.TestnetError(
+            f"ConfigParam 84: {len(entries)} entries, more than {SETTLEMENT_ASSETS_MAX_ENTRIES}"
+        )
+    return {f"{key:064x}": decode_settlement_asset(value) for key, value in entries.items()}
+
+
+def settlement_assets_change(current: dict[str, dict], new: dict[str, dict]) -> dict:
+    """The one entry a proposal changes. ConfigParam 84 is one value, so two
+    proposals made from the same old value would drop each other's entry: a
+    change touching more or fewer than one entry is refused (design 3.1)."""
+    touched = sorted(
+        master for master in set(current) | set(new) if current.get(master) != new.get(master)
+    )
+    if len(touched) != 1:
+        raise lib.TestnetError(
+            f"a ConfigParam 84 proposal must change exactly one entry; this one changes {len(touched)}"
+        )
+    master = touched[0]
+    action = "add" if master not in current else "remove" if master not in new else "change"
+    return {
+        "master": master,
+        "action": action,
+        "before": current.get(master),
+        "after": new.get(master),
+    }
+
+
+def bridge_address_of(cell: lib.Cell | None) -> str | None:
+    """The bridge_address of a TokenBridgeParams value (v0 #00 or v1 #01)."""
+    if cell is None:
+        return None
+    s = lib.Slice(cell)
+    if s.bits(8) not in (0x00, 0x01):
+        raise lib.TestnetError("not a TokenBridgeParams value")
+    return s.bytes(32).hex()
+
+
+def check_bridge_migration(
+    param: int, current: lib.Cell | None, new: lib.Cell, assets: dict[str, dict]
+) -> None:
+    """A bridge address change while ConfigParam 84 still lists an active asset of
+    the old bridge is refused: that record would stop verifying (design 7.4). Its
+    status 2 or 3 is adopted first, by its own proposal."""
+    old, replacement = bridge_address_of(current), bridge_address_of(new)
+    if old is None or old == replacement:
+        return
+    chain = TOKEN_BRIDGE_PARAMS[param]
+    active = [
+        master
+        for master, asset in assets.items()
+        if asset["status"] == "active"
+        and asset["origin"]["kind"] == "token_bridge"
+        and asset["origin"]["bridge_address"] == old
+        and asset["origin"]["source_chain_id"] == chain
+    ]
+    if active:
+        raise lib.TestnetError(
+            f"ConfigParam {param} would replace bridge {old}, but ConfigParam 84 still lists "
+            f"active assets of it ({', '.join(active)}); adopt their status 2 or 3 first"
+        )
+
+
+def validator_count(cp34: lib.Cell) -> int:
+    """validators#11 or validators_ext#12: utime_since, utime_until, total."""
+    s = lib.Slice(cp34)
+    if s.bits(8) not in (0x11, 0x12):
+        raise lib.TestnetError("ConfigParam 34 is not a validator set")
+    s.bits(64)
+    return s.bits(16)
+
+
+def check_node_releases(evidence_path: str | None, tos_root: str, validators: int) -> list[dict]:
+    """The rollout precondition of ConfigParam 84 (design 3.1): every current
+    validator runs a node whose schema has ConfigParam 84. The evidence names one
+    tos commit per validator; each must define ConfigParam 84 in its block.tlb,
+    read from the tos repository at --tos-root."""
+    if not evidence_path:
+        raise lib.TestnetError(
+            "ConfigParam 84 needs --node-release-evidence: a node without its schema halts on any "
+            "ConfigParam 84 value, so every current validator's release must be shown first"
+        )
+    rows = json.loads(Path(evidence_path).read_text()).get("validators")
+    if not isinstance(rows, list) or len(rows) < validators:
+        raise lib.TestnetError(
+            f"the release evidence names {len(rows) if isinstance(rows, list) else 0} validators; "
+            f"the current set has {validators}"
+        )
+    checked = []
+    for row in rows:
+        commit = str(row.get("commit", ""))
+        if len(commit) != 40 or any(c not in "0123456789abcdef" for c in commit):
+            raise lib.TestnetError(f"{row.get('name')}: not a full commit id: {commit!r}")
+        shown = subprocess.run(
+            ["git", "-C", tos_root, "show", f"{commit}:crypto/block/block.tlb"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if shown.returncode != 0:
+            raise lib.TestnetError(f"{row.get('name')}: commit {commit} is not in {tos_root}")
+        if SETTLEMENT_ASSETS_SCHEMA_LINE not in shown.stdout:
+            raise lib.TestnetError(
+                f"{row.get('name')}: commit {commit} has no ConfigParam 84 schema; upgrade first"
+            )
+        checked.append({"name": row.get("name"), "commit": commit})
+    return checked
+
+
 # ---------------------------------------------------------------- reads
 
 
 def config_cell(url: str, param: int) -> lib.Cell | None:
-    answer = lib.rpc(url, "getConfigParam", param=param)
+    """The parameter's value, or None when the configuration holds none."""
+    try:
+        answer = lib.rpc(url, "getConfigParam", param=param)
+    except lib.RpcError as error:
+        if error.reason == "CONFIG_PARAM_ABSENT":
+            return None
+        raise
     data = (answer or {}).get("config", {}).get("bytes")
     return lib.parse_boc(base64.b64decode(data)) if data else None
 
@@ -229,6 +465,37 @@ def status(url: str, proposal: str) -> dict | None:
         "losses": num(e[7]),
         "wins": num(e[8]),
     }
+
+
+def stack_list(entry) -> list:
+    """The elements of a TVM list as the node renders it: a "list", or nested
+    two-element "tuple" cons cells ending in an empty tuple or null."""
+    out: list = []
+    while entry and entry[0] in ("tuple", "list"):
+        elements = entry[1]["elements"]
+        if entry[0] == "list":
+            return out + list(elements)
+        if not elements:
+            break
+        if len(elements) != 2:
+            raise lib.TestnetError("a list cell is not a pair")
+        out.append(elements[0])
+        entry = elements[1]
+    return out
+
+
+def pending_params(url: str) -> dict[str, int]:
+    """Every registered proposal and the parameter it sets (list_proposals)."""
+    answer = lib.rpc(url, "runGetMethod", address=CONFIG_ADDRESS, method="list_proposals", stack=[])
+    if answer.get("exit_code") != 0:
+        raise lib.TestnetError(f"list_proposals exited {answer.get('exit_code')}")
+    stack = answer.get("stack") or []
+    out = {}
+    for item in stack_list(stack[0]) if stack else []:
+        phash, body = item[1]["elements"]
+        params = body[1]["elements"][2][1]["elements"]
+        out[f"{int(phash[1], 0):064x}"] = int(params[0][1], 0)
+    return out
 
 
 def current_set_hash(url: str) -> str:
@@ -304,12 +571,76 @@ def send(
     )
 
 
+def network_global_id(args) -> int:
+    """The global id value-moving steps sign for: the testnet profile's confirmed
+    one, or, with --local-network, the local development network's. In the local
+    case the ceremony's genesis.json (the zero state every operation checks the
+    nodes against) is written from the network file, or must already agree."""
+    if not getattr(args, "local_network", None):
+        return lib.confirmed_global_id(lib.load_profile(Path(args.profile)))
+    network = json.loads(Path(args.local_network).read_text())
+    if (
+        network.get("global_id") != lib.LOCAL_GLOBAL_ID
+        or network.get("scope") != "local-development"
+    ):
+        raise lib.TestnetError(
+            f"{args.local_network} does not describe the local development network"
+        )
+    genesis = {
+        "zero_state": {
+            "root_hash": base64.b64encode(bytes.fromhex(network["zerostate_root"])).decode(),
+            "file_hash": base64.b64encode(bytes.fromhex(network["zerostate_file"])).decode(),
+        },
+        "scope": "local-development",
+    }
+    path = lib.private_dir(Path(args.ceremony)) / "genesis.json"
+    if path.exists():
+        if json.loads(path.read_text()).get("zero_state") != genesis["zero_state"]:
+            raise lib.TestnetError(f"{path} names another zero state than {args.local_network}")
+    else:
+        path.write_text(json.dumps(genesis, indent=1) + "\n")
+    return lib.LOCAL_GLOBAL_ID
+
+
+def check_settlement_assets_proposal(
+    args, value: lib.Cell, current: lib.Cell | None, critical: bool
+) -> dict:
+    """Every refusal design 3.1 asks of proposal tooling for ConfigParam 84."""
+    if not critical:
+        raise lib.TestnetError("ConfigParam 84 must be listed in ConfigParam 10 (critical)")
+    new = decode_settlement_assets(value)
+    old = decode_settlement_assets(current) if current is not None else {}
+    change = settlement_assets_change(old, new)
+    others = [h for h, p in pending_params(args.rpc).items() if p == SETTLEMENT_ASSETS_PARAM]
+    if others:
+        raise lib.TestnetError(
+            f"another ConfigParam 84 proposal is pending ({', '.join(others)}); "
+            "changes to ConfigParam 84 are serialized"
+        )
+    releases = check_node_releases(
+        args.node_release_evidence, args.tos_root, validator_count(config_cell(args.rpc, 34))
+    )
+    return {
+        "entries": len(new),
+        "validation_cells": validation_visits(value),
+        "change": change,
+        "node_releases": releases,
+    }
+
+
 def cmd_propose(args) -> int:
     value = lib.parse_boc(Path(args.value_boc).read_bytes())
     current = config_cell(args.rpc, args.param)
     if current is not None and current.hash() == value.hash():
         raise lib.TestnetError(f"ConfigParam {args.param} already has this value")
     critical = args.param in signed_keys(config_cell(args.rpc, 10))
+    checks = None
+    if args.param == SETTLEMENT_ASSETS_PARAM:
+        checks = check_settlement_assets_proposal(args, value, current, critical)
+    elif args.param in TOKEN_BRIDGE_PARAMS:
+        recognized = config_cell(args.rpc, SETTLEMENT_ASSETS_PARAM)
+        assets = decode_settlement_assets(recognized) if recognized is not None else {}
+        check_bridge_migration(args.param, current, value, assets)
     setup = parse_vote_setup(config_cell(args.rpc, 11), critical)
     expire = args.expire_seconds or setup["min_store_sec"]
     price = proposal_price(value, setup, expire)
@@ -327,6 +658,8 @@ def cmd_propose(args) -> int:
         "value_hash": value.hash().hex(),
         "min_wins": setup["min_wins"],
     }
+    if checks is not None:
+        plan["settlement_assets"] = checks
     folder = lib.private_dir(lib.private_dir(Path(args.ceremony) / "governance") / phash)
     (folder / "proposal.json").write_text(json.dumps(plan, indent=1) + "\n")
     (folder / "value.boc").write_bytes(lib.serialize_boc(value))
@@ -337,7 +670,7 @@ def cmd_propose(args) -> int:
     if status(args.rpc, phash) is not None:
         print(f"proposal {phash} is already registered")
         return 0
-    global_id = lib.confirmed_global_id(lib.load_profile(Path(args.profile)))
+    global_id = network_global_id(args)
     operations = elections.operations_for(args, global_id)
 
     def expect(_ops, record, delivery, evidence):
@@ -362,11 +695,89 @@ def cmd_propose(args) -> int:
     return 0
 
 
+def tl_key_file(path: Path, prefix: bytes, key_b64: str) -> None:
+    key = base64.b64decode(key_b64, validate=True)
+    if len(key) != 32:
+        raise lib.TestnetError("a console key is 32 bytes")
+    lib.write_new(path, prefix + key, 0o600)
+
+
+def sign_local(args, proposal: str) -> dict:
+    """Votes from the local network's consoles: one per member of the current set.
+    A candidate outside the set has no key for it and is skipped."""
+    data = Path(args.local_network).resolve().parent
+    ports = json.loads((data / "testnet-ports.json").read_text())["nodes"]
+    members = validator_count(config_cell(args.rpc, 34))
+    votes: dict = {}
+    skipped = []
+    for node in ports:
+        if node["role"] not in ("validator", "candidate"):
+            continue
+        name = f"node-{node['idx']}"
+        console = data / "elections" / f"console-{node['idx']}.private.json"
+        if not console.is_file():
+            raise lib.TestnetError(
+                f"{console} is missing; the local network was set up without --rotate"
+            )
+        config = json.loads(console.read_text())
+        with tempfile.TemporaryDirectory(prefix="config-vote-") as work:
+            w = Path(work)
+            tl_key_file(
+                w / "client", lib.ED25519_PRIVATE_TL_PREFIX, config["client_private_key"]["key"]
+            )
+            tl_key_file(
+                w / "server.pub", lib.ED25519_PUBLIC_TL_PREFIX, config["server_public_key"]["key"]
+            )
+            out = subprocess.run(
+                [
+                    args.console,
+                    "-a",
+                    config["address"],
+                    "-k",
+                    str(w / "client"),
+                    "-p",
+                    str(w / "server.pub"),
+                    "-t",
+                    "30",
+                    "-c",
+                    f"create-proposal-vote 0x{proposal} {w / 'vote.boc'}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=90,
+            )
+            vote = w / "vote.boc"
+            if out.returncode != 0 or not vote.is_file() or not vote.stat().st_size:
+                skipped.append(name)
+                print(f"{name}: no vote (not in the current set or the console refused)")
+                continue
+            raw = vote.read_bytes()
+        idx, cell = parse_vote(raw, proposal)
+        if str(idx) in votes:
+            raise lib.TestnetError(
+                f"{name}: index {idx} was already signed by {votes[str(idx)]['host']}"
+            )
+        votes[str(idx)] = {
+            "host": name,
+            "boc": base64.b64encode(raw).decode(),
+            "hash": cell.hash().hex(),
+        }
+        print(f"{name}: idx {idx}")
+    if len(votes) != members:
+        raise lib.TestnetError(f"{len(votes)} votes for a set of {members}; skipped {skipped}")
+    return votes
+
+
 def cmd_sign(args) -> int:
     proposal = args.proposal.lower()
     if status(args.rpc, proposal) is None:
         raise lib.TestnetError(f"proposal {proposal} is not registered")
     set_hash = current_set_hash(args.rpc)
+    if args.local_network:
+        votes = sign_local(args, proposal)
+        return save_round(args, proposal, set_hash, votes)
+    if not args.inventory:
+        raise lib.TestnetError("sign needs --inventory (or --local-network for the local network)")
     inventory = {h["name"]: h for h in json.loads(Path(args.inventory).read_text())["hosts"]}
     hosts = args.host or ["node-1", "node-2", "node-3", "node-4"]
     script = (
@@ -400,6 +811,10 @@ def cmd_sign(args) -> int:
             "hash": cell.hash().hex(),
         }
         print(f"{name}: idx {idx}")
+    return save_round(args, proposal, set_hash, votes)
+
+
+def save_round(args, proposal: str, set_hash: str, votes: dict) -> int:
     if current_set_hash(args.rpc) != set_hash:
         raise lib.TestnetError("the validator set changed while signing; sign again")
     folder = lib.private_dir(lib.private_dir(Path(args.ceremony) / "governance") / proposal)
@@ -418,7 +833,7 @@ def cmd_vote(args) -> int:
     round_ = json.loads(path.read_text())
     if round_["set"] != set_hash:
         raise lib.TestnetError("the votes were signed under another validator set")
-    global_id = lib.confirmed_global_id(lib.load_profile(Path(args.profile)))
+    global_id = network_global_id(args)
     operations = elections.operations_for(args, global_id)
     before = status(args.rpc, proposal)
     if before is None:
@@ -470,12 +885,14 @@ def cmd_status(args) -> int:
 
 def cmd_adopted(args) -> int:
     want = lib.parse_boc(Path(args.value_boc).read_bytes()).hash()
-    for url in (args.rpc, args.confirm_rpc):
+    urls = [args.rpc, args.confirm_rpc, *(args.also_rpc or [])]
+    for url in urls:
         cell = config_cell(url, args.param)
         if cell is None or cell.hash() != want:
             print(f"{url}: ConfigParam {args.param} is not the proposed value")
             return 1
-    print(f"ConfigParam {args.param} = {want.hex()} on both validators")
+        print(f"{url}: ConfigParam {args.param} = {want.hex()}")
+    print(f"ConfigParam {args.param} = {want.hex()} on all {len(urls)} nodes")
     return 0
 
 
@@ -484,6 +901,10 @@ def main(argv: list[str] | None = None) -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--profile", default=str(lib.PROFILE_PATH))
+    parser.add_argument(
+        "--local-network",
+        help="the local development network's network.json, used instead of --profile",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     def chain(p, confirm=False):
@@ -506,15 +927,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--value-boc", required=True)
     p.add_argument("--expire-seconds", type=int)
     p.add_argument("--id")
+    p.add_argument("--node-release-evidence", help="ConfigParam 84: each validator's tos commit")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(fn=cmd_propose)
 
     p = sub.add_parser("sign")
     p.add_argument("--ceremony", required=True)
-    p.add_argument("--inventory", required=True)
+    p.add_argument("--inventory")
     chain(p)
     p.add_argument("--proposal", required=True)
     p.add_argument("--host", action="append")
+    p.add_argument("--console", default=LOCAL_CONSOLE, help="the local validator console")
     p.set_defaults(fn=cmd_sign)
 
     p = sub.add_parser("vote")
@@ -530,6 +953,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("adopted")
     chain(p, confirm=True)
+    p.add_argument("--also-rpc", action="append", help="another node that must serve the value")
     p.add_argument("--param", type=int, required=True)
     p.add_argument("--value-boc", required=True)
     p.set_defaults(fn=cmd_adopted)
