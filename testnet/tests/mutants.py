@@ -1458,6 +1458,12 @@ M += [
         '    python3 "$HERE/check-clock.py" \\\n',
         '    true "$HERE/check-clock.py" \\\n',
     ),
+    (
+        "SC1 a schedule needing a third stake per pool is accepted",
+        LIB,
+        '    if values["stake_held_for"] + values["elections_start_before"] > values["elected_for"]:\n',
+        "    if False:\n",
+    ),
 ]
 
 

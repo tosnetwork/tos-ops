@@ -8,14 +8,14 @@ The December 5, 2026 network has two kinds of registered validator:
 
 - **The genesis set** (`genesis.validators` = 2): the team's two validator
   hosts (O1, O2). They are the zero state's validator set (ConfigParam 34) and
-  validate alone until the first election's set takes office at T + 6 h.
+  validate alone until the first election's set takes office at T + 24 h.
 - **External validators** (E of them, at most `elections.max_external_validators`
   = 19): operators who register a record and a pool before genesis
   (registration closes on November 30) exactly like O1 and O2, but are not in
   the zero state. They are onboarded after genesis by
   `testnet-elections.py onboard --no-host` and `testnet-operator.py onboard`
   ([Onboarding an operator-run host](#onboarding-an-operator-run-host)) and stand
-  from the first election (opens at T + 5 h).
+  from the first election (opens at T + 12 h, closes at T + 22 h).
 
 `manifest` writes both: `genesis-set.json` (the zero state's set) and
 `genesis-records.json` (every registered record, the genesis set first).
@@ -588,7 +588,7 @@ After the first ordinary election, drop `--genesis-set`.
 A block is final with at least two thirds of the elected set's weight. The plan
 reports, under `liveness`, how many external validators must be online:
 
-- **Before the first elected set (T to T + 6 h)** the set is the two team
+- **Before the first elected set (T to T + 24 h)** the set is the two team
   validators: both must be up.
 - **Both team validators up:** the team holds just over half, so the chain
   needs about a third of the external weight online. At E = 19 that is
@@ -608,7 +608,7 @@ hold all of the weight (the plan reports it as
 same tosctl release and the same election configuration, so one fault can stop
 both stake orders. Runbook check, every election: once its window opens and
 before it closes (the window is `elections_start_before` to
-`elections_end_before` before the next term, T + 5 h to T + 5 h 45 min for the
+`elections_end_before` before the next term, T + 12 h to T + 22 h for the
 first), confirm that the Elector holds both team pools' stakes for that
 election, from a node the coordinator reads:
 
@@ -639,31 +639,67 @@ network continues, restarts from a new genesis or ends. Bring a downed team
 validator back first: with both team validators up the chain needs the fewest
 external validators.
 
+### Schedule: 24 h terms
+
 The schedule is `genesis` in `network/profile.json`, and `genesis.json` prints
-its times. Epoch 6 carries the 2 h ConfigParam 15 epoch 5 adopted by its live
-vote (7,200 / 3,600 / 900 / 3,600). The bootstrap set is valid for 21,600 s after
-the epoch T, and each elected set for 7,200 s. Every registered validator, the
-two team ones and each external one, must be onboarded (operator wallets and pool
-owners funded, pools deployed and holding the principal) and stake through two
-overlapping elections (Production-Node.md
-section 9). The first election opens at T + 5 h and closes at T + 5 h 45 min; the
-elected set takes office at T + 6 h. The next election opens at T + 7 h, its set
-takes office at T + 8 h, and the set rotates every 2 h after that, each rotation a
-key block. Everything has to be ready before the first window opens. A rehearsal
-of the bootstrap flow at production timing uses
+its times. ConfigParam 15 is 86,400 / 43,200 / 7,200 / 21,600: each elected set
+serves 24 h, its election opens 12 h before the term and closes 2 h before it,
+and a stake is held 6 h after its term ends. The genesis set is valid for
+86,400 s after the epoch T.
+
+| When (UTC, from the epoch T) | What |
+|---|---|
+| T | genesis; the two team validators produce blocks |
+| T + 12 h to T + 22 h | first election: a 10 h window, longer than a night, so every time zone has waking hours in it |
+| about T + 22 h | election result installed (ConfigParam 36): a key block |
+| T + 24 h | first elected set takes office: a key block |
+| T + 36 h to T + 46 h | second election, for the set of T + 48 h |
+| T + 24 h + 24 h k | every later set; a 14-day test has about 13 elected terms |
+
+Every registered validator, the two team ones and each external one, must be
+onboarded (operator wallets and pool owners funded, pools deployed and holding
+the principal) before its first window closes, and stakes through overlapping
+elections (Production-Node.md section 9). A pool holds two stakes: the one
+frozen for the current term (until the term ends plus 6 h) and the one in the
+next election. The stake placed for a term starting at S returns at S + 30 h,
+before the election after next opens at S + 36 h, so two are enough;
+`testnet_lib.validator_schedule` refuses any schedule where
+`stake_held_for + elections_start_before` exceeds `elected_for`. A rehearsal of
+the bootstrap flow at production timing uses
 `network/profile-production-timing.json` (the canonical template's schedule;
 `rehearse-loopback.sh` takes it as `REHEARSAL_PROFILE`).
 
-The first epoch used the canonical template's schedule unchanged: a 131,072 s
-bootstrap set and 65,536 s terms. Its first key block after genesis would have
-come at T + 34 h. Until then the GC checkpoint could not move, so no state and
-no consensus database was deleted, and at about 145 GB a day the 99 GB disks
-would have filled in 15 hours. That is why this testnet runs a shorter
-schedule; it also ran a 3,600 s validator `state_ttl` until the retention was
-aligned with upstream TON (86,400 s, `network/profile.json` `retention`). The
-short schedule's key block every 2 h keeps the GC checkpoint moving; with the
-upstream `state_ttl` it trails the head by about a day, so watch free disk under
-heavy load.
+**Why 2 h terms were adopted, and why 24 h is fine now.** The first epoch used
+the canonical template's schedule unchanged: a 131,072 s bootstrap set and
+65,536 s terms, with a 3,600 s validator `state_ttl`. Its first key block after
+genesis would have come at T + 34 h. The GC point never passes the last key
+block (tos `validator/manager.cpp` `try_advance_gc_masterchain_block`: also not
+now minus `state_ttl`, the last rotation block or the persistent-state
+serializer), so until then no state and no consensus database was deleted, and
+at about 145 GB a day (16 basechain shards then) the 99 GB disks would have
+filled in 15 hours. Epochs 5 to 8 therefore ran 2 h terms. Since then the
+retention was aligned with upstream TON (`state_ttl` 86,400 s) and the
+basechain starts as one shard. Every election result and every term start is a
+key block, so with 24 h terms key blocks come at most 22 h apart, shorter than
+`state_ttl`: the GC point trails the head by `state_ttl`, as it did with 2 h
+terms, and a validator holds the same about 24-30 h of data. 48 h terms would
+put key blocks up to 46 h apart and roughly double that; they stay an option if
+the measurement below shows lower growth.
+
+### Disk: measure in the first 48 h
+
+The validator floor is 120 GiB free (`host_requirements`), on a recommended
+200 GB SSD or NVMe. It is an estimate: about 30 h of data held at 2.2-3 GB/h
+for a full 21-validator set (each slot stores certificates with ceil(2N/3)
+ML-DSA-44 signatures of 2,420 bytes: 14 at N = 21, 3 at N = 4, where 0.56-0.92
+GB/h was measured), 66-90 GB, plus about 10 GB of base database and logs and the
+20 GiB at which operators and the load guard stop. **In the first 48 h of the
+test, with the elected set, measure each team host's growth** (`watch-testnet.py`
+`free_gib` and `consensus_mb` every round, across at least one key block) and
+ask the operators for `df -h /var/lib/tos` at the same UTC times. If growth is
+above 3 GB/h, raise the floor and tell the operators before free space falls
+under 20 GiB anywhere; if it is well below, 48 h terms are worth reconsidering
+for a later epoch.
 
 ### 8.1 Onboarding a genesis validator for elections
 

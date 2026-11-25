@@ -473,6 +473,14 @@ EPOCH6_SCHEDULE = {
     "stake_held_for": 3600,
 }
 EPOCH6_TEST_EPOCH = 1793000000
+# The December 5 schedule: 24 h terms (owner: at least 24 h between election cycles).
+DEC5_SCHEDULE = {
+    "initial_set_valid_for": 86400,
+    "elected_for": 86400,
+    "elections_start_before": 43200,
+    "elections_end_before": 7200,
+    "stake_held_for": 21600,
+}
 EPOCH5_TAG = bytes.fromhex("3edc0460815cddd18f2b878004f50d7191d0dbd34d772d298b281e0767d7fd2c")
 
 
@@ -526,16 +534,31 @@ def test_patch_puts_the_epoch5_schedule_above_the_guard():
     assert schedule_constants("\n".join(lines[guard:])) == {}
 
 
-def test_epoch6_schedule_is_the_repository_profile():
-    assert lib.validator_schedule(lib.load_profile()) == EPOCH6_SCHEDULE
-    # First election T + 5 h to T + 5 h 45 min, in office at T + 6 h, then 2 h terms.
+def test_the_december_schedule_is_the_repository_profile():
+    assert lib.validator_schedule(lib.load_profile()) == DEC5_SCHEDULE
+    # First election T + 12 h to T + 22 h, in office at T + 24 h, then 24 h terms.
     t = EPOCH6_TEST_EPOCH
-    bootstrap_until = t + EPOCH6_SCHEDULE["initial_set_valid_for"]
-    opens = max(bootstrap_until - EPOCH6_SCHEDULE["elections_start_before"], t)
-    takes_office = opens + EPOCH6_SCHEDULE["elections_start_before"]
-    closes = takes_office - EPOCH6_SCHEDULE["elections_end_before"]
-    assert (opens - t, closes - t, takes_office - t) == (18000, 20700, 21600)
-    assert takes_office + EPOCH6_SCHEDULE["elected_for"] - t == 28800
+    s = DEC5_SCHEDULE
+    bootstrap_until = t + s["initial_set_valid_for"]
+    opens = max(bootstrap_until - s["elections_start_before"], t)
+    takes_office = opens + s["elections_start_before"]
+    closes = takes_office - s["elections_end_before"]
+    assert (opens - t, closes - t, takes_office - t) == (43200, 79200, 86400)
+    assert closes - opens == 10 * 3600  # longer than a night in every time zone
+    assert takes_office + s["elected_for"] - t == 172800
+    # About 13 elected terms in the 14-day test.
+    assert (14 * 86400 - s["initial_set_valid_for"]) // s["elected_for"] == 13
+
+
+def test_two_stakes_per_pool_suffice_on_the_december_schedule():
+    """A stake placed for the term starting at S is frozen until S + elected_for +
+    stake_held_for; the election after next opens at S + 2 x elected_for -
+    elections_start_before. The first must come back before the third is needed."""
+    s = DEC5_SCHEDULE
+    returns = s["elected_for"] + s["stake_held_for"]
+    third_opens = 2 * s["elected_for"] - s["elections_start_before"]
+    assert (returns, third_opens) == (108000, 129600)  # S + 30 h, S + 36 h
+    assert returns <= third_opens
 
 
 def test_epoch5_schedule_record_matches_the_template_arithmetic():
@@ -691,17 +714,20 @@ def schedule_profile(**changes):
 
 
 def test_repository_schedule_is_the_decided_one():
-    assert lib.validator_schedule(lib.load_profile()) == EPOCH6_SCHEDULE
+    assert lib.validator_schedule(lib.load_profile()) == DEC5_SCHEDULE
 
 
 @pytest.mark.parametrize(
     "changes, message",
     [
-        ({"elections_end_before": 7200}, "end_before < elections_start_before"),
-        ({"elections_start_before": 14400}, "start_before < elected_for"),
+        ({"elections_end_before": 43200}, "end_before < elections_start_before"),
+        ({"elections_start_before": 86400}, "start_before < elected_for"),
+        # The first stake would still be frozen when the election after next opens.
+        ({"stake_held_for": 43201}, "two stakes per pool would not suffice"),
+        ({"elections_start_before": 64801}, "two stakes per pool would not suffice"),
         (
             {
-                "initial_set_valid_for": EPOCH6_SCHEDULE["elections_start_before"]
+                "initial_set_valid_for": DEC5_SCHEDULE["elections_start_before"]
                 + lib.MIN_FIRST_ELECTION_LEAD_SECONDS
                 - 1
             },
@@ -730,7 +756,7 @@ def test_schedule_refuses_missing_or_extra_election_params():
 
 
 def test_schedule_accepts_the_least_lead_time():
-    least = EPOCH6_SCHEDULE["elections_start_before"] + lib.MIN_FIRST_ELECTION_LEAD_SECONDS
+    least = DEC5_SCHEDULE["elections_start_before"] + lib.MIN_FIRST_ELECTION_LEAD_SECONDS
     assert lib.validator_schedule(schedule_profile(initial_set_valid_for=least))
 
 
@@ -738,7 +764,7 @@ def test_load_profile_refuses_an_unworkable_schedule(tmp_path):
     # Every script loads the profile first, so a bad schedule must stop them all,
     # not only the genesis step that patches the template.
     path = tmp_path / "profile.json"
-    path.write_text(json.dumps(schedule_profile(elections_end_before=7200)))
+    path.write_text(json.dumps(schedule_profile(elections_end_before=43200)))
     with pytest.raises(lib.TestnetError, match="end_before"):
         lib.load_profile(path)
 
@@ -1549,3 +1575,8 @@ def test_a_send_is_never_retried():
 def test_wrapping_twice_keeps_one_bound():
     read = lib.retrying_reads(FlakyRpc())
     assert lib.retrying_reads(read) is read
+
+
+def test_two_stakes_boundary_is_accepted():
+    # stake_held_for + elections_start_before == elected_for: back just in time.
+    assert lib.validator_schedule(schedule_profile(stake_held_for=43200))

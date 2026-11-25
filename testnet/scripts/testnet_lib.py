@@ -484,6 +484,18 @@ def validator_schedule(profile: dict[str, Any]) -> dict[str, int]:
             f"the first election would open {lead} s after genesis; operators need at least "
             f"{MIN_FIRST_ELECTION_LEAD_SECONDS} s to fund and deposit their stakes"
         )
+    # Each pool holds two stakes (elections.pool_tos): the one frozen for the current
+    # term and the one placed in the overlapping next election. A stake placed for a
+    # term is frozen until the term ends plus stake_held_for, and the election after
+    # next opens elections_start_before before the term after next, i.e. at the term's
+    # start + 2 x elected_for - elections_start_before. The first stake must be back
+    # by then, or a third would be needed.
+    if values["stake_held_for"] + values["elections_start_before"] > values["elected_for"]:
+        raise TestnetError(
+            "stake_held_for + elections_start_before exceeds elected_for: a pool's first "
+            "stake would still be frozen when the election after next opens, and two stakes "
+            "per pool would not suffice"
+        )
     return values
 
 

@@ -24,7 +24,8 @@ GOOD_FACTS = {
     "cpu_model": "Intel Xeon Processor (Icelake)",
     "cpu_flags": "fpu cx16 lahf_lm popcnt sse4_1 sse4_2 ssse3 avx2",
     "mem_kib": str(int(11.6 * 1048576)),
-    "disk_free_kib": str(88 * 1048576),
+    # A 200 GB disk with the node installed: above the 120 GiB validator floor.
+    "disk_free_kib": str(150 * 1048576),
     "ipv4": "203.0.113.10 ",
     "ntp": "yes",
     "ntp_source": "ntpd:1",
@@ -488,7 +489,7 @@ def test_local_mode_runs_every_host_check_without_ssh(as_root, monkeypatch, tmp_
     report = json.loads(out.read_text())
     assert report["version"] == "tos-testnet.preflight-local.v1"
     assert report["passed"] is True and report["name"] == "node-x"
-    assert report["floor"] == {"min_cpus": 4, "min_memory_gib": 11, "min_disk_free_gib": 60}
+    assert report["floor"] == {"min_cpus": 4, "min_memory_gib": 11, "min_disk_free_gib": 120}
     found = {r["check"]: r["status"] for r in report["results"]}
     for check in ("os", "arch", "cpu", "memory", "disk", "address", "time", "ufw", "ports"):
         assert found[check] == "PASS", check

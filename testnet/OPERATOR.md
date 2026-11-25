@@ -8,7 +8,9 @@ seat: on December 5, 2026 the genesis validator set is the team's two
 validators, and an external validator registers its public record and pool
 before genesis (registration closes on November 30), is written to the
 ceremony's `genesis-records.json` but not to the zero state, and stands from the
-first election (opens at T + 5 h; the elected set takes office at T + 6 h). Your
+first election (open from T + 12 h to T + 22 h; the elected set takes office at
+T + 24 h). Each elected set then serves 24 h, and each election is open for 10 h
+ending 2 h before its term (all times UTC). Your
 pool stakes one unit (`elections.stake_tos`, 10,002 TOS), funded by the
 coordinator. The two team pools stake (E+1)/2 units each for E external
 validators, so the team holds a little over half of the weight and the external
@@ -99,7 +101,10 @@ it is not a no-signing check and requires signing permission.
 **Operator prerequisites:** dedicated host, static public IPv4 or verified UDP
 forwarding/hairpin NAT, provider console access, root administration and enough
 NVMe endurance. The current validator preflight floors are **4 CPUs, 11 GiB
-MemTotal, 60 GiB free** on Ubuntu 24.04. These are installation floors, not a
+MemTotal, 120 GiB free** on Ubuntu 24.04, on a recommended **200 GB SSD or
+NVMe**: a full 21-validator set is estimated to hold up to about 90 GB of
+consensus, state and archive data at once (about 30 h at 2.2-3 GB/h), and the
+load guard and the stall rules stop at 20 GiB free. These are installation floors, not a
 production capacity guarantee. See [profile](network/profile.json) and
 [hardware proposal](../production/Hardware-and-Hosting.md).
 
