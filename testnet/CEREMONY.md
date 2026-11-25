@@ -48,7 +48,22 @@ python3 $S/testnet-coordinator.py plan --external-validators <E>
 ```
 
 and copies the four values it prints under `set_in_profile` into
-`network/profile.json` (reviewed and committed like any profile change). The
+`network/profile.json` (reviewed and committed like any profile change).
+
+In the same change, set the validator disk floor (`host_requirements` validator
+`min_disk_free_gib`) for the real set size N = 2 + E, using the arithmetic in
+section 8:
+- the consensus and state rate scales with the ceil(2N/3) signatures each
+  certificate carries;
+- the archive rate scales the same way;
+- add the load-window allowance, the base, 15 % headroom and the 20 GiB stop
+  level.
+
+The 160 GiB default is the value for N = 21. Never set the floor below what this
+arithmetic gives, and publish the final floor in the December 1–4 packet. The
+invitation tells participants that the packet's floor is the binding one.
+
+The
 plan is `testnet_lib.election_plan`: it simulates the Elector's choice
 (`elector-code.fc` `try_elect`) and refuses unless an election of the two team
 pools alone concludes and elects both (E = 0 included), all 2 + E pools are
