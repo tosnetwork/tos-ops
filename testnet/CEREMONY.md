@@ -192,6 +192,34 @@ the first testnet hosts that flag said yes while ntpsec had no server at all.
 The VMs had IPv6 addresses but no working IPv6 path, so ntpd chose IPv6
 servers, dropped them, and kept nothing.
 
+**Continuously, on every validator, team or external.** The validators come
+from many time zones, and every one keeps its clock disciplined by NTP for the
+whole test: ntpsec (`setup-time.sh`) or chrony running with a selected source,
+within 100 ms of NTP time. The limit follows consensus timing: a candidate is
+validated no earlier than 300 ms (`min_block_interval`) after its parent by the
+local clock, and slots target 400 ms, so 100 ms is a third of the minimum
+interval; a disciplined VPS clock stays within a few milliseconds.
+
+- **All times are UTC**, whatever an operator's local time zone; hosts may
+  keep any time zone setting, since the kernel clock and NTP are UTC either way.
+- **Refused at start:** `preflight.py --local` fails the `time` check (not
+  waivable) on an unsynchronised clock, on a clock no ntpsec or chrony
+  disciplines (systemd-timesyncd alone is not enough), with no selected source
+  or beyond 100 ms; `install-node.sh activate --role validator` and
+  `enable-elections.sh` refuse to start on a clock `check-clock.py` rejects.
+- **Daily check** on every validator host: `python3
+  /opt/tos-testnet/scripts/check-clock.py`, expected `clock ok: ntpd with 1
+  selected source, offset ... ms (limit 100 ms), NTPSynchronized=yes`, exit 0
+  ([OPERATOR.md §2](OPERATOR.md#2-host-requirements-clock-and-preflight) gives the
+  operators a cron alarm that runs it every 10 minutes).
+- **Monitoring, team hosts:** `watch-testnet.py` reads the clock in every
+  round (`check-host-disk.py` reports `clock_synced`, `clock_daemon`,
+  `clock_sources`, `clock_offset_ms`) and raises `<host>:clock_unsynced`
+  (NTPSynchronized not yes, no ntpsec or chrony, or no selected source) or
+  `<host>:clock_offset=<ms>ms` beyond `--max-clock-offset-ms` (default 100), which
+  the alert relay forwards like every anomaly. Treat either as an incident: the
+  host votes late or not at all until it is fixed.
+
 ## 0.5 Preflight every host
 
 Every host is checked against the same floors before anything is installed,

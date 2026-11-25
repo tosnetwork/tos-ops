@@ -42,6 +42,11 @@ def report(seqno=100, head_age=1.0, shard_age=2.0, restarts=0, net=0, active="ac
         "refusal_answers_total": 0,
         "cpu_busy_pct": None,
         "cpu_iowait_pct": None,
+        # A clock disciplined by ntpsec, well within the 100 ms limit.
+        "clock_synced": True,
+        "clock_daemon": "ntpd",
+        "clock_sources": 1,
+        "clock_offset_ms": 0.4,
     }
 
 
@@ -359,3 +364,43 @@ def test_probe_retries_once_after_a_failed_read():
     got = watch_testnet.probe(host, 0, run=flaky, retry_after=5, sleep=slept.append)
     assert got["head_seqno"] == 100
     assert len(calls) == 2 and slept == [5]
+
+
+# ---------------------------------------------------------------- clock discipline
+
+
+@pytest.mark.parametrize(
+    "changes, anomaly",
+    [
+        ({"clock_synced": False}, "node-1:clock_unsynced"),
+        ({"clock_synced": None}, "node-1:clock_unsynced"),
+        ({"clock_daemon": None, "clock_sources": None}, "node-1:clock_unsynced"),
+        ({"clock_sources": 0}, "node-1:clock_unsynced"),
+        ({"clock_offset_ms": 150.25}, "node-1:clock_offset=+150.2ms"),
+        ({"clock_offset_ms": -101.0}, "node-1:clock_offset=-101.0ms"),
+    ],
+)
+def test_an_undisciplined_or_offset_clock_is_an_anomaly(tmp_path, changes, anomaly):
+    judge = watch_testnet.Judge(make_args(tmp_path))
+    current = watch_testnet.row(0.0, "node-1", dict(report(), **changes))
+    assert anomaly in judge(current)
+
+
+def test_a_disciplined_clock_within_the_limit_raises_nothing(tmp_path):
+    judge = watch_testnet.Judge(make_args(tmp_path))
+    for offset in (0.0, 99.9, -100.0):
+        current = watch_testnet.row(0.0, "node-1", dict(report(), clock_offset_ms=offset))
+        assert not [a for a in judge(current) if "clock" in a]
+
+
+def test_the_clock_limit_is_an_option(tmp_path):
+    judge = watch_testnet.Judge(make_args(tmp_path, max_clock_offset_ms=10.0))
+    current = watch_testnet.row(0.0, "node-1", dict(report(), clock_offset_ms=12.0))
+    assert "node-1:clock_offset=+12.0ms" in judge(current)
+    assert watch_testnet.MAX_CLOCK_OFFSET_MS == 100.0
+
+
+def test_a_clock_daemon_the_probe_never_reports_is_invalid():
+    assert not watch_testnet.valid_report(dict(report(), clock_daemon="timesyncd"))
+    assert not watch_testnet.valid_report(dict(report(), clock_synced="yes"))
+    assert watch_testnet.valid_report(report())

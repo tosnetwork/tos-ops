@@ -13,7 +13,8 @@
 # node NAME, turns tosctl's explorer indexer off (indexer_enabled: false),
 # installs systemd/tos-testnet-elections.service and starts it. The task and
 # every tosctl call here run as the non-login user tos-ctl (created if missing).
-# Refuses unless the node is bound to a wallet and a pool (onboard-validator).
+# Refuses unless the clock is NTP-disciplined (check-clock.py) and the node is
+# bound to a wallet and a pool (onboard-validator).
 # Then waits until the task has opened the wallet and the pool, or reports
 # what it logged instead.
 set -euo pipefail
@@ -49,6 +50,9 @@ UNIT_STAKE="$(profile elections stake_tos)"
 [[ "$FACTOR" =~ ^[1-9][0-9]?(\.[0-9]+)?$|^100(\.0+)?$ ]] || die "--max-factor must be a decimal from 1.0 to 100.0"
 [ -f /etc/tos/tosctl.env ] || die "/etc/tos/tosctl.env is missing; run init-operator.sh first"
 [ -d "$DIR" ] || die "$DIR is missing; run init-operator.sh first"
+# A validator stakes only with an NTP-disciplined clock: consensus reads it.
+python3 "$HERE/check-clock.py" \
+  || die "the clock is not NTP-disciplined (above); run setup-time.sh and check again before enabling elections"
 # The task runs as tos-ctl (see the unit); so does every tosctl call here, so
 # nothing it writes in /var/lib/tos-ctl becomes root-owned.
 if ! id -u "$USER_NAME" >/dev/null 2>&1; then

@@ -1421,6 +1421,43 @@ M += [
         "    return stake_nanotos + surplus_nanotos\n",
         "    return stake_nanotos - ELECTOR_CONFIRMATION_NANOTOS\n",
     ),
+    # The clock discipline: NTP at all times, within 100 ms.
+    (
+        "C1 an unsynchronised clock passes the clock check",
+        W / "scripts/check-host-disk.py",
+        '    if facts.get("clock_synced") is not True:\n',
+        "    if False:\n",
+    ),
+    (
+        "C2 a clock beyond the offset limit passes the clock check",
+        W / "scripts/check-host-disk.py",
+        "    elif abs(offset) > max_offset_ms:\n",
+        "    elif False:\n",
+    ),
+    (
+        "C3 preflight ignores the clock offset and daemon",
+        PREFLIGHT,
+        '        facts.get("ntp") == "yes" and disciplined and has_source and close,\n',
+        '        facts.get("ntp") == "yes" and has_source,\n',
+    ),
+    (
+        "C4 the watch raises no clock anomaly",
+        W / "scripts/watch-testnet.py",
+        "            found.extend(clock_anomalies(name, current, args))\n",
+        "",
+    ),
+    (
+        "C5 enable-elections starts on any clock",
+        W / "scripts/enable-elections.sh",
+        'python3 "$HERE/check-clock.py" \\\n',
+        'true "$HERE/check-clock.py" \\\n',
+    ),
+    (
+        "C6 a validator is activated on any clock",
+        INSTALL,
+        '    python3 "$HERE/check-clock.py" \\\n',
+        '    true "$HERE/check-clock.py" \\\n',
+    ),
 ]
 
 

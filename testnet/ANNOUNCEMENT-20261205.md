@@ -67,6 +67,14 @@ You can start with a zero-balance wallet. The coordinator allocates testnet TOS 
 
    Fix every FAIL and rerun with a new `--out` file. The UDP line stays a warning until a probe from outside proves your ports are reachable; the coordinator can send probes from its own machine to your public address, which needs no access to your VPS. [Host preparation, preflight and the UDP probe test](OPERATOR.md#2-host-requirements-clock-and-preflight)
 
+4. **Keep your clock on NTP for the whole test.** Validators join from many time zones, and consensus reads each machine's clock, so every validator must keep its clock disciplined by an NTP service (ntpsec, which the setup installs, or chrony) with a selected time source, at all times and not only during setup, within 100 ms of NTP time. All testnet times are **UTC**, whatever your local time zone; your VPS may keep any time zone setting. Check it every day and after every reboot, and set the 10-minute alarm from the operator guide:
+
+   ```bash
+   python3 /opt/tos-testnet/scripts/check-clock.py
+   ```
+
+   Expected: one line starting `clock ok:` and exit status 0. A `clock NOT OK:` line means your validator is voting late or not at all: fix it and tell the coordinator. The node and the election service refuse to start on a clock that fails this check. [Clock](OPERATOR.md#2-host-requirements-clock-and-preflight)
+
 ## Create your first operator wallet
 
 After installing `tosctl`, run this on your VPS. Replace the placeholder with the node name assigned by the coordinator.
@@ -123,7 +131,7 @@ Two things can stop the network. If too much weight is offline at once, blocks s
 
 ## Monitor your validator during the test
 
-- Check node and election service status, chain progress, restarts, free disk space and operator wallet fee balance.
+- Check node and election service status, chain progress, restarts, free disk space, the clock (`check-clock.py`, daily) and operator wallet fee balance.
 - At each election, confirm stake acceptance and active-set membership. Check stake recovery when it is due. Report an expired term even if blocks are still advancing.
 - If chain progress stalls, an election fails, fees run low or disk usage grows unexpectedly, report the UTC time, node name, public pool address, last chain head and relevant sanitized log lines. If the outcome of a transaction is unclear, ask the coordinator to reconcile the original attempt before retrying.
 - Tell the coordinator before scheduled maintenance or leaving so they can check your active duties and outstanding stakes.

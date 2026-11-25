@@ -128,7 +128,51 @@ production capacity guarantee. See [profile](network/profile.json) and
 
    Expected: ntpsec follows a selected reachable server (`*` in `ntpq`), using
    IPv4. `NTPSynchronized=yes` alone is insufficient. On failure fix clock/network
-   reachability; do not prepare a node with an unproven clock.
+   reachability; do not prepare a node with an unproven clock. `setup-time.sh`
+   adds `ntp.nict.jp` beside the Ubuntu pool; on another continent pass a
+   nearby server instead, for example `setup-time.sh time.cloudflare.com`.
+
+   **Keep the clock disciplined by NTP at all times, not only now.** Consensus
+   reads the local clock (a candidate is validated no earlier than 300 ms after
+   its parent; slots target 400 ms), so a validator whose clock drifts votes
+   late or not at all. Keep ntpsec (installed by `setup-time.sh`, which
+   `install-node.sh prepare` also runs) or chrony running with a selected
+   source, within **100 ms** of NTP time. `install-node.sh activate --role
+   validator` and `enable-elections.sh` refuse to start on a clock that fails
+   this check.
+
+   **All testnet times are UTC**, whatever your local time zone: launch,
+   election windows, handovers and the times in your reports. Your host may keep
+   any time zone setting; the kernel clock and NTP are UTC either way. Convert
+   published times yourself (`date -u` prints UTC now).
+
+   **Daily check**, and after every reboot:
+
+   ```bash
+   python3 /opt/tos-testnet/scripts/check-clock.py
+   ```
+
+   Expected, exit status 0:
+
+   ```text
+   clock ok: ntpd with 1 selected source, offset -0.412 ms (limit 100 ms), NTPSynchronized=yes
+   ```
+
+   Any `clock NOT OK: ...` line (exit status 1) names what is wrong: no
+   `NTPSynchronized=yes`, no ntpsec or chrony answering, no selected source, or
+   an offset beyond 100 ms. Rerun `setup-time.sh` (with a nearby server), check
+   outbound UDP 123, and tell the coordinator if it does not recover.
+
+   **Alarm.** Run the same check every 10 minutes from cron so a lapse reaches
+   you, not only the daily look; for example `/etc/cron.d/tos-clock`:
+
+   ```text
+   */10 * * * * root python3 /opt/tos-testnet/scripts/check-clock.py --quiet || logger -p user.err -t tos-clock "clock not NTP-disciplined"
+   ```
+
+   and watch for `tos-clock` in `journalctl -p err`, or forward it to your own
+   alerting. The coordinator's monitor raises the same condition for the team's
+   hosts.
 3. **Run the preflight on this host yourself.** It reads the same facts and
    applies the same floors as the coordinator's preflight of team hosts
    ([§0.5](CEREMONY.md#05-preflight-every-host)), locally, and changes nothing:
@@ -140,7 +184,8 @@ production capacity guarantee. See [profile](network/profile.json) and
 
    It checks Ubuntu 24.04, the architecture and x86-64-v2 instructions, CPUs,
    memory and free disk against the validator floors, whether the public address
-   is on an interface (a WARN behind NAT), NTP with a selected server, ufw rules
+   is on an interface (a WARN behind NAT), NTP (ntpsec or chrony with a selected
+   server, within 100 ms of NTP time; this check cannot be waived), ufw rules
    for UDP 30001/31001 with console 30002 closed, and whether another program
    holds those ports. Expected: no FAIL. Fix every FAIL and rerun with a new
    `--out` file. Send the JSON report to the coordinator. If the coordinator

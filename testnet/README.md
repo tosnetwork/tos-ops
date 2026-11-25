@@ -50,7 +50,8 @@ testnet/
 │   ├── install-node.sh           prepare | activate one node (root)
 │   ├── check-testnet.py          independent nodes agree on one live chain; ConfigParam 34 after a rotation
 │   ├── check-handover.py         collect | verify: every block around a set handover is finalized by its chain-selected set
-│   ├── check-host-disk.py        one host's disk, consensus/, unit, memory, head and CPU; refuses below a floor
+│   ├── check-clock.py            the clock is NTP-disciplined (ntpsec or chrony, a selected source, within 100 ms); daily and from cron
+│   ├── check-host-disk.py        one host's disk, consensus/, unit, memory, head, CPU and clock; refuses below a floor
 │   ├── watch-testnet.py          coordinator: sample every validator on a schedule, keep a TSV, report anomalies
 │   ├── watch_extra_resources.py  coordinator: pinned PID/boot/OOM/reserve guard on node-1..4 (resource_extra_probe.py)
 │   ├── alert-relay.py            coordinator | peer: watch anomalies and heartbeats to Telegram; silence | unsilence

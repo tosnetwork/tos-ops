@@ -260,3 +260,17 @@ def test_the_unit_reads_the_cache_variable_the_drop_in_sets():
     for variable in ("TOS_ROCKSDB_BLOCK_CACHE_SIZE", "TOS_CELLDB_CACHE_BYTES"):
         assert f"Environment={variable}=" in unit
     assert unit.count("${TOS_CELLDB_CACHE_BYTES}") == 2
+
+
+# ---------------------------------------------------------------- the clock
+
+
+def test_a_validator_is_not_activated_on_an_undisciplined_clock(fake_host, tmp_path):  # noqa: F811
+    ok(fake_host([PREPARE]))
+    # ntpsec answers but has lost its source: the kernel still says synchronized.
+    (tmp_path / "fakebin" / "ntpq").write_text("#!/bin/sh\necho '     remote  refid'\n")
+    result = fake_host([ACTIVATE])
+    assert result is not None and "the clock is not NTP-disciplined" in result.stderr
+    assert "clock NOT OK: ntpd has no selected NTP source" in result.stdout
+    # Nothing was started.
+    assert not any(fake_host.state.iterdir())
