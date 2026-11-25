@@ -53,11 +53,11 @@ You may take part, and may receive the reward, only if all of the following are 
 
 1. You are an individual who has reached the age of majority where you live, and at least 18 years old. Persons under that age may not register, even with a guardian's consent.
 2. You can enter into a binding agreement under the law that applies to you.
-3. You are not, and you are not owned or controlled by:
+3. You are not:
    - a person on a sanctions list maintained by the United Nations, the United States (including the U.S. Treasury's OFAC lists), the European Union or the United Kingdom; or
-   - a person located in, ordinarily resident in, or organised under the law of, a country or region subject to country-wide or region-wide sanctions under any of those regimes. At the date of this policy these include Cuba, Iran, North Korea, and the Crimea, so-called Donetsk People's Republic and so-called Luhansk People's Republic regions of Ukraine. The paying entity publishes the current list with the claim instructions.
+   - a person located in or ordinarily resident in a country or region subject to country-wide or region-wide sanctions under any of those regimes. At the date of this policy these include Cuba, Iran, North Korea, and the Crimea, so-called Donetsk People's Republic and so-called Luhansk People's Republic regions of Ukraine. The paying entity publishes the current list with the claim instructions.
 4. Taking part, and receiving and holding the reward, are lawful for you where you live and where you are a tax resident.
-5. You are not a member, employee or contractor of the team, the paying entity or any coordinator of this campaign. You are not an immediate family or household member of one, and you have no access to non-public campaign information. You are not participating on behalf of one of them, and you are not registering an identity for someone else.
+5. You are not a member, employee or contractor of the team, the paying entity or any coordinator of this campaign, other than under this campaign's services terms. You are not an immediate family or household member of one, and you have no access to non-public information that gives an unfair advantage in qualifying. You are not participating on behalf of one of them, and you are not registering an identity for someone else.
 6. You meet the identity and tax documentation requirements in section 4 before payment.
 
 **U.S. persons are not excluded.** U.S. citizens and U.S. tax residents may register and take part. To receive the reward, they must meet every condition in this policy, including the U.S. tax documentation in section 4.
@@ -82,7 +82,7 @@ Before any reward is paid, each qualified participant must complete the steps be
 4. **Reporting and withholding.**
    - The paying entity may be required to report payments to tax authorities. For U.S. persons this may include an information return in the IRS Form 1099 series.
    - Where the law requires, it may withhold tax from the reward, for example backup withholding if the IRS notifies the paying entity that a U.S. person's taxpayer identification number is incorrect.
-   - Because the reward is paid in TOS, the paying entity may deliver fewer TOS, or sell part of the reward, to cover an amount it must withhold, and reports that amount as the law requires.
+   - Because the reward is paid in TOS, the paying entity may deliver fewer TOS, or sell part of the reward, to cover an amount it must withhold.
    - Any amount withheld is reported as the law requires.
    - The paying entity does not increase the reward to cover tax.
 5. **Payment address.** You provide a mainnet address that you control. A payment sent to the address you gave is final. The team cannot recover tokens sent to a wrong or lost address.
@@ -126,7 +126,7 @@ The paying entity may disqualify a participant, withhold or reclaim a reward, an
 - **Before December 5, 2026:** the team may change or cancel the campaign and this policy by announcing it in the official channels.
 - **After December 5, 2026:** the team changes the published rules only to correct errors or where the law requires it. Every change is announced.
   - A change that reduces a participant's reward or adds conditions applies only if the law requires it.
-  - A participant who does not accept such a change may withdraw. They are then paid a pro-rata share of the reward, in proportion to the verified days of the 14-day test they completed, on the payment terms of section 6.
+  - A participant who does not accept such a change may withdraw. They are then paid a pro-rata share of the reward, in proportion to the verified days of the 14-day test they completed, on the payment terms of section 6, unless the law forbids that payment.
 - If the campaign does not proceed, for example because fewer than five qualified external applicants register by the deadline, no reward is owed under it.
 
 ## 9. Personal data
@@ -159,7 +159,7 @@ The paying entity may disqualify a participant, withhold or reclaim a reward, an
 
 - **Relationship.** Participants act as independent contractors. Nothing in this policy creates employment, agency, partnership or a joint venture, and participants cannot bind the team or the paying entity.
 - **Mandatory law.** Nothing in this policy removes rights you have under mandatory law, including consumer law, that cannot be excluded by agreement.
-- **Withdrawal.** You may withdraw at any time by telling the coordinator. A participant who withdraws before qualifying receives no reward.
+- **Withdrawal.** You may withdraw at any time by telling the coordinator. A participant who withdraws before qualifying receives no reward, except as section 8 provides.
 - **The draft and the final policy.** If the final policy published before December 5 differs materially from this draft, you may withdraw without penalty.
 - **Language.** The English version is binding. Translations are for convenience.
 - **Severability.** If a provision is invalid, the rest remains in force.

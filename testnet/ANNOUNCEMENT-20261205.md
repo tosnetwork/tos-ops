@@ -22,13 +22,13 @@ We invite external operators to run a validator in the next TOS public testnet. 
 
 **Individual reward is a separate determination.** The announced reward is **1,000 mainnet TOS per qualified individual**, paid **after the mainnet launch**, and not paid in testnet tokens. Registering, preparing hardware, or appearing in an election does not automatically qualify anyone. Individual eligibility requires approved onboarding, participation during the assigned **14-day test**, acceptable node uptime and synchronization, completion of requested tests, and supporting evidence/feedback. The team will publish the exact uptime threshold, acceptance method, exceptions and claim instructions **before testing begins on December 5**. Until those rules and the individual's results are verified, individual reward qualification is pending. A person running multiple nodes cannot claim more than one participation reward. The collective success threshold does not by itself determine anyone's individual reward outcome.
 
-**Where the reward comes from.** The reward is funded from the staking rewards that validators operated by the TOS team earn on mainnet. It is not a new issuance or an allocation from the genesis supply, and it does not change the token economics. It is paid out as those rewards accrue, so payment starts after mainnet launch and may arrive in instalments; mainnet has no fixed launch date, and if it has not launched by December 31, 2027, no reward is payable. **At most 19 individuals can receive the reward in this campaign: one for each external validator seat.**
+**Where the reward comes from.** The reward is funded from the staking rewards that validators operated by the TOS team earn on mainnet. It is not a new issuance or an allocation from the genesis supply, and it does not change the token economics. It is paid out as those rewards accrue, so payment starts after mainnet launch and may arrive in instalments; mainnet has no fixed launch date, and if it has not launched by December 31, 2027, or the paying entity announces before then that it will not launch, no reward is payable. **At most 19 individuals can receive the reward in this campaign: one for each external validator seat.**
 
 **Eligibility, tax and terms.** One set of rules applies to every participant in every country: the [Validator Reward Terms and Eligibility Policy](VALIDATOR-REWARD-TERMS.md). It is a draft under legal review and will be final before December 5. If it and this invitation differ on any matter the policy covers, the policy wins.
 
 - **U.S. persons are not excluded.** U.S. citizens and U.S. tax residents must meet the same eligibility conditions as everyone else, and before payment they provide IRS Form W-9.
 - **Who cannot take part:**
-  - sanctioned persons, and people resident in comprehensively sanctioned countries or regions;
+  - sanctioned persons, and people located in or resident in a country or region under country-wide or region-wide sanctions (see the policy);
   - the team's own members and contractors.
 - **Before payment:**
   - identity verification, which enforces one reward per person and sanctions screening;
@@ -42,7 +42,7 @@ We invite external operators to run a validator in the next TOS public testnet. 
 
 **Costs and key safety.** No TOS purchase or mainnet deposit is required. Testnet TOS has no value, and the testnet may be paused, reset or ended early. Participants cover their own VPS and networking costs unless separately agreed. Never send the coordinator, support staff, or other participants your mnemonic, consensus seed, wallet private key or vault credentials.
 
-**Your data.** The team keeps your operator name, contact handle, time zone, VPS public IP address and the public records you send, only for the purposes in section 9 of the [policy](VALIDATOR-REWARD-TERMS.md): running this test, verifying results, one reward per person, sanctions screening, tax compliance and paying rewards. Public chain data stays public. Ask the coordinator to delete the rest after the campaign ends.
+**Your data.** The team keeps your operator name, contact handle, time zone, VPS public IP address and the public records you send, only for the purposes in section 9 of the [policy](VALIDATOR-REWARD-TERMS.md): running this test, verifying results, one reward per person, sanctions screening, tax compliance and paying rewards. Public chain data stays public. Test data needed for rewards is kept until your reward is paid or forfeited; see section 9 of the policy for deletion.
 
 ## Start here
 
