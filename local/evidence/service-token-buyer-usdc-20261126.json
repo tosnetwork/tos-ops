@@ -6,7 +6,7 @@
     "tools_tos": "58015fcdfe3d3ea23ff23c1bfc6aec377361b38e",
     "ai": "ac2a2a0e4dd938fc12d0aef7fc4c92b1ba9087cf",
     "execution_build_parent": "eb2d316e",
-    "execution_build_note": "executed the reviewed working-tree extension; final independent reconstruction uses the clean committed build"
+    "execution_build_note": "executed the working-tree extension; final independent reconstruction uses the clean committed build"
   },
   "tosctl_sha256": "4da61d5595f6d3c78f4361790b182c0d6953d0ed32bd3b9b990ea3e65fcf2141",
   "network": {
@@ -267,5 +267,5 @@
     "The native offer/preflight projections remain native-only; token binding uses token inspection.",
     "No public-network, second-asset or forced receiver-refusal acceptance is claimed."
   ],
-  "upstream": "No corresponding operations/provider/client code at upstream 857b8a57a178e6ae0fe7fa86e7d81c5233de8560; inherited validator and VM code unchanged."
+  "upstream": "No corresponding operations/provider/client code at fetched upstream 99143587e6babb2e577eadea0fc741cb1b413fab; inherited validator and VM code unchanged."
 }
