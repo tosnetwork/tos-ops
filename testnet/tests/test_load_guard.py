@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
-from conftest import SCRIPTS
+from testnet_support import SCRIPTS
 
 spec = importlib.util.spec_from_file_location("load_guard", SCRIPTS / "load-guard.py")
 lg = importlib.util.module_from_spec(spec)

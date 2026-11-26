@@ -8,8 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 import testnet_lib as lib
-from conftest import SCRIPTS
 from load_qualification import Qualification, check_genesis
+from testnet_support import SCRIPTS
 
 
 def audit(tmp_path, **kw):

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 import testnet_lib as lib
-from conftest import SCRIPTS
+from testnet_support import SCRIPTS
 
 spec = importlib.util.spec_from_file_location("testnet_operator", SCRIPTS / "testnet-operator.py")
 operator = importlib.util.module_from_spec(spec)

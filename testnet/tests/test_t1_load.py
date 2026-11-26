@@ -12,7 +12,7 @@ import textwrap
 import time
 
 import pytest
-from conftest import SCRIPTS
+from testnet_support import SCRIPTS
 
 spec = importlib.util.spec_from_file_location("t1_load", SCRIPTS / "t1-load.py")
 tl = importlib.util.module_from_spec(spec)

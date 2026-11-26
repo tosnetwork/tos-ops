@@ -526,8 +526,10 @@ none first (`plan --external-validators 0 --write`):
 TOS_ROOT=$TOS_ROOT TOS_BUILD=$TOS_ROOT/build testnet/scripts/rehearse-loopback.sh /path/to/new/workdir
 ```
 
-Unit tests need only pytest (the tos environment has it). With `TOS_ROOT`
-set they also check the patch against the real template, and with `TOS_BIN`
+Install the [hash-locked test dependencies](../README.md#test-environment) into
+the prepared tos environment first. The full suite includes real signature
+verification and builds the small CON-01 helper against trusted OpenSSL >= 3.5.
+With `TOS_ROOT` set it also checks the patch against the real template, and with `TOS_BIN`
 naming release binaries they exercise the console set-up:
 
 ```bash

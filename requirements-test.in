@@ -1,0 +1,4 @@
+# Install into the prepared tos Python environment; see README.md.
+pytest==9.0.2
+dilithium-py==1.1.0
+ruff==0.15.2

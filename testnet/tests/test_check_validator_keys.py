@@ -6,15 +6,12 @@ check_validator_keys_mutants.py shows that each guard is needed: removing it tur
 """
 
 import base64
-import copy
 import gzip
 import importlib.util
 import json
-from pathlib import Path
 
 import pytest
-
-from conftest import DATA, SCRIPTS
+from testnet_support import DATA, SCRIPTS
 
 D = DATA / "validator-keys"
 spec = importlib.util.spec_from_file_location("check_validator_keys", SCRIPTS / "check-validator-keys.py")

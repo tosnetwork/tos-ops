@@ -12,8 +12,8 @@ import fakechain
 import pytest
 import testnet_lib as lib
 import testnet_ops as ops
-from conftest import DATA, SCRIPTS
 from fakechain import NANO, build_external, internal_message
+from testnet_support import DATA, SCRIPTS
 
 BOOT = "-1:" + "11" * 32
 DEST = "-1:" + "de" * 32

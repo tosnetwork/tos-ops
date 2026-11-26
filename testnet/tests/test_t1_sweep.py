@@ -10,9 +10,8 @@ import time
 from types import SimpleNamespace
 
 import pytest
-from conftest import SCRIPTS
-
 import t1_sweep_emu as E
+from testnet_support import SCRIPTS
 
 _why = None if (E.SIGNER.is_file() and (E.TOS / "build/crypto/func").exists()) else "no pinned tos checkout or signer"
 pytestmark = pytest.mark.skipif(_why is not None, reason=_why or "")

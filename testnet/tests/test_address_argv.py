@@ -14,7 +14,7 @@ import shlex
 
 import pytest
 import testnet_lib as lib
-from conftest import SCRIPTS
+from testnet_support import SCRIPTS
 
 POOL = "-1:" + "5c" * 32
 OWNER = "-1:" + "0e" * 32

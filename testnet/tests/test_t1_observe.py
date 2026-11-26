@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 import t1_probe
-from conftest import SCRIPTS
+from testnet_support import SCRIPTS
 
 spec = importlib.util.spec_from_file_location("t1_observe", SCRIPTS / "t1-observe.py")
 obs = importlib.util.module_from_spec(spec)
