@@ -1,0 +1,454 @@
+{
+  "schema": "local-service-token-usdc-run/1",
+  "scope": "existing local network only; incomplete end-to-end acceptance",
+  "network": {
+    "global_id": 3,
+    "global_version": 16,
+    "genesis_root": "65735247a371030abe811aeac0afe357301ce90e161450d26f88b4beb5b4c366",
+    "genesis_file": "c3860fe196a2a1b5e4e74a9cf9448624a353ce68a8c4c5f6413347586d688769"
+  },
+  "sources": {
+    "running_tos": "b9a5a0406193d3577022b5c856bab9f77836f58b",
+    "tools_tos": "1d7fb39462db7d9d0988b00023d3638b59e0d9fa",
+    "ai": "8d16d59bdb948cd203f69a08af04486e38010fa1",
+    "tos_ops_base": "920e4acbaf018b17230e7efc14ef75f5e5b6454e"
+  },
+  "tosctl_sha256": "9d01dfb4912b1d1f774fc58b859c0410569062432befadafc9ee98f3aad2324e",
+  "actor": "0:70b5f1b98874a08095b21be4a483b335737ce8d016861ad64afe01bd5ccd32a1",
+  "actor_code_hash": "edf727b8bb61786e33e3e00dc57fa1db41f8eeb6cbddc0382b3e8daf227e4c89",
+  "lifecycles": [
+    {
+      "case": "responded",
+      "status": "PASS_CONTRACT_PATH",
+      "transaction": {
+        "lt": 171164000003,
+        "hash": "35f6a1a3d9b6285b385f90904cb7bd4862e6ea081fc5e013eef3853813adc031"
+      },
+      "amount_atomic": "1000000",
+      "independent_resolver": {
+        "command": "tos-service-verify",
+        "result": "pass",
+        "checkpoint": {
+          "block_file_hash": "sha256:7d8422eee2ac46829a0e900ddeeb6ebe1806a548a19c6dbad3b6dfd6b71908aa",
+          "block_root_hash": "sha256:a55ab93e94b3113b39592786b968f0c23ea4aedf37710b31f3b5e5926dc25cb8",
+          "chain_time": 1795692397,
+          "seqno": 175938
+        },
+        "receipt_file": "verify-responded.json",
+        "sha256": "4553164ffcaecb1c967b1173b9f659215a830726a817d9b7c461ca2bfe77519f"
+      },
+      "owner_outcome_audit": null
+    },
+    {
+      "case": "refunded",
+      "status": "PASS_CONTRACT_PATH",
+      "transaction": {
+        "hash": "4f5957a264bdb4aa96240627f00db751a637bf89ba18fff78a35203e4e6ac13a",
+        "lt": 172745000009
+      },
+      "amount_atomic": "1000000",
+      "independent_resolver": {
+        "command": "tos-service-verify",
+        "result": "pass",
+        "checkpoint": {
+          "block_file_hash": "sha256:56d1b0c73d862c5f0568347593a39eb51ece2206412e9da952eec2d8733973b2",
+          "block_root_hash": "sha256:94111ea4bea310ca87bd5e57b0b7425889c1a19ec0554867e1e22dac735b0dac",
+          "chain_time": 1795692397,
+          "seqno": 175939
+        },
+        "receipt_file": "verify-refunded.json",
+        "sha256": "650323bea4f102578ab23cb3992cc957c3e8f52731990eac9eedf51b24e765bd"
+      },
+      "owner_outcome_audit": null
+    },
+    {
+      "case": "swept",
+      "status": "PASS_CONTRACT_PATH",
+      "transaction": {
+        "hash": "e9a729bef27733a273b70eb78d72e6cc34c5d351bf9d9dd871f6db4e7ca6d305",
+        "lt": 174226000009
+      },
+      "amount_atomic": "1000000",
+      "independent_resolver": {
+        "command": "tos-service-verify",
+        "result": "pass",
+        "checkpoint": {
+          "block_file_hash": "sha256:9788df4da8f5938c2b704b6dd92a063bc99ecfeb8dab7aa7d032619c67ceb1a7",
+          "block_root_hash": "sha256:6cca5f9e03c836e74cf9a5a739da859ea918dc3637ee94838e81b774287d4d18",
+          "chain_time": 1795692398,
+          "seqno": 175940
+        },
+        "receipt_file": "verify-swept.json",
+        "sha256": "77bcbb076316216bf88a3bb9e45df7e50dc7a0d21491a209c92cd12b8005d71b"
+      },
+      "owner_outcome_audit": null
+    },
+    {
+      "case": "funding-refused",
+      "status": "PASS_CONTRACT_PATH",
+      "transaction": {
+        "hash": "7a7c9404797329f7296b8cc49a8d8058f2eef236f9065dc7ea6ddedae2fc7f11",
+        "lt": 171264000014
+      },
+      "amount_atomic": "1000000",
+      "independent_resolver": {
+        "command": "tos-service-verify",
+        "result": "pass",
+        "checkpoint": {
+          "block_file_hash": "sha256:9788df4da8f5938c2b704b6dd92a063bc99ecfeb8dab7aa7d032619c67ceb1a7",
+          "block_root_hash": "sha256:6cca5f9e03c836e74cf9a5a739da859ea918dc3637ee94838e81b774287d4d18",
+          "chain_time": 1795692398,
+          "seqno": 175940
+        },
+        "receipt_file": "verify-funding-refused.json",
+        "sha256": "e557d14a17c1dcad6b291ea23a55b6b33e7a5fe827cdf6c26e47d7115a1b5e88"
+      },
+      "owner_outcome_audit": "owner-audit.json"
+    },
+    {
+      "case": "surplus-recovered",
+      "status": "PASS_CONTRACT_PATH",
+      "transaction": {
+        "hash": "a5be4ae7b66bd66cd0b4f2397e0846dbb02ca07795d23a9da584a6bd3266a808",
+        "lt": 171364000014
+      },
+      "amount_atomic": "1000000",
+      "independent_resolver": {
+        "command": "tos-service-verify",
+        "result": "pass",
+        "checkpoint": {
+          "block_file_hash": "sha256:2a3dac885ed2761efcda27ce9538d0fe56c2eadc7f7d115e240273e753213943",
+          "block_root_hash": "sha256:f554b6694f10dcad450abad18edead3a84350150ba42e8b7255b4eb0ef97aa07",
+          "chain_time": 1795692398,
+          "seqno": 175941
+        },
+        "receipt_file": "verify-surplus.json",
+        "sha256": "ab36ffb9b70cbe3061aae564458eebab6d49a52aad8db90cbe81401ffa030991"
+      },
+      "owner_outcome_audit": "owner-audit.json"
+    },
+    {
+      "case": "returned",
+      "status": "NOT_RUN",
+      "reason": "A separately pinned refusal-capable test wallet deployment has not been prepared. The real recognized wallet was not replaced."
+    }
+  ],
+  "token_accounting": {
+    "checkpoint": 174572,
+    "rpc_count": 3,
+    "balances_atomic": {
+      "buyer": 23000000,
+      "owner": 2000000,
+      "actor": 0
+    },
+    "total_atomic": 25000000,
+    "original_mint_atomic": 25000000,
+    "owner_token_wallet": "0:20b9e283d9497e8aadecc97ab9edb7b6b9dc9a9b4f2179f1e92e459d49234ad4",
+    "config79_hash": "f0f4ed98aef58e483c2d1313a11145f109e3a0d609a96b5aa1f932e458d6a7dd",
+    "config84_hash": "3fe75614b544685031b29a368afed76ce9d268a7592dc5a4d5bcbebad20bf761"
+  },
+  "invariant": "wallet balance + in-flight >= pending + refundable + returned + in-flight + revenue; three common-block references after each driver step",
+  "buyer_path": {
+    "status": "BLOCKED",
+    "buyer_head": "3a4decccf5bb6cf4395e5bc0b91ffa8163c18107",
+    "reason": "The main-build CLI refuses --valid-until; the buyer requires explicit expiry and the v2 prepared-send schema. Offer publication and paid-work execution are not claimed."
+  },
+  "verification_limit": "Request selectors reconstruct contract outcomes, not a complete canonical Quote/Receipt/artifact bundle. The owner recovery additionally has a decoded SAO1 kind-6 delivered outcome from identical public cells on three references.",
+  "additional_provider_check": {
+    "operation": "withdraw-revenue",
+    "amount_atomic": "1000000",
+    "result": "delivered",
+    "transaction": {
+      "hash": "6b4345e7caa326ad9d58c7c5922b1d05f432c47c526a5b5daae6de56cb69690c",
+      "lt": 171952000009
+    }
+  },
+  "retained_attempts": [
+    {
+      "case": "premature-expire",
+      "result": "refused",
+      "exit_code": 1914,
+      "transaction": {
+        "lt": 172246000003,
+        "hash": "19afa3d1ffcc8b466a40d2b4358541f288fcae6339b0e497318d4a33fb70111f"
+      },
+      "followup": "driver now refuses before signing until the live deadline"
+    },
+    {
+      "case": "provider-withdraw-original",
+      "result": "never_sent",
+      "reason": "missing bounce flag; fixed and regression-tested; original journal retained"
+    }
+  ],
+  "services": "network and election services unchanged; final health check healthy",
+  "raw_evidence": {
+    "directory": "/data/service-token-t10/evidence",
+    "retention": "retain through independent review and for at least 90 days; private journal and keys are not published",
+    "files": [
+      {
+        "file": "activate-owner.json",
+        "sha256": "cc4ccdb913adb8a818124fda151c71c97c48a7504e5fd5f7cf01ffd3ca84821f",
+        "bytes": 296
+      },
+      {
+        "file": "after-call-funding-refused.json",
+        "sha256": "f20383011f00057cd3f9ed45b6bd236914eb4b724e79cafad80a48b2c8763bc0",
+        "bytes": 468
+      },
+      {
+        "file": "after-call-refunded.json",
+        "sha256": "d27afe58e51497b12813d69f2f6fae02cf699997253be6a96b29666b5060a804",
+        "bytes": 454
+      },
+      {
+        "file": "after-call-responded.json",
+        "sha256": "e1f5ae12ea808fadc59fafff7e1fbcbf3fa15edfb311d59930cf0ef114015881",
+        "bytes": 454
+      },
+      {
+        "file": "after-call-surplus.json",
+        "sha256": "af511bb8699e3061d74ad2cbf4f66acbfd061c1b7ebc972e72a21ea6f53a46cf",
+        "bytes": 468
+      },
+      {
+        "file": "after-call-swept.json",
+        "sha256": "da9d1239e724590d27360af13603ec11d292eb053eca2e77e46cf09bb426e34b",
+        "bytes": 454
+      },
+      {
+        "file": "after-claim-refund-1.json",
+        "sha256": "31fddad4a2671bcd2aa8a9705fa996c6fbd086e93ba64e2c4f99423dd1922ba1",
+        "bytes": 462
+      },
+      {
+        "file": "after-expire-1-on-time.json",
+        "sha256": "f043fe848ee392ad2d212c5a966101bf128f43a16e426a9440efb1e079cb4eab",
+        "bytes": 468
+      },
+      {
+        "file": "after-expire-1.json",
+        "sha256": "1611e205021fcbdf5c96fc71b2147ab9acf2bbafd355b60ff3038d46b6f3fe4b",
+        "bytes": 462
+      },
+      {
+        "file": "after-provider-withdraw.json",
+        "sha256": "01d8270e0b1c55a4b43950fe11fc7706d7b30b561f0ee6b208c4cf179260784a",
+        "bytes": 462
+      },
+      {
+        "file": "after-recover-surplus.json",
+        "sha256": "2664dbf12eb2c5c0459c76a98b31d93facc4a64fad950aa7e20f66d35f214569",
+        "bytes": 468
+      },
+      {
+        "file": "after-respond-0.json",
+        "sha256": "2d6318d95d8afffd79c0b0eb0ed5e16b5ce32dbd5bbee7c4f3bf0754767cce6b",
+        "bytes": 468
+      },
+      {
+        "file": "after-sweep-2.json",
+        "sha256": "061a2befe43b80078afc444f4d5a11713d1fb6176f96bb772ed63d785cb26783",
+        "bytes": 442
+      },
+      {
+        "file": "after-topup-actor-wallet.json",
+        "sha256": "2c59177ed8e002410184e11b3d9b1ff5da39a556ddb75f054926aefe23b4cbdb",
+        "bytes": 468
+      },
+      {
+        "file": "before-call-funding-refused.json",
+        "sha256": "df4d92a2583c745f0e7f02e9bb1463740c63100289b15c6ed34c9a31e1fee3c1",
+        "bytes": 468
+      },
+      {
+        "file": "before-call-refunded.json",
+        "sha256": "41f1f2604005e7b9e73ecb13942336ddda254fc558fdbc85d87f6f0c0c8f8344",
+        "bytes": 454
+      },
+      {
+        "file": "before-call-responded.json",
+        "sha256": "de40b192dfc509850bbf8318a86ef2eb20b2a4f4db28b5b5ef0fac4d02e90143",
+        "bytes": 430
+      },
+      {
+        "file": "before-call-surplus.json",
+        "sha256": "74a09a9b65b4bec52bebc7a456b7604b4170297e0c43decc7d891805e2763df5",
+        "bytes": 468
+      },
+      {
+        "file": "before-call-swept.json",
+        "sha256": "317883c0cf524b912bd0d14ec808dd3a9a4b1b8dc0b9bbf7dc71cf6286707cec",
+        "bytes": 454
+      },
+      {
+        "file": "before-claim-refund-1.json",
+        "sha256": "13b17a7323406728bc672fa12fe938501fd59494071fc231c0d91c0f6131acf0",
+        "bytes": 468
+      },
+      {
+        "file": "before-expire-1-on-time.json",
+        "sha256": "8eb05651500c30d73f524512f1dc4fd7421e9c6c26b3092f6e37be99256817be",
+        "bytes": 462
+      },
+      {
+        "file": "before-expire-1.json",
+        "sha256": "0ea1c32368ec1db0b805ea5d9504cdf52b84e3a518b46ea90b479c2b3df6362b",
+        "bytes": 462
+      },
+      {
+        "file": "before-recover-surplus.json",
+        "sha256": "e1a3931d7fb55c5a4c93268407000f1c695fd25d67c4ed5c10518a29daac0d4c",
+        "bytes": 468
+      },
+      {
+        "file": "before-respond-0.json",
+        "sha256": "6a9600da41a73f9dde71777b9673762aec4b5a753b8460388ae598bea85b043d",
+        "bytes": 454
+      },
+      {
+        "file": "before-sweep-2.json",
+        "sha256": "d5b05ae8c797519232d4f2b67ec15defd75658423e1dbf493457b23e99aa5d09",
+        "bytes": 462
+      },
+      {
+        "file": "before-topup-actor-wallet.json",
+        "sha256": "71ed36538745e824d8ebd93d166cd3ad8250286157b3fd67e5d8309a6012b357",
+        "bytes": 468
+      },
+      {
+        "file": "call-funding-refused.json",
+        "sha256": "e15c1ff80daa6722f327634ec58d0459381b60c5e53b74477f43451474585d04",
+        "bytes": 1416
+      },
+      {
+        "file": "call-refunded.json",
+        "sha256": "e5780e5d34796133d0d8735ba6bd84144ef72e411966f56f1cb040a3172155f3",
+        "bytes": 1416
+      },
+      {
+        "file": "call-responded.json",
+        "sha256": "1ce5db93474ccc42206fc29ab61e6520edf7f7cc5bdb816becedaf4cb679b94a",
+        "bytes": 1416
+      },
+      {
+        "file": "call-surplus.json",
+        "sha256": "135aea4a392ea8dfb3f9419f9e08eadac203456d67577398d341dfedd59064ea",
+        "bytes": 1416
+      },
+      {
+        "file": "call-swept.json",
+        "sha256": "dc1714f5ece05b87cfc4f347ce99b71a114cffc93cc11f4f20b8a68999acac32",
+        "bytes": 1416
+      },
+      {
+        "file": "claim-refund-1.json",
+        "sha256": "50dbd884ed9b420c0d3010cb998be76c9ecdd6bd5bca767d96aff2443544895d",
+        "bytes": 1154
+      },
+      {
+        "file": "deploy-actor.json",
+        "sha256": "9b8717fed10d46c5cddadba45f1799a049aa48462871195f03e239fad489465b",
+        "bytes": 33486
+      },
+      {
+        "file": "expire-1-on-time.json",
+        "sha256": "f14537d0be34a6e95f45ecf7d2d2f96246ef65700b3b41a7f355730cea122a18",
+        "bytes": 1132
+      },
+      {
+        "file": "expire-1.json",
+        "sha256": "eecfbfbc6d27534c9bfa2c0d7e7e25440afa380ca7ffc9680cfa5b33263cb448",
+        "bytes": 1132
+      },
+      {
+        "file": "final-token-accounting.json",
+        "sha256": "4e1d1df4f15809c046a91a608c7688ead5a13183774a55abd694f0af33269420",
+        "bytes": 465
+      },
+      {
+        "file": "fund-owner.json",
+        "sha256": "ada0ed04b8e7f07f3d45e91710fc76674db9cce66b56d1aec74517b76504fc57",
+        "bytes": 1083
+      },
+      {
+        "file": "owner-audit-backing.json",
+        "sha256": "02e9215127eaedbab876d559f233526db3aa2a9baf5859b4b585b23169ade0d0",
+        "bytes": 442
+      },
+      {
+        "file": "owner-audit.json",
+        "sha256": "4190c0b2c8e98e2cabfd691ff663a1487478b9ba4476f00c12d3f8f6231d6392",
+        "bytes": 29545
+      },
+      {
+        "file": "prepared.json",
+        "sha256": "ed66a5e103270172e238bc61bad3e3f87fae9a7e184cddd692091c6507b69f1b",
+        "bytes": 326
+      },
+      {
+        "file": "recover-surplus.json",
+        "sha256": "87772e840345f4269dc965b59c1a060992b59e7642ed5cf4ab28d4ec8a503401",
+        "bytes": 1132
+      },
+      {
+        "file": "respond-0.json",
+        "sha256": "3ae8cd7ffd1dce97a74fe419198af459ed7eb6783e0185837874ff8f5085d9ba",
+        "bytes": 1176
+      },
+      {
+        "file": "sweep-2.json",
+        "sha256": "17542cbc20fc8a8b82b7e54eae6a75a28078931f9870e342977bff8ed41bb472",
+        "bytes": 1134
+      },
+      {
+        "file": "topup-actor-wallet.json",
+        "sha256": "ce5fff414976c36894aea212cb2707daabb4effa81858fa2a89fc9e5b37d6671",
+        "bytes": 1112
+      },
+      {
+        "file": "verify-funding-refused.json",
+        "sha256": "e557d14a17c1dcad6b291ea23a55b6b33e7a5fe827cdf6c26e47d7115a1b5e88",
+        "bytes": 5469
+      },
+      {
+        "file": "verify-refunded.json",
+        "sha256": "650323bea4f102578ab23cb3992cc957c3e8f52731990eac9eedf51b24e765bd",
+        "bytes": 2779
+      },
+      {
+        "file": "verify-responded-raw.json",
+        "sha256": "f1bcc586d12aa4f222f80e740cae06716331e382fcb82cf6ea2721a016d9584c",
+        "bytes": 2948
+      },
+      {
+        "file": "verify-responded.json",
+        "sha256": "4553164ffcaecb1c967b1173b9f659215a830726a817d9b7c461ca2bfe77519f",
+        "bytes": 2761
+      },
+      {
+        "file": "verify-surplus.json",
+        "sha256": "ab36ffb9b70cbe3061aae564458eebab6d49a52aad8db90cbe81401ffa030991",
+        "bytes": 5032
+      },
+      {
+        "file": "verify-swept.json",
+        "sha256": "77bcbb076316216bf88a3bb9e45df7e50dc7a0d21491a209c92cd12b8005d71b",
+        "bytes": 2776
+      }
+    ]
+  },
+  "go_tool_sha256": {
+    "tos-service-verify": "3ef7e57ff85d24b86739c4706251b831867739602024e82b41f5c8cae7624563",
+    "service-actor-token-e2e-fixture": "bdd3d64e639dddbd42d5db1aa3ff2e9a7d542e91936a884fde62e0d0c6d26a2f",
+    "tos-service-provider": "d08fad848e5db746c6df77adba4e057be0092a07b456f6a0c2cdbcff0c0fbb62"
+  },
+  "upstream_comparison": "These operations/client adapters have no upstream counterpart. The reference CLI at tools_tos uses an opt-in bounce flag; only its repository-specific caller was corrected. No inherited core path changed.",
+  "validation": {
+    "python_new_tests": "19 passed",
+    "python_relevant_with_existing_bridge_tests": "51 passed",
+    "python_broad": "3926 passed, 73 skipped, 37 setup errors, 5 failed; not a clean pass",
+    "python_broad_limits": "Missing signature verifier prerequisites; rerunning affected groups with the missing pure-Python dependency gave 37 passed, 17 setup errors requiring a compiled verifier and one missing current-build create-state failure. No prerequisite failure is counted as acceptance.",
+    "go": "fmt/proto/schema/spec/boundary/conformance, vet/build and provider race suite passed; three external pinned-helper tests excluded as documented. One chain-reader timeout under two workers, full package rerun under four workers passed.",
+    "mutations": "9 Python controls, 4 fixture controls and 1 provider bounce control, all assertion-red; restored targets green"
+  }
+}
