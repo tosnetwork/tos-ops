@@ -18,7 +18,7 @@ import importlib.util
 import json
 
 import pytest
-from conftest import DATA, SCRIPTS
+from testnet_support import DATA, SCRIPTS
 
 spec = importlib.util.spec_from_file_location("check_handover", SCRIPTS / "check-handover.py")
 ch = importlib.util.module_from_spec(spec)

@@ -21,6 +21,37 @@ belong outside the repository.
 [reset](testnet/CEREMONY.md#9-resetting-the-testnet) ·
 [alerts](testnet/README.md#alerts).
 
+## Test environment
+
+Use a built tos checkout and its Python environment, then install this
+repository's exact, hash-locked test dependencies (including real ML-DSA-44
+verification):
+
+```bash
+uv pip install --python "$TOS_ROOT/.venv/bin/python" --require-hashes -r requirements-test.txt
+TOS_ROOT="$TOS_ROOT" "$TOS_ROOT/.venv/bin/python" -m pytest -q testnet/tests local/tests
+```
+
+Regenerate the lock deliberately after changing `requirements-test.in`:
+
+```bash
+uv pip compile --python-version 3.14 --generate-hashes --output-file requirements-test.txt requirements-test.in
+```
+
+Pytest generates fresh TL bindings from the selected `TOS_ROOT` schemas into a
+temporary directory under this worktree's `.pytest_cache`. Tests and their child
+processes use those bindings; no generated file in the separate checkout is
+modified. This prevents an old generated API from disguising the current node
+schema. Operational driver setup still needs its own current bindings.
+
+The two CON-01 certificate suites never skip cryptography. Unless both explicit
+verifier path/hash variables are supplied, their session fixture compiles the
+small verification-only C helper using `CC` (default `cc`) and the trusted
+OpenSSL >= 3.5 under `$TOS_ROOT/build/third-party/openssl`, or `OPENSSL_PREFIX`.
+The generated helper is hashed and executed through the same sealed snapshot as
+an explicitly pinned helper. This requires Linux memfd/sealing support; the
+libc binding is used when standalone Python omits `os.memfd_create`.
+
 ## Layout
 
 ### `local/` — disposable development network
@@ -85,31 +116,21 @@ Tests: [testnet/tests/](testnet/tests/); operation mutation controls are in
 [mutants.py](testnet/tests/mutants.py). From the repository root:
 
 ```bash
-TOS_ROOT="$TOS_ROOT" "$TOS_ROOT/.venv/bin/python" -m pytest -q testnet/tests \
-  --ignore testnet/tests/test_con01_history.py \
-  --ignore testnet/tests/test_con01_observer_crypto.py
+TOS_ROOT="$TOS_ROOT" "$TOS_ROOT/.venv/bin/python" -m pytest -q testnet/tests
 ```
 
-Some tests skip, and say why, unless their tool is present. Supply them for a run with no skips:
-`dilithium-py` 1.1.0 and `shellcheck` on the interpreter's path (`shellcheck-py` provides the binary),
+Optional tool tests skip, and say why, unless their tool is present. Supply
+`shellcheck` on the interpreter's path (`shellcheck-py` provides the binary),
 `TOS_BIN` pointing at a tos build's `build/utils` (for `generate-random-id`), and
 `PROOF_VERIFY_LIBRARY` set to the built `libtosproofverify.so` (target `tos-proof-embedded`; see
 [production/scripts](production/scripts/README.md)).
 
-The two con01 certificate suites verify real ML-DSA signatures and refuse to skip. They need
-the compiled signature verifier ([con01_history](testnet/acceptance/con01_history/README.md#build-and-reproduce))
-and a CPython with `os.memfd_create`; the standalone Python in a uv `.venv` may lack it. Build
-the verifier against an OpenSSL of 3.5 or newer (a tos build carries one under
-`build/third-party/openssl`), then run them with the system interpreter:
-
-```bash
-cc -std=c11 -O2 -Wall -Wextra -Werror -I "$OPENSSL_PREFIX/include" \
-  testnet/acceptance/con01_history/mldsa_verify.c "$OPENSSL_PREFIX/lib/libcrypto.a" -ldl -pthread \
-  -o "$VERIFIER" && chmod 500 "$VERIFIER"
-CON01_SIGNATURE_VERIFIER="$VERIFIER" \
-CON01_SIGNATURE_VERIFIER_SHA256="$(sha256sum "$VERIFIER" | cut -d' ' -f1)" \
-  /usr/bin/python3 -m pytest -q testnet/tests/test_con01_history.py testnet/tests/test_con01_observer_crypto.py
-```
+The two CON-01 certificate suites verify real ML-DSA signatures and refuse to
+skip. The normal test session builds their verifier as described above. To use an
+already built, independently pinned helper instead, set both
+`CON01_SIGNATURE_VERIFIER` and `CON01_SIGNATURE_VERIFIER_SHA256`; an incomplete or
+wrong pin is refused. See [the audit build instructions](testnet/acceptance/con01_history/README.md#build-and-reproduce)
+for standalone use outside pytest.
 
 ### `production/` — designs and templates
 

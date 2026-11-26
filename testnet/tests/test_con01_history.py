@@ -1,12 +1,17 @@
 """Actual public certificate regressions; no chain writes or node checker imports."""
 
 import copy
+import ctypes
+import errno
+import fcntl
 import json
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "testnet" / "acceptance"))
@@ -55,18 +60,38 @@ class Certificates(unittest.TestCase):
         self.assertEqual(row["signers"], 3)
         self.assertGreater(3 * row["signed_weight"], 2 * row["total_weight"])
 
-    def test_a_python_without_memfd_create_is_refused_with_its_reason(self):
-        # Standalone Python builds can lack it; the refusal must name the missing call,
-        # not surface as an AttributeError from inside the snapshot code.
-        program = os.environ["CON01_SIGNATURE_VERIFIER"]
+    def test_a_python_without_os_memfd_still_uses_a_sealed_executable(self):
+        program = Path(os.environ["CON01_SIGNATURE_VERIFIER"])
         digest = os.environ["CON01_SIGNATURE_VERIFIER_SHA256"]
-        saved = os.memfd_create
-        del os.memfd_create
-        try:
-            with self.assertRaisesRegex(Refused, "no os.memfd_create"):
-                SignatureVerifier(Path(program), digest)
-        finally:
-            os.memfd_create = saved
+        with tempfile.TemporaryDirectory() as directory:
+            candidate = Path(directory) / "verifier"
+            candidate.write_bytes(program.read_bytes())
+            candidate.chmod(0o500)
+            with patch.object(os, "memfd_create", None, create=True):
+                checker = SignatureVerifier(candidate, digest)
+            try:
+                seals = fcntl.fcntl(checker.fd, 1034)  # Linux F_GET_SEALS
+                required = 0x000F  # WRITE, GROW, SHRINK and SEAL
+                self.assertEqual(seals & required, required)
+                with self.assertRaises(OSError) as denied:
+                    os.write(checker.fd, b"changed")
+                self.assertEqual(denied.exception.errno, errno.EPERM)
+                candidate.chmod(0o700)
+                candidate.write_bytes(b"replaced after the pin check")
+                verify_link(self.link, checker)
+            finally:
+                checker.close()
+
+    def test_missing_native_and_libc_memfd_is_refused(self):
+        with (
+            patch.object(os, "memfd_create", None, create=True),
+            patch.object(ctypes, "CDLL", side_effect=OSError("unavailable")),
+        ):
+            with self.assertRaisesRegex(Refused, "Linux memfd_create unavailable"):
+                SignatureVerifier(
+                    Path(os.environ["CON01_SIGNATURE_VERIFIER"]),
+                    os.environ["CON01_SIGNATURE_VERIFIER_SHA256"],
+                )
 
     def test_corrupted_real_signature_is_rejected(self):
         link = copy.deepcopy(self.link)

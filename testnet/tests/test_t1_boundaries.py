@@ -7,7 +7,7 @@ import subprocess
 from types import SimpleNamespace
 
 import pytest
-from conftest import SCRIPTS
+from testnet_support import SCRIPTS
 
 spec = importlib.util.spec_from_file_location("t1_boundaries", SCRIPTS / "t1-boundaries.py")
 tb = importlib.util.module_from_spec(spec)

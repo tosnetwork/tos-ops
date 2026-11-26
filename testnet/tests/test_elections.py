@@ -15,7 +15,7 @@ from pathlib import Path
 import fakechain
 import pytest
 import testnet_lib as lib
-from conftest import SCRIPTS
+from testnet_support import SCRIPTS
 
 spec = importlib.util.spec_from_file_location("testnet_elections", SCRIPTS / "testnet-elections.py")
 elections = importlib.util.module_from_spec(spec)

@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 import testnet_lib as lib
-from conftest import DATA, one_key_list, serialize_boc
+from testnet_support import DATA, one_key_list, serialize_boc
 
 REPORT = (DATA / "consensus-key-report.txt").read_text()
 DHT_NODE = json.loads((DATA / "dht-node-loopback.json").read_text())

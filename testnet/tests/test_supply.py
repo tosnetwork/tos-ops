@@ -29,7 +29,7 @@ from pathlib import Path
 import chainbuild
 import pytest
 import testnet_lib as lib
-from conftest import DATA
+from testnet_support import DATA
 
 NANO = 10**9
 OLD_STATE = (DATA / "zerostate-v16-auth.boc").read_bytes()

@@ -13,7 +13,7 @@ import json
 import subprocess
 
 import pytest
-from conftest import SCRIPTS
+from testnet_support import SCRIPTS
 
 spec = importlib.util.spec_from_file_location(
     "check_host_disk_clock", SCRIPTS / "check-host-disk.py"

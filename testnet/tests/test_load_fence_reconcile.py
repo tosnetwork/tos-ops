@@ -20,9 +20,9 @@ import load_fence_reconcile as lfr
 import pytest
 import testnet_lib as lib
 import testnet_ops as ops
-from conftest import SCRIPTS
 from load_finality_window import AdmissionClosed
 from load_qualification import Qualification, atomic_json
+from testnet_support import SCRIPTS
 
 CANARY = "CANARYc4n4ryZQXJ"
 IDENTITY = {"global_id": 2, "genesis_root": "aa" * 32, "genesis_file": "bb" * 32}

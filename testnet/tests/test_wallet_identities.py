@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 import testnet_lib as lib
-from conftest import SCRIPTS
+from testnet_support import SCRIPTS
 
 
 def load_script(name: str, module: str):

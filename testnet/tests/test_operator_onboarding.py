@@ -18,7 +18,6 @@ import sys
 import fakechain
 import pytest
 import testnet_lib as lib
-from conftest import SCRIPTS
 from test_elections import (  # noqa: F401 (boarding and pinned_tos are fixtures)
     ALL_STEPS,
     HOST_WALLET,
@@ -30,6 +29,7 @@ from test_elections import (  # noqa: F401 (boarding and pinned_tos are fixtures
     pinned_tos,
     settled_ids,
 )
+from testnet_support import SCRIPTS
 
 spec = importlib.util.spec_from_file_location("testnet_operator", SCRIPTS / "testnet-operator.py")
 operator_tool = importlib.util.module_from_spec(spec)

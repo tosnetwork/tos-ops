@@ -5,7 +5,7 @@ import json
 
 import pytest
 import testnet_lib as lib
-from conftest import DATA, SCRIPTS, one_key_list, serialize_boc
+from testnet_support import DATA, SCRIPTS, one_key_list, serialize_boc
 
 spec = importlib.util.spec_from_file_location("check_testnet", SCRIPTS / "check-testnet.py")
 check_testnet = importlib.util.module_from_spec(spec)

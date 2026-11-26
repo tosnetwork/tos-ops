@@ -1,8 +1,10 @@
 """Shared setup: the drivers import their siblings and tos modules.
 
-Run from the tos checkout's uv environment with TOS_ROOT set, for example:
+Use the prepared tos environment plus the hash-locked test requirements in the
+repository README. Run from the tos-ops root so uv does not resync away those
+extra dependencies:
 
-    cd "$TOS_ROOT" && TOS_ROOT="$TOS_ROOT" uv run python -m pytest <tos-ops>/local/tests
+    TOS_ROOT="$TOS_ROOT" "$TOS_ROOT/.venv/bin/python" -m pytest local/tests
 """
 
 import os

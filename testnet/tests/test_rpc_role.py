@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 import testnet_lib as lib
-from conftest import SCRIPTS
+from testnet_support import SCRIPTS
 
 SYSTEMD = SCRIPTS.parent / "systemd"
 INSTALL = SCRIPTS / "install-node.sh"

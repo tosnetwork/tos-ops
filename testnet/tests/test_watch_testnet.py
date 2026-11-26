@@ -4,7 +4,7 @@ import json
 
 import pytest
 import testnet_lib as lib
-from conftest import SCRIPTS
+from testnet_support import SCRIPTS
 
 spec = importlib.util.spec_from_file_location("watch_testnet", SCRIPTS / "watch-testnet.py")
 watch_testnet = importlib.util.module_from_spec(spec)

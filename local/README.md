@@ -47,9 +47,11 @@ Prepare the separate tos environment once, using its pinned lockfile and schema:
 (cd "$TOS_ROOT" && uv sync --locked && uv run python test/tostester/generate_tl.py)
 ```
 
-This writes generated bindings into the tos checkout, not this repository. If
-bindings are generated in an external directory instead, add their parent to
-`PYTHONPATH`. Then run from the tos-ops root:
+That command prepares the operational drivers' bindings. Pytest separately
+generates isolated bindings from the selected checkout's current schema, so stale
+operational artifacts cannot change what the tests validate. Install the
+[hash-locked test dependencies](../README.md#test-environment) after `uv sync`,
+then run from the tos-ops root:
 
 ```bash
 TOS_ROOT="$TOS_ROOT" "$TOS_ROOT/.venv/bin/python" -m pytest -q local/tests

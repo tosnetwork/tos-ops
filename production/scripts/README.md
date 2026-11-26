@@ -153,4 +153,6 @@ PROOF_VERIFY_LIBRARY="$TOS_ROOT/build-network-check/lite-client/proof-verify/lib
 
 The recorded proof tests need that library; without it they explicitly skip.
 An acceptance run must supply it and must execute both the valid proof and the
-signature/link negative controls. The ordinary unit suite needs only pytest.
+signature/link negative controls. For the full Python suite, install the
+[hash-locked test dependencies](../../README.md#test-environment) and provide
+the certificate verifier prerequisites documented there.
