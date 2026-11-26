@@ -1788,9 +1788,16 @@ def host_build(
     lines = [line for line in output.splitlines() if line.startswith("{")]
     try:
         prepared = json.loads(lines[-1])
-        if prepared.get("version") != "tosctl.wallet-prepared-send.v1":
+        if prepared.get("version") != "tosctl.wallet-prepared-send.v2":
             raise ValueError(prepared.get("version"))
-        return base64.b64decode(prepared["message_boc_base64"], validate=True)
+        boc = base64.b64decode(prepared["message_boc_base64"], validate=True)
+        # v2 reports the expiry it signed; it must be the one in the signed bytes.
+        signed = ops.decode_signed_header(lib.parse_boc(boc))["valid_until"]
+        if type(prepared.get("valid_until")) is not int or prepared["valid_until"] != signed:
+            raise ValueError(
+                f"valid_until {prepared.get('valid_until')!r} is not the signed {signed}"
+            )
+        return boc
     except (IndexError, ValueError, KeyError, TypeError) as exc:
         raise lib.TestnetError(f"no prepared message from the host: {output[-400:]}") from exc
 

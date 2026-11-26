@@ -3585,6 +3585,19 @@ NR_FIXTURE = json.loads(
     (Path(__file__).parent / "data" / "native-registry" / "c17d3fca5-payloads.json").read_text()
 )
 NR_PAYER = "0:d99220851c7e2b7c765d4a2961806bc0f38a9df0484ca8ce75b9d971a54b1301"
+# The fixture's envelope is a recorded v1 capture and stays byte-for-byte as recorded.
+# The v2 envelope differs only in its version and the added `valid_until`, which v2
+# reports as the expiry signed into the same message bytes; it is derived here from
+# those bytes, not captured.
+NR_ENVELOPE_V1 = NR_FIXTURE["envelope_a"]
+NR_SIGNED_VALID_UNTIL = spc.decode_wallet_envelope(
+    spc.boc_decode(base64.b64decode(NR_ENVELOPE_V1["message_boc_base64"]))
+)["valid_until"]
+NR_ENVELOPE = {
+    **NR_ENVELOPE_V1,
+    "version": "tosctl.wallet-prepared-send.v2",
+    "valid_until": NR_SIGNED_VALID_UNTIL,
+}
 
 
 class NativeRegistryEnvelopeBinding(unittest.TestCase):
@@ -3594,8 +3607,22 @@ class NativeRegistryEnvelopeBinding(unittest.TestCase):
         args = dict(payer=NR_PAYER, value_nanotos=1, bounce=False, global_id=2, seqno=24)
         args.update(kw)
         return spc.bind_prepared_send(
-            envelope or NR_FIXTURE["envelope_a"], built or NR_FIXTURE["register_a"], **args
+            envelope or NR_ENVELOPE, built or NR_FIXTURE["register_a"], **args
         )
+
+    def test_the_envelope_must_be_v2_and_report_the_signed_expiry(self):
+        self.assertEqual(spc.PREPARED_SEND_VERSION, "tosctl.wallet-prepared-send.v2")
+        self.assertGreater(NR_SIGNED_VALID_UNTIL, 0)
+        with self.assertRaises(spc.Refusal):
+            self.bind(envelope=NR_ENVELOPE_V1)  # the recorded v1 capture
+        for reported in (NR_SIGNED_VALID_UNTIL + 1, NR_SIGNED_VALID_UNTIL - 1, None, "x", True):
+            with self.assertRaises(spc.Refusal, msg=repr(reported)) as cm:
+                self.bind(envelope={**NR_ENVELOPE, "valid_until": reported})
+            self.assertIn("valid_until", str(cm.exception))
+        missing = {k: v for k, v in NR_ENVELOPE.items() if k != "valid_until"}
+        with self.assertRaises(spc.Refusal) as cm:
+            self.bind(envelope=missing)
+        self.assertIn("valid_until", str(cm.exception))
 
     def test_the_real_registration_envelope_binds_every_part(self):
         raw, msg, e = self.bind()
@@ -3634,10 +3661,10 @@ class NativeRegistryEnvelopeBinding(unittest.TestCase):
 
     def test_a_wrong_version_or_an_oversized_message_is_refused_before_decoding(self):
         with self.assertRaises(spc.Refusal):
-            self.bind(envelope={**NR_FIXTURE["envelope_a"], "version": "other"})
+            self.bind(envelope={**NR_ENVELOPE, "version": "other"})
         big = base64.b64encode(b"\xb5\xee\x9c\x72" + b"\0" * 65536).decode()
         with self.assertRaises(spc.Refusal) as cm:
-            self.bind(envelope={**NR_FIXTURE["envelope_a"], "message_boc_base64": big})
+            self.bind(envelope={**NR_ENVELOPE, "message_boc_base64": big})
         self.assertIn("limit", str(cm.exception))
 
     def test_the_registry_state_init_dag_hashes_to_its_address(self):
@@ -4140,8 +4167,8 @@ class NativeRegistryRealEnvelope(RunnerCase):
             if self.sent
             else dict(spc.NR_ABSENT)
         )
-        self.runner.local = lambda *a, **k: NR_FIXTURE["envelope_a"]
-        raw = base64.b64decode(NR_FIXTURE["envelope_a"]["message_boc_base64"])
+        self.runner.local = lambda *a, **k: NR_ENVELOPE
+        raw = base64.b64decode(NR_ENVELOPE["message_boc_base64"])
         self.ext = spc.dag_cell_hash_b64(spc.boc_decode(raw))
         self.rpc.send_boc = lambda b64, url=None: self.sent.append(b64) or {}
         self.rpc.last_lt = lambda address, url=None: 0
@@ -4178,8 +4205,8 @@ class NativeRegistryRealEnvelope(RunnerCase):
             record = self.runner.registry_send("nr-real", self.built, bounce=False)
         self.assertEqual(record["verdict"], "settled")
         self.assertEqual(self.runner.journal.attempt_record("nr-real")["external_hash"], self.ext)
-        self.assertEqual(self.sent, [NR_FIXTURE["envelope_a"]["message_boc_base64"]])
-        raw = base64.b64decode(NR_FIXTURE["envelope_a"]["message_boc_base64"])
+        self.assertEqual(self.sent, [NR_ENVELOPE["message_boc_base64"]])
+        raw = base64.b64decode(NR_ENVELOPE["message_boc_base64"])
         with self.assertRaises(spc.Refusal):
             spc.cell_hash_b64(spc.boc_decode(raw))  # the tree-only helper cannot hash it
 
