@@ -859,18 +859,21 @@ class BoardingHost:
             init = lib.parse_boc(base64.b64decode(init_b64)) if init_b64 else None
             body = lib.parse_boc(base64.b64decode(body_b64)) if body_b64 else None
             seqno = self.chain.account(self.operator)["seqno"] + self.tweak.get("seqno_delta", 0)
+            valid_until = self.chain.now + self.tweak.get("ttl", 120)
             boc = fakechain.build_external(
                 self.operator,
                 self.tweak.get("global_id", 2),
                 seqno,
-                self.chain.now + self.tweak.get("ttl", 120),
+                valid_until,
                 fakechain.internal_message(destination, value, "--bounce" in words, init, body),
                 subwallet=698983191,
             )
             return (
                 json.dumps(
                     {
-                        "version": "tosctl.wallet-prepared-send.v1",
+                        "version": self.tweak.get("version", "tosctl.wallet-prepared-send.v2"),
+                        "valid_until": valid_until
+                        + self.tweak.get("reported_valid_until_delta", 0),
                         "message_boc_base64": base64.b64encode(boc).decode(),
                     }
                 )
@@ -1190,6 +1193,8 @@ def test_an_interrupted_onboarding_never_sends_value_twice(boarding, monkeypatch
         ({"seqno_delta": 1}, "seqno"),
         ({"ttl": 600}, "expires"),
         ({"ttl": -1}, "expires"),
+        ({"version": "tosctl.wallet-prepared-send.v1"}, "no prepared message"),
+        ({"reported_valid_until_delta": 1}, "no prepared message"),
     ],
 )
 def test_a_host_built_message_other_than_intended_is_never_sent(boarding, tweak, message):

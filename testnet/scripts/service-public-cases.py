@@ -759,7 +759,7 @@ def decode_wallet_envelope(msg: Cell) -> dict:
 
 
 MAX_EXTERNAL_MESSAGE_BYTES = 65535
-PREPARED_SEND_VERSION = "tosctl.wallet-prepared-send.v1"
+PREPARED_SEND_VERSION = "tosctl.wallet-prepared-send.v2"
 
 
 def bind_prepared_send(
@@ -775,7 +775,8 @@ def bind_prepared_send(
     """Bind a `wallet send --build-only` envelope to the registry message it must carry.
 
     The exact signed bytes are decoded (never trusted from the envelope's own summary fields)
-    and every part is compared: the paying wallet, network, wallet seqno, the internal message's
+    and every part is compared: the paying wallet, network, wallet seqno, the envelope's
+    `valid_until` against the signed expiry, the internal message's
     destination, value and bounce flag, and the body and StateInit hashes of the CLI's
     `register-agent`/`action` output. The external message must fit MAX_EXTERNAL_MESSAGE_BYTES.
     Returns the raw bytes, the decoded message and the decoded envelope; refuses on any mismatch.
@@ -793,6 +794,9 @@ def bind_prepared_send(
         "payer": same_addr(e["wallet"], payer) and same_addr(envelope.get("payer"), payer),
         "global_id": e["global_id"] == global_id,
         "seqno": e["seqno"] == seqno,
+        # v2 reports the expiry it signed; it must be the one in the signed bytes.
+        "valid_until": type(envelope.get("valid_until")) is int
+        and envelope.get("valid_until") == e["valid_until"],
         "destination": same_addr(e["destination"], built.get("destination"))
         and same_addr(envelope.get("destination"), built.get("destination")),
         "value": e["value_nanotos"] == value_nanotos == envelope.get("amount_nanotos"),
