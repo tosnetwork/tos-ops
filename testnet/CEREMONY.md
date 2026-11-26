@@ -934,6 +934,8 @@ one, checking:
 - global id 2;
 - the wallet's current seqno on both validators;
 - the subwallet and an expiry within 120 s plus 30 s clock skew;
+- the envelope's schema `tosctl.wallet-prepared-send.v2` and its `valid_until`,
+  which must equal the expiry in the signed bytes;
 - send mode 3;
 - the exact destination, value, bounce flag, StateInit and body.
 
