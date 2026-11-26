@@ -1,0 +1,32 @@
+[
+  {
+    "endpoint": "http://127.0.0.1:8011",
+    "result": "unavailable",
+    "error": "http://127.0.0.1:8011: http://127.0.0.1:8011 getTransactionsStd: INTERNAL_ERROR -32603: getTransactions: [Error : -400 : cannot compute block with specified transaction: cannot find block (0,70b5f1b98874a080) lt=196263000009: lt not in db]"
+  },
+  {
+    "endpoint": "http://127.0.0.1:8012",
+    "result": "unavailable",
+    "error": "http://127.0.0.1:8012: http://127.0.0.1:8012 getTransactionsStd: INTERNAL_ERROR -32603: getTransactions: [Error : -400 : cannot compute block with specified transaction: cannot find block (0,70b5f1b98874a080) lt=196263000009: lt not in db]"
+  },
+  {
+    "endpoint": "http://127.0.0.1:8013",
+    "result": "unavailable",
+    "error": "http://127.0.0.1:8013: http://127.0.0.1:8013 getTransactionsStd: INTERNAL_ERROR -32603: getTransactions: [Error : -400 : cannot compute block with specified transaction: cannot find block (0,70b5f1b98874a080) lt=196263000009: lt not in db]"
+  },
+  {
+    "endpoint": "http://127.0.0.1:8014",
+    "result": "unavailable",
+    "error": "http://127.0.0.1:8014: http://127.0.0.1:8014 getTransactionsStd: INTERNAL_ERROR -32603: getTransactions: [Error : -400 : cannot compute block with specified transaction: cannot find block (0,70b5f1b98874a080) lt=196263000009: lt not in db]"
+  },
+  {
+    "endpoint": "http://127.0.0.1:8015",
+    "result": "unavailable",
+    "error": "http://127.0.0.1:8015: http://127.0.0.1:8015 getTransactionsStd: INTERNAL_ERROR -32603: getTransactions: [Error : -400 : cannot compute block with specified transaction: cannot find block (0,70b5f1b98874a080) lt=196263000009: lt not in db]"
+  },
+  {
+    "endpoint": "http://127.0.0.1:8016",
+    "result": "unavailable",
+    "error": "http://127.0.0.1:8016: http://127.0.0.1:8016 getTransactionsStd: INTERNAL_ERROR -32603: getTransactions: [Error : -400 : cannot compute block with specified transaction: cannot find block (0,70b5f1b98874a080) lt=196263000009: lt not in db]"
+  }
+]

@@ -1,0 +1,186 @@
+{
+  "checkpoint": {
+    "block_file_hash": "sha256:9788df4da8f5938c2b704b6dd92a063bc99ecfeb8dab7aa7d032619c67ceb1a7",
+    "block_root_hash": "sha256:6cca5f9e03c836e74cf9a5a739da859ea918dc3637ee94838e81b774287d4d18",
+    "chain_time": 1795692398,
+    "seqno": 175940
+  },
+  "checks": [
+    {
+      "detail": "complete actor history and typed pending, refund, payout and returned cells agree",
+      "id": "finalized-state",
+      "ok": true
+    }
+  ],
+  "funding_refusals": [
+    {
+      "active_payout_id": 1,
+      "amount_atomic": "1000000",
+      "call": {
+        "body_boc": "te6ccgEBAgEAegABYnNi0JwAAAAAAAAAADD0JAgAKdtGxcGWZfkiG1UP/6PvCBXRQqROv8bIo0mqKESQkvMBAIhTVEMB3yVWwDLgZSxjyDNAdZX/qSwzXd2zGlevPFYR9dBBqZ0AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+        "bounced": false,
+        "exit_code": 0,
+        "hash": "eb9c2d6702532200789ca65e778f70c53ad5fbbebf7551976e03640eb609370a",
+        "inbound_message_hash": "e6a216e7553eb94b0a59b3f0c56473d8ea087630a34fc6299b0d95d0db591740",
+        "kind": "funding_refused",
+        "log_body_bocs": [
+          "te6ccgEBAQEAPQAAdVNBRjEAAAAAAAAAAIACnbRsXBlmX5IhtVD/+j7wgV0UKkTr/GyKNJqihEkJLyYehIAPDAAAAAAAAAAD"
+        ],
+        "logs": [
+          {
+            "Balance": null,
+            "Funding": {
+              "Amount": 1000000,
+              "From": {
+                "Address": "FO2jYuDLMvyRDaqH/9H3hArooVInX+NkUaTVFCJISXk=",
+                "AddressBits": 256,
+                "AnycastDepth": -1,
+                "AnycastPrefix": null,
+                "BitLen": 267,
+                "Bits": "gAKdtGxcGWZfkiG1UP/6PvCBXRQqROv8bIo0mqKESQkvIA==",
+                "Kind": 2,
+                "Workchain": 0
+              },
+              "PayoutID": 1,
+              "QueryID": 0,
+              "Reason": 1926
+            },
+            "Outcome": null,
+            "Snapshot": null,
+            "Tag": 1396786737
+          }
+        ],
+        "lt": 171264000007,
+        "notification": {
+          "amount_atomic": "1000000",
+          "forward_payload_boc": "te6ccgEBAgEASgABAcABAIhTVEMB3yVWwDLgZSxjyDNAdZX/qSwzXd2zGlevPFYR9dBBqZ0AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+          "from": "0:14eda362e0cb32fc910daa87ffd1f7840ae8a152275fe36451a4d51422484979",
+          "payload": {
+            "ExpectedTermsHash": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "RequestHash": [
+              223,
+              37,
+              86,
+              192,
+              50,
+              224,
+              101,
+              44,
+              99,
+              200,
+              51,
+              64,
+              117,
+              149,
+              255,
+              169,
+              44,
+              51,
+              93,
+              221,
+              179,
+              26,
+              87,
+              175,
+              60,
+              86,
+              17,
+              245,
+              208,
+              65,
+              169,
+              157
+            ]
+          },
+          "query_id": 0
+        },
+        "now": 1795690501,
+        "opcode": 1935855772,
+        "outputs": [
+          {
+            "body_boc": "te6ccgEBAQEAWQAArVJUUjEAAAAAAAAAATD0JAgAKdtGxcGWZfkiG1UP/6PvCBXRQqROv8bIo0mqKESQkvMABTto2LgyzL8kQ2qh//R94QK6KFSJ1/jZFGk1RQiSEl5NrK8wEA==",
+            "bounce": true,
+            "bounced": false,
+            "destination": "0:47a698f96279b2b1dcf9dc69896b7d9f94e8776a88df4a9462646332387b20ff",
+            "has_state_init": false,
+            "hash": "91bb07c19d54aed1768514c14734e9d510b9baeb9d5b5c4e94b686233a7085b1",
+            "value_nanotos": "963794187"
+          }
+        ],
+        "sender": "0:47a698f96279b2b1dcf9dc69896b7d9f94e8776a88df4a9462646332387b20ff",
+        "took_effect": true,
+        "value_nanotos": "993756770"
+      },
+      "caller": "0:14eda362e0cb32fc910daa87ffd1f7840ae8a152275fe36451a4d51422484979",
+      "payout_id": 1,
+      "reason": 1926,
+      "state": "funding_returned"
+    }
+  ],
+  "network": {
+    "genesis_file_hash": "sha256:c3860fe196a2a1b5e4e74a9cf9448624a353ce68a8c4c5f6413347586d688769",
+    "genesis_root_hash": "sha256:65735247a371030abe811aeac0afe357301ce90e161450d26f88b4beb5b4c366",
+    "network_id": "local-usdc-t10"
+  },
+  "not_claimed": [
+    "operator independence of the endpoints: agreeing endpoints run by one operator are one source",
+    "computation correctness: a Receipt is the provider's attested statement of the digests it binds",
+    "the identity or independence of the buyer, the provider or the verifier",
+    "anything after the checkpoint, or about a request the verification did not select",
+    "without an evidence bundle, only the caller wallet of each request is proven: not its Quote, its Capability binding or whose purchase it is; bind the reported caller to the buyer's declared wallet",
+    "without a token bundle, no asset-recognition or funding-chain claim is made"
+  ],
+  "reads": {
+    "endpoints": [
+      {
+        "genesis_ok": true,
+        "url": "http://127.0.0.1:8011/jsonRPC"
+      },
+      {
+        "genesis_ok": true,
+        "url": "http://127.0.0.1:8012/jsonRPC"
+      },
+      {
+        "genesis_ok": true,
+        "url": "http://127.0.0.1:8013/jsonRPC"
+      }
+    ],
+    "quorum": 3
+  },
+  "requests": [],
+  "result": "pass",
+  "schema": "tos.service.purchase-verdict.token.v1"
+}

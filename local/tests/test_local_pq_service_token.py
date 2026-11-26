@@ -24,6 +24,10 @@ def test_network_pins_are_checked_before_reuse(tmp_path):
     class Chain:
         validator_urls = ("node-a", "node-b", "node-c")
 
+        def config(self, param, *, url):
+            assert param == 19
+            return module.usdc.Builder().int(3, 32).end()
+
         def call(self, method, *, url):
             return {
                 "init": {
@@ -132,7 +136,7 @@ def test_independent_resolver_failure_is_never_a_pass(tmp_path, monkeypatch):
                 verifier=Path("verifier"), case="responded", operation_args=[]
             ),
             state,
-            None,
+            SimpleNamespace(urls=["a", "b", "c", "d", "e", "f"]),
             None,
         )
 
@@ -195,7 +199,7 @@ def test_a_pending_request_is_not_a_completed_lifecycle(tmp_path, monkeypatch):
                 verifier=Path("verifier"), case="refunded", operation_args=[]
             ),
             state,
-            None,
+            SimpleNamespace(urls=["a", "b", "c", "d", "e", "f"]),
             None,
         )
 
@@ -453,7 +457,7 @@ def test_publication_refuses_a_running_provider(tmp_path, monkeypatch):
             module.publish(args, state, None, None)
 
 
-@pytest.mark.parametrize("bad", [None, "supply", "references"])
+@pytest.mark.parametrize("bad", [None, "supply", "references", "sum"])
 def test_supply_audit_is_checkpoint_bound_and_accounts_for_every_wallet(tmp_path, bad):
     state = module.usdc.State(tmp_path)
     state.set("owner", "owner")
@@ -512,6 +516,8 @@ def test_supply_audit_is_checkpoint_bound_and_accounts_for_every_wallet(tmp_path
                     }[params["address"]]
                 )
             )
+            if bad == "sum" and params.get("address") == ids["actor"]:
+                amount += 1
             if bad == "supply" and params["method"] == "get_token_data":
                 amount = 26
             return {"exit_code": 0, "stack": [["num", str(amount)]]}
@@ -630,3 +636,156 @@ def test_shared_destination_flag_reaches_the_actual_send_parser(
     )
     module.main()
     assert captured == ["--operation", operation, "--destination", destination]
+
+
+@pytest.mark.parametrize("bad", ["root", "file", "global_id", "absent_id"])
+def test_endpoint_network_identity_is_on_chain(tmp_path, bad):
+    root, file = "11" * 32, "22" * 32
+    (tmp_path / "network.json").write_text(
+        json.dumps({"global_id": 3, "zerostate_root": root, "zerostate_file": file})
+    )
+
+    class Chain:
+        validator_urls = ("a", "b", "c")
+
+        def config(self, param, *, url):
+            assert param == 19
+            if bad == "absent_id" and url == "b":
+                return None
+            return (
+                module.usdc.Builder()
+                .int(2 if bad == "global_id" and url == "b" else 3, 32)
+                .end()
+            )
+
+        def call(self, method, *, url):
+            assert method == "getMasterchainInfo"
+            return {
+                "init": {
+                    "root_hash": base64.b64encode(
+                        bytes.fromhex(
+                            "33" * 32 if bad == "root" and url == "b" else root
+                        )
+                    ).decode(),
+                    "file_hash": base64.b64encode(
+                        bytes.fromhex(
+                            "44" * 32 if bad == "file" and url == "b" else file
+                        )
+                    ).decode(),
+                }
+            }
+
+    with pytest.raises(module.usdc.Refused):
+        module.check_network(
+            SimpleNamespace(data=tmp_path), Chain(), module.usdc.State(tmp_path)
+        )
+
+
+def test_owner_refuses_an_expired_unaccepted_message(tmp_path, monkeypatch):
+    state = module.usdc.State(tmp_path)
+
+    class Chain:
+        sends = 0
+
+        def send(self, message):
+            self.sends += 1
+            pytest.fail("expired message reached broadcast")
+
+        def executed_external(self, *args):
+            return None
+
+    chain = Chain()
+    owner = module.Owner.__new__(module.Owner)
+    owner.chain, owner.address = chain, "0:" + "11" * 32
+    owner.seqno = lambda: 4
+    state.put_intent(
+        "expired",
+        {
+            "wallet": owner.address,
+            "seqno": 4,
+            "valid_until": 99,
+            "boc": module.usdc.boc64(module.usdc.Builder().end()),
+            "expected": {},
+            "state": "signed",
+            "hash": "ab" * 32,
+        },
+    )
+    monkeypatch.setattr(module.time, "time", lambda: 100)
+    with pytest.raises(module.usdc.Refused, match="expired"):
+        owner.send_once(state, "expired", lambda: None)
+    assert chain.sends == 0
+
+
+def test_unresolved_owner_send_prevents_a_new_signature(tmp_path):
+    state = module.usdc.State(tmp_path)
+    owner = module.Owner.__new__(module.Owner)
+    owner.address = "0:" + "11" * 32
+    state.put_intent("old", {"wallet": owner.address, "state": "signed"})
+    owner.seqno = lambda: pytest.fail("unresolved send reached signing")
+    with pytest.raises(module.usdc.Refused, match="unresolved owner send"):
+        owner.send_once(state, "new", lambda: pytest.fail("built another message"))
+
+
+def test_second_resolver_uses_nodes_four_to_six(tmp_path, monkeypatch):
+    state = module.usdc.State(tmp_path)
+    state.set("deployment", {"address": "actor"})
+    (tmp_path / "rail.json").write_text(
+        json.dumps(
+            {
+                "rpc_endpoints": ["a", "b", "c"],
+                "registry_code_boc_file": "code",
+                "registry_code_hash": "hash",
+                "actor_code_hash": "actor-code",
+            }
+        )
+    )
+    seen = []
+
+    def run(args):
+        seen.extend(args)
+        return json.dumps({"result": "pass", "requests": [{"state": "responded"}]})
+
+    monkeypatch.setattr(module, "run", run)
+    module.verify(
+        SimpleNamespace(verifier=Path("verifier"), case="responded", operation_args=[]),
+        state,
+        SimpleNamespace(urls=["a", "b", "c", "d", "e", "f"]),
+        None,
+    )
+    assert seen[seen.index("--rpc") + 1] == "d,e,f"
+    provenance = json.loads(
+        (tmp_path / "evidence/verify-responded-provenance.json").read_text()
+    )
+    assert provenance["resolver_endpoints"] == ["d", "e", "f"]
+    with pytest.raises(module.usdc.Refused, match="overlap"):
+        module.verify(
+            SimpleNamespace(
+                verifier=Path("verifier"), case="responded", operation_args=[]
+            ),
+            state,
+            SimpleNamespace(urls=["a", "b", "c", "a", "e", "f"]),
+            None,
+        )
+
+
+def test_saved_public_receipts_match_their_hashes_and_index():
+    import hashlib
+
+    root = Path(__file__).parents[1] / "evidence/service-token-public-20261126"
+    index = json.loads((root / "INDEX.json").read_text())
+    assert index["complete"] is False
+    assert "not captured before pruning" in index["limitation"]
+    transactions = 0
+    for row in index["files"]:
+        path = root / row["file"]
+        assert path.resolve().is_relative_to(root.resolve())
+        raw = path.read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == row["sha256"]
+        if row["kind"] == "transaction-boc":
+            transactions += 1
+            assert (
+                module.usdc.lib.parse_boc(raw).hash().hex() == row["transaction_hash"]
+            )
+        else:
+            assert json.loads(raw)["result"] == "pass"
+    assert transactions == 8

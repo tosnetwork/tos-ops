@@ -46,6 +46,10 @@ def test_refusal_driver_requires_approved_genesis_and_each_peer(tmp_path):
     class Chain:
         validator_urls = ("a", "b", "c")
 
+        def config(self, param, *, url):
+            assert param == 19
+            return module.u.Builder().int(3, 32).end()
+
         def call(self, *a, url, **kw):
             return {
                 "init": {

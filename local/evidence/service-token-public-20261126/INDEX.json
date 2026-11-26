@@ -1,0 +1,129 @@
+{
+  "schema": "local-token-public-evidence.v1",
+  "complete": false,
+  "limitation": "Original lifecycle and buyer transaction BOCs were not captured before pruning. Saved verifier outputs are historical results, not new reconstructions. Returned receipt-chain BOCs are available; the returned claim transaction BOC is not.",
+  "files": [
+    {
+      "file": "original/verify-responded-raw.json",
+      "sha256": "9dfba9cf51084b76d54078c0e41eacc3d51d1318855c0bf83a023be3d59a07c7",
+      "kind": "saved-public-verifier-output"
+    },
+    {
+      "file": "original/verify-refunded.json",
+      "sha256": "2b6942f869421591a28d03f9f3a94d473a17006ed395008c2ed6d0f92cfba54b",
+      "kind": "saved-public-verifier-output"
+    },
+    {
+      "file": "original/verify-swept.json",
+      "sha256": "77874c30cfbad4c4b96117c4962edda11fd237ef0f7bc166f394f78259da046b",
+      "kind": "saved-public-verifier-output"
+    },
+    {
+      "file": "original/verify-funding-refused.json",
+      "sha256": "97b1c251345be87f29822b313677abc1ed86ccf3f94dea3190bf6cb26a1b5525",
+      "kind": "saved-public-verifier-output"
+    },
+    {
+      "file": "original/verify-surplus.json",
+      "sha256": "63b59de027c9ffab3baf8a6b08845d1b90392b10d52eea2d525499850da100ac",
+      "kind": "saved-public-verifier-output"
+    },
+    {
+      "file": "buyer/independent-buyer-responded-clean.json",
+      "sha256": "a9ef61a4b094b4308346cb5627eda850178dd897cc71ad503ea7b21e05b131b4",
+      "kind": "saved-public-verifier-output"
+    },
+    {
+      "file": "buyer/independent-buyer-refunded.json",
+      "sha256": "bcb1d09c2c6f112f468a445e5a175ad656297c9ac9d26b32abf833b9c2b6e518",
+      "kind": "saved-public-verifier-output"
+    },
+    {
+      "file": "returned/independent-returned-0.json",
+      "sha256": "978049876bae098d849d1dcc7c3b72ee3bd34e88551cd63ada528b552ae58d9e",
+      "kind": "saved-public-verifier-output"
+    },
+    {
+      "file": "returned/independent-returned-1.json",
+      "sha256": "fe356c1056bc7f5d6b1761283eb6c22e4ad02480640e103915cfba155c86c158",
+      "kind": "saved-public-verifier-output"
+    },
+    {
+      "file": "returned/independent-returned-claim-1.json",
+      "sha256": "e8326c8b21e275e60226f2eb39fd6c46778d93b7caa80989963f21666bf71412",
+      "kind": "saved-public-verifier-output"
+    },
+    {
+      "file": "returned/transactions/211091000005-cca8060af5a623119597ecbcfc2d87b988bd686867f01b7d65074fccc5c89d6f.boc",
+      "sha256": "47a4c6b3a5b64a6311642155a9e502b02050ef8f2964390206754dc062d74d52",
+      "transaction_hash": "cca8060af5a623119597ecbcfc2d87b988bd686867f01b7d65074fccc5c89d6f",
+      "lt": 211091000005,
+      "kind": "transaction-boc",
+      "receipt_role": "source",
+      "case": 0
+    },
+    {
+      "file": "returned/transactions/211091000007-bce8f33c2232d2c3aa97a2faec65884a0badc012719902fa9d9ba3141cb21632.boc",
+      "sha256": "0091ef67856c18867a365e3749835f4ab562e7e8656889a0bc5614579ce5a695",
+      "transaction_hash": "bce8f33c2232d2c3aa97a2faec65884a0badc012719902fa9d9ba3141cb21632",
+      "lt": 211091000007,
+      "kind": "transaction-boc",
+      "receipt_role": "receiver",
+      "case": 0
+    },
+    {
+      "file": "returned/transactions/211091000009-5b70574ac1306f0097a8666e4b58fff05d2d2e26bb0f63e25810e9bee63e9498.boc",
+      "sha256": "6edff1f604fdec6ccc21a8323562a71ad31be4e2e122db57059d26cfcea424c4",
+      "transaction_hash": "5b70574ac1306f0097a8666e4b58fff05d2d2e26bb0f63e25810e9bee63e9498",
+      "lt": 211091000009,
+      "kind": "transaction-boc",
+      "receipt_role": "bounce_source",
+      "case": 0
+    },
+    {
+      "file": "returned/transactions/211091000011-88f53664c05e63ec57594b13b4fb3b016ed610017841f747f5b70dd8f9348dcb.boc",
+      "sha256": "5be2f4564da5e5adc3f789a1e6a5597f907a92711c5143d30313a52292fd83c4",
+      "transaction_hash": "88f53664c05e63ec57594b13b4fb3b016ed610017841f747f5b70dd8f9348dcb",
+      "lt": 211091000011,
+      "kind": "transaction-boc",
+      "receipt_role": "actor",
+      "case": 0
+    },
+    {
+      "file": "returned/transactions/211049000005-e262e56f8ea7fdd3ca4826b0e2589fabffb9c8c88e2d441bd9b32c1340e37647.boc",
+      "sha256": "6e9ff218d2e9ca61980e03b862efc478465f9baae34c9d4d54dbe3dafe7a44e4",
+      "transaction_hash": "e262e56f8ea7fdd3ca4826b0e2589fabffb9c8c88e2d441bd9b32c1340e37647",
+      "lt": 211049000005,
+      "kind": "transaction-boc",
+      "receipt_role": "source",
+      "case": 1
+    },
+    {
+      "file": "returned/transactions/211049000007-f896d7ba5432b8ecaadf6456f1dab9509606f78ab3d101911b55506bc86e84be.boc",
+      "sha256": "c647d29b425d31007cd19b1b5a14da807ceb9027be1788431b6e342549070331",
+      "transaction_hash": "f896d7ba5432b8ecaadf6456f1dab9509606f78ab3d101911b55506bc86e84be",
+      "lt": 211049000007,
+      "kind": "transaction-boc",
+      "receipt_role": "receiver",
+      "case": 1
+    },
+    {
+      "file": "returned/transactions/211049000009-73950352baae27939b08df5652163435c71a39bc2dbc845ff085f6cdae9c77a2.boc",
+      "sha256": "3eaa907be7ee1d858c25f5a75e85c25dbc8e0d8bbc9ad66c52be8f0f629994c1",
+      "transaction_hash": "73950352baae27939b08df5652163435c71a39bc2dbc845ff085f6cdae9c77a2",
+      "lt": 211049000009,
+      "kind": "transaction-boc",
+      "receipt_role": "bounce_source",
+      "case": 1
+    },
+    {
+      "file": "returned/transactions/211049000011-de1e7fe4e9c37d5e4f99f8208cd3d5fb6d11da8421f02af4f5e2d18373c601e4.boc",
+      "sha256": "fdb5b566eab08c4d13efe2e21fa9e4b9ed100d7319eaf16929280e03a2e270c6",
+      "transaction_hash": "de1e7fe4e9c37d5e4f99f8208cd3d5fb6d11da8421f02af4f5e2d18373c601e4",
+      "lt": 211049000011,
+      "kind": "transaction-boc",
+      "receipt_role": "actor",
+      "case": 1
+    }
+  ]
+}

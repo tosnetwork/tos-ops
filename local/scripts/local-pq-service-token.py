@@ -496,6 +496,15 @@ def verify(args, state, chain, bridge):
     require(args.verifier is not None, "--verifier is required")
     require(args.case, "verify requires --case")
     config = json.loads((state.root / "rail.json").read_text())
+    endpoints = chain.urls[3:6]
+    require(
+        len(endpoints) == 3 and len(set(endpoints)) == 3,
+        "three independent resolver endpoints are required",
+    )
+    require(
+        not set(endpoints).intersection(config["rpc_endpoints"]),
+        "resolver endpoints overlap sending endpoints",
+    )
     document = json.loads(
         run(
             [
@@ -503,7 +512,7 @@ def verify(args, state, chain, bridge):
                 "--network-domain",
                 str(state.root / "network.json"),
                 "--rpc",
-                ",".join(config["rpc_endpoints"]),
+                ",".join(endpoints),
                 "--registry-code-boc",
                 config["registry_code_boc_file"],
                 "--registry-code-hash",
@@ -546,6 +555,14 @@ def verify(args, state, chain, bridge):
             "funding outcome not proven",
         )
     state.evidence("verify-" + args.case, document)
+    state.evidence(
+        "verify-" + args.case + "-provenance",
+        {
+            "resolver_endpoints": endpoints,
+            "sending_endpoints": config["rpc_endpoints"],
+            "resolver": "independent process using the same production resolver code",
+        },
+    )
 
 
 def read_audit_rows(chain, actor, head, urls):
@@ -763,6 +780,8 @@ def configure(args, state, chain, bridge):
 
 def check_network(args, chain, state):
     approved = json.loads((args.data / "network.json").read_text())
+    # Local metadata identifies the approved genesis; the chain config is the
+    # authority for the network id, checked on every sending reference.
     require(approved["global_id"] == 3, "only local global id 3 is allowed")
     genesis = approved["zerostate_root"]
     if state.get("network"):
@@ -770,6 +789,14 @@ def check_network(args, chain, state):
             state["network"]["genesis"] == genesis, "journal belongs to another genesis"
         )
     for url in chain.validator_urls[:3]:
+        global_id = chain.config(19, url=url)
+        require(global_id is not None, "global id config is absent")
+        reader = usdc.lib.Slice(global_id)
+        require(
+            reader.remaining() == 32 and not global_id.refs,
+            "malformed global id config",
+        )
+        require(reader.bits(32) == 3, "on-chain global id is not local id 3")
         initial = chain.call("getMasterchainInfo", url=url)["init"]
         require(
             base64.b64decode(initial["root_hash"]).hex() == genesis,

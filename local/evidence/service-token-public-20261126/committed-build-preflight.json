@@ -1,0 +1,174 @@
+{
+  "schema": "tos.openfox.provider-preflight",
+  "version": 1,
+  "generated_unix": 1795713083,
+  "ok": false,
+  "admission_paused": false,
+  "checks": [
+    {
+      "id": "config.parse",
+      "status": "pass",
+      "message": "the rail configuration parses strictly"
+    },
+    {
+      "id": "config.provider",
+      "status": "pass",
+      "message": "the provider section names a Capability, controllers and paths"
+    },
+    {
+      "id": "state_dir.private",
+      "status": "pass",
+      "message": "state_dir is an owner-only (0700) directory owned by this user"
+    },
+    {
+      "id": "state_dir.disk_free",
+      "status": "pass",
+      "message": "435648700416 bytes free under state_dir (at least 1073741824 required)"
+    },
+    {
+      "id": "admission.pause",
+      "status": "pass",
+      "message": "new admissions are open"
+    },
+    {
+      "id": "process.user",
+      "status": "warn",
+      "message": "running as root; run the provider node as an unprivileged owner user"
+    },
+    {
+      "id": "tosctl.pin",
+      "status": "pass",
+      "message": "tosctl matches its pinned SHA-256"
+    },
+    {
+      "id": "tosctl.config",
+      "status": "pass",
+      "message": "the tosctl configuration file exists and is not world-accessible"
+    },
+    {
+      "id": "tosctl.vault_env",
+      "status": "pass",
+      "message": "the vault URL environment variable VAULT_URL is set (value not shown)"
+    },
+    {
+      "id": "transport.peers",
+      "status": "pass",
+      "message": "no direct peers; a recipient whose verified key card is held goes through its relays; any other recipient has no route and a send to it fails"
+    },
+    {
+      "id": "executor.pin",
+      "status": "pass",
+      "message": "the executor matches its pinned SHA-256"
+    },
+    {
+      "id": "containerd.socket",
+      "status": "pass",
+      "message": "the container runtime socket is present and not world-accessible (not connected to)"
+    },
+    {
+      "id": "manifest.local",
+      "status": "fail",
+      "message": "manifest key 21 does not name a workchain 0 Service Actor"
+    },
+    {
+      "id": "rpc.endpoints",
+      "status": "pass",
+      "message": "3 endpoints with quorum 2 (a strict majority)"
+    },
+    {
+      "id": "rpc.independence",
+      "status": "unknown",
+      "message": "endpoints have distinct authorities, but whether distinct operators run them is not verified; a quorum of one operator's endpoints is one point of trust"
+    },
+    {
+      "id": "chain.open",
+      "status": "pass",
+      "message": "the finalized reader is configured"
+    },
+    {
+      "id": "rpc.genesis",
+      "status": "pass",
+      "message": "every endpoint serves genesis root sha256:65735247a371030abe811aeac0afe357301ce90e161450d26f88b4beb5b4c366 and file sha256:c3860fe196a2a1b5e4e74a9cf9448624a353ce68a8c4c5f6413347586d688769 (network label \"tos:global-id:3\" is bound only by these hashes)"
+    },
+    {
+      "id": "chain.finalized",
+      "status": "pass",
+      "message": "finalized checkpoint 227760 read by a strict majority"
+    },
+    {
+      "id": "clock.skew",
+      "status": "pass",
+      "message": "the local clock is within 1s of the finalized checkpoint time (warning above 30s)"
+    },
+    {
+      "id": "chain.registry",
+      "status": "fail",
+      "message": "the Native Registry read failed (a code hash other than registry_code_hash is refused): quorum not reached: 0 value groups and 3 endpoint errors (first: TOS JSON-RPC error -32603: getTransactions: [Error : -400 : cannot compute block with specified transaction: cannot find block (0,35e5077184c6321e) lt=192244000005: lt not in db])"
+    },
+    {
+      "id": "chain.capability",
+      "status": "unknown",
+      "message": "not run: chain.registry did not pass"
+    },
+    {
+      "id": "chain.actor",
+      "status": "unknown",
+      "message": "not run: manifest.local did not pass"
+    },
+    {
+      "id": "chain.attestor",
+      "status": "unknown",
+      "message": "not run: manifest.local did not pass"
+    },
+    {
+      "id": "chain.admission",
+      "status": "unknown",
+      "message": "not run: chain.capability did not pass"
+    },
+    {
+      "id": "signer.attestor",
+      "status": "warn",
+      "message": "controller \"token-work-attestor\" resolves to mldsa44:d89fd0a41e36b8de3342df4d72100df2c5738d3522d58c19f3bccfda825aaad9, but the manifest attestor is unknown"
+    },
+    {
+      "id": "signer.packet",
+      "status": "pass",
+      "message": "controller \"service-packet\" resolves in the vault to packet_key_id (nothing was signed)"
+    },
+    {
+      "id": "signer.wallet",
+      "status": "unknown",
+      "message": "tosctl offers no way to resolve wallet \"owner\" without signing, so the respond wallet is not checked; preflight never signs"
+    },
+    {
+      "id": "relay.config",
+      "status": "pass",
+      "message": "relays http://127.0.0.1:8097 (https, or http only on loopback)"
+    },
+    {
+      "id": "relay.trust",
+      "status": "pass",
+      "message": "http://127.0.0.1:8097: plaintext loopback, no TLS; relays named only by a peer's card use the system trust store"
+    },
+    {
+      "id": "relay.reachable",
+      "status": "fail",
+      "message": "http://127.0.0.1:8097: unreachable or not a relay"
+    },
+    {
+      "id": "relay.key",
+      "status": "pass",
+      "message": "own key hpke:98fae8ce3dac1c833ddbaec8de83c4a77ca8d97c9472da25908bf358da6c8cf3 is valid until 2026-12-03T13:22:42Z (serve issues its successor 48h0m0s before expiry); 2 keys are held"
+    },
+    {
+      "id": "relay.card",
+      "status": "fail",
+      "message": "the own key card does not verify against finalized checkpoint 227760: quorum not reached: 0 value groups and 3 endpoint errors (first: TOS JSON-RPC error -32603: getTransactions: [Error : -400 : cannot compute block with specified transaction: cannot find block (0,c3abdc2a21b6d145) lt=192244000003: lt not in db]); a card signed by a controller no longer in the Agent's policy is unusable"
+    },
+    {
+      "id": "relay.peers",
+      "status": "fail",
+      "message": "agent_e7e071c6a9cea32847e66236f9a6e3beec409ddcb5dca939f6fdc86328ba8ccd hpke:f676ca4d7c513820c007181972231a6aaef0db1547a6be145cc5afbe597da7b6: cannot be checked now"
+    }
+  ]
+}
