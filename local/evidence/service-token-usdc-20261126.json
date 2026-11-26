@@ -316,59 +316,9 @@
         "bytes": 468
       },
       {
-        "file": "call-funding-refused.json",
-        "sha256": "e15c1ff80daa6722f327634ec58d0459381b60c5e53b74477f43451474585d04",
-        "bytes": 1416
-      },
-      {
-        "file": "call-refunded.json",
-        "sha256": "e5780e5d34796133d0d8735ba6bd84144ef72e411966f56f1cb040a3172155f3",
-        "bytes": 1416
-      },
-      {
-        "file": "call-responded.json",
-        "sha256": "1ce5db93474ccc42206fc29ab61e6520edf7f7cc5bdb816becedaf4cb679b94a",
-        "bytes": 1416
-      },
-      {
-        "file": "call-surplus.json",
-        "sha256": "135aea4a392ea8dfb3f9419f9e08eadac203456d67577398d341dfedd59064ea",
-        "bytes": 1416
-      },
-      {
-        "file": "call-swept.json",
-        "sha256": "dc1714f5ece05b87cfc4f347ce99b71a114cffc93cc11f4f20b8a68999acac32",
-        "bytes": 1416
-      },
-      {
-        "file": "claim-refund-1.json",
-        "sha256": "50dbd884ed9b420c0d3010cb998be76c9ecdd6bd5bca767d96aff2443544895d",
-        "bytes": 1154
-      },
-      {
-        "file": "deploy-actor.json",
-        "sha256": "9b8717fed10d46c5cddadba45f1799a049aa48462871195f03e239fad489465b",
-        "bytes": 33486
-      },
-      {
-        "file": "expire-1-on-time.json",
-        "sha256": "f14537d0be34a6e95f45ecf7d2d2f96246ef65700b3b41a7f355730cea122a18",
-        "bytes": 1132
-      },
-      {
-        "file": "expire-1.json",
-        "sha256": "eecfbfbc6d27534c9bfa2c0d7e7e25440afa380ca7ffc9680cfa5b33263cb448",
-        "bytes": 1132
-      },
-      {
         "file": "final-token-accounting.json",
         "sha256": "4e1d1df4f15809c046a91a608c7688ead5a13183774a55abd694f0af33269420",
         "bytes": 465
-      },
-      {
-        "file": "fund-owner.json",
-        "sha256": "ada0ed04b8e7f07f3d45e91710fc76674db9cce66b56d1aec74517b76504fc57",
-        "bytes": 1083
       },
       {
         "file": "owner-audit-backing.json",
@@ -384,26 +334,6 @@
         "file": "prepared.json",
         "sha256": "ed66a5e103270172e238bc61bad3e3f87fae9a7e184cddd692091c6507b69f1b",
         "bytes": 326
-      },
-      {
-        "file": "recover-surplus.json",
-        "sha256": "87772e840345f4269dc965b59c1a060992b59e7642ed5cf4ab28d4ec8a503401",
-        "bytes": 1132
-      },
-      {
-        "file": "respond-0.json",
-        "sha256": "3ae8cd7ffd1dce97a74fe419198af459ed7eb6783e0185837874ff8f5085d9ba",
-        "bytes": 1176
-      },
-      {
-        "file": "sweep-2.json",
-        "sha256": "17542cbc20fc8a8b82b7e54eae6a75a28078931f9870e342977bff8ed41bb472",
-        "bytes": 1134
-      },
-      {
-        "file": "topup-actor-wallet.json",
-        "sha256": "ce5fff414976c36894aea212cb2707daabb4effa81858fa2a89fc9e5b37d6671",
-        "bytes": 1112
       },
       {
         "file": "verify-funding-refused.json",
@@ -435,7 +365,8 @@
         "sha256": "77bcbb076316216bf88a3bb9e45df7e50dc7a0d21491a209c92cd12b8005d71b",
         "bytes": 2776
       }
-    ]
+    ],
+    "privacy": "Only public transaction/verifier/snapshot records are indexed. Wallet-send receipts carrying signed spending envelopes, the full journal, keys and vault remain private and must not be published wholesale."
   },
   "go_tool_sha256": {
     "tos-service-verify": "3ef7e57ff85d24b86739c4706251b831867739602024e82b41f5c8cae7624563",
@@ -449,6 +380,7 @@
     "python_broad": "3926 passed, 73 skipped, 37 setup errors, 5 failed; not a clean pass",
     "python_broad_limits": "Missing signature verifier prerequisites; rerunning affected groups with the missing pure-Python dependency gave 37 passed, 17 setup errors requiring a compiled verifier and one missing current-build create-state failure. No prerequisite failure is counted as acceptance.",
     "go": "fmt/proto/schema/spec/boundary/conformance, vet/build and provider race suite passed; three external pinned-helper tests excluded as documented. One chain-reader timeout under two workers, full package rerun under four workers passed.",
-    "mutations": "9 Python controls, 4 fixture controls and 1 provider bounce control, all assertion-red; restored targets green"
+    "mutations": "9 Python controls, 4 fixture controls and 1 provider bounce control, all assertion-red; restored targets green",
+    "python_base_controls": "Representative validator-key, certificate and legacy-genesis failures reproduce on unchanged base 920e4acb: 2 failed and 1 setup error; no source fix was made for missing test prerequisites."
   }
 }
