@@ -351,8 +351,11 @@ Production takes its node binaries from the tos repository's GitHub release for
 the approved tag, not from a build on each host (the testnet keeps its host
 builds). [fetch-release.py](../testnet/scripts/fetch-release.py) is that path.
 
-The release binaries are dynamically linked and need Ubuntu 24.04 (glibc 2.39
-or newer) with these runtime packages. Install them before fetching; the fetch
+The release binaries are dynamically linked and need Ubuntu 24.04 or later
+(glibc 2.39 or newer) with these runtime packages. Ubuntu 26.04 ships
+`libgsl28` and no `libgsl27`, so a host later than 24.04 needs a release whose
+node binaries do not link `libgsl.so.27`; `fetch-release.py` refuses one that
+does, naming the missing library. Install them before fetching; the fetch
 tool installs nothing:
 
 | Architecture | Packages |
@@ -460,7 +463,7 @@ from the same release, with the same checks, by its own role. No node role
 fetches it, and the host needs no Rust toolchain:
 
 ```bash
-sudo apt-get install libssl3t64   # part of a standard Ubuntu 24.04 installation
+sudo apt-get install libssl3t64   # part of a standard Ubuntu 24.04 or later installation
 sudo python3 /opt/tos-testnet/scripts/fetch-release.py --tag v<VERSION> \
   --rev <FULL_40_CHARACTER_COMMIT> --role tosctl --arch x86_64 \
   --out /var/lib/tos-build/tosctl-<FULL_40_CHARACTER_COMMIT>
@@ -477,7 +480,7 @@ provenance, `SHA256SUMS`, byte identity with the `tosctl` member of
 keeps. On this host `ldd` must find every library and `tosctl --version` must
 print the exact line `COMMIT_ID: <rev>` (tosctl has no `-V` that reports the
 commit). tosctl links `libssl.so.3` and `libcrypto.so.3`, both in the Ubuntu
-24.04 package `libssl3t64`, which a refusal names when either is missing; it
+24.04 and later package `libssl3t64`, which a refusal names when either is missing; it
 uses none of the node binaries' libraries. The validator's CPU and backend
 checks do not apply to this role.
 

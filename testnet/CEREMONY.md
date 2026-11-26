@@ -299,7 +299,7 @@ python3 /opt/tos-testnet/scripts/preflight.py --inventory hosts.json --accept-ne
 
 It checks, per host:
 
-- SSH, Ubuntu 24.04, and x86-64-v2 on x86_64;
+- SSH, Ubuntu 24.04 or later, and x86-64-v2 on x86_64;
 - CPUs, memory and free disk against the role floors in `network/profile.json`;
 - whether the public address is on an interface;
 - NTP;

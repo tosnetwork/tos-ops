@@ -44,7 +44,7 @@ nothing.
 
 Per host, against network/profile.json `host_requirements`:
   ssh       the host answers as the inventory user
-  os        Ubuntu 24.04 on x86_64 or aarch64
+  os        Ubuntu 24.04 or later on x86_64 or aarch64
   cpu       enough CPUs; on x86_64 the x86-64-v2 instructions the build targets
   memory    MemTotal at or above the role's floor
   disk      free space for /var/lib at or above the role's floor
@@ -303,6 +303,16 @@ def ufw_allows(rules: list[str], port: int, proto: str) -> bool:
 # ---------------------------------------------------------------- per-host checks
 
 
+def parse_os_version(value: object) -> tuple[int, int] | None:
+    """An /etc/os-release VERSION_ID of the form YY.MM as (YY, MM), else None."""
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(r"(\d{2})\.(\d{2})", value)
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
 def evaluate_host(host: Host, facts: dict[str, str], profile: dict) -> list[Result]:
     req = profile["host_requirements"]
     floor = role_floor(host.roles, profile)
@@ -320,8 +330,14 @@ def evaluate_host(host: Host, facts: dict[str, str], profile: dict) -> list[Resu
                 return
         out.append(Result(host.name, check, "PASS" if ok else ("WARN" if warn else "FAIL"), detail))
 
+    os_version = parse_os_version(facts.get("os_version"))
+    min_version = parse_os_version(req["os"]["min_version_id"])
+    if min_version is None:
+        raise ValueError(f"profile os.min_version_id is not YY.MM: {req['os']['min_version_id']!r}")
     os_ok = (
-        facts.get("os_id") == req["os"]["id"] and facts.get("os_version") == req["os"]["version_id"]
+        facts.get("os_id") == req["os"]["id"]
+        and os_version is not None
+        and os_version >= min_version
     )
     add("os", os_ok, f"{facts.get('os_id')} {facts.get('os_version')} {facts.get('arch')}")
     arch = facts.get("arch", "")

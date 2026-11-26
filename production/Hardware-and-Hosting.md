@@ -22,7 +22,7 @@ Proposed starting profile, subject to representative-load measurements:
 | Endurance | Measure sustained writes and rated TBW/DWPD; keep replacement headroom |
 | Network | Static public IPv4, at least 1 Gbit/s; ADNL and QUIC UDP reachable without filtering |
 | Time | Selected reachable NTP source; a synchronization flag alone is insufficient |
-| Build | Linux release and CPU-compatible verified binaries; current testnet scripts target Ubuntu 24.04 x86_64/x86-64-v2 |
+| Build | Linux release and CPU-compatible verified binaries; current testnet scripts target Ubuntu 24.04 or later, x86_64/x86-64-v2 |
 
 These are candidate floors, not a promise that 16 GiB or a particular disk size
 supports every validator count/load. The original 21-validator sizing exercise

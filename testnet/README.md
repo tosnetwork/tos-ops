@@ -561,7 +561,7 @@ genesis`, `testnet-elections.py pool`, `onboard` and `load`), beside `manifest
 - Journal gates recognize only fully matched election-task pool messages; unrelated
   or unverifiable activity remains unexplained and blocks the gate.
 - Preflight admits aarch64, but the supplied host build script sets x86-64-v2;
-  follow this runbook on Ubuntu 24.04 x86_64 only unless a separate build is reviewed.
+  follow this runbook on Ubuntu 24.04 or later, x86_64 only, unless a separate build is reviewed.
 - The alert peer sees the coordinator heartbeat, not chain state. Independent
   chain observation requires another approved endpoint/deployment.
 
