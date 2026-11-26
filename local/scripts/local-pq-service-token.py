@@ -14,6 +14,7 @@ import fcntl
 import hashlib
 import importlib.util
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -519,6 +520,56 @@ def verify(args, state, chain, bridge):
     state.evidence("verify-" + args.case, document)
 
 
+def read_audit_rows(chain, actor, head, urls):
+    rows = []
+    cursor = head
+    seen = set()
+    while int(cursor["lt"]) and len(rows) < 64:
+        marker = (cursor["lt"], cursor["hash"])
+        require(marker not in seen, "audit cursor repeats")
+        seen.add(marker)
+        pages = [
+            chain.call(
+                "getTransactionsStd",
+                url=url,
+                address=actor,
+                lt=cursor["lt"],
+                hash=cursor["hash"],
+                limit=min(16, 64 - len(rows)),
+            )
+            for url in urls
+        ]
+        page_rows = [
+            [(tx["transaction_id"], tx["data"]) for tx in page["transactions"]]
+            for page in pages
+        ]
+        require(
+            all(value == page_rows[0] for value in page_rows),
+            "transaction cells differ between references",
+        )
+        require(
+            page_rows[0] and page_rows[0][0][0] == cursor,
+            "audit page does not start at its anchor",
+        )
+        require(
+            len(page_rows[0]) <= min(16, 64 - len(rows)), "audit page exceeds the bound"
+        )
+        following = [
+            page.get("previous_transaction_id") or {"lt": "0", "hash": ""}
+            for page in pages
+        ]
+        require(
+            all(value == following[0] for value in following),
+            "audit cursors differ between references",
+        )
+        require(
+            int(following[0]["lt"]) < int(cursor["lt"]), "audit cursor does not advance"
+        )
+        rows.extend(page_rows[0])
+        cursor = following[0]
+    return rows
+
+
 def audit_owner(args, state, chain, bridge):
     common = snapshot(state, chain, "owner-audit-backing")
     actor = state["deployment"]["address"]
@@ -530,28 +581,9 @@ def audit_owner(args, state, chain, bridge):
         for u in urls
     ]
     require(all(h == heads[0] for h in heads), "actor heads differ at checkpoint")
-    pages = [
-        chain.call(
-            "getTransactionsStd",
-            url=u,
-            address=actor,
-            lt=heads[0]["lt"],
-            hash=heads[0]["hash"],
-            limit=64,
-        )
-        for u in urls
-    ]
-    rows = [
-        [(t["transaction_id"], t["data"]) for t in page["transactions"]]
-        for page in pages
-    ]
-    require(
-        all(row == rows[0] for row in rows),
-        "transaction cells differ between references",
-    )
-    require(len(rows[0]) < 64, "audit history exceeds its local-run bound")
+    rows = read_audit_rows(chain, actor, heads[0], urls)
     decoded = []
-    for tid, boc in rows[0]:
+    for tid, boc in rows:
         request = {
             "actor": actor,
             "lt": int(tid["lt"]),
@@ -719,6 +751,417 @@ def check_network(args, chain, state):
         )
 
 
+def fund_work_buyer(args, state, chain, bridge):
+    require(args.destination, "funding needs the new local buyer address")
+    wc, _ = usdc.split(args.destination)
+    require(wc == 0, "buyer must be basechain")
+    bound = state.get("work-buyer")
+    if bound is None:
+        state.set("work-buyer", args.destination)
+    else:
+        require(bound == args.destination, "work buyer identity changed")
+    completed = state.root / "evidence/tokens-work-buyer.json"
+    if completed.exists():
+        proof = json.loads(completed.read_text())
+        intent = state.intent("tokens-work-buyer")
+        native = state.intent("fund-work-buyer")
+        require(
+            intent is not None
+            and intent["state"] == "done"
+            and native is not None
+            and native["state"] == "done"
+            and proof["send"]["hash"] == intent["hash"]
+            and proof["credited_atomic"] == 3000000,
+            "funding evidence does not match the durable send",
+        )
+        state.evidence("work-buyer-funded", proof)
+        return
+    deployer = usdc.Wallet(
+        chain, (args.bridge_state / "keys/deployer.pk").read_bytes(), -1
+    )
+    require(deployer.address == bridge["wallets"]["deployer"], "funding source changed")
+    if state.intent("fund-work-buyer") is None:
+        require(
+            chain.balance(deployer.address) >= 7 * usdc.NANO,
+            "preserve at least one TOS at source",
+        )
+    receipt = deployer.transfer(
+        state, "fund-work-buyer", args.destination, 6 * usdc.NANO, bounce=False
+    )
+    state.evidence("fund-work-buyer", receipt)
+    buyer = usdc.wallets(chain, args.bridge_state / "keys")["buyer"]
+    body = (
+        usdc.Builder()
+        .uint(0x0F8A7EA5, 32)
+        .uint(10, 64)
+        .coins(3000000)
+        .addr(args.destination)
+        .addr(buyer.address)
+        .bit(False)
+        .coins(0)
+        .bit(False)
+        .end()
+    )
+    receipt = buyer.transfer(
+        state,
+        "tokens-work-buyer",
+        bridge["mint"]["buyer_token_wallet"],
+        500000000,
+        body,
+    )
+    target = usdc.read_address(
+        usdc.stack_cell(
+            chain.get(
+                bridge["mint"]["minter"],
+                "get_wallet_address",
+                usdc.slice_of(args.destination),
+            )[0]
+        )
+    )
+    chain.wait(
+        "buyer token credit",
+        lambda: (
+            chain.active(target)
+            and usdc.num(chain.get(target, "get_wallet_data")[0]) == 3000000
+        ),
+    )
+    state.evidence(
+        "tokens-work-buyer",
+        {"send": receipt, "token_wallet": target, "credited_atomic": 3000000},
+    )
+
+
+def audit_supply(args, state, chain, bridge):
+    master = bridge["mint"]["minter"]
+    owners = {
+        "bridge_buyer": bridge["wallets"]["buyer"],
+        "actor_owner": state["owner"],
+        "actor": state["deployment"]["address"],
+    }
+    if state.get("work-buyer"):
+        owners["work_buyer"] = state["work-buyer"]
+    wallets = {
+        name: usdc.read_address(
+            usdc.stack_cell(
+                chain.get(master, "get_wallet_address", usdc.slice_of(owner))[0]
+            )
+        )
+        for name, owner in owners.items()
+    }
+    require(len(set(wallets.values())) == len(wallets), "supply audit repeats a wallet")
+    urls = chain.validator_urls[:3]
+    seqno = (
+        min(chain.call("getMasterchainInfo", url=url)["last"]["seqno"] for url in urls)
+        - 2
+    )
+    rows = []
+    for url in urls:
+        block = chain.call(
+            "lookupBlock",
+            url=url,
+            workchain=-1,
+            shard="-9223372036854775808",
+            seqno=seqno,
+        )
+
+        def first(address, method, url=url):
+            response = chain.call(
+                "runGetMethod",
+                url=url,
+                address=address,
+                method=method,
+                stack=[],
+                seqno=seqno,
+            )
+            require(response.get("exit_code") == 0, "supply getter refused")
+            return usdc.num(next(reversed(response["stack"])))
+
+        balances = {}
+        for name, wallet in wallets.items():
+            account = chain.call(
+                "getAddressInformation", url=url, address=wallet, seqno=seqno
+            )
+            balances[name] = (
+                first(wallet, "get_wallet_data")
+                if account.get("state") == "active"
+                else 0
+            )
+        supply = first(master, "get_token_data")
+        require(
+            supply == bridge["mint"]["balance_atomic"],
+            "the approved minted supply changed",
+        )
+        require(
+            sum(balances.values()) == supply,
+            "wallet balances do not reconcile with minted supply",
+        )
+        rows.append(
+            {"block": block, "balances_atomic": balances, "supply_atomic": supply}
+        )
+    require(all(row == rows[0] for row in rows), "supply references disagree")
+    state.evidence(
+        "token-supply",
+        {"checkpoint": seqno, "wallets": wallets, "rpc_count": len(urls), **rows[0]},
+    )
+
+
+def save_document(path, value):
+    temporary = path.with_suffix(".tmp")
+    with temporary.open("w") as out:
+        os.chmod(temporary, 0o600)
+        json.dump(value, out, indent=2)
+        out.write("\n")
+        out.flush()
+        os.fsync(out.fileno())
+    os.replace(temporary, path)
+    descriptor = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def publish(args, state, chain, bridge):
+    """Bind the existing local actor to a registered provider Capability."""
+    require(
+        args.provider_runtime and args.published_config,
+        "publication needs provider runtime and its initialized configuration",
+    )
+    config = json.loads(args.published_config.read_text())
+    with (Path(config["state_dir"]) / "serve.lock").open("a") as serve_lock:
+        try:
+            fcntl.flock(serve_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise usdc.Refused("stop the local provider before publication") from error
+        publish_locked(args, state, chain, bridge, config)
+
+
+def publish_locked(args, state, chain, bridge, config):
+    original = json.loads((state.root / "rail.json").read_text())
+    require(config["wallet_address"] == state["owner"], "publication owner changed")
+    require(
+        config["network"]["network_id"] == "tos:global-id:3",
+        "publication is local only",
+    )
+    require(
+        config["actor_code_hash"].removeprefix("tvm-cell-sha256:")
+        == state["deployment"]["code_hash"],
+        "publication actor code changed",
+    )
+    name = "token-work-attestor"
+    controller_path = state.root / "publication-controller.json"
+    if controller_path.exists():
+        controller = json.loads(controller_path.read_text())
+    else:
+        # A lost reply is recovered by querying the same vault name, not by
+        # generating a replacement identity.
+        command = [
+            str(args.tosctl),
+            "agent",
+            "--config",
+            config["tosctl"]["config_path"],
+            "native-registry",
+        ]
+        queried = subprocess.run(
+            [*command, "controller", "--name", name],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        raw = (
+            queried.stdout
+            if queried.returncode == 0
+            else run([*command, "new-controller", "--name", name])
+        )
+        controller = json.loads(raw)
+        require(
+            controller["name"] == name and controller["suite"] == "ML-DSA-44",
+            "invalid attestor controller",
+        )
+        controller_path.write_text(json.dumps(controller) + "\n")
+        controller_path.chmod(0o600)
+    config["token"] = original["token"]
+    actor_config = config["token"]["actors"][0]
+    actor_config["manifest_file"] = str(state.root / "manifest.cbor")
+    config["token"]["monitor_report"] = str(state.root / "monitor.json")
+    save_document(args.published_config, config)
+    manifest_dir = usdc.private_dir(state.root / "publication-manifests")
+    manifest = json.loads(
+        run(
+            [
+                str(args.provider_runtime),
+                "manifest",
+                "--token-config",
+                str(args.published_config),
+                "--provider-agent",
+                config["agent_id"],
+                "--actor",
+                state["deployment"]["address"],
+                "--code-hash",
+                config["actor_code_hash"],
+                "--attestor",
+                "mldsa44:" + controller["key_id"],
+                "--version",
+                "1.0.0",
+                "--out-dir",
+                str(manifest_dir),
+            ]
+        )
+    )
+    prior = state.get("publication")
+    if prior is None:
+        import secrets
+
+        prior = {
+            "agent_id": config["agent_id"],
+            "manifest_digest": manifest["manifest_digest"],
+            "nonce": secrets.token_hex(32),
+            "object_nonce": secrets.token_hex(32),
+            "attestor": controller["key_id"],
+        }
+        state.set("publication", prior)
+    require(
+        prior["agent_id"] == config["agent_id"]
+        and prior["manifest_digest"] == manifest["manifest_digest"]
+        and prior["attestor"] == controller["key_id"],
+        "publication identity changed",
+    )
+    registration = state.get("publication-registration")
+    if registration is None:
+        init = json.loads((state.root / "publication-init.json").read_text())
+        require(init["agent_id"] == config["agent_id"], "Agent handoff changed")
+        registration = json.loads(
+            run(
+                [
+                    str(args.tosctl),
+                    "agent",
+                    "--config",
+                    config["tosctl"]["config_path"],
+                    "native-registry",
+                    "action",
+                    "--global-config",
+                    config["chain_global_config_file"],
+                    "--network-label",
+                    config["network"]["network_id"],
+                    "--kind",
+                    "register-capability",
+                    "--agent",
+                    init["agent_address"],
+                    "--nonce",
+                    prior["nonce"],
+                    "--object-nonce",
+                    prior["object_nonce"],
+                    "--version",
+                    "1.0.0",
+                    "--manifest",
+                    prior["manifest_digest"].removeprefix("sha256:"),
+                    "--signer",
+                    config["packet_controller"],
+                ]
+            )
+        )
+        state.set("publication-registration", registration)
+    receipt = Owner(chain, state).transfer(
+        state,
+        "publication-register-capability",
+        registration["destination"],
+        2 * usdc.NANO,
+        usdc.from64(registration["body_boc"]),
+    )
+    state.evidence(
+        "publication-register-capability",
+        {
+            "send": receipt,
+            "capability": registration["target_id"],
+            "final_target": registration["final_target"],
+        },
+    )
+    chain.wait(
+        "published Capability", lambda: chain.active(registration["final_target"])
+    )
+    views = []
+    for url in chain.validator_urls[:3]:
+        view = chain.call(
+            "getAddressInformation", url=url, address=registration["final_target"]
+        )
+        require(view.get("state") == "active", "Capability absent on a reference")
+        views.append(usdc.from64(view["code"]).hash().hex())
+    require(
+        all(
+            v == config["registry_code_hash"].removeprefix("tvm-cell-sha256:")
+            for v in views
+        ),
+        "Capability code differs",
+    )
+    actor_config["capability_id"] = "cap_" + registration["target_id"]
+    raw = Path(manifest["path"]).read_bytes()
+    (state.root / "manifest.cbor").write_bytes(raw)
+    (state.root / "manifest.cbor").chmod(0o600)
+    metadata = json.loads(
+        run(
+            [
+                str(args.provider_runtime),
+                "metadata",
+                "--network-id",
+                config["network"]["network_id"],
+                "--genesis-root-hash",
+                config["network"]["genesis_root_hash"],
+                "--genesis-file-hash",
+                config["network"]["genesis_file_hash"],
+                "--capability-id",
+                actor_config["capability_id"],
+                "--provider-agent",
+                config["agent_id"],
+                "--manifest-digest",
+                manifest["manifest_digest"],
+            ]
+        )
+    )["metadata_hash"]
+    for label, extra in [
+        (
+            "publication-attestor",
+            [
+                "--operation",
+                "rotate-attestor-key",
+                "--new-attestor-pubkey",
+                controller["public_key"],
+            ],
+        ),
+        (
+            "publication-policy",
+            ["--operation", "update-policy", "--metadata-hash", metadata],
+        ),
+    ]:
+        document = cli_document(args, state, chain, label, "send", *extra)
+        receipt = Owner(chain, state).transfer(
+            state,
+            label,
+            document["destination"],
+            int(document["value_nanotos"]),
+            usdc.from64(document["body_boc"]),
+            bounce=True,
+        )
+        state.evidence(label, {"send": receipt, "details": document["details"]})
+    config["provider"] = {
+        "capability_id": actor_config["capability_id"],
+        "version": "1.0.0",
+        "manifest_file": actor_config["manifest_file"],
+        "attestor_controller": name,
+        "respond_budget_seconds": 120,
+        "executor_socket": str(state.root / "executor.sock"),
+    }
+    save_document(args.published_config, config)
+    state.evidence(
+        "publication",
+        {
+            "agent_id": config["agent_id"],
+            "capability_id": actor_config["capability_id"],
+            "manifest_digest": manifest["manifest_digest"],
+            "metadata_hash": metadata,
+        },
+    )
+
+
 def case_name(value):
     if not 1 <= len(value) <= 80 or any(
         c not in "abcdefghijklmnopqrstuvwxyz0123456789-" for c in value
@@ -736,7 +1179,10 @@ def main():
         choices=(
             "prepare",
             "configure",
+            "publish",
+            "fund-work-buyer",
             "audit-owner",
+            "audit-supply",
             "fund",
             "deploy",
             "status",
@@ -755,8 +1201,11 @@ def main():
     p.add_argument("--fixture", type=Path, required=True)
     p.add_argument("--tosctl", type=Path)
     p.add_argument("--verifier", type=Path)
+    p.add_argument("--provider-runtime", type=Path)
+    p.add_argument("--published-config", type=Path)
     p.add_argument("--capability-id", default="cap_" + "44" * 32)
     p.add_argument("--case", type=case_name)
+    p.add_argument("--destination")
     p.add_argument("--sender-wallet", choices=("owner", "buyer"), default="owner")
     args, extra = p.parse_known_args()
     args.operation_args = extra
@@ -790,6 +1239,10 @@ def main():
             call_case(args, state, chain, bridge)
         elif args.step in ("send", "topup"):
             send_operation(args, state, chain, bridge)
+        elif args.step == "fund-work-buyer":
+            fund_work_buyer(args, state, chain, bridge)
+        elif args.step == "audit-supply":
+            audit_supply(args, state, chain, bridge)
         elif args.step == "audit-owner":
             audit_owner(args, state, chain, bridge)
         elif args.step == "snapshot":

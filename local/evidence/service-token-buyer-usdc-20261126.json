@@ -1,0 +1,271 @@
+{
+  "schema": "local-service-token-buyer-run/1",
+  "scope": "existing local network only; buyer responded/refunded and paid-work guards verified; forced receiver refusal pending approval",
+  "sources": {
+    "running_tos": "b9a5a0406193d3577022b5c856bab9f77836f58b",
+    "tools_tos": "58015fcdfe3d3ea23ff23c1bfc6aec377361b38e",
+    "ai": "ac2a2a0e4dd938fc12d0aef7fc4c92b1ba9087cf",
+    "execution_build_parent": "eb2d316e",
+    "execution_build_note": "executed the reviewed working-tree extension; final independent reconstruction uses the clean committed build"
+  },
+  "tosctl_sha256": "4da61d5595f6d3c78f4361790b182c0d6953d0ed32bd3b9b990ea3e65fcf2141",
+  "network": {
+    "network_id": "tos:global-id:3",
+    "genesis_root_hash": "sha256:65735247a371030abe811aeac0afe357301ce90e161450d26f88b4beb5b4c366",
+    "genesis_file_hash": "sha256:c3860fe196a2a1b5e4e74a9cf9448624a353ce68a8c4c5f6413347586d688769"
+  },
+  "actor": "0:70b5f1b98874a08095b21be4a483b335737ce8d016861ad64afe01bd5ccd32a1",
+  "actor_code_hash": "edf727b8bb61786e33e3e00dc57fa1db41f8eeb6cbddc0382b3e8daf227e4c89",
+  "provider_agent": "agent_6f9c1802527dca94bda6a87d11572d475b9ae74565420682625e572fab3c4d37",
+  "capability": "cap_f24160463d75039534f420b29b172e398c658cf7e90987efe925a211612aa13b",
+  "manifest_sha256": "79f88ffd13b67a2d6646c532eaf065ad77079015eeb06853140022cd1b8f6aea",
+  "buyer": "0:cfe6bca561bf8a1dcc17fa0162c2ef2c1e0fb6bbb56a4da1a580229173a9f6d0",
+  "funding": [
+    {
+      "operation": "fund-work-buyer",
+      "amount": 6000000000,
+      "unit": "nanotos",
+      "external_hash": "1833a4040f72dd6998617786d2bf6247b7952ecbd6345b57fd99799e46ec40fc",
+      "source_transaction": {
+        "lt": 193065000001,
+        "hash": "5645ee876bd25ced6168b03c5586a7fc19b25543bf20386c120e6d24e3436f48"
+      }
+    },
+    {
+      "operation": "tokens-work-buyer",
+      "amount": 3000000,
+      "unit": "atomic token",
+      "external_hash": "3e4073e3e02a7dbb6164d4bb78470785b78fa9ddda07dd3fa3d1e6cd949d2fbb",
+      "source_transaction": {
+        "lt": 193069000001,
+        "hash": "3f6b532805bf05ab560975178530d144c4d3da45ab0995b563c7c9a3b4871a5e"
+      }
+    },
+    {
+      "operation": "storage-topup-bridge",
+      "amount": 10000000,
+      "unit": "nanotos",
+      "external_hash": "dfa76f77fd16a126ea1796b2684476fa470f9f26287b2ae20b7a66df661a5258",
+      "source_transaction": {
+        "lt": 193836000001,
+        "hash": "aedb0f5027b073bc63fc183b13499f4ee0c72b0626044c2816c0eb7bd40b4719"
+      }
+    },
+    {
+      "operation": "storage-topup-minter",
+      "amount": 10000000,
+      "unit": "nanotos",
+      "external_hash": "3f91e7ae7a39f317da188cde0ad30fc76cd0ea9bc659d9e944652460ed1f3522",
+      "source_transaction": {
+        "lt": 193841000001,
+        "hash": "52e72aadae9444c02b48bf23a9c6dab515595d06b540c36fe45bc3332e497964"
+      }
+    }
+  ],
+  "lifecycles": [
+    {
+      "case": "buyer-responded",
+      "result": "PASS",
+      "request": {
+        "request_id": 3,
+        "request_hash": "7cc5b4be001e7123a9973858509890f0caf14087831907e29f7275ee27450cf5",
+        "caller": "0:cfe6bca561bf8a1dcc17fa0162c2ef2c1e0fb6bbb56a4da1a580229173a9f6d0",
+        "state": "responded",
+        "price_atomic": "1000000",
+        "call": {
+          "lt": 194154000007,
+          "hash": "9cf06df3d939bbb9162e360060c2023df3638754aa548e1480abd2f260c0b30a"
+        },
+        "response_hash": "0013aa7493c1edf42669306cf8c87137cc7cc8b06f7f7cf6e4b18fbf7077a8cf"
+      },
+      "verifier": {
+        "file": "independent-buyer-responded-clean.json",
+        "sha256": "ce4f149208a1bca5071745bfe2af398319a6dd9ddd7f888fcca12b9271621f02",
+        "checkpoint": {
+          "seqno": 196659,
+          "chain_time": 1795700670,
+          "block_root_hash": "sha256:770dab7ef5194550e50be98ec141f4e17e1d8c6096dc543834485e3bf66d7fc5",
+          "block_file_hash": "sha256:b625cd360f70300f924b0c8d9ddfa9cd0715b3e6d6a1b97b3c7872d6d465515b"
+        },
+        "reference_set": "three endpoints separate from buyer custody"
+      },
+      "exported_files": [
+        {
+          "file": "artifact.tar",
+          "sha256": "793c8e6449ee6827273dcb710ff8dd54408bd0828e91473a6576f10d50ece78e"
+        },
+        {
+          "file": "evidence.json",
+          "sha256": "7114023e258685f0da63eaad72de44bec079c8a9738daf6648bc3bb38ca5921b"
+        },
+        {
+          "file": "export.json",
+          "sha256": "0a9ad422443009f23c3bdf92f04c9a876979ade5b7577fc97b2ade8c46c8427d"
+        },
+        {
+          "file": "receipt.boc",
+          "sha256": "e70d610a6347ee1620ece9db8f7f60735f4ab946c138be38777ccee068cfea30"
+        }
+      ],
+      "preview": {
+        "amount_atomic": "1000000",
+        "received_atomic": "1000000",
+        "wallet_value_nanotos": "1134082110",
+        "forward_nanotos": "993756770"
+      }
+    },
+    {
+      "case": "buyer-refunded",
+      "result": "PASS",
+      "request": {
+        "request_id": 4,
+        "request_hash": "49f9e9672935f3e691bfbdaa76a272a3152082d70cd96cb5982a8866ef51c027",
+        "caller": "0:cfe6bca561bf8a1dcc17fa0162c2ef2c1e0fb6bbb56a4da1a580229173a9f6d0",
+        "state": "refunded",
+        "price_atomic": "1000000",
+        "payout_id": 7,
+        "destination": "0:cfe6bca561bf8a1dcc17fa0162c2ef2c1e0fb6bbb56a4da1a580229173a9f6d0",
+        "call": {
+          "lt": 194649000007,
+          "hash": "94b9c705ffcb5e7136c0462fb78ae759bb649792784b733ca1278bad29e1eb32"
+        }
+      },
+      "verifier": {
+        "file": "independent-buyer-refunded.json",
+        "sha256": "44ab60a21bb04c7757f6e79b72a812c7815320506b168b5c37602558a1f427b6",
+        "checkpoint": {
+          "seqno": 196313,
+          "chain_time": 1795700531,
+          "block_root_hash": "sha256:702ac91c271aa8d8ee1195d5c34118b04d1b6b7a525a3bf79f4e81e15d3ba57e",
+          "block_file_hash": "sha256:dfcd58336938b3fe29ffd0f8b9550e004813ff6a1b1c3eb3e671200b8e074fc2"
+        },
+        "reference_set": "three endpoints separate from buyer custody"
+      },
+      "exported_files": [
+        {
+          "file": "evidence.json",
+          "sha256": "9f0253bd568a0ee4e7e21ede41e4e12b6bb6d9a267a675514170ede4390cd44e"
+        },
+        {
+          "file": "export.json",
+          "sha256": "a84bf398b0c45505f7a940661be5bee7b542b79fd05bbe5abdfac3c5cad41475"
+        }
+      ],
+      "preview": {
+        "amount_atomic": "1000000",
+        "received_atomic": "1000000",
+        "wallet_value_nanotos": "1134082110",
+        "forward_nanotos": "993756770"
+      },
+      "terminal_transaction": {
+        "hash": "cbdce8d70374bad3a5574bc7bea3ad0f962a40d1dd0ff0fa6e04057bdf7cab40",
+        "lt": 196263000009
+      }
+    }
+  ],
+  "monitor_fault_injection": {
+    "kind": "trusted local report only; no on-chain freeze or state override",
+    "alarm_refused": true,
+    "stale_refused": true,
+    "execution_slots": 1,
+    "provider_records": 1,
+    "first_record": "acked",
+    "second_request_executed": false,
+    "log_sha256": "a2d38d949aa5df1c295bc21123a09dfea6a1315669cd87bf682c1953bc9e4c82",
+    "monitor_restored": true
+  },
+  "budget_refusal": {
+    "code": "MCP_BUYER_OVER_BUDGET",
+    "sha256": "bc89cd9ae4856b315f3aff38235bc530dd958c4d59f11b495550062c453ec7f4"
+  },
+  "backing_snapshots": [
+    {
+      "name": "buyer-before-funding",
+      "checkpoint": 194058,
+      "wallet_balance_atomic": 0,
+      "ledger_atomic": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "sha256": "f46b67cbabea72eceb545574f987e43a214cf3eb44fe9a812195020e31116170"
+    },
+    {
+      "name": "buyer-after-funding",
+      "checkpoint": 194165,
+      "wallet_balance_atomic": 1000000,
+      "ledger_atomic": [
+        1000000,
+        0,
+        0,
+        0,
+        0
+      ],
+      "sha256": "74dcf848eda82b5ee693d397a51307dc2933099f862dddcbbad5c627193a66dd"
+    },
+    {
+      "name": "buyer-responded",
+      "checkpoint": 194412,
+      "wallet_balance_atomic": 1000000,
+      "ledger_atomic": [
+        0,
+        0,
+        0,
+        0,
+        1000000
+      ],
+      "sha256": "f93226a9e308cd10eeac9da37eb0bea0c061c4759bd8b1419de211f17831b920"
+    },
+    {
+      "name": "buyer-refunded",
+      "checkpoint": 196278,
+      "wallet_balance_atomic": 1000000,
+      "ledger_atomic": [
+        0,
+        0,
+        0,
+        0,
+        1000000
+      ],
+      "sha256": "edf62a82d5151fc421f0a1c0d027e9606a85b4d1f8709d1720aefc052f3c7784"
+    },
+    {
+      "name": "owner-audit-backing",
+      "checkpoint": 197246,
+      "wallet_balance_atomic": 1000000,
+      "ledger_atomic": [
+        0,
+        0,
+        0,
+        0,
+        1000000
+      ],
+      "sha256": "9c5a7ea95add97758f51959076aa56ed971ddf9b727ff689c76f4221ed3e14ec"
+    }
+  ],
+  "supply": {
+    "checkpoint": 196535,
+    "rpc_count": 3,
+    "balances_atomic": {
+      "actor": 1000000,
+      "actor_owner": 2000000,
+      "bridge_buyer": 20000000,
+      "work_buyer": 2000000
+    },
+    "supply_atomic": 25000000
+  },
+  "returned": {
+    "result": "BLOCKED",
+    "reason": "no honest deterministic receiver refusal within the pinned production wallet and existing supply; test-only build proposal awaits coordinator decision",
+    "test_build_deployed": false
+  },
+  "limits": [
+    "The monitor alarm/stale runs are local report fault injections, not real asset freezes.",
+    "Pinned account recognition currently needs retrievable last transactions; real storage donations refreshed the bridge/minter without changing recognition.",
+    "The native offer/preflight projections remain native-only; token binding uses token inspection.",
+    "No public-network, second-asset or forced receiver-refusal acceptance is claimed."
+  ],
+  "upstream": "No corresponding operations/provider/client code at upstream 857b8a57a178e6ae0fe7fa86e7d81c5233de8560; inherited validator and VM code unchanged."
+}

@@ -59,7 +59,7 @@ and reuses their receipts. Keep the deployer's remaining allocation intact.
 configuration. Its default capability selector is **unpublished**: this is
 sufficient for state inspection, not an offer or a buyer purchase. A real
 published token Capability and its canonical manifest must be provided before
-claiming offer/buyer acceptance. This helper is not an offer publisher.
+claiming offer/buyer acceptance. The separate publication step below binds the existing actor to a real offer.
 
 ## Contract lifecycles
 
@@ -126,20 +126,124 @@ successful resolver invocation. Keep the returned JSON and common-block
 snapshots. Owner payout delivery also needs its authenticated outcome evidence;
 the funding's original `surplus` classification alone is not proof of recovery.
 
-## Remaining end-to-end gates
+## Published offer and buyer-driven work
 
-The contract-driven cases do not replace a buyer purchase. A published token
-offer, provider paid-work execution and the buyer's confirmed custody path
-must run before claiming all layers passed. The buyer additionally requires
-`wallet send --valid-until` and its v2 prepared-send document. Never substitute
-another envelope or bypass a refusal to make that gate pass.
+The buyer requires `wallet send --valid-until` and
+`tosctl.wallet-prepared-send.v2`. Pin the exact rebuilt binary, installed with
+trusted ownership and without group/world write permission. Do not change the
+running validators. Run custody commands in their private vault environment;
+never put a vault URL containing credentials in an argument or a log.
 
-A genuine recipient refusal requires the design's separately pinned test-only
-wallet build. Do not replace the real recognized wallet code or alter the
-existing bridge/configuration to fake this outcome. Without that test setup,
-record `returned` as blocked, not passed. USDT is a later acceptance run.
+1. Run `tos-service-provider init` in its established custody environment,
+   first without `--yes`, then with it. Use the local global config,
+   `--network-label tos:global-id:3`, three matching RPC endpoints, the owner's
+   wallet/configuration, the token actor code hash, registry BOC and pinned
+   tosctl. Give it a separate `--rail-config` and `--state-dir`. Keep its JSON
+   result as `$TOKEN_STATE/publication-init.json`; the result names the
+   registered Agent and address, not a key. Registration attaches 2 TOS.
+2. With that provider stopped, run:
+
+   ```sh
+   t10 publish --provider-runtime "$TOKEN_BIN/tos-service-provider" \
+     --published-config "$PROVIDER_CONFIG"
+   ```
+
+   This derives the token manifest through the shared builder, journals its
+   Agent, digest and nonces before signing the Capability registration, and
+   sends the registration, attestor rotation and metadata update as distinct
+   immutable steps. It verifies the Capability's code on three references.
+   Reuse the same private state after interruption. Never delete a saved
+   nonce, signed document or unresolved intent. The publication lock refuses
+   an already running provider.
+3. Configure the existing provider's relay and real software-work executor
+   using the provider runbook in the ai repository. The written provider
+   section initially names a private executor socket; replace that with the
+   installed executor's socket or the documented pinned subprocess executor
+   configuration before serving. Use `token --inspect offer` to check the
+   finalized binding. `serve` publishes the signed relay card in the configured
+   offer file. The native `offer` deployment command is not a token deployer.
+4. Establish a separate non-root buyer custody account and vault using
+   `tos-service-buyer init plan`, then `init apply --yes`, with a distinct
+   developer uid and a shared-group socket directory in mode 2750. Keep its
+   state and keys in mode 0700/0600. The buyer wallet must have an expiring
+   envelope; do not import the bridge run's non-expiring wallet as the buyer.
+   `fund-work-buyer --destination "$WORK_BUYER"` journals exactly 6 TOS and
+   3,000,000 atomic token units to this new local wallet, retaining at least
+   1 TOS at the original native source. It refuses a changed destination and
+   never repeats completed funding after the buyer has spent its balance.
+5. Add the independently checked asset pins and per-call/window atomic limits
+   to the buyer's `token_assets` configuration. Keep its native-fee budget
+   separate. Start the buyer agent. Obtain the canonical source archive with
+   the ai buyer's source packer or MCP source tool; arbitrary tar serialization
+   is deliberately refused.
+6. From the developer account, use the non-signing client:
+
+   ```sh
+   python3 local/scripts/local-pq-service-token-buyer.py prepare \
+     --socket "$BUYER_SOCKET" --state "$BUYER_CLIENT_STATE" --case purchase-one \
+     --offer "$TOKEN_OFFER" --archive "$SOURCE_ARCHIVE"
+   python3 local/scripts/local-pq-service-token-buyer.py request-payment \
+     --socket "$BUYER_SOCKET" --state "$BUYER_CLIENT_STATE" --case purchase-one
+   ```
+
+   The client persists the offer/archive/socket identity before the request;
+   retries reuse the quote and idempotency key. It cannot confirm or sign.
+   Inspect the buyer custody confirmer's exact token and native budgets, then
+   confirm there. Use the client's `status`, `result` and `refund` steps with
+   the same socket, state and case. Refund respects the real chain deadlines;
+   it does not manufacture expiry. A third preparation above the asset window
+   cap must be refused before signing.
+7. Export from the buyer custody account with `tos-service-buyer evidence
+   --config "$BUYER_CONFIG" --request-hash "$REQUEST_HASH" --out-dir
+   "$NEW_EXPORT_DIR"`. Run `tos-service-verify` against a separate reference
+   endpoint set, with independent network, registry, actor and asset pins,
+   the exported evidence, receipt and artifact. Record each common-block
+   backing snapshot separately from the wallet send receipt. Run `t10 audit-supply`
+   to reconcile the original supply across the bridge buyer, owner, actor and
+   work buyer at one checkpoint on three references. `audit-owner` follows
+   short history pages up to its fixed 64-transaction receipt window; it never
+   assumes a short page is the end of history.
+
+For a live execution-safety test, inject an explicitly labelled local monitor
+report with the asset alarm, then a stale report, while the second funded task
+is pending. Record both refusals and that no execution slot was created. Keep
+execution refused until its real refund completes; restore the normal report
+only afterward. This is a monitor fault injection, not an on-chain asset freeze
+and not a substitute for the production monitor's own acceptance tests.
+
+## Remaining returned-case gate
+
+The actual receiver checks the sender's deterministic wallet identity and its
+supply bound (`token-wallet.fc`, `receive_reported_tokens`); the dispatcher
+requires the receiver compute budget before entering it. The recognized wallet
+has no owner-configurable incoming-transfer refusal. Its terminal/burn flags do
+not create such a refusal. Correctly funded transfers within the existing small
+supply therefore offer no honest deterministic refusal at the receiver.
+
+The proposed smallest test-only build adds a deliberate receiver refusal for
+one test recipient to the reported-transfer handler. Its changed code hash
+requires an isolated, correctly derived and explicitly pinned bridge/minter/
+wallet namespace and an ordinary recognition entry. It must not replace code
+or state at an existing address, impersonate the recognized asset, or bypass
+recognition. Deployment of that test setup requires a separate coordinator
+choice. It has not been deployed. Record `returned` as blocked until that
+choice and a real authenticated refusal outcome. The second asset remains a
+later acceptance run.
+
+The current client also requires the latest transactions of pinned bridge and
+minter accounts to remain retrievable. A local stale-history refusal was
+resolved by two real 0.01-TOS storage donations, using their documented empty-body
+paths; recognition, code and configuration were unchanged. This does not fix
+long-term historical availability and is recorded as a follow-up.
 
 ## Evidence and tests
+
+The original contract-path run is indexed in
+[evidence/service-token-usdc-20261126.json](evidence/service-token-usdc-20261126.json).
+The subsequent buyer/provider run is indexed in
+[evidence/service-token-buyer-usdc-20261126.json](evidence/service-token-buyer-usdc-20261126.json).
+The latter records the two independent verdicts, export hashes, monitor fault
+injections, funding receipts and four-wallet conservation check.
 
 The private state contains keys and signed BOCs: never commit or print it.
 Retain raw public transaction/verifier receipts outside the repository and
@@ -149,7 +253,10 @@ succeeds. Leave the original network and election task running.
 
 ```sh
 TOS_ROOT="$TOS_ROOT" "$TOS_ROOT/.venv/bin/python" -m pytest \
-  local/tests/test_local_pq_service_token.py -q
+  local/tests/test_local_pq_service_token.py local/tests/test_local_pq_service_token_buyer.py -q
 uv run ruff check local/scripts/local-pq-service-token.py local/tests/test_local_pq_service_token.py
 uv run ruff format --check local/scripts/local-pq-service-token.py local/tests/test_local_pq_service_token.py
 ```
+
+Upstream comparison: these local operations and client adapters have no upstream
+counterpart; inherited validator and VM code is unchanged.

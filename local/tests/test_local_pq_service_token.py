@@ -273,7 +273,7 @@ def test_owner_audit_requires_the_exact_recovery(tmp_path, monkeypatch, change):
     if change:
         with pytest.raises(
             module.usdc.Refused,
-            match="history exceeds" if change == "bound" else "outcome is not proven",
+            match="exceeds the bound" if change == "bound" else "outcome is not proven",
         ):
             module.audit_owner(
                 SimpleNamespace(fixture=Path("fixture")), state, Chain(), None
@@ -293,3 +293,265 @@ def test_owner_audit_requires_the_exact_recovery(tmp_path, monkeypatch, change):
 def test_case_names_cannot_escape_the_evidence_directory(value):
     with pytest.raises(module.argparse.ArgumentTypeError):
         module.case_name(value)
+
+
+def publication_fixture(tmp_path):
+    state = module.usdc.State(tmp_path)
+    state.set("owner", "owner")
+    state.set("deployment", {"address": "actor", "code_hash": "aa" * 32})
+    token = {"actors": [{"address": "actor"}]}
+    module.save_document(tmp_path / "rail.json", {"token": token})
+    config = {
+        "wallet_address": "owner",
+        "state_dir": str(tmp_path),
+        "network": {
+            "network_id": "tos:global-id:3",
+            "genesis_root_hash": "sha256:" + "11" * 32,
+            "genesis_file_hash": "sha256:" + "22" * 32,
+        },
+        "agent_id": "agent_" + "33" * 32,
+        "actor_code_hash": "tvm-cell-sha256:" + "aa" * 32,
+        "registry_code_hash": "tvm-cell-sha256:" + "bb" * 32,
+        "tosctl": {"config_path": "custody.json"},
+        "packet_controller": "packet",
+        "chain_global_config_file": "global.json",
+    }
+    path = tmp_path / "published.json"
+    module.save_document(path, config)
+    module.save_document(
+        tmp_path / "publication-controller.json",
+        {"key_id": "cc" * 32, "public_key": "dd" * 1312},
+    )
+    args = SimpleNamespace(
+        provider_runtime=Path("provider"), published_config=path, tosctl=Path("tosctl")
+    )
+    return args, state, config
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("wallet_address", "another"),
+        ("actor_code_hash", "changed"),
+        ("network", {"network_id": "public"}),
+    ],
+)
+def test_publication_refuses_changed_identity_before_signing(
+    tmp_path, monkeypatch, field, value
+):
+    args, state, config = publication_fixture(tmp_path)
+    config[field] = value
+    module.save_document(args.published_config, config)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("identity refusal reached custody")
+
+    monkeypatch.setattr(module, "run", forbidden)
+    with pytest.raises(module.usdc.Refused):
+        module.publish(args, state, None, None)
+
+
+def test_publication_journals_registration_identity_before_its_signature(
+    tmp_path, monkeypatch
+):
+    args, state, config = publication_fixture(tmp_path)
+    module.save_document(
+        tmp_path / "publication-init.json",
+        {"agent_id": config["agent_id"], "agent_address": "agent-address"},
+    )
+    manifest = tmp_path / "canonical.cbor"
+    manifest.write_bytes(b"canonical")
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if "manifest" in argv:
+            return json.dumps(
+                {"manifest_digest": "sha256:" + "ee" * 32, "path": str(manifest)}
+            )
+        # The identity and nonces must survive a crash before building the
+        # registry signature. The custody process must use its subcommand config.
+        saved = module.usdc.State(tmp_path).get("publication")
+        assert saved is not None
+        assert saved["manifest_digest"] == "sha256:" + "ee" * 32
+        assert len(saved["nonce"]) == 64 and len(saved["object_nonce"]) == 64
+        assert argv[:4] == ["tosctl", "agent", "--config", "custody.json"]
+        raise module.usdc.Refused("stop before registration signature")
+
+    monkeypatch.setattr(module, "run", run)
+    with pytest.raises(module.usdc.Refused, match="before registration signature"):
+        module.publish(args, state, None, None)
+    first = state.get("publication")
+    with pytest.raises(module.usdc.Refused, match="before registration signature"):
+        module.publish(args, state, None, None)
+    assert state.get("publication") == first
+    assert len(calls) == 4
+
+
+def test_work_buyer_destination_cannot_change_on_rerun(tmp_path):
+    state = module.usdc.State(tmp_path)
+    state.set("work-buyer", "0:" + "11" * 32)
+    with pytest.raises(module.usdc.Refused, match="identity changed"):
+        module.fund_work_buyer(
+            SimpleNamespace(destination="0:" + "22" * 32), state, None, None
+        )
+
+
+def test_work_buyer_cannot_be_masterchain(tmp_path):
+    state = module.usdc.State(tmp_path)
+    with pytest.raises(module.usdc.Refused, match="basechain"):
+        module.fund_work_buyer(
+            SimpleNamespace(destination="-1:" + "22" * 32), state, None, None
+        )
+
+
+def test_completed_work_funding_does_not_require_an_unspent_balance(tmp_path):
+    state = module.usdc.State(tmp_path)
+    destination = "0:" + "22" * 32
+    state.set("work-buyer", destination)
+    state.put_intent("fund-work-buyer", {"state": "done"})
+    state.put_intent("tokens-work-buyer", {"state": "done", "hash": "hash"})
+    state.evidence(
+        "tokens-work-buyer", {"send": {"hash": "hash"}, "credited_atomic": 3000000}
+    )
+    # A None chain proves the completed path neither looks at the current
+    # balance (which can have been spent) nor makes another transfer.
+    module.fund_work_buyer(SimpleNamespace(destination=destination), state, None, None)
+    assert (
+        json.loads((tmp_path / "evidence/work-buyer-funded.json").read_text())[
+            "credited_atomic"
+        ]
+        == 3000000
+    )
+
+
+def test_publication_refuses_a_running_provider(tmp_path, monkeypatch):
+    args, state, _config = publication_fixture(tmp_path)
+    monkeypatch.setattr(
+        module,
+        "publish_locked",
+        lambda *args: pytest.fail("active provider reached publication"),
+    )
+    with (tmp_path / "serve.lock").open("a") as lock:
+        module.fcntl.flock(lock, module.fcntl.LOCK_EX)
+        with pytest.raises(module.usdc.Refused, match="stop the local provider"):
+            module.publish(args, state, None, None)
+
+
+@pytest.mark.parametrize("bad", [None, "supply", "references"])
+def test_supply_audit_is_checkpoint_bound_and_accounts_for_every_wallet(tmp_path, bad):
+    state = module.usdc.State(tmp_path)
+    state.set("owner", "owner")
+    state.set("deployment", {"address": "actor"})
+    state.set("work-buyer", "buyer")
+    bridge = {
+        "mint": {"minter": "master", "balance_atomic": 25},
+        "wallets": {"buyer": "original"},
+    }
+    ids = {
+        name: "0:" + f"{i:064x}"
+        for i, name in enumerate(("original", "owner", "actor", "buyer"), 1)
+    }
+
+    class Chain:
+        validator_urls = ("node-a", "node-b", "node-c")
+
+        def get(self, _master, method, address):
+            assert method == "get_wallet_address"
+            # The test substitutes owner slices below, retaining the real
+            # address-cell decoder for returned wallet addresses.
+            return [
+                (
+                    "cell",
+                    {
+                        "bytes": module.usdc.boc64(
+                            module.usdc.Builder().addr(ids[address]).end()
+                        )
+                    },
+                )
+            ]
+
+        def call(self, rpc_method, *, url, **params):
+            if rpc_method == "getMasterchainInfo":
+                return {"last": {"seqno": 100}}
+            assert params["seqno"] == 98
+            if rpc_method == "lookupBlock":
+                return {
+                    "seqno": 98,
+                    "hash": "other"
+                    if bad == "references" and url == "node-c"
+                    else "block",
+                }
+            if rpc_method == "getAddressInformation":
+                return {"state": "active"}
+            assert rpc_method == "runGetMethod"
+            amount = (
+                25
+                if params["method"] == "get_token_data"
+                else (
+                    {
+                        ids["original"]: 20,
+                        ids["owner"]: 2,
+                        ids["actor"]: 1,
+                        ids["buyer"]: 2,
+                    }[params["address"]]
+                )
+            )
+            if bad == "supply" and params["method"] == "get_token_data":
+                amount = 26
+            return {"exit_code": 0, "stack": [["num", str(amount)]]}
+
+    import unittest.mock
+
+    with unittest.mock.patch.object(
+        module.usdc, "slice_of", side_effect=lambda address: address
+    ):
+        if bad:
+            with pytest.raises(module.usdc.Refused):
+                module.audit_supply(None, state, Chain(), bridge)
+        else:
+            module.audit_supply(None, state, Chain(), bridge)
+            proof = json.loads((tmp_path / "evidence/token-supply.json").read_text())
+            assert proof["supply_atomic"] == 25 and proof["rpc_count"] == 3
+            assert sum(proof["balances_atomic"].values()) == 25
+
+
+def test_audit_follows_short_pages_and_compares_the_reference_cursors():
+    class Chain:
+        def __init__(self, disagree=False):
+            self.calls = []
+            self.disagree = disagree
+
+        def call(self, rpc_method, *, url, **params):
+            assert rpc_method == "getTransactionsStd"
+            self.calls.append((url, params["lt"]))
+            if params["lt"] == "20":
+                return {
+                    "transactions": [
+                        {"transaction_id": {"lt": "20", "hash": "a"}, "data": "first"}
+                    ],
+                    "previous_transaction_id": {
+                        "lt": "10",
+                        "hash": "other" if self.disagree and url == "c" else "b",
+                    },
+                }
+            return {
+                "transactions": [
+                    {
+                        "transaction_id": {"lt": "10", "hash": "b"},
+                        "data": "older receipt",
+                    }
+                ],
+                "previous_transaction_id": {"lt": "0", "hash": ""},
+            }
+
+    chain = Chain()
+    rows = module.read_audit_rows(
+        chain, "actor", {"lt": "20", "hash": "a"}, ["a", "b", "c"]
+    )
+    assert [r[1] for r in rows] == ["first", "older receipt"]
+    assert len(chain.calls) == 6
+    with pytest.raises(module.usdc.Refused, match="cursors differ"):
+        module.read_audit_rows(
+            Chain(True), "actor", {"lt": "20", "hash": "a"}, ["a", "b", "c"]
+        )
