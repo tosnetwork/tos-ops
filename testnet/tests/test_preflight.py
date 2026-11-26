@@ -3,11 +3,13 @@ import json
 import re
 import subprocess
 import sys
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import testnet_lib as lib
-from conftest import SCRIPTS
+from testnet_support import SCRIPTS
 
 spec = importlib.util.spec_from_file_location("preflight", SCRIPTS / "preflight.py")
 preflight = importlib.util.module_from_spec(spec)
@@ -231,9 +233,6 @@ class FakeNetwork:
                 self.sent.append((sender, self.by_address[address].name, int(port)))
             return subprocess.CompletedProcess([], 0, "", "")
         if command.startswith("timeout"):
-            import time
-
-            time.sleep(6)  # the probes are sent while the capture runs
             ports = [int(p) for p in re.findall(r"dst port (\d+)", command)]
             lines = [
                 f"PROB:{s}:{p}"
@@ -246,6 +245,23 @@ class FakeNetwork:
 
 @pytest.fixture
 def quick(monkeypatch):
+    # Model a capture buffer: start listening first, read the buffer on join,
+    # after send workers finish. No wall-clock deadline races a paused test.
+    class CaptureThread:
+        def __init__(self, *, target, args):
+            self.target, self.args, self.started = target, args, False
+
+        def start(self):
+            self.started = True
+
+        def join(self):
+            assert self.started, "capture was not started"
+            self.target(*self.args)
+
+    monkeypatch.setattr(
+        preflight, "threading", SimpleNamespace(Thread=CaptureThread, Lock=threading.Lock)
+    )
+    monkeypatch.setattr(preflight, "time", SimpleNamespace(sleep=lambda _: None))
     monkeypatch.setattr(preflight, "CAPTURE_SECONDS", 1)
 
 

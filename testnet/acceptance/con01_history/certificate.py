@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import bisect
+import ctypes
 import fcntl
 import hashlib
 import os
@@ -37,11 +38,7 @@ def hash_bytes(value):
 
 
 def identity(block):
-    shard = (
-        -9223372036854775808
-        if block["shard"] == "8000000000000000"
-        else int(block["shard"])
-    )
+    shard = -9223372036854775808 if block["shard"] == "8000000000000000" else int(block["shard"])
     require(
         int(block["workchain"]) == -1 and shard == -9223372036854775808,
         "masterchain block required",
@@ -59,13 +56,31 @@ def identity(block):
     )
 
 
+def _create_sealable_memfd():
+    """Use the same Linux syscall when standalone Python omits its os binding."""
+    flags = 0x0001 | 0x0002  # Linux MFD_CLOEXEC | MFD_ALLOW_SEALING
+    native = getattr(os, "memfd_create", None)
+    try:
+        if native is not None:
+            return native("con01-openssl", flags)
+        libc = ctypes.CDLL(None, use_errno=True)
+        create = libc.memfd_create
+        create.argtypes = (ctypes.c_char_p, ctypes.c_uint)
+        create.restype = ctypes.c_int
+        descriptor = create(b"con01-openssl", flags)
+        if descriptor < 0:
+            code = ctypes.get_errno()
+            raise OSError(code, os.strerror(code))
+        return descriptor
+    except (AttributeError, OSError) as error:
+        raise Refused("Linux memfd_create unavailable for the sealed verifier snapshot") from error
+
+
 class SignatureVerifier:
     """One sealed bounded OpenSSL helper; public verification input only."""
 
     def __init__(self, executable: Path, digest: str):
-        fd = os.open(
-            executable, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
-        )
+        fd = os.open(executable, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
         self.fd = -1
         copied = -1
         try:
@@ -86,29 +101,16 @@ class SignatureVerifier:
                 and hashlib.sha256(raw).hexdigest() == digest,
                 "signature verifier pin",
             )
-            # The sealed snapshot needs memfd_create; some standalone Python builds lack it.
-            require(
-                hasattr(os, "memfd_create"),
-                "this Python has no os.memfd_create for the sealed verifier snapshot; "
-                "run under a CPython built with it, such as /usr/bin/python3",
-            )
-            copied = os.memfd_create(
-                "con01-openssl", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING
-            )
+            copied = _create_sealable_memfd()
             view = memoryview(raw)
             while view:
                 n = os.write(copied, view)
                 require(n > 0, "verifier snapshot write")
                 view = view[n:]
             os.fchmod(copied, 0o500)
-            fcntl.fcntl(
-                copied,
-                fcntl.F_ADD_SEALS,
-                fcntl.F_SEAL_WRITE
-                | fcntl.F_SEAL_GROW
-                | fcntl.F_SEAL_SHRINK
-                | fcntl.F_SEAL_SEAL,
-            )
+            # Linux F_ADD_SEALS and WRITE/GROW/SHRINK/SEAL. Standalone Python
+            # may omit the named constants as well as os.memfd_create.
+            fcntl.fcntl(copied, getattr(fcntl, "F_ADD_SEALS", 1033), 0x000F)
             self.fd = copied
             copied = -1
         finally:
@@ -188,24 +190,18 @@ def verify_link(link, verify_signature, expected_source=None):
         link["dest"],
         link["cert"],
     )
-    require(
-        link["config"].hash() == f.D(source["root_hash"]), "source config root mismatch"
-    )
+    require(link["config"].hash() == f.D(source["root_hash"]), "source config root mismatch")
     require(root.hash() == f.D(destination["root_hash"]), "destination root mismatch")
-    require(
-        identity(cert["id"]) == identity(destination), "certificate target mismatch"
-    )
+    require(identity(cert["id"]) == identity(destination), "certificate target mismatch")
     header = f.block_header(root)
     require(
-        header["seqno"] == int(destination["seqno"])
-        and header["prevkey"] == int(source["seqno"]),
+        header["seqno"] == int(destination["seqno"]) and header["prevkey"] == int(source["seqno"]),
         "source is not declared governing key block",
     )
     params = source_params(link["config"], source)
     v = f.validators(params[34].c.slice().ref())
     require(
-        cert["cc_seqno"] == header["cc"]
-        and cert["validator_set_hash"] == header["vhash"],
+        cert["cc_seqno"] == header["cc"] and cert["validator_set_hash"] == header["vhash"],
         "certificate/header session coordinates",
     )
     require(
@@ -251,9 +247,7 @@ def verify_packet(raw, anchor, verify_signature):
             identity(start) == identity(anchor),
             "proof does not start at trusted anchor",
         )
-        require(
-            identity(links[0]["src"]) == identity(start), "first proof source mismatch"
-        )
+        require(identity(links[0]["src"]) == identity(start), "first proof source mismatch")
         require(identity(links[-1]["dst"]) == identity(end), "proof endpoint mismatch")
         results = []
         cursor = start

@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 import testnet_lib as lib
-from conftest import SCRIPTS
+from testnet_support import SCRIPTS
 
 NANO = 10**9
 PROFILE_PATH = SCRIPTS.parent / "network" / "profile.json"

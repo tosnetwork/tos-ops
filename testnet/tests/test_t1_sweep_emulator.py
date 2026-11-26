@@ -10,9 +10,8 @@ import sys
 import time
 
 import pytest
-from conftest import SCRIPTS
-
 import t1_sweep_emu as E
+from testnet_support import SCRIPTS
 
 pytestmark = pytest.mark.skipif(E.available() is not None, reason=E.available() or "")
 

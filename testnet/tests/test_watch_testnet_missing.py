@@ -7,8 +7,8 @@ import signal
 import subprocess
 
 import pytest
-from conftest import SCRIPTS
 from test_watch_testnet import inventory, load_report, make_args
+from testnet_support import SCRIPTS
 
 spec = importlib.util.spec_from_file_location("watch_testnet", SCRIPTS / "watch-testnet.py")
 watch_testnet = importlib.util.module_from_spec(spec)

@@ -14,6 +14,12 @@ ROOT = Path(__file__).resolve().parents[2]
 MUTATIONS = [
     (
         "certificate.py",
+        'fcntl.fcntl(copied, getattr(fcntl, "F_ADD_SEALS", 1033), 0x000F)',
+        "pass  # mutant: omit executable sealing",
+        "a_python_without_os_memfd_still_uses_a_sealed_executable",
+    ),
+    (
+        "certificate.py",
         "    timing = (",
         '    require(v["since"] <= header["gen_utime"] <= v["until"], "term outside validity interval")\n    timing = (',
         "real_expired_schedule_certificate_has_valid_finality",

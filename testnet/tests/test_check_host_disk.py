@@ -1,7 +1,7 @@
 import importlib.util
 import json
 
-from conftest import SCRIPTS
+from testnet_support import SCRIPTS
 
 spec = importlib.util.spec_from_file_location("check_host_disk", SCRIPTS / "check-host-disk.py")
 check_host_disk = importlib.util.module_from_spec(spec)
