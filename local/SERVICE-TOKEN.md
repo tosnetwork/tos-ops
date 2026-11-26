@@ -2,7 +2,9 @@
 
 Local development only. This procedure uses the **existing** network and the
 minted balance from [the bridge run](OPERATIONS.md#test-usdc-through-the-token-bridge).
-It never resets the chain, changes a validator service or uses the Genesis wallet.
+The original-asset checks never reset the chain, change a validator service or
+use the Genesis wallet. The isolated refusal namespace below has a separately
+journaled local-faucet fee phase.
 No public-network acceptance is implied.
 
 ## Prerequisites
@@ -260,3 +262,81 @@ uv run ruff format --check local/scripts/local-pq-service-token.py local/tests/t
 
 Upstream comparison: these local operations and client adapters have no upstream
 counterpart; inherited validator and VM code is unchanged.
+
+
+## Local-only returned-entry test
+
+This requires the separately reviewed `test/token-refusal/` generator in the tos
+checkout. It is **not** a release token and must never run on a public network.
+`local-token-refusal.py` requires global id 3 and an explicit approved genesis;
+it compares both zero-state hashes on three local validator endpoints before any
+phase. The wallet itself also refuses outside id 3.
+
+Use a fresh private state directory. The namespace phase deploys unchanged bridge
+and minter code embedding the test wallet, under the vacant ConfigParam 81 slot.
+Its synthetic source-token identifier is the 20-byte `LOCAL_ONLY_TEST_REFU`.
+There is no EVM deposit: local test oracles authorize exactly 5,000,000 atomic
+units in this separate namespace. Those units are not test USDC and have no
+redemption claim. The original asset and its 25,000,000 units are untouched.
+
+```sh
+refusal() {
+  sudo "$PYTHON" local/scripts/local-token-refusal.py "$@" \
+    --state "$REFUSAL_NAMESPACE" --bridge-state "$BRIDGE_STATE" \
+    --test-source "$TEST_SOURCE" --tools-tos "$TOS_ROOT" \
+    --running-tos "$RUNNING_TOS_ROOT" --tosctl "$TOSCTL" \
+    --approved-genesis "$APPROVED_LOCAL_GENESIS" --ceremony "$CEREMONY"
+}
+refusal namespace
+# If the recognition quote needs it, run the guarded fee phase below first.
+refusal recognize
+```
+
+The critical recognition proposal needs its full quoted storage payment and four
+set wins. Insufficient funds refuse; never remove an operation record or change
+its body to retry. If needed, `refusal fund-governance` funds the dedicated local
+payer once with 60 TOS from the local faucet. That phase requires the local
+elections service inactive and the shared faucet lock held; stop/start only that
+local service under a shell trap, never a validator, and confirm it is active
+afterwards. Keep the receipt. For that separate local fee phase:
+
+```sh
+set -euo pipefail
+sudo systemctl is-active --quiet tos-pq-elections
+trap 'sudo systemctl start tos-pq-elections' EXIT
+sudo systemctl stop tos-pq-elections
+refusal fund-governance
+sudo systemctl start tos-pq-elections
+sudo systemctl is-active --quiet tos-pq-elections
+trap - EXIT
+refusal recognize
+```
+
+A planned proposal must resume its exact original body; do not create another
+journal to evade its fence.
+
+Recognition adds the entry through normal governance and preserves the previous
+entry byte for byte. A concurrently changed ConfigParam 84 refuses. Because the
+schema has no label field, the visible source-token bytes and the independently
+pinned test-code hashes identify the test entry. Evidence names
+`LOCAL-ONLY-TEST-REFUSAL-v1`. Production configurations retain their own asset
+pins and do not recognize this master.
+
+Run the actor driver with `--bridge-state "$REFUSAL_NAMESPACE"` and a fresh
+`--state`. Run `prepare`, `fund`, `deploy`, `configure`, then `call --case refunded`.
+Wait for the actual response deadline, expire, and claim the refund to the
+`reject_owner` in `LOCAL-ONLY-TEST.json`. The R transaction must compute-abort
+with exit 1980, bounce to S, and make S emit `transfer_refused`. Require the
+actor's authenticated refused outcome and a returned entry before continuing.
+
+Use the same buyer to `claim-returned --id "$RETURNED_ID"
+--destination "$BUYER_WALLET"`. Independently reconstruct before and after with
+`tos-service-verify` and separate finalized RPC readers. Snapshot the invariant
+after every send. A `sweep-returned` must wait for its actual 30-day deadline;
+do not change clocks, state, actor code or the window to make the test finish.
+
+The [returned-entry evidence](evidence/service-token-returned-local-20261126.json)
+records two real exit-1980 receiver aborts, identical receipt BOCs on two readers,
+a successful returned claim, independent resolver verdicts and both supply
+checks. A second entry is retained for a sweep after its natural deadline; its
+early sweep was refused before signing. All keys stay outside the repository.

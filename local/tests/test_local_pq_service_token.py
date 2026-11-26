@@ -58,8 +58,11 @@ def test_document_id_cannot_change_its_meaning(tmp_path):
         module.cli_document(None, state, None, "op", "send", "--token-amount", "2")
 
 
+@pytest.mark.parametrize("subwallet", [42, 0x55534443])
 @pytest.mark.parametrize("delivered", [True, False])
-def test_owner_journals_exact_message_and_does_not_repeat(tmp_path, delivered):
+def test_owner_journals_exact_message_and_does_not_repeat(
+    tmp_path, delivered, subwallet
+):
     state = module.usdc.State(tmp_path)
 
     class Chain:
@@ -74,6 +77,9 @@ def test_owner_journals_exact_message_and_does_not_repeat(tmp_path, delivered):
             record = module.usdc.State(tmp_path).intent("send")
             assert record["hash"] == message.hash().hex()
             assert record["state"] == "signed"
+            header = module.usdc.lib.Slice(message.refs[0])
+            header.bits(512 + 32)
+            assert header.bits(32) == subwallet
             self.seq += 1
 
         def wait(self, label, predicate):
@@ -90,6 +96,7 @@ def test_owner_journals_exact_message_and_does_not_repeat(tmp_path, delivered):
     owner = module.Owner.__new__(module.Owner)
     owner.chain = chain
     owner.address = "0:" + "11" * 32
+    owner.subwallet_id = subwallet
     owner.key = nacl.signing.SigningKey.generate()
     owner.seqno = lambda: chain.seq
     destination = "0:" + "22" * 32
@@ -130,7 +137,9 @@ def test_independent_resolver_failure_is_never_a_pass(tmp_path, monkeypatch):
         )
 
 
-@pytest.mark.parametrize("operation", ["expire", "sweep-expired-request"])
+@pytest.mark.parametrize(
+    "operation", ["expire", "sweep-expired-request", "sweep-returned"]
+)
 def test_deadline_gate_precedes_signing(tmp_path, monkeypatch, operation):
     state = module.usdc.State(tmp_path)
     state.set("deployment", {"address": "actor"})
@@ -139,11 +148,17 @@ def test_deadline_gate_precedes_signing(tmp_path, monkeypatch, operation):
         "read_at": {"gen_utime": 100},
         "response_deadline": 200,
         "refund_claim_deadline": 300,
+        "return_deadline": 400,
     }
     monkeypatch.setattr(module, "run", lambda *a, **kw: json.dumps(view))
     args = SimpleNamespace(
         case="deadline",
-        operation_args=["--operation", operation, "--request-id", "1"],
+        operation_args=[
+            "--operation",
+            operation,
+            "--id" if operation == "sweep-returned" else "--request-id",
+            "1",
+        ],
         tosctl=Path("cli"),
         sender_wallet="owner",
         step="send",
@@ -555,3 +570,63 @@ def test_audit_follows_short_pages_and_compares_the_reference_cursors():
         module.read_audit_rows(
             Chain(True), "actor", {"lt": "20", "hash": "a"}, ["a", "b", "c"]
         )
+
+
+def test_refusal_fee_topup_requires_the_independently_marked_build(
+    tmp_path, monkeypatch
+):
+    state = module.usdc.State(tmp_path)
+    sent = []
+    owner = SimpleNamespace(
+        address="owner", transfer=lambda *a, **kw: sent.append(a) or {"state": "done"}
+    )
+    monkeypatch.setattr(module, "Owner", lambda *a: owner)
+    bridge = {"mint": {"buyer": "test-buyer"}}
+    chain = SimpleNamespace(balance=lambda *a: 4 * module.usdc.NANO)
+    with pytest.raises(module.usdc.Refused, match="marked local refusal namespace"):
+        module.fund_refusal_buyer(None, state, chain, bridge)
+    assert not sent
+    bridge["build"] = {"label": "LOCAL-ONLY-TEST-REFUSAL-v1"}
+    module.fund_refusal_buyer(None, state, chain, bridge)
+    assert sent[0][1:4] == ("fund-refusal-buyer", "test-buyer", 2 * module.usdc.NANO)
+
+
+@pytest.mark.parametrize("operation", ["claim-refund", "claim-returned"])
+def test_shared_destination_flag_reaches_the_actual_send_parser(
+    tmp_path, monkeypatch, operation
+):
+    bridge = tmp_path / "bridge"
+    bridge.mkdir(mode=0o700)
+    (bridge / "state.json").write_text("{}")
+    captured = []
+    monkeypatch.setattr(module.usdc, "Chain", lambda *a: None)
+    monkeypatch.setattr(module, "check_network", lambda *a: None)
+    monkeypatch.setattr(
+        module, "send_operation", lambda args, *a: captured.extend(args.operation_args)
+    )
+    destination = "0:" + "22" * 32
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            str(SCRIPT),
+            "send",
+            "--state",
+            str(tmp_path / "state"),
+            "--bridge-state",
+            str(bridge),
+            "--running-tos",
+            str(tmp_path),
+            "--tools-tos",
+            str(tmp_path),
+            "--fixture",
+            str(tmp_path / "fixture"),
+            "--case",
+            "refund",
+            "--operation",
+            operation,
+            "--destination",
+            destination,
+        ],
+    )
+    module.main()
+    assert captured == ["--operation", operation, "--destination", destination]

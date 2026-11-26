@@ -82,6 +82,7 @@ def prepare(args, state, chain, bridge):
     )
     inputs = {
         "owner": owner,
+        "bridge_config_param": bridge.get("bridge_param", 79),
         "master": bridge["mint"]["minter"],
         "wallet_code_boc": current["code"],
         "actor_code_boc": code_path.read_text().strip(),
@@ -147,6 +148,8 @@ def fund(args, state, chain, bridge):
 class Owner(usdc.Wallet):
     """The local expiring wallet-v3 envelope; same durable T5 send journal."""
 
+    subwallet_id = 42
+
     def __init__(self, chain, state):
         super().__init__(
             chain, (state.root / "keys/owner.pk").read_bytes(), 0, state["owner"]
@@ -168,7 +171,7 @@ class Owner(usdc.Wallet):
             signed = (
                 usdc.Builder()
                 .int(3, 32)
-                .uint(42, 32)
+                .uint(self.subwallet_id, 32)
                 .uint(expiry, 32)
                 .uint(seqno, 32)
                 .uint(mode, 8)
@@ -219,6 +222,27 @@ class Owner(usdc.Wallet):
         state.put_intent(intent, record)
         require(record["state"] == "done", usdc.accepted_not_sent(intent, record))
         return record
+
+
+def fund_refusal_buyer(args, state, chain, bridge):
+    require(
+        bridge.get("build", {}).get("label") == "LOCAL-ONLY-TEST-REFUSAL-v1",
+        "only the marked local refusal namespace may receive this fee top-up",
+    )
+    owner = Owner(chain, state)
+    if state.intent("fund-refusal-buyer") is None:
+        require(
+            chain.balance(owner.address) >= 3 * usdc.NANO,
+            "owner fee reserve insufficient",
+        )
+    receipt = owner.transfer(
+        state,
+        "fund-refusal-buyer",
+        bridge["mint"]["buyer"],
+        2 * usdc.NANO,
+        bounce=False,
+    )
+    state.evidence("fund-refusal-buyer", receipt)
 
 
 def deploy(args, state, chain, bridge):
@@ -408,10 +432,10 @@ def send_operation(args, state, chain, bridge):
     require(label, "operation requires a unique case name")
     if "--operation" in args.operation_args and state.intent(label) is None:
         op = args.operation_args[args.operation_args.index("--operation") + 1]
-        if op in ("expire", "sweep-expired-request"):
-            request_id = args.operation_args[
-                args.operation_args.index("--request-id") + 1
-            ]
+        if op in ("expire", "sweep-expired-request", "sweep-returned"):
+            returned = op == "sweep-returned"
+            id_flag = "--id" if returned else "--request-id"
+            request_id = args.operation_args[args.operation_args.index(id_flag) + 1]
             view = json.loads(
                 run(
                     [
@@ -420,19 +444,23 @@ def send_operation(args, state, chain, bridge):
                         "--config",
                         str(state.root / "tosctl-config.json"),
                         "service-token",
-                        "request-show",
+                        "returned-show" if returned else "request-show",
                         "--address",
                         state["deployment"]["address"],
                         "--code-profile",
                         "test",
-                        "--request-id",
+                        id_flag,
                         request_id,
                         "--format",
                         "json",
                     ]
                 )
             )
-            field = "response_deadline" if op == "expire" else "refund_claim_deadline"
+            field = {
+                "expire": "response_deadline",
+                "sweep-expired-request": "refund_claim_deadline",
+                "sweep-returned": "return_deadline",
+            }[op]
             require(
                 view.get("found") and view["read_at"]["gen_utime"] >= view[field],
                 f"{op} deadline has not arrived",
@@ -632,9 +660,9 @@ def configure(args, state, chain, bridge):
     pin = {
         "Master": bridge["mint"]["minter"],
         "Bridge": bridge["tvm"]["bridge"],
-        "BridgeConfigParam": 79,
+        "BridgeConfigParam": bridge.get("bridge_param", 79),
         "Decimals": 6,
-        "SourceChainID": 1,
+        "SourceChainID": bridge["evm"]["chain_id"],
         "SourceToken": list(bytes.fromhex(bridge["evm"]["token"][2:])),
         **{
             name: "tvm-cell-sha256:" + bridge["tvm"][field]
@@ -648,7 +676,9 @@ def configure(args, state, chain, bridge):
     actor = {
         "address": state["deployment"]["address"],
         "code_hash": "tvm-cell-sha256:" + state["deployment"]["code_hash"],
-        "asset_id": "test-usdc",
+        "asset_id": bridge.get(
+            "label", bridge.get("build", {}).get("label", "test-usdc")
+        ),
         "master": pin["Master"],
         "capability_id": args.capability_id,
         "version": "1.0.0",
@@ -1184,6 +1214,7 @@ def main():
             "audit-owner",
             "audit-supply",
             "fund",
+            "fund-refusal-buyer",
             "deploy",
             "status",
             "call",
@@ -1209,6 +1240,10 @@ def main():
     p.add_argument("--sender-wallet", choices=("owner", "buyer"), default="owner")
     args, extra = p.parse_known_args()
     args.operation_args = extra
+    if args.step == "send" and args.destination:
+        # This flag also belongs to the funding helper. Forward it explicitly
+        # when the command is an actor send, rather than silently consuming it.
+        args.operation_args = [*extra, "--destination", args.destination]
     require(not extra or args.step in ("send", "topup", "verify"), "unknown arguments")
     root = usdc.private_dir(args.state)
     with (root / ".lock").open("a") as lock:
@@ -1235,6 +1270,8 @@ def main():
                     indent=2,
                 )
             )
+        elif args.step == "fund-refusal-buyer":
+            fund_refusal_buyer(args, state, chain, bridge)
         elif args.step == "call":
             call_case(args, state, chain, bridge)
         elif args.step in ("send", "topup"):
