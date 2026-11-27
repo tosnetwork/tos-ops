@@ -299,7 +299,7 @@ python3 /opt/tos-testnet/scripts/preflight.py --inventory hosts.json --accept-ne
 
 It checks, per host:
 
-- SSH, Ubuntu 24.04 or later, and x86-64-v2 on x86_64;
+- SSH, Ubuntu 24.04 LTS or a later LTS release, and x86-64-v2 on x86_64;
 - CPUs, memory and free disk against the role floors in `network/profile.json`;
 - whether the public address is on an interface;
 - NTP;
@@ -342,8 +342,10 @@ compile job and takes tens of minutes on a 6-core VM. To replace the binaries
 of a prepared node later, stop it and run
 `install-node.sh binaries --role <role> --release <dir> --rev <COMMIT>`.
 `--rev` refuses a release whose `BUILD-INFO` names another commit. All
-validators' `SHA256SUMS` for one commit are identical (build timestamps take
-the commit time); compare them after building, before installing.
+validators' `SHA256SUMS` for one commit are identical on the same Ubuntu
+release (build timestamps take the commit time; `BUILD-INFO` names the release
+on its `build_os` line); compare them within each `build_os` group after
+building, before installing. Different Ubuntu releases build different bytes.
 
 This creates `/var/lib/tos/validator` and `/var/log/tos/validator` owned by
 `tos`. It runs the first start with `-I <PUBLIC_IPV4>:30001` on a placeholder

@@ -54,8 +54,8 @@ def test_a_good_validator_passes_every_host_check():
     assert set(statuses(results).values()) == {"PASS"}, [r for r in results if r.status != "PASS"]
 
 
-@pytest.mark.parametrize("version", ["24.04", "24.10", "26.04", "28.04"])
-def test_ubuntu_24_04_or_later_passes_the_os_check(version):
+@pytest.mark.parametrize("version", ["24.04", "26.04", "28.04"])
+def test_ubuntu_24_04_or_a_later_lts_passes_the_os_check(version):
     results = preflight.evaluate_host(host(), dict(GOOD_FACTS, os_version=version), PROFILE)
     assert statuses(results)["os"] == "PASS"
 
@@ -65,6 +65,10 @@ def test_ubuntu_24_04_or_later_passes_the_os_check(version):
     [
         ("os_version", "22.04"),
         ("os_version", "23.10"),
+        ("os_version", "24.10"),
+        ("os_version", "25.04"),
+        ("os_version", "25.10"),
+        ("os_version", "22.04"),
         ("os_version", "24"),
         ("os_version", "24.4"),
         ("os_version", "26.04.1"),
@@ -72,7 +76,7 @@ def test_ubuntu_24_04_or_later_passes_the_os_check(version):
         ("os_id", "debian"),
     ],
 )
-def test_an_older_malformed_or_other_os_fails_the_os_check(key, value):
+def test_an_older_interim_malformed_or_other_os_fails_the_os_check(key, value):
     results = preflight.evaluate_host(host(), dict(GOOD_FACTS, **{key: value}), PROFILE)
     assert statuses(results)["os"] == "FAIL"
 

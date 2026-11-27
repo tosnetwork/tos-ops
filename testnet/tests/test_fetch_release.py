@@ -1266,9 +1266,16 @@ def test_the_host_build_links_gsl_statically_when_the_source_supports_it():
     build = (SCRIPTS / "build-node-binaries.sh").read_text()
     # The option is passed only when the source defines it, and the build
     # record says so, so the flags line never claims a static link it lacks.
-    assert "if grep -q 'TOS_STATIC_GSL' \"$SRC/CMakeLists.txt\"; then" in build
+    assert "if grep -q '^option(TOS_STATIC_GSL ' \"$SRC/CMakeLists.txt\"; then" in build
     assert "STATIC_GSL=(-DTOS_STATIC_GSL=ON)" in build
-    assert 'STATIC_GSL_FLAG=" TOS_STATIC_GSL=ON"' in build
+    # The flag is claimed only after the cache and the binaries prove it.
+    assert "grep -qx 'TOS_STATIC_GSL:BOOL=ON' \"$BUILD/CMakeCache.txt\"" in build
+    assert 'needed=$(readelf -d "$OUT.tmp/$t") || die' in build
+    assert "grep -q 'NEEDED.*libgsl' <<<\"$needed\"" in build
+    assert build.index("TOS_STATIC_GSL:BOOL=ON") < build.index(
+        'STATIC_GSL_FLAG=" TOS_STATIC_GSL=ON"'
+    )
+    assert 'echo "build_os $(. /etc/os-release && echo "$PRETTY_NAME")"' in build
     assert 'cmake -S "$SRC" -B "$BUILD" -G Ninja "${STATIC_GSL[@]}"' in build
     assert 'TOS_USE_JEMALLOC=ON Release$STATIC_GSL_FLAG"' in build
 

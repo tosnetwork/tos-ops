@@ -47,8 +47,9 @@ directory before --out is created, and the fetch is refused when
     report the commit: a node binary's -V must print Commit: <rev>, and
     tosctl --version must print the exact line COMMIT_ID: <rev>. The refusal
     names the Ubuntu package of each missing library it knows (libjemalloc2,
-    libgsl27 for a release that links GSL dynamically, libblas3, libreadline8t64, libatomic1 on arm64; libssl3t64 for
-    tosctl's libssl.so.3 and libcrypto.so.3). Nothing is installed here:
+    libgsl27 for a release that links GSL dynamically, libblas3,
+    libreadline8t64, libatomic1 on arm64; libssl3t64 for tosctl's libssl.so.3
+    and libcrypto.so.3). Nothing is installed here:
     install the packages and fetch again;
   - --role validator is asked for on a host that may not validate. A
     validator must verify with the hardware SHA-256 backend of its

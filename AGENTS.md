@@ -66,7 +66,7 @@ transaction. Keep all signing, journal, network and custody guards intact.
 
 ## Environment facts
 
-The public-testnet build procedure targets **Ubuntu 24.04 or later, x86_64 with
+The public-testnet build procedure targets **Ubuntu 24.04 LTS or a later LTS release, x86_64 with
 x86-64-v2 instructions**, clang-21 and a pinned full tos commit. The preflight
 profile also admits aarch64, but the supplied build script sets x86-64-v2; do not
 assume that is a supported ARM build procedure.
