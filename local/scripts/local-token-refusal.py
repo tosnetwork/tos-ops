@@ -23,6 +23,11 @@ service = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(service)
 u = service.usdc
 LABEL = "LOCAL-ONLY-TEST-REFUSAL-v1"
+TEST_WALLET_CODE_HASH = (
+    "cf5c98a11cf3de09b1cf702fa1eba38d870c822abb866320bba2da59dac013df"
+)
+# Reserved by this local fixture; never a configured public EVM chain.
+TEST_SOURCE_CHAIN_ID = int.from_bytes(b"LOCALT10", "big")
 SOURCE_TOKEN = b"LOCAL_ONLY_TEST_REFU".hex()
 EXTERNAL_NAMESPACE = int.from_bytes(hashlib.sha256(LABEL.encode()).digest()[:20], "big")
 
@@ -36,6 +41,10 @@ def local_only(args, chain, state):
         "approved local genesis differs",
     )
     u.require(args.approved_genesis != "0" * 64, "empty genesis pin")
+    u.require(
+        state.get("evm") is None or state["evm"]["chain_id"] == TEST_SOURCE_CHAIN_ID,
+        "legacy test chain id cannot be reused; keep its historical record",
+    )
     if state.get("network") is None:
         state.set("network", {"global_id": 3, "genesis": args.approved_genesis})
 
@@ -67,10 +76,18 @@ def build(args, state, chain, tools):
                 str(output),
                 "--global-id",
                 "3",
+                "--func",
+                str(tools.func),
+                "--fift",
+                str(tools.fift),
             ]
         )
     marker = json.loads((output / "LOCAL-ONLY-TEST.json").read_text())
     u.require(marker["label"] == LABEL and marker["global_id"] == 3, "wrong test build")
+    u.require(
+        marker.get("wallet_code_hash") == TEST_WALLET_CODE_HASH,
+        "test wallet marker code hash differs",
+    )
     # Compile the immutable staged source; never write a release artifact.
     wallet_bytes = (output / "token-wallet-local-only-test.fc").read_bytes()
     u.require(
@@ -124,6 +141,10 @@ def build(args, state, chain, tools):
             tools.fift_run(output, script.name).split("HASH")[-1].strip().lower()
         )
     prior = state.get("build")
+    u.require(
+        hashes["token-wallet"] == TEST_WALLET_CODE_HASH,
+        "compiled test wallet code hash differs",
+    )
     result = {"label": LABEL, "code_hashes": hashes, "marker": marker}
     u.require(not prior or prior == result, "test build changed since planning")
     state.set("build", result)
@@ -146,6 +167,10 @@ def require_original_payer_clear(args, state, address):
 
 
 def namespace(args, state, chain, tools):
+    u.require(
+        state.get("evm") is None or state["evm"]["chain_id"] == TEST_SOURCE_CHAIN_ID,
+        "legacy test chain id cannot be reused; keep its historical record",
+    )
     occupied = chain.config(81)
     if occupied is not None:
         u.require(
@@ -156,7 +181,7 @@ def namespace(args, state, chain, tools):
     keys = u.private_dir(state.root / "keys")
     # Independent keys and wallet namespace; old payer is used only for fees.
     u.MULTISIG_WALLET_ID = 0x54455354
-    u.EVM_CHAIN_ID = 56
+    u.EVM_CHAIN_ID = TEST_SOURCE_CHAIN_ID
     u.BRIDGE_PARAM = 81
     u.BRIDGE_TOS = 6
     u.MULTISIG_TOS = 5
@@ -164,7 +189,7 @@ def namespace(args, state, chain, tools):
         state.set(
             "evm",
             {
-                "chain_id": 56,
+                "chain_id": TEST_SOURCE_CHAIN_ID,
                 "bridge": "0x" + format(EXTERNAL_NAMESPACE, "040x"),
                 "token": "0x" + SOURCE_TOKEN,
                 "test_only": True,
@@ -196,7 +221,9 @@ def namespace(args, state, chain, tools):
         )
         chain.wait(name + " active", lambda w=w: chain.active(w.address))
     if not state.get("tvm"):
-        printed = tools.fift_run(output, "new-bridge.fif", "56", state["evm"]["bridge"])
+        printed = tools.fift_run(
+            output, "new-bridge.fif", str(TEST_SOURCE_CHAIN_ID), state["evm"]["bridge"]
+        )
         bridge = next(
             x.split("=")[1].strip().lower()
             for x in printed.splitlines()
@@ -387,7 +414,7 @@ def recognize(args, state, chain, tools):
         "origin": {
             "kind": "token_bridge",
             "bridge_address": u.split(tvm["bridge"])[1].hex(),
-            "source_chain_id": 56,
+            "source_chain_id": TEST_SOURCE_CHAIN_ID,
             "source_token": SOURCE_TOKEN,
         },
     }

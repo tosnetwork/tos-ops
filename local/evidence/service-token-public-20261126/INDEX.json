@@ -4,56 +4,6 @@
   "limitation": "Original lifecycle and buyer transaction BOCs were not captured before pruning. Saved verifier outputs are historical results, not new reconstructions. Returned receipt-chain BOCs are available; the returned claim transaction BOC is not.",
   "files": [
     {
-      "file": "original/verify-responded-raw.json",
-      "sha256": "9dfba9cf51084b76d54078c0e41eacc3d51d1318855c0bf83a023be3d59a07c7",
-      "kind": "saved-public-verifier-output"
-    },
-    {
-      "file": "original/verify-refunded.json",
-      "sha256": "2b6942f869421591a28d03f9f3a94d473a17006ed395008c2ed6d0f92cfba54b",
-      "kind": "saved-public-verifier-output"
-    },
-    {
-      "file": "original/verify-swept.json",
-      "sha256": "77874c30cfbad4c4b96117c4962edda11fd237ef0f7bc166f394f78259da046b",
-      "kind": "saved-public-verifier-output"
-    },
-    {
-      "file": "original/verify-funding-refused.json",
-      "sha256": "97b1c251345be87f29822b313677abc1ed86ccf3f94dea3190bf6cb26a1b5525",
-      "kind": "saved-public-verifier-output"
-    },
-    {
-      "file": "original/verify-surplus.json",
-      "sha256": "63b59de027c9ffab3baf8a6b08845d1b90392b10d52eea2d525499850da100ac",
-      "kind": "saved-public-verifier-output"
-    },
-    {
-      "file": "buyer/independent-buyer-responded-clean.json",
-      "sha256": "a9ef61a4b094b4308346cb5627eda850178dd897cc71ad503ea7b21e05b131b4",
-      "kind": "saved-public-verifier-output"
-    },
-    {
-      "file": "buyer/independent-buyer-refunded.json",
-      "sha256": "bcb1d09c2c6f112f468a445e5a175ad656297c9ac9d26b32abf833b9c2b6e518",
-      "kind": "saved-public-verifier-output"
-    },
-    {
-      "file": "returned/independent-returned-0.json",
-      "sha256": "978049876bae098d849d1dcc7c3b72ee3bd34e88551cd63ada528b552ae58d9e",
-      "kind": "saved-public-verifier-output"
-    },
-    {
-      "file": "returned/independent-returned-1.json",
-      "sha256": "fe356c1056bc7f5d6b1761283eb6c22e4ad02480640e103915cfba155c86c158",
-      "kind": "saved-public-verifier-output"
-    },
-    {
-      "file": "returned/independent-returned-claim-1.json",
-      "sha256": "e8326c8b21e275e60226f2eb39fd6c46778d93b7caa80989963f21666bf71412",
-      "kind": "saved-public-verifier-output"
-    },
-    {
       "file": "returned/transactions/211091000005-cca8060af5a623119597ecbcfc2d87b988bd686867f01b7d65074fccc5c89d6f.boc",
       "sha256": "47a4c6b3a5b64a6311642155a9e502b02050ef8f2964390206754dc062d74d52",
       "transaction_hash": "cca8060af5a623119597ecbcfc2d87b988bd686867f01b7d65074fccc5c89d6f",
@@ -124,6 +74,61 @@
       "kind": "transaction-boc",
       "receipt_role": "actor",
       "case": 1
+    },
+    {
+      "file": "original/verify-responded-raw.json",
+      "sha256": "9dfba9cf51084b76d54078c0e41eacc3d51d1318855c0bf83a023be3d59a07c7",
+      "kind": "saved-public-verifier-output"
+    },
+    {
+      "file": "original/verify-responded.json",
+      "sha256": "5a09aaa5b5479b40ad996ef7046a4661c94f88e522e8f97649f59bd2b39e502c",
+      "kind": "saved-public-verifier-output"
+    },
+    {
+      "file": "original/verify-refunded.json",
+      "sha256": "2b6942f869421591a28d03f9f3a94d473a17006ed395008c2ed6d0f92cfba54b",
+      "kind": "saved-public-verifier-output"
+    },
+    {
+      "file": "original/verify-swept.json",
+      "sha256": "77874c30cfbad4c4b96117c4962edda11fd237ef0f7bc166f394f78259da046b",
+      "kind": "saved-public-verifier-output"
+    },
+    {
+      "file": "original/verify-funding-refused.json",
+      "sha256": "97b1c251345be87f29822b313677abc1ed86ccf3f94dea3190bf6cb26a1b5525",
+      "kind": "saved-public-verifier-output"
+    },
+    {
+      "file": "original/verify-surplus.json",
+      "sha256": "63b59de027c9ffab3baf8a6b08845d1b90392b10d52eea2d525499850da100ac",
+      "kind": "saved-public-verifier-output"
+    },
+    {
+      "file": "buyer/independent-buyer-responded-clean.json",
+      "sha256": "a9ef61a4b094b4308346cb5627eda850178dd897cc71ad503ea7b21e05b131b4",
+      "kind": "saved-public-verifier-output"
+    },
+    {
+      "file": "buyer/independent-buyer-refunded.json",
+      "sha256": "bcb1d09c2c6f112f468a445e5a175ad656297c9ac9d26b32abf833b9c2b6e518",
+      "kind": "saved-public-verifier-output"
+    },
+    {
+      "file": "returned/independent-returned-0.json",
+      "sha256": "978049876bae098d849d1dcc7c3b72ee3bd34e88551cd63ada528b552ae58d9e",
+      "kind": "saved-public-verifier-output"
+    },
+    {
+      "file": "returned/independent-returned-1.json",
+      "sha256": "fe356c1056bc7f5d6b1761283eb6c22e4ad02480640e103915cfba155c86c158",
+      "kind": "saved-public-verifier-output"
+    },
+    {
+      "file": "returned/independent-returned-claim-1.json",
+      "sha256": "e8326c8b21e275e60226f2eb39fd6c46778d93b7caa80989963f21666bf71412",
+      "kind": "saved-public-verifier-output"
     }
   ]
 }

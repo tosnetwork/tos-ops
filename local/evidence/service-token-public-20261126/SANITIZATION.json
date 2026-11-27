@@ -1,0 +1,202 @@
+{
+  "schema": "public-verifier-sanitization.v1",
+  "serialization": "json.dumps(parsed_original_without_listed_fields, indent=2, ensure_ascii=True, sort_keys=False) + newline; no field values are changed",
+  "entries": [
+    {
+      "archive_file": "original/verify-responded-raw.json",
+      "original_file": "verify-responded-raw.json",
+      "original_sha256": "f1bcc586d12aa4f222f80e740cae06716331e382fcb82cf6ea2721a016d9584c",
+      "original_record_citations": [
+        {
+          "record": "service-token-usdc-20261126.json",
+          "pointer": "/raw_evidence/files/32/sha256"
+        }
+      ],
+      "sanitized_sha256": "9dfba9cf51084b76d54078c0e41eacc3d51d1318855c0bf83a023be3d59a07c7",
+      "removed_json_pointers": [
+        "/tool",
+        "/inputs"
+      ]
+    },
+    {
+      "archive_file": "original/verify-responded.json",
+      "original_file": "verify-responded.json",
+      "original_sha256": "4553164ffcaecb1c967b1173b9f659215a830726a817d9b7c461ca2bfe77519f",
+      "original_record_citations": [
+        {
+          "record": "service-token-usdc-20261126.json",
+          "pointer": "/lifecycles/0/independent_resolver/sha256"
+        },
+        {
+          "record": "service-token-usdc-20261126.json",
+          "pointer": "/raw_evidence/files/33/sha256"
+        }
+      ],
+      "sanitized_sha256": "5a09aaa5b5479b40ad996ef7046a4661c94f88e522e8f97649f59bd2b39e502c",
+      "removed_json_pointers": [
+        "/inputs",
+        "/tool"
+      ]
+    },
+    {
+      "archive_file": "original/verify-refunded.json",
+      "original_file": "verify-refunded.json",
+      "original_sha256": "650323bea4f102578ab23cb3992cc957c3e8f52731990eac9eedf51b24e765bd",
+      "original_record_citations": [
+        {
+          "record": "service-token-usdc-20261126.json",
+          "pointer": "/lifecycles/1/independent_resolver/sha256"
+        },
+        {
+          "record": "service-token-usdc-20261126.json",
+          "pointer": "/raw_evidence/files/31/sha256"
+        }
+      ],
+      "sanitized_sha256": "2b6942f869421591a28d03f9f3a94d473a17006ed395008c2ed6d0f92cfba54b",
+      "removed_json_pointers": [
+        "/inputs",
+        "/tool"
+      ]
+    },
+    {
+      "archive_file": "original/verify-swept.json",
+      "original_file": "verify-swept.json",
+      "original_sha256": "77bcbb076316216bf88a3bb9e45df7e50dc7a0d21491a209c92cd12b8005d71b",
+      "original_record_citations": [
+        {
+          "record": "service-token-usdc-20261126.json",
+          "pointer": "/lifecycles/2/independent_resolver/sha256"
+        },
+        {
+          "record": "service-token-usdc-20261126.json",
+          "pointer": "/raw_evidence/files/35/sha256"
+        }
+      ],
+      "sanitized_sha256": "77874c30cfbad4c4b96117c4962edda11fd237ef0f7bc166f394f78259da046b",
+      "removed_json_pointers": [
+        "/inputs",
+        "/tool"
+      ]
+    },
+    {
+      "archive_file": "original/verify-funding-refused.json",
+      "original_file": "verify-funding-refused.json",
+      "original_sha256": "e557d14a17c1dcad6b291ea23a55b6b33e7a5fe827cdf6c26e47d7115a1b5e88",
+      "original_record_citations": [
+        {
+          "record": "service-token-usdc-20261126.json",
+          "pointer": "/lifecycles/3/independent_resolver/sha256"
+        },
+        {
+          "record": "service-token-usdc-20261126.json",
+          "pointer": "/raw_evidence/files/30/sha256"
+        }
+      ],
+      "sanitized_sha256": "97b1c251345be87f29822b313677abc1ed86ccf3f94dea3190bf6cb26a1b5525",
+      "removed_json_pointers": [
+        "/inputs",
+        "/tool"
+      ]
+    },
+    {
+      "archive_file": "original/verify-surplus.json",
+      "original_file": "verify-surplus.json",
+      "original_sha256": "ab36ffb9b70cbe3061aae564458eebab6d49a52aad8db90cbe81401ffa030991",
+      "original_record_citations": [
+        {
+          "record": "service-token-usdc-20261126.json",
+          "pointer": "/lifecycles/4/independent_resolver/sha256"
+        },
+        {
+          "record": "service-token-usdc-20261126.json",
+          "pointer": "/raw_evidence/files/34/sha256"
+        }
+      ],
+      "sanitized_sha256": "63b59de027c9ffab3baf8a6b08845d1b90392b10d52eea2d525499850da100ac",
+      "removed_json_pointers": [
+        "/inputs",
+        "/tool"
+      ]
+    },
+    {
+      "archive_file": "buyer/independent-buyer-responded-clean.json",
+      "original_file": "independent-buyer-responded-clean.json",
+      "original_sha256": "ce4f149208a1bca5071745bfe2af398319a6dd9ddd7f888fcca12b9271621f02",
+      "original_record_citations": [
+        {
+          "record": "service-token-buyer-usdc-20261126.json",
+          "pointer": "/lifecycles/0/verifier/sha256"
+        }
+      ],
+      "sanitized_sha256": "a9ef61a4b094b4308346cb5627eda850178dd897cc71ad503ea7b21e05b131b4",
+      "removed_json_pointers": [
+        "/tool",
+        "/inputs"
+      ]
+    },
+    {
+      "archive_file": "buyer/independent-buyer-refunded.json",
+      "original_file": "independent-buyer-refunded.json",
+      "original_sha256": "44ab60a21bb04c7757f6e79b72a812c7815320506b168b5c37602558a1f427b6",
+      "original_record_citations": [
+        {
+          "record": "service-token-buyer-usdc-20261126.json",
+          "pointer": "/lifecycles/1/verifier/sha256"
+        }
+      ],
+      "sanitized_sha256": "bcb1d09c2c6f112f468a445e5a175ad656297c9ac9d26b32abf833b9c2b6e518",
+      "removed_json_pointers": [
+        "/tool",
+        "/inputs"
+      ]
+    },
+    {
+      "archive_file": "returned/independent-returned-0.json",
+      "original_file": "independent-returned-0.json",
+      "original_sha256": "67ab9cc12966b973d4a90c1ddca97d915768a6fabd197a5dbcf96151e60f6be5",
+      "original_record_citations": [
+        {
+          "record": "service-token-returned-local-20261126.json",
+          "pointer": "/returned_0/record_sha256"
+        }
+      ],
+      "sanitized_sha256": "978049876bae098d849d1dcc7c3b72ee3bd34e88551cd63ada528b552ae58d9e",
+      "removed_json_pointers": [
+        "/tool",
+        "/inputs"
+      ]
+    },
+    {
+      "archive_file": "returned/independent-returned-1.json",
+      "original_file": "independent-returned-1.json",
+      "original_sha256": "d5abe6a3f5673bba8aa8e8e3f6a8e35ed5b03e16f57718f6ae6cd55ff44fae6a",
+      "original_record_citations": [
+        {
+          "record": "service-token-returned-local-20261126.json",
+          "pointer": "/returned_1/record_sha256"
+        }
+      ],
+      "sanitized_sha256": "fe356c1056bc7f5d6b1761283eb6c22e4ad02480640e103915cfba155c86c158",
+      "removed_json_pointers": [
+        "/tool",
+        "/inputs"
+      ]
+    },
+    {
+      "archive_file": "returned/independent-returned-claim-1.json",
+      "original_file": "independent-returned-claim-1.json",
+      "original_sha256": "b3c286539e6aca082670158da425fd045db7c1d8651692fe1cb6e653c55727d5",
+      "original_record_citations": [
+        {
+          "record": "service-token-returned-local-20261126.json",
+          "pointer": "/claimed_0/record_sha256"
+        }
+      ],
+      "sanitized_sha256": "e8326c8b21e275e60226f2eb39fd6c46778d93b7caa80989963f21666bf71412",
+      "removed_json_pointers": [
+        "/tool",
+        "/inputs"
+      ]
+    }
+  ]
+}

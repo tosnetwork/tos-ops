@@ -266,3 +266,53 @@ def test_source_payer_open_operations_are_never_bypassed(tmp_path, monkeypatch, 
             module.require_original_payer_clear(args, state, "payer")
     else:
         module.require_original_payer_clear(args, state, "payer")
+
+
+def test_test_namespace_has_a_reserved_local_source_chain_id(tmp_path):
+    assert module.TEST_SOURCE_CHAIN_ID == int.from_bytes(b"LOCALT10", "big")
+    assert module.TEST_SOURCE_CHAIN_ID > 2**32
+    state = module.u.State(tmp_path)
+    state.set("evm", {"chain_id": 56})
+    with pytest.raises(module.u.Refused, match="legacy test chain id"):
+        module.namespace(None, state, None, None)
+
+
+def test_marker_cannot_choose_the_wallet_code_hash(tmp_path, monkeypatch):
+    import hashlib
+
+    root = tmp_path / "state"
+    root.mkdir(mode=0o700)
+    output = root / "local-only-test-build"
+    output.mkdir()
+    wallet = b"controlled staged source"
+    for name in ("token-wallet-local-only-test.fc", "token-wallet.fc"):
+        (output / name).write_bytes(wallet)
+    marker = {
+        "label": module.LABEL,
+        "global_id": 3,
+        "wallet_code_hash": "00" * 32,
+        "wallet_source_sha256": hashlib.sha256(wallet).hexdigest(),
+    }
+    (output / "LOCAL-ONLY-TEST.json").write_text(json.dumps(marker))
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    for name in ("new-bridge.fif", "new-multisig.fif"):
+        (contracts / name).write_text("")
+    tools = SimpleNamespace(contracts=contracts, func=Path("func"))
+    monkeypatch.setattr(
+        module.service,
+        "run",
+        lambda *a, **kw: pytest.fail("unverified marker reached compilation"),
+    )
+    with pytest.raises(module.u.Refused, match="marker code hash"):
+        module.build(SimpleNamespace(), module.u.State(root), None, tools)
+
+
+def test_wallet_pin_matches_the_real_accepted_build():
+    record = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "evidence/service-token-returned-local-20261126.json"
+        ).read_text()
+    )
+    assert module.TEST_WALLET_CODE_HASH == record["code_hashes"]["token-wallet"]

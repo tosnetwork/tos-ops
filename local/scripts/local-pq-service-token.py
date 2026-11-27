@@ -25,6 +25,8 @@ assert SPEC is not None and SPEC.loader is not None
 usdc = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(usdc)
 
+import transaction_archive as archive
+
 
 def require(ok, detail):
     usdc.require(ok, detail)
@@ -42,6 +44,137 @@ def run(argv, *, cwd=None, data=None):
     )
     require(p.returncode == 0, f"{Path(argv[0]).name} refused: {p.stderr[-1800:]}")
     return p.stdout
+
+
+class EvidenceState(usdc.State):
+    def bind_archive(self, chain, data):
+        network = json.loads((data / "network.json").read_text())
+        self.archive_chain = chain
+        self.archive_genesis = {
+            "root": network["zerostate_root"],
+            "file": network["zerostate_file"],
+        }
+
+    def archive_send(self, name, record):
+        if not hasattr(self, "archive_chain") or not isinstance(record.get("tx"), dict):
+            return
+        account = record.get("wallet")
+        if account is None and name == "activate-owner":
+            account = self["owner"]
+        require(account is not None, "transaction evidence has no source account")
+        tx = record["tx"]
+        root = {"account": account, "lt": int(tx["lt"]), "hash": tx["hash"]}
+        identity = archive.digest(json.dumps(root, sort_keys=True).encode())
+        journal = archive.StepJournal(self.root / "archive" / "sends")
+        journal.run(
+            case_name(name),
+            identity,
+            lambda: None,
+            lambda directory: archive.TransactionArchive(
+                directory, self.archive_chain.urls[3:6], self.archive_genesis
+            ).capture_wait([root]),
+        )
+
+    def archive_completed_sends(self):
+        for name, record in self.intents().items():
+            self.archive_send(name, record)
+
+    def put_intent(self, name, record):
+        super().put_intent(name, record)
+        # Persist the exact transaction cells before returning to a caller that
+        # might sign the next message, including sends inside one CLI step.
+        self.archive_send(name, record)
+
+    def evidence(self, name, value):
+        require(case_name(name) == name, "invalid evidence name")
+        path = self.root / "evidence" / (name + ".json")
+        archive.document(path, value)
+        if isinstance(value, dict) and "result" in value:
+            archive.StepJournal(self.root / "archive").retain_verifier(name, value)
+        print(f"evidence: {path}")
+        return path
+
+
+def archived_action(args, state, chain, action):
+    """Finish evidence before returning, or fence every different value step."""
+    label = args.step + "-" + (args.case or "default")
+    identity = archive.digest(
+        json.dumps(
+            [
+                args.step,
+                args.case,
+                args.operation_args,
+                args.destination,
+                args.sender_wallet,
+            ],
+            sort_keys=True,
+        ).encode()
+    )
+    journal = archive.StepJournal(state.root / "archive")
+    before_path = journal.directory / label / "before.json"
+
+    def act():
+        if not before_path.exists():
+            archive.document(
+                before_path,
+                {
+                    k: archive.digest(json.dumps(v, sort_keys=True).encode())
+                    for k, v in state.intents().items()
+                },
+            )
+        action()
+
+    def capture(directory):
+        return capture_step(directory, state, chain, args.data)
+
+    state.archive_completed_sends()
+    return journal.run(label, identity, act, capture)
+
+
+def capture_step(directory, state, chain, data):
+    before = json.loads((directory / "before.json").read_text())
+    roots = []
+    for name, record in state.intents().items():
+        if before.get(name) == archive.digest(
+            json.dumps(record, sort_keys=True).encode()
+        ):
+            continue
+        require(
+            record.get("state") == "done",
+            "step has an unresolved send; reconcile its original intent",
+        )
+        tx = record.get("tx")
+        require(isinstance(tx, dict), "finalized send has no exact transaction id")
+        account = record.get("wallet")
+        if account is None and name == "activate-owner":
+            account = state["owner"]
+        require(account is not None, "finalized send has no source account")
+        roots.append({"account": account, "lt": int(tx["lt"]), "hash": tx["hash"]})
+    network = json.loads((data / "network.json").read_text())
+    collector = archive.TransactionArchive(
+        directory,
+        chain.urls[3:6],
+        {"root": network["zerostate_root"], "file": network["zerostate_file"]},
+    )
+    return collector.capture_wait(roots)
+
+
+def recover_archive(args, state, chain):
+    journal = archive.StepJournal(state.root / "archive")
+    pending = journal.read()["pending"]
+    require(pending is not None, "there is no pending evidence step")
+
+    def no_action():
+        raise archive.Refused(
+            "action was interrupted; resume its original journaled command, not a new step"
+        )
+
+    return journal.run(
+        pending["label"],
+        pending["identity"],
+        no_action,
+        lambda directory: capture_step(directory, state, chain, args.data),
+    )
 
 
 def prepare(args, state, chain, bridge):
@@ -505,36 +638,39 @@ def verify(args, state, chain, bridge):
         not set(endpoints).intersection(config["rpc_endpoints"]),
         "resolver endpoints overlap sending endpoints",
     )
-    document = json.loads(
-        run(
-            [
-                str(args.verifier),
-                "--network-domain",
-                str(state.root / "network.json"),
-                "--rpc",
-                ",".join(endpoints),
-                "--registry-code-boc",
-                config["registry_code_boc_file"],
-                "--registry-code-hash",
-                config["registry_code_hash"],
-                "--actor-code-hash",
-                config["actor_code_hash"],
-                "--asset-pins",
-                str(state.root / "pins.json"),
-                "--actor",
-                state["deployment"]["address"],
-                *(
-                    args.operation_args
-                    or [
-                        "--request-hash",
-                        hashlib.sha256(
-                            ("local-token-t10-" + args.case).encode()
-                        ).hexdigest(),
-                    ]
-                ),
-            ]
-        )
+    raw_document = run(
+        [
+            str(args.verifier),
+            "--network-domain",
+            str(state.root / "network.json"),
+            "--rpc",
+            ",".join(endpoints),
+            "--registry-code-boc",
+            config["registry_code_boc_file"],
+            "--registry-code-hash",
+            config["registry_code_hash"],
+            "--actor-code-hash",
+            config["actor_code_hash"],
+            "--asset-pins",
+            str(state.root / "pins.json"),
+            "--actor",
+            state["deployment"]["address"],
+            *(
+                args.operation_args
+                or [
+                    "--request-hash",
+                    hashlib.sha256(
+                        ("local-token-t10-" + args.case).encode()
+                    ).hexdigest(),
+                ]
+            ),
+        ]
     )
+    document = json.loads(raw_document)
+    archive.StepJournal(state.root / "archive").retain_verifier(
+        "verify-" + args.case + "-raw", document, raw=raw_document.encode()
+    )
+    state.evidence("verify-" + args.case, document)
     require(document["result"] == "pass", "independent verifier refused")
     expected = {
         "responded": "responded",
@@ -554,7 +690,6 @@ def verify(args, state, chain, bridge):
             any(r["state"] == expected for r in document.get("funding_refusals", [])),
             "funding outcome not proven",
         )
-    state.evidence("verify-" + args.case, document)
     state.evidence(
         "verify-" + args.case + "-provenance",
         {
@@ -1235,6 +1370,7 @@ def main():
         "step",
         choices=(
             "prepare",
+            "archive",
             "configure",
             "publish",
             "fund-work-buyer",
@@ -1275,49 +1411,68 @@ def main():
     root = usdc.private_dir(args.state)
     with (root / ".lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        state = usdc.State(root)
+        state = EvidenceState(root)
         chain = usdc.Chain(args.data)
         check_network(args, chain, state)
+        state.bind_archive(chain, args.data)
         bridge = json.loads((args.bridge_state / "state.json").read_text())
-        if args.step == "status":
-            print(
-                json.dumps(
-                    {
-                        "owner": state.get("owner"),
-                        "deployment": state.get("deployment"),
-                        "intents": {
-                            k: {
-                                "state": v["state"],
-                                "hash": v.get("hash"),
-                                "tx": v.get("tx"),
-                            }
-                            for k, v in state.intents().items()
+
+        def dispatch():
+            if args.step == "status":
+                print(
+                    json.dumps(
+                        {
+                            "owner": state.get("owner"),
+                            "deployment": state.get("deployment"),
+                            "intents": {
+                                k: {
+                                    "state": v["state"],
+                                    "hash": v.get("hash"),
+                                    "tx": v.get("tx"),
+                                }
+                                for k, v in state.intents().items()
+                            },
                         },
-                    },
-                    indent=2,
+                        indent=2,
+                    )
                 )
-            )
-        elif args.step == "fund-refusal-buyer":
-            fund_refusal_buyer(args, state, chain, bridge)
-        elif args.step == "call":
-            call_case(args, state, chain, bridge)
-        elif args.step in ("send", "topup"):
-            send_operation(args, state, chain, bridge)
-        elif args.step == "fund-work-buyer":
-            fund_work_buyer(args, state, chain, bridge)
-        elif args.step == "audit-supply":
-            audit_supply(args, state, chain, bridge)
-        elif args.step == "audit-owner":
-            audit_owner(args, state, chain, bridge)
-        elif args.step == "snapshot":
-            snapshot(state, chain, args.case or "snapshot")
+            elif args.step == "archive":
+                recover_archive(args, state, chain)
+            elif args.step == "fund-refusal-buyer":
+                fund_refusal_buyer(args, state, chain, bridge)
+            elif args.step == "call":
+                call_case(args, state, chain, bridge)
+            elif args.step in ("send", "topup"):
+                send_operation(args, state, chain, bridge)
+            elif args.step == "fund-work-buyer":
+                fund_work_buyer(args, state, chain, bridge)
+            elif args.step == "audit-supply":
+                audit_supply(args, state, chain, bridge)
+            elif args.step == "audit-owner":
+                audit_owner(args, state, chain, bridge)
+            elif args.step == "snapshot":
+                snapshot(state, chain, args.case or "snapshot")
+            else:
+                globals()[args.step](args, state, chain, bridge)
+
+        if args.step in {
+            "fund",
+            "fund-refusal-buyer",
+            "deploy",
+            "call",
+            "send",
+            "topup",
+            "publish",
+            "fund-work-buyer",
+        }:
+            archived_action(args, state, chain, dispatch)
         else:
-            globals()[args.step](args, state, chain, bridge)
+            dispatch()
     return 0
 
 
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (usdc.Refused, usdc.lib.TestnetError) as e:
+    except (usdc.Refused, usdc.lib.TestnetError, archive.Refused) as e:
         raise SystemExit(str(e)) from e

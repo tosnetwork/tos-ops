@@ -605,6 +605,9 @@ def test_shared_destination_flag_reaches_the_actual_send_parser(
     bridge.mkdir(mode=0o700)
     (bridge / "state.json").write_text("{}")
     captured = []
+    monkeypatch.setattr(
+        module, "archived_action", lambda args, state, chain, action: action()
+    )
     monkeypatch.setattr(module.usdc, "Chain", lambda *a: None)
     monkeypatch.setattr(module, "check_network", lambda *a: None)
     monkeypatch.setattr(
@@ -789,3 +792,111 @@ def test_saved_public_receipts_match_their_hashes_and_index():
         else:
             assert json.loads(raw)["result"] == "pass"
     assert transactions == 8
+
+
+def test_all_value_commands_use_the_archive_barrier(tmp_path, monkeypatch):
+    import ast
+
+    tree = ast.parse(SCRIPT.read_text())
+    main = next(
+        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main"
+    )
+    guarded = []
+    for node in ast.walk(main):
+        if (
+            isinstance(node, ast.If)
+            and isinstance(node.test, ast.Compare)
+            and isinstance(node.test.comparators[0], ast.Set)
+        ):
+            values = {
+                x.value
+                for x in node.test.comparators[0].elts
+                if isinstance(x, ast.Constant)
+            }
+            if "fund" in values:
+                assert any(
+                    isinstance(call, ast.Call)
+                    and isinstance(call.func, ast.Name)
+                    and call.func.id == "archived_action"
+                    for call in ast.walk(node)
+                )
+                guarded.append(values)
+    assert guarded == [
+        {
+            "fund",
+            "fund-refusal-buyer",
+            "deploy",
+            "call",
+            "send",
+            "topup",
+            "publish",
+            "fund-work-buyer",
+        }
+    ]
+
+
+def test_verifier_refusal_is_saved_durably_before_it_is_reported(tmp_path, monkeypatch):
+    state = module.EvidenceState(tmp_path)
+    state.set("deployment", {"address": "actor"})
+    (tmp_path / "rail.json").write_text(
+        json.dumps(
+            {
+                "rpc_endpoints": ["a", "b", "c"],
+                "registry_code_boc_file": "code",
+                "registry_code_hash": "hash",
+                "actor_code_hash": "actor-code",
+            }
+        )
+    )
+    monkeypatch.setattr(
+        module, "run", lambda *a: '{"result":"fail","reason":"injected refusal"}'
+    )
+    with pytest.raises(module.usdc.Refused, match="independent verifier"):
+        module.verify(
+            SimpleNamespace(verifier=Path("verify"), case="monitor", operation_args=[]),
+            state,
+            SimpleNamespace(urls=["a", "b", "c", "d", "e", "f"]),
+            None,
+        )
+    report = next((tmp_path / "archive/verifiers").glob("*.json"))
+    assert json.loads(report.read_text())["reason"] == "injected refusal"
+    module.archive.StepJournal(tmp_path / "archive").validate_verifiers()
+
+
+def test_each_send_is_archived_before_another_send_inside_the_same_step(
+    tmp_path, monkeypatch
+):
+    state = module.EvidenceState(tmp_path)
+    state.archive_chain = SimpleNamespace(urls=["a", "b", "c", "d", "e", "f"])
+    state.archive_genesis = {"root": "root", "file": "file"}
+    captures = []
+
+    class Collector:
+        def __init__(self, directory, endpoints, genesis):
+            self.directory = directory
+            assert endpoints == ["d", "e", "f"]
+
+        def capture_wait(self, roots):
+            captures.append(roots)
+            module.archive.sync_write(self.directory / "tx.boc", b"transaction")
+            return {
+                "files": [
+                    {"file": "tx.boc", "sha256": module.archive.digest(b"transaction")}
+                ]
+            }
+
+    monkeypatch.setattr(module.archive, "TransactionArchive", Collector)
+    first = {
+        "wallet": "0:" + "11" * 32,
+        "state": "done",
+        "tx": {"lt": 1, "hash": "22" * 32},
+    }
+    state.put_intent("first", first)
+    assert len(captures) == 1
+    assert (tmp_path / "archive/sends/first/manifest.json").exists()
+    state.put_intent("second", {**first, "tx": {"lt": 2, "hash": "33" * 32}})
+    assert len(captures) == 2
+    (tmp_path / "archive/sends/first/tx.boc").write_bytes(b"damaged")
+    with pytest.raises(module.archive.Refused, match="missing or changed"):
+        state.put_intent("third", {**first, "tx": {"lt": 3, "hash": "44" * 32}})
+    assert len(captures) == 2

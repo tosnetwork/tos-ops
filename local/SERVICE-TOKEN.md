@@ -157,7 +157,8 @@ never put a vault URL containing credentials in an argument or a log.
    Reuse the same private state after interruption. Never delete a saved
    nonce, signed document or unresolved intent. The publication lock refuses
    an already running provider.
-3. Configure the existing provider's relay and real software-work executor
+3. Run the provider as a dedicated service user with its own private custody
+   directory, rather than root. Configure the provider's relay and real software-work executor
    using the provider runbook in the ai repository. The written provider
    section initially names a private executor socket; replace that with the
    installed executor's socket or the documented pinned subprocess executor
@@ -207,13 +208,17 @@ never put a vault URL containing credentials in an argument or a log.
    assumes a short page is the end of history.
 
 For a live execution-safety test, inject an explicitly labelled local monitor
-report with the asset alarm, then a stale report, while the second funded task
-is pending. Record both refusals and that no execution slot was created. Keep
-execution refused until its real refund completes; restore the normal report
-only afterward. This is a monitor fault injection, not an on-chain asset freeze
+report with an emergency asset alarm, then a stale report, while a fresh funded
+task is pending. Record the exact refusal text and the actual slot/record ids
+(or explicitly their absence if refused before admission). A local debugger may
+pause the unmodified committed provider at the execution gate after admission:
+this tests that the same admitted slot retries after the report clears. Archive
+funding before starting this test, and archive each observation before changing
+the report again. Restore the normal report only after both refusals are kept;
+then require a normal response or the genuine deadline/refund path. This is a monitor fault injection, not an on-chain asset freeze
 and not a substitute for the production monitor's own acceptance tests.
 
-## Remaining returned-case gate
+## Receiver refusal and the accepted local fixture
 
 The actual receiver checks the sender's deterministic wallet identity and its
 supply bound (`token-wallet.fc`, `receive_reported_tokens`); the dispatcher
@@ -227,10 +232,9 @@ one test recipient to the reported-transfer handler. Its changed code hash
 requires an isolated, correctly derived and explicitly pinned bridge/minter/
 wallet namespace and an ordinary recognition entry. It must not replace code
 or state at an existing address, impersonate the recognized asset, or bypass
-recognition. Deployment of that test setup requires a separate coordinator
-choice. It has not been deployed. Record `returned` as blocked until that
-choice and a real authenticated refusal outcome. The second asset remains a
-later acceptance run.
+recognition. The separately approved local fixture has now produced real authenticated
+refusals and a returned claim; see its evidence below. This approval is local
+only. The second asset and public-network work remain later acceptance runs.
 
 The current client also requires the latest transactions of pinned bridge and
 minter accounts to remain retrievable. A local stale-history refusal was
@@ -248,8 +252,10 @@ The latter records the two independent verdicts, export hashes, monitor fault
 injections, funding receipts and four-wallet conservation check.
 
 The private state contains keys and signed BOCs: never commit or print it.
-Retain raw public transaction/verifier receipts outside the repository and
-commit only a bounded, sanitized result index with hashes and source pins.
+Archive raw public transaction cells and actual verifier outputs durably after
+each finalized step, before the next value step. Keep keys, vault credentials
+and unexecuted spending envelopes private. A bounded sanitized public receipt
+bundle may be committed for review, with exact byte/hash provenance.
 Record every early refusal and interrupted attempt, even if a later attempt
 succeeds. Leave the original network and election task running.
 
@@ -275,6 +281,11 @@ phase. The wallet itself also refuses outside id 3.
 Use a fresh private state directory. The namespace phase deploys unchanged bridge
 and minter code embedding the test wallet, under the vacant ConfigParam 81 slot.
 Its synthetic source-token identifier is the 20-byte `LOCAL_ONLY_TEST_REFU`.
+New namespaces reserve source-chain id `0x4c4f43414c543130` (ASCII `LOCALT10`)
+solely for this local fixture; it is not an EVM network deployment. The runtime
+and driver refuse non-local networks. The accepted historical run used id 56;
+its record is retained unchanged, and that legacy namespace cannot be reused by
+the new driver.
 There is no EVM deposit: local test oracles authorize exactly 5,000,000 atomic
 units in this separate namespace. Those units are not test USDC and have no
 redemption claim. The original asset and its 25,000,000 units are untouched.
@@ -340,3 +351,44 @@ records two real exit-1980 receiver aborts, identical receipt BOCs on two reader
 a successful returned claim, independent resolver verdicts and both supply
 checks. A second entry is retained for a sweep after its natural deadline; its
 early sweep was refused before signing. All keys stay outside the repository.
+
+
+## Immediate archival and interrupted capture
+
+Every value command in the actor driver uses the shared `transaction_archive`
+step journal. It saves each source transaction and all transitive internal
+message deliveries, byte-matching three approved references. It retains the
+canonical block-header ancestry to one common finalized masterchain checkpoint,
+including split/merge parents. This is trusted-node corroboration, not a claim
+of trustless verification. Exact business-outcome verifier JSON is stored
+separately, without replacing it with an archival success.
+
+Each send inside a multi-send command also completes its own capture barrier before
+returning to the caller; accepted-but-not-sent transactions are retained too.
+Files are fsynced before rename, directories are fsynced, and the complete-step
+manifest is committed last. The next value command validates the prior files
+and refuses while capture is pending. A storage/read failure never authorizes a
+new send. Resume completed-action evidence capture without broadcasting:
+
+```sh
+t10 archive
+```
+
+If the action itself was interrupted, inspect its original intent, then resume
+that same named command under its existing no-blind-resend rules. Never clear a
+pending archive or substitute a new step id. Captures are bounded to 256
+transactions, 64 MiB of cells, 1024 ancestry headers per reference and a 15-minute
+wait; reaching a bound refuses rather than claiming complete evidence.
+
+External buyer/provider orchestration must use the same `StepJournal.run`
+barrier around each logical value step. Keep the provider stopped while funding
+is finalized and archived; only then release its task. Supply the exact source
+transaction ids and actual independent verifier outputs to `TransactionArchive`.
+Read-only monitor refusals are retained with `retain_verifier` before changing
+the injected report. The public-network half must use this shared API in its
+own approved driver; this local runner continues to refuse global id other than 3.
+
+The accepted older pruning gap remains documented. It is never repaired by
+inventing cells. `SANITIZATION.json` beside the public archive names each
+original record's SHA-256, the citation's JSON pointer and the exact removed
+fields. Only the stated fields are removed; no retained value is changed.
