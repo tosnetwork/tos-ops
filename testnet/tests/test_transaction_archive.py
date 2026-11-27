@@ -203,3 +203,31 @@ def test_every_public_verifier_has_exact_hash_citations_and_removal_provenance()
             for part in citation["pointer"][1:].split("/"):
                 value = value[int(part)] if isinstance(value, list) else value[part]
             assert value == entry["original_sha256"]
+
+
+def test_archive_uses_finalized_consensus_not_a_head_offset(tmp_path):
+    class Node:
+        def __init__(self, url):
+            self.url = url
+
+        def call(self, method, **params):
+            if method == "getMasterchainInfo":
+                return {
+                    "init": {
+                        "root_hash": base64.b64encode(bytes.fromhex("11" * 32)).decode(),
+                        "file_hash": base64.b64encode(bytes.fromhex("22" * 32)).decode(),
+                    },
+                    "last": {"seqno": 1000},
+                }
+            if method == "getConsensusBlock":
+                return {
+                    "@type": "ext.blocks.consensusBlock",
+                    "consensus_block": {"a": 100, "b": 101, "c": 102}[self.url],
+                }
+            assert method == "lookupBlock"
+            return block(params["seqno"])
+
+    collector = archive.TransactionArchive(
+        tmp_path, ["a", "b", "c"], {"root": "11" * 32, "file": "22" * 32}, node=Node
+    )
+    assert collector.checkpoint()["seqno"] == 100

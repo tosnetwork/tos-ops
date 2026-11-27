@@ -388,7 +388,21 @@ Read-only monitor refusals are retained with `retain_verifier` before changing
 the injected report. The public-network half must use this shared API in its
 own approved driver; this local runner continues to refuse global id other than 3.
 
+On first use, an immutable `legacy-before-archive.json` records the digests of
+already-completed legacy sends as **not captured**. It is written before any new
+send, never enrolls an open attempt, and cannot exempt a new or changed record.
+A pending archive remains fenced across restarts. This preserves the accepted
+historical gap without making it a claim of successful capture or blocking the
+later natural-deadline recovery of an old returned entry.
+
 The accepted older pruning gap remains documented. It is never repaired by
 inventing cells. `SANITIZATION.json` beside the public archive names each
 original record's SHA-256, the citation's JSON pointer and the exact removed
 fields. Only the stated fields are removed; no retained value is changed.
+
+
+The [fresh monitor-injection receipt](evidence/service-token-monitor-local-20261127.json)
+records a small buyer purchase on the committed runtime, alarm and stale-report
+refusals with the exact slot and record identifiers, and the same slot's eventual
+response. Its complete public bundle includes the new transaction cells and
+byte-bound verifier outputs; earlier pruned receipts remain explicitly missing.

@@ -50,6 +50,29 @@ class EvidenceState(usdc.State):
     def bind_archive(self, chain, data):
         network = json.loads((data / "network.json").read_text())
         self.archive_chain = chain
+        enrollment = self.root / "archive" / "legacy-before-archive.json"
+        if not enrollment.exists():
+            # The accepted historical gap is not a requirement to fabricate
+            # old cells. Freeze only already-completed records, before any new
+            # send; a pending archive can never become a legacy exemption.
+            legacy = (
+                {}
+                if (self.root / "archive/sends/steps.json").exists()
+                else {
+                    name: archive.digest(json.dumps(record, sort_keys=True).encode())
+                    for name, record in self.intents().items()
+                    if record.get("state") == "done"
+                }
+            )
+            archive.document(
+                enrollment,
+                {
+                    "complete": False,
+                    "reason": "completed before archival was enabled; not claimed as captured",
+                    "records": legacy,
+                },
+            )
+        self.archive_legacy = json.loads(enrollment.read_text())["records"]
         self.archive_genesis = {
             "root": network["zerostate_root"],
             "file": network["zerostate_file"],
@@ -57,6 +80,10 @@ class EvidenceState(usdc.State):
 
     def archive_send(self, name, record):
         if not hasattr(self, "archive_chain") or not isinstance(record.get("tx"), dict):
+            return
+        if getattr(self, "archive_legacy", {}).get(name) == archive.digest(
+            json.dumps(record, sort_keys=True).encode()
+        ):
             return
         account = record.get("wallet")
         if account is None and name == "activate-owner":
@@ -1120,7 +1147,10 @@ def publish(args, state, chain, bridge):
         "publication needs provider runtime and its initialized configuration",
     )
     config = json.loads(args.published_config.read_text())
-    with (Path(config["state_dir"]) / "serve.lock").open("a") as serve_lock:
+    descriptor = os.open(
+        Path(config["state_dir"]) / "serve.lock", os.O_RDWR | os.O_CREAT, 0o600
+    )
+    with os.fdopen(descriptor, "a") as serve_lock:
         try:
             fcntl.flock(serve_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:

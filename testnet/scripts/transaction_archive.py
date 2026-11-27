@@ -140,8 +140,17 @@ class TransactionArchive:
                 ops.b64hash(initial["file_hash"]).hex() == self.genesis["file"],
                 "archive reference genesis file differs",
             )
-        seqno = min(int(n.call("getMasterchainInfo")["last"]["seqno"]) for n in self.nodes) - 2
-        require(seqno >= 0, "archive checkpoint unavailable")
+        positions = []
+        for node in self.nodes:
+            position = node.call("getConsensusBlock")
+            require(
+                position.get("@type") == "ext.blocks.consensusBlock"
+                and type(position.get("consensus_block")) is int
+                and 0 < position["consensus_block"] < 2**32,
+                "archive finalized checkpoint unavailable",
+            )
+            positions.append(position["consensus_block"])
+        seqno = min(positions)
         blocks = [
             n.call("lookupBlock", workchain=-1, shard=str(-(2**63)), seqno=seqno)
             for n in self.nodes

@@ -1,0 +1,21 @@
+{
+  "mode": "alarm",
+  "observed_at": 1795739395,
+  "refusal_text": "2026-11-27T00:29:52Z: provider: railgate: execution safety guard refused: servicebridge: asset alarm refuses token execution",
+  "request_hash": "697731589bb73742c11e058e01a9c4dcbec1a787cb0e5f0f7f120cae0c12f01d",
+  "result": "refused",
+  "slots": [
+    {
+      "data": {
+        "actor": "0:333c87e187656fbad3644071f6747d67a2ef36b15067d2b116bb367bd0edba9d",
+        "quote_commitment": "tvm-cell-sha256:d99d86adec07223f384d268ae33f4e6a8beb26023012362ceb0d194e77cfca3c",
+        "request_hash": "697731589bb73742c11e058e01a9c4dcbec1a787cb0e5f0f7f120cae0c12f01d",
+        "request_id": 0,
+        "schema": "tos.ai.railgate-slot.v1",
+        "state": "admitted",
+        "updated_unix": 1795739359
+      },
+      "file": "ccad0b2f058be3ea4f38723b834c52ecf26eee066fa490cd043675803acc77ee.json"
+    }
+  ]
+}

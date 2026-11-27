@@ -900,3 +900,103 @@ def test_each_send_is_archived_before_another_send_inside_the_same_step(
     with pytest.raises(module.archive.Refused, match="missing or changed"):
         state.put_intent("third", {**first, "tx": {"lt": 3, "hash": "44" * 32}})
     assert len(captures) == 2
+
+
+def test_publication_lock_is_private_for_the_provider_runtime(tmp_path, monkeypatch):
+    import stat
+
+    state = module.usdc.State(tmp_path)
+    directory = tmp_path / "provider-state"
+    directory.mkdir(mode=0o700)
+    config = tmp_path / "provider.json"
+    config.write_text(json.dumps({"state_dir": str(directory)}))
+    monkeypatch.setattr(module, "publish_locked", lambda *args: None)
+    module.publish(
+        SimpleNamespace(provider_runtime=Path("provider"), published_config=config),
+        state,
+        None,
+        None,
+    )
+    assert stat.S_IMODE((directory / "serve.lock").stat().st_mode) == 0o600
+
+
+def test_fresh_monitor_evidence_is_complete_and_recheckable():
+    import hashlib
+
+    evidence = Path(__file__).parents[1] / "evidence"
+    folder = evidence / "service-token-monitor-public-20261127"
+    record = json.loads(
+        (evidence / "service-token-monitor-local-20261127.json").read_text()
+    )
+    index = json.loads((folder / "INDEX.json").read_text())
+    assert index["complete"] is True
+    assert len(record["archive_steps"]) == index["steps"] == 15
+    assert len(record["transactions"]) == index["transaction_bocs"] == 35
+    assert record["provider_final"]["state"] == "acked"
+    assert [v["slot_state"] for v in record["injections"]] == ["admitted", "admitted"]
+    assert "asset alarm refuses" in record["injections"][0]["refusal_text"]
+    assert "monitor report is stale" in record["injections"][1]["refusal_text"]
+    for item in record["transactions"]:
+        raw = (folder / item["file"]).read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == item["sha256"]
+        assert module.usdc.lib.parse_boc(raw).hash().hex() == item["transaction_hash"]
+    states = set()
+    entries = json.loads((folder / "SANITIZATION.json").read_text())["entries"]
+    assert len(entries) == index["verifier_outputs"] == 21
+    for entry in entries:
+        raw = (folder / entry["archive_file"]).read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == entry["sanitized_sha256"]
+        module.archive.verify_citations(evidence, entry)
+        output = json.loads(raw)
+        if output.get("schema") == "tos-service-verify/token/v1":
+            states.update(v["state"] for v in output["requests"])
+    # Check the real resolver outputs, independently of any particular schema label.
+    for item in record["verifier_outputs"]:
+        output = json.loads((folder / item["file"]).read_text())
+        if "requests" in output:
+            assert output["result"] == "pass"
+            states.update(v["state"] for v in output["requests"])
+    assert {"pending", "responded"} <= states
+    assert all(
+        step["invariant"] and step["supply_atomic"] == 25000000
+        for step in record["invariants"]["steps"]
+    )
+
+
+def test_historical_gap_does_not_exempt_any_new_or_pending_send(tmp_path, monkeypatch):
+    state = module.EvidenceState(tmp_path)
+    old = {
+        "wallet": "0:" + "11" * 32,
+        "state": "done",
+        "tx": {"lt": 1, "hash": "22" * 32},
+    }
+    state.put_intent("historical", old)
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "network.json").write_text(
+        json.dumps({"zerostate_root": "root", "zerostate_file": "file"})
+    )
+    state.bind_archive(SimpleNamespace(urls=["a", "b", "c", "d", "e", "f"]), data)
+    legacy = json.loads((tmp_path / "archive/legacy-before-archive.json").read_text())
+    assert legacy["complete"] is False and set(legacy["records"]) == {"historical"}
+    state.archive_completed_sends()
+    captured = []
+
+    class Collector:
+        def __init__(self, directory, endpoints, genesis):
+            self.directory = directory
+
+        def capture_wait(self, roots):
+            captured.extend(roots)
+            raise OSError("injected storage failure")
+
+    monkeypatch.setattr(module.archive, "TransactionArchive", Collector)
+    with pytest.raises(OSError, match="storage failure"):
+        state.put_intent("new", {**old, "tx": {"lt": 2, "hash": "33" * 32}})
+    state.bind_archive(state.archive_chain, data)
+    assert set(state.archive_legacy) == {"historical"}
+    with pytest.raises(OSError, match="storage failure"):
+        state.archive_completed_sends()
+    assert len(captured) == 2
+    assert all(x["lt"] == 2 for x in captured)
+    assert set(state.archive_legacy) == {"historical"}

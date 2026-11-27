@@ -25,7 +25,25 @@ native-rail verification model; it is not an independently implemented parser.
 
 The [committed-build monitor replay status](service-token-public-20261126/monitor-replay-status.json)
 records the exact historical refusal text and request/slot identifiers, clearly
-separated from the current build's read-only preflight. The requested new live
-alarm/staleness injections remain blocked before injection by pruned registry and
-actor history. Neither a unit test nor a saved historical log is relabelled as a
-live rerun. A fresh accepted run with immediate receipt capture is still needed.
+separated from the current build's read-only preflight. That historical attempt stopped before injection because registry and actor
+history had been pruned; it remains unchanged. It is superseded for the fresh-run
+requirement by the [new monitor-injection record](service-token-monitor-local-20261127.json).
+Neither a unit test nor an old log is relabelled as a live rerun.
+
+## Fresh monitor-injection run
+
+The [complete fresh bundle](service-token-monitor-public-20261127/INDEX.json)
+retains 35 transaction BOCs and 21 verifier outputs for 15 captured steps. The
+fresh actor and registry identities avoid the old pruned registry history. The
+buyer paid 100,000 atomic test units, both monitor faults refused execution in
+the same admitted slot, and clearing the report allowed one execution and a
+response. Nodes 4–6 independently reconstructed pending and responded states.
+All captured checkpoints satisfy the token invariant and reconcile the original
+25,000,000-unit supply. Validator CPU caps remained at 55%; no validator service
+or chain configuration changed.
+
+Both bundles have a `SANITIZATION.json`: each output names the original SHA-256
+cited by its record and every removed JSON pointer. The checker verifies the
+original bytes, the citation, and the exact removal transform. All transaction
+cells remain byte-for-byte public chain data. The earlier pruning gap stays an
+accepted, explicit limitation; the new run does not fill it with invented cells.
