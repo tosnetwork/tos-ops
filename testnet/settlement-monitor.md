@@ -203,7 +203,7 @@ headroom, fixed hourly/daily usage, swap/channel occupancy, recognition overflow
 (more than 16), and an active old-bridge recognition record. USDT adds fee and
 upgrade alarms; freeze, pause, destroy and receiver-blacklist checks are explicit.
 
-On **freeze, pause, bridge-fund destruction or legacy deprecation** (also unexplained backing decrease or shortfall):
+On **freeze, pause, bridge-fund destruction, implementation change or legacy deprecation** (also unexplained backing decrease or shortfall):
 
 1. Page the operator/oracles immediately, with asset identity and checkpoints.
    Oracles vote `voteForDisableToken` for that token or `voteForSwitchLock` at
@@ -231,7 +231,7 @@ make an alarm disappear.
 
 ## Evidence
 
-Run under the operator's thermal guard:
+Run with the repository Python environment:
 
 ```
 python3 -m pytest -q testnet/tests/test_check_settlement.py
@@ -367,7 +367,7 @@ unsafe receiver is not a substitute for those guards.
 The explicit source-only acceptance suite starts a separate ephemeral loopback
 Anvil instance. It never resets or writes the existing TOS/EVM network. It uses
 local behavioural fixtures; it does not certify a production issuer release.
-Run under the shared thermal guard, with `anvil`, `cast`, Node and the pinned
+Run with `anvil`, `cast`, Node and the pinned
 Solidity compiler module available:
 
 ```sh
