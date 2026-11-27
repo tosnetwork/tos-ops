@@ -220,7 +220,8 @@ On **freeze, pause, bridge-fund destruction, implementation change or legacy dep
 4. Retain observations, source logs and receipts. Freeze/pause/bridge-destroy/deprecation/implementation-change/backing
    incidents latch durably in `incidents.json`; later healthy samples do not
    clear the provider pause hook. Only an explicit reviewed incident resolution
-   may archive those latches. No automatic unpause, cap increase or compensation.
+   ([runbook below](#runbook-reviewed-incident-resolution)) may archive those
+   latches. No automatic unpause, cap increase or compensation.
 
 For a wallet/actor floor, fund only the smallest justified TOS top-up through the
 normal approved value-moving procedure. For refusal pressure, enable/reconcile
@@ -229,21 +230,94 @@ retire the old record before changing ConfigParam 79. Do not raise caps to hide
 an unexplained balance change. Never discard a baseline, journal or incident to
 make an alarm disappear.
 
+### Runbook: reviewed incident resolution
+
+A latched incident is removed only with `scripts/resolve-settlement-incident.py`,
+never by editing `incidents.json`. Resolution is for a condition that has ended
+and whose cause was reviewed (for example the issuer unpaused and the bridge's
+holdings reconcile); it is not a way to resume an asset that is still affected.
+
+1. Review the cause and the evidence, and agree the one-line reason with the
+   reviewer. Confirm that the checker has published a report **after** the
+   condition ended, with no alarm of that incident's asset and code. What an
+   absent alarm proves depends on the code. For a level code (`bridge_frozen`,
+   `token_paused` from the `paused` flag, `token_deprecated`, `token_upgrade`,
+   `backing_shortfall`) it shows the condition no longer holds. For an
+   edge-triggered code (`destroyed_funds`, `unexplained_decrease`, and
+   `token_paused` raised by `pause_events`) it shows only that no new event
+   occurred in the last checked interval, not that the cause is resolved or the
+   loss reconciled. For those codes the human review is the real guard: the
+   command cannot tell a resolved cause from a quiet interval.
+2. Run, with operator-selected paths:
+
+   ```sh
+   python3 testnet/scripts/resolve-settlement-incident.py \
+     --state-dir monitor-state --policy policy.json --incident usdt:token_paused \
+     --reason "issuer unpaused at source block N; reviewed by REVIEWER" \
+     --record incident-evidence/usdt-token-paused.json
+   ```
+
+   It takes the same nonblocking `monitor.lock` as the checker and refuses
+   (exit 2, nothing changed) unless all of the following hold: the state
+   directory is private and owned; the reason is one non-empty printable line
+   of at most 2,000 characters; the record path is new, writable and outside the
+   state directory; the incident is latched in an `incidents.json` object, its
+   key is its alarm's `ASSET:CODE` and the code is an emergency; and
+   `report.json` exists and is a checked `tos-settlement-report/1` (not
+   baseline, not STALE) whose `latched_incidents` equal the current incidents,
+   whose checkpoint is newer than the incident's and no older than the policy's
+   `max_age_seconds`, and which has no alarm with that asset and code.
+3. It first creates the record `tos-settlement-incident-resolution/1`
+   exclusively (`O_CREAT|O_EXCL`, never replacing a file that appeared after the
+   check), fsyncs it and its directory, and only then replaces `incidents.json`
+   without that incident (atomic replace with fsync). The record holds the
+   incident id and removed entry, the remaining incident ids, the sha256 of
+   `incidents.json` before and, computed in advance from the checker's exact
+   encoding, after; the report checkpoint and sha256, the reason and the time.
+   A failed record write removes its own partial file. A replace that fails
+   without changing `incidents.json` withdraws the record. Both exit 2. Retain
+   the record with the incident evidence; the after hash must match the state
+   file.
+
+   **Exit 3** (`"result": "partial"`) means a failure after the record was
+   written left a change, and the JSON names it: `incidents.json` was replaced
+   but not durably confirmed, or does not read back as the record states, or
+   was not replaced but the record could not be withdrawn, or a partial record
+   file could not be removed. Stop the schedule, keep every file and compare
+   `incidents_sha256_current` with the record before doing anything else.
+
+   **An interrupted run** (killed or crashed after the record was written,
+   printing no result), or power loss after the replace but before its
+   directory fsync, can leave a durable record whose removal never took
+   effect. Such a record is void when its `incidents_sha256_after` does not
+   match the current `incidents.json`, or when its incident is still present
+   there. Keep the void record beside the evidence (rename it with a `.void`
+   suffix rather than deleting it), then rerun with a new `--record` path.
+4. The next checker run publishes `provider_pause_assets` without that asset if
+   no other incident of it is latched. A condition that returns latches again.
+   One run resolves one incident; repeat per incident, each with its own record.
+
 ## Evidence
 
 Run with the repository Python environment:
 
 ```
-python3 -m pytest -q testnet/tests/test_check_settlement.py
+python3 -m pytest -q testnet/tests/test_check_settlement.py testnet/tests/test_resolve_settlement_incident.py
 python3 testnet/tests/settlement_monitor_mutants.py
-uv run ruff check testnet/scripts/check-settlement.py testnet/tests/test_check_settlement.py testnet/tests/settlement_monitor_mutants.py
-uv run ruff format --check testnet/scripts/check-settlement.py testnet/tests/test_check_settlement.py testnet/tests/settlement_monitor_mutants.py
+python3 testnet/tests/settlement_incident_mutants.py --log-dir INCIDENT_CONTROL_LOGS
+uv run ruff check testnet/scripts/check-settlement.py testnet/scripts/resolve-settlement-incident.py testnet/tests/test_check_settlement.py testnet/tests/test_resolve_settlement_incident.py testnet/tests/settlement_monitor_mutants.py testnet/tests/settlement_incident_mutants.py
+uv run ruff format --check testnet/scripts/check-settlement.py testnet/scripts/resolve-settlement-incident.py testnet/tests/test_check_settlement.py testnet/tests/test_resolve_settlement_incident.py testnet/tests/settlement_monitor_mutants.py testnet/tests/settlement_incident_mutants.py
 ```
 
 The threshold tests exercise each alarm below and at/above its boundary for
 both assets, plus malformed/incomplete observations and unknown dispatch. The
 mutation controls remove the guards in an isolated temporary source and require
-the tests to fail. No test contacts a node, sends value or builds node code.
+the tests to fail. The incident controls remove each of the resolution
+command's refusal guards in turn and require that refusal's own test to fail
+with its assertion, and the ordering and failure-path controls (record
+after replace, partial record kept, record not withdrawn, partial reported as
+refused, read-back unchecked) fail their fault-injection tests (26/26).
+No test contacts a node, sends value or builds node code.
 The checker is TOS-specific operational tooling; no inherited consensus or
 bridge algorithm is changed.
 
