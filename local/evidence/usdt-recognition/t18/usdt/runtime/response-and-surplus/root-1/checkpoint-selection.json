@@ -1,0 +1,21 @@
+{
+  "current_finalized": {
+    "@type": "tos.blockIdExt",
+    "file_hash": "bL27zBuW3Z+A+ugzwVwTzAMQYbJJ0dCEqsxO4zrB3kY=",
+    "root_hash": "aqF2mkIFbz8cJAMdC6Qob6ZYqlawmSMB6/8QfF2T2r4=",
+    "seqno": 362008,
+    "shard": "-9223372036854775808",
+    "workchain": -1
+  },
+  "mode": "canonical historical finalized block",
+  "normal_ancestry_checks_unchanged": true,
+  "root_utime": 1795780199,
+  "selected": {
+    "@type": "tos.blockIdExt",
+    "file_hash": "y1SIucZm8Ktuv/O2MmfwRuNumGOM2QFyVrdQdDmMa64=",
+    "root_hash": "AXWeKMwVxEFZ9wuniPq5ZSbFYrlXiGAOsxMyng2D01M=",
+    "seqno": 359765,
+    "shard": "-9223372036854775808",
+    "workchain": -1
+  }
+}

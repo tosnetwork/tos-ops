@@ -1,0 +1,60 @@
+{
+  "checkpoint": {
+    "@type": "tos.blockIdExt",
+    "file_hash": "hywa7/wXRMJ4a3e6UiHUdRdsUmIlGjVvzNLPBC3VxH8=",
+    "root_hash": "zNLliRvP/HuI61Dem4JEkPBh/ksrayewNc1A9lcouFU=",
+    "seqno": 361130,
+    "shard": "-9223372036854775808",
+    "workchain": -1
+  },
+  "complete": true,
+  "files": [
+    {
+      "account": "0:14eda362e0cb32fc910daa87ffd1f7840ae8a152275fe36451a4d51422484979",
+      "block": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "948Bc+fRhnmLcpIGfTAwwgAkwBEXItGrkvjl43RZnHI=",
+        "root_hash": "MWQ6htnYhKVsW4L5NcPjzgCxttsY2xfM+ZnyWuOjErw=",
+        "seqno": 394317,
+        "shard": "-9223372036854775808",
+        "workchain": 0
+      },
+      "file": "transactions/395636000001-1985c658ea93a8d83d3cae0659a0dd90ef0777107628667a317d6eb4fe555fb6.boc",
+      "lt": 395636000001,
+      "sha256": "8b16e435b78fbcb4679931b4e7d44f551b929f85690e8858f1ec5e4cae2dd9d9",
+      "transaction_hash": "1985c658ea93a8d83d3cae0659a0dd90ef0777107628667a317d6eb4fe555fb6"
+    },
+    {
+      "account": "0:dab3c57e833459f6b2481148009a8c0817540da8cfc1e64248be612f1fe06df3",
+      "block": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "948Bc+fRhnmLcpIGfTAwwgAkwBEXItGrkvjl43RZnHI=",
+        "root_hash": "MWQ6htnYhKVsW4L5NcPjzgCxttsY2xfM+ZnyWuOjErw=",
+        "seqno": 394317,
+        "shard": "-9223372036854775808",
+        "workchain": 0
+      },
+      "file": "transactions/395636000003-31678c538452696cfb0eebfb54050684727ddb43c2908fd303f44967934348c5.boc",
+      "lt": 395636000003,
+      "sha256": "c8e8e906be1b976c1ce05b643a65dc326f8096a8d3d2bb5a58e117f9f1314487",
+      "transaction_hash": "31678c538452696cfb0eebfb54050684727ddb43c2908fd303f44967934348c5"
+    },
+    {
+      "file": "verifiers/archival-verification-c4bfe0dff83aacafe68fdcf5067f117003a867a54e1b05f8dd7d90ce16828768.json",
+      "sha256": "c4bfe0dff83aacafe68fdcf5067f117003a867a54e1b05f8dd7d90ce16828768"
+    },
+    {
+      "file": "block-headers.json",
+      "sha256": "bcfbbc1b7a8e70467f92edb938d0dbfcb12a1c79f9b9ac0069769165a469c22d"
+    }
+  ],
+  "identity": "96b31b2a2956d7cf42e542349fad5de1aa1cdb64dab8f41d06e2cc3eab55adfc",
+  "label": "send-refunded-expire",
+  "roots": [
+    {
+      "account": "0:14eda362e0cb32fc910daa87ffd1f7840ae8a152275fe36451a4d51422484979",
+      "hash": "1985c658ea93a8d83d3cae0659a0dd90ef0777107628667a317d6eb4fe555fb6",
+      "lt": 395636000001
+    }
+  ]
+}

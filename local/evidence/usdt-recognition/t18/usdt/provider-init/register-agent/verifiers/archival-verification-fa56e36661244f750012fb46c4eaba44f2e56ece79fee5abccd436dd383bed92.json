@@ -1,0 +1,61 @@
+{
+  "checkpoint": {
+    "@type": "tos.blockIdExt",
+    "file_hash": "5SF2qSGOsb5xN2hkOLrRVbF3FONVG2WVG/RCvUP2VcM=",
+    "root_hash": "DbUXApNqaJDnpfg+1KCttrTtOnKHvWqFYfOmBsQbRU0=",
+    "seqno": 353194,
+    "shard": "-9223372036854775808",
+    "workchain": -1
+  },
+  "endpoints": [
+    "http://127.0.0.1:8014",
+    "http://127.0.0.1:8015",
+    "http://127.0.0.1:8016"
+  ],
+  "genesis": {
+    "file": "c3860fe196a2a1b5e4e74a9cf9448624a353ce68a8c4c5f6413347586d688769",
+    "root": "65735247a371030abe811aeac0afe357301ce90e161450d26f88b4beb5b4c366"
+  },
+  "result": "pass",
+  "roots": [
+    {
+      "account": "0:30dafeefd22a8fa0b41df503dbd9084eeb6d043c146083606061f09ad0b659a6",
+      "hash": "e6bd09aa48c8262c5f155e252d90a60c95ade703f941c33dbd94329b28d34c41",
+      "lt": 387787000001
+    }
+  ],
+  "schema": "transaction-archive-verification.v1",
+  "transactions": [
+    {
+      "account": "0:30dafeefd22a8fa0b41df503dbd9084eeb6d043c146083606061f09ad0b659a6",
+      "block": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "qXT125vv1STy2UX1vbzce97K66msTfrDfNyXolgi7kc=",
+        "root_hash": "dm/FAqRsMlZAQLCz8PckWpUNQ4Z1rn2Y7w+Ctv9tn+I=",
+        "seqno": 386492,
+        "shard": "-9223372036854775808",
+        "workchain": 0
+      },
+      "file": "transactions/387787000001-e6bd09aa48c8262c5f155e252d90a60c95ade703f941c33dbd94329b28d34c41.boc",
+      "lt": 387787000001,
+      "sha256": "084dc1274c8240af22af4555e6993da7845e27168817bb298576c4be0391ca39",
+      "transaction_hash": "e6bd09aa48c8262c5f155e252d90a60c95ade703f941c33dbd94329b28d34c41"
+    },
+    {
+      "account": "0:c6f72fc43f89254059473e51e7b5d01541248374faa314d94021e4ffcc245190",
+      "block": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "qXT125vv1STy2UX1vbzce97K66msTfrDfNyXolgi7kc=",
+        "root_hash": "dm/FAqRsMlZAQLCz8PckWpUNQ4Z1rn2Y7w+Ctv9tn+I=",
+        "seqno": 386492,
+        "shard": "-9223372036854775808",
+        "workchain": 0
+      },
+      "file": "transactions/387787000003-4be8c455b8ab5a9840f334b90bd2fb238a46bf5bc25cbff2acffc255b86762be.boc",
+      "lt": 387787000003,
+      "sha256": "6c4e759768a2191a8def8f8296597356ca53c3f7906b29aac1632401af9631c2",
+      "transaction_hash": "4be8c455b8ab5a9840f334b90bd2fb238a46bf5bc25cbff2acffc255b86762be"
+    }
+  ],
+  "trust_model": "three approved trusted nodes; matching decoded transaction cells and block ancestry to one matching finalized checkpoint"
+}

@@ -1,0 +1,31 @@
+{
+  "block": {
+    "@type": "tos.blockIdExt",
+    "file_hash": "CguDf9nRqg6b5QPpdlkTQiJ63Q0tIYfk/c8uLurIXdk=",
+    "root_hash": "VoRrwTaDay0V1TNWl25sBt2v0jGnG2a1Qhn05B4X45Y=",
+    "seqno": 363307,
+    "shard": "-9223372036854775808",
+    "workchain": -1
+  },
+  "checkpoint": 363307,
+  "native_ledger": [
+    300000000,
+    200000000,
+    0,
+    20784,
+    3,
+    0,
+    0,
+    0,
+    0
+  ],
+  "rpc_count": 3,
+  "token_ledger": [
+    0,
+    1000000,
+    0,
+    0,
+    1000000
+  ],
+  "wallet_balance_atomic": 2000000
+}

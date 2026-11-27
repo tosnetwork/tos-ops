@@ -1,0 +1,13 @@
+{
+  "resolver": "independent process using the same production resolver code",
+  "resolver_endpoints": [
+    "http://127.0.0.1:8014",
+    "http://127.0.0.1:8015",
+    "http://127.0.0.1:8016"
+  ],
+  "sending_endpoints": [
+    "http://127.0.0.1:8011",
+    "http://127.0.0.1:8012",
+    "http://127.0.0.1:8013"
+  ]
+}

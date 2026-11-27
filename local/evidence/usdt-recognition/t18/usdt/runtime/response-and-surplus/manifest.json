@@ -1,0 +1,323 @@
+{
+  "checkpoints": [
+    {
+      "@type": "tos.blockIdExt",
+      "file_hash": "o0o8AJemv+dGDjGduxxLFPgxJPXNlzt7qgiSh6egTkg=",
+      "root_hash": "/1QxCPGUJAqJ1Xpc0qlSWpgRNaMl1V+309bSZHPZp+w=",
+      "seqno": 358802,
+      "shard": "-9223372036854775808",
+      "workchain": -1
+    },
+    {
+      "@type": "tos.blockIdExt",
+      "file_hash": "y1SIucZm8Ktuv/O2MmfwRuNumGOM2QFyVrdQdDmMa64=",
+      "root_hash": "AXWeKMwVxEFZ9wuniPq5ZSbFYrlXiGAOsxMyng2D01M=",
+      "seqno": 359765,
+      "shard": "-9223372036854775808",
+      "workchain": -1
+    },
+    {
+      "@type": "tos.blockIdExt",
+      "file_hash": "y1SIucZm8Ktuv/O2MmfwRuNumGOM2QFyVrdQdDmMa64=",
+      "root_hash": "AXWeKMwVxEFZ9wuniPq5ZSbFYrlXiGAOsxMyng2D01M=",
+      "seqno": 359765,
+      "shard": "-9223372036854775808",
+      "workchain": -1
+    },
+    {
+      "@type": "tos.blockIdExt",
+      "file_hash": "y1SIucZm8Ktuv/O2MmfwRuNumGOM2QFyVrdQdDmMa64=",
+      "root_hash": "AXWeKMwVxEFZ9wuniPq5ZSbFYrlXiGAOsxMyng2D01M=",
+      "seqno": 359765,
+      "shard": "-9223372036854775808",
+      "workchain": -1
+    }
+  ],
+  "complete": true,
+  "files": [
+    {
+      "account": "0:30dafeefd22a8fa0b41df503dbd9084eeb6d043c146083606061f09ad0b659a6",
+      "block": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "aUMh9XpLEoY+bmwTEXi80foR8ta6Lgu9U3xzzup3duI=",
+        "root_hash": "nEyNykW4/6bo4LWM2mH4z3vJmtgOnpoVRu958lA1hQ8=",
+        "seqno": 392064,
+        "shard": "-9223372036854775808",
+        "workchain": 0
+      },
+      "file": "root-0/transactions/393375000001-1fc7345ac631151ed5166e63b6202854edf3f9afed939841fc4e3d98c7b42fa2.boc",
+      "lt": 393375000001,
+      "sha256": "71d0969b7f3bbf0ee1a00786ae318db1c6fd7574cd3c9ab689319cdd2a624528",
+      "transaction_hash": "1fc7345ac631151ed5166e63b6202854edf3f9afed939841fc4e3d98c7b42fa2"
+    },
+    {
+      "account": "0:dab3c57e833459f6b2481148009a8c0817540da8cfc1e64248be612f1fe06df3",
+      "block": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "aUMh9XpLEoY+bmwTEXi80foR8ta6Lgu9U3xzzup3duI=",
+        "root_hash": "nEyNykW4/6bo4LWM2mH4z3vJmtgOnpoVRu958lA1hQ8=",
+        "seqno": 392064,
+        "shard": "-9223372036854775808",
+        "workchain": 0
+      },
+      "file": "root-0/transactions/393375000003-53269a83d8e38985be20ff9f1dbffb1ccdfbd311c5e5ec0298b9c42ac77e502e.boc",
+      "lt": 393375000003,
+      "sha256": "1f4777f334136935fcd1cc8b54db9316caaf5252563d7e2dc1e81a82371e26c5",
+      "transaction_hash": "53269a83d8e38985be20ff9f1dbffb1ccdfbd311c5e5ec0298b9c42ac77e502e"
+    },
+    {
+      "file": "root-0/verifiers/archival-verification-3b29f6f8dcf4e59c22e714415eb5fab6c2e926bbeea50ef0018172b75914b03d.json",
+      "sha256": "3b29f6f8dcf4e59c22e714415eb5fab6c2e926bbeea50ef0018172b75914b03d"
+    },
+    {
+      "file": "root-0/block-headers.json",
+      "sha256": "4d48a84ab7e8d48a8ac29ae79342af097537d14ed3e34bd24d277b6cf8dc3e47"
+    },
+    {
+      "file": "root-0/checkpoint-selection.json",
+      "sha256": "0971864e347b30df67a0be10ee7f1c91ebbc242db241cc643ef84dc7190ef07b"
+    },
+    {
+      "file": "root-0/capture.json",
+      "sha256": "87eec401fbe15cbfbf07f776cabb3bcd384e9a7d356ee2f41f11d941fe1e4508"
+    },
+    {
+      "account": "0:30dafeefd22a8fa0b41df503dbd9084eeb6d043c146083606061f09ad0b659a6",
+      "block": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "oYBqOGD8ijRyKe/xOYryCs7pW/8+5ukbWcCeCyqPA98=",
+        "root_hash": "CSJVCSHZZ8nHLboaJFpvAzhZhe3PTVTciIj/aEqrD0M=",
+        "seqno": 393025,
+        "shard": "-9223372036854775808",
+        "workchain": 0
+      },
+      "file": "root-1/transactions/394340000017-75b68cc474fc5be69f39b2f2899f53354e5da1d9d39d7aaa1ee91acc9eff0c4f.boc",
+      "lt": 394340000017,
+      "sha256": "01cfd86bf72a5fe6de53c575e5e0b6729ca639825de07823c208cf38fcfc16af",
+      "transaction_hash": "75b68cc474fc5be69f39b2f2899f53354e5da1d9d39d7aaa1ee91acc9eff0c4f"
+    },
+    {
+      "file": "root-1/verifiers/archival-verification-7ee538feaa7f112cb3a8628c6028b2eee5d7951cad5eb74490bd1c3780d838c0.json",
+      "sha256": "7ee538feaa7f112cb3a8628c6028b2eee5d7951cad5eb74490bd1c3780d838c0"
+    },
+    {
+      "file": "root-1/block-headers.json",
+      "sha256": "f079f79c4d98ccda9f7941a3b587269a92fa82bee53fb9de85f80f28e0732247"
+    },
+    {
+      "file": "root-1/checkpoint-selection.json",
+      "sha256": "cce8f3fb2a265d2c13a695eaa409693f8f66757c9202e23c539b66ece7814f69"
+    },
+    {
+      "file": "root-1/capture.json",
+      "sha256": "6cf0e2d57c783329044c0e3d89d9fb3e4f243dd40a547018ee610375d99ca5cf"
+    },
+    {
+      "account": "0:30dafeefd22a8fa0b41df503dbd9084eeb6d043c146083606061f09ad0b659a6",
+      "block": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "oYBqOGD8ijRyKe/xOYryCs7pW/8+5ukbWcCeCyqPA98=",
+        "root_hash": "CSJVCSHZZ8nHLboaJFpvAzhZhe3PTVTciIj/aEqrD0M=",
+        "seqno": 393025,
+        "shard": "-9223372036854775808",
+        "workchain": 0
+      },
+      "file": "root-2/transactions/394340000015-794af1e87f1d0d71eb802677e0de627babb1133d0c2582c8bd03a4970e02b3ce.boc",
+      "lt": 394340000015,
+      "sha256": "8127fed69d410fbf606ff0bf609d821325f78baf83261ed8148d18d58fc966d1",
+      "transaction_hash": "794af1e87f1d0d71eb802677e0de627babb1133d0c2582c8bd03a4970e02b3ce"
+    },
+    {
+      "file": "root-2/verifiers/archival-verification-04b21293ac2d665a32be2b18ae70193e7fd1fde05589837f460ed6fea4083587.json",
+      "sha256": "04b21293ac2d665a32be2b18ae70193e7fd1fde05589837f460ed6fea4083587"
+    },
+    {
+      "file": "root-2/block-headers.json",
+      "sha256": "f079f79c4d98ccda9f7941a3b587269a92fa82bee53fb9de85f80f28e0732247"
+    },
+    {
+      "file": "root-2/checkpoint-selection.json",
+      "sha256": "b84a196744514aa32da1a43da6eef25f0e049e3a6e8e9bab0dcc953c5d464b99"
+    },
+    {
+      "file": "root-2/capture.json",
+      "sha256": "c6430906203006974e0bfda42957a7c3254dd13715a259cad430e6cbe4b8d3a9"
+    },
+    {
+      "account": "0:30dafeefd22a8fa0b41df503dbd9084eeb6d043c146083606061f09ad0b659a6",
+      "block": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "oYBqOGD8ijRyKe/xOYryCs7pW/8+5ukbWcCeCyqPA98=",
+        "root_hash": "CSJVCSHZZ8nHLboaJFpvAzhZhe3PTVTciIj/aEqrD0M=",
+        "seqno": 393025,
+        "shard": "-9223372036854775808",
+        "workchain": 0
+      },
+      "file": "root-3/transactions/394340000001-0b306ec799fd55ebf555fbb9a27a44279059770cada6d189c94d552f37a1a31e.boc",
+      "lt": 394340000001,
+      "sha256": "b14bb530b436d63128e2228910a2c42778b461e7f3b621f8fc41b52524c30fe9",
+      "transaction_hash": "0b306ec799fd55ebf555fbb9a27a44279059770cada6d189c94d552f37a1a31e"
+    },
+    {
+      "account": "0:dab3c57e833459f6b2481148009a8c0817540da8cfc1e64248be612f1fe06df3",
+      "block": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "oYBqOGD8ijRyKe/xOYryCs7pW/8+5ukbWcCeCyqPA98=",
+        "root_hash": "CSJVCSHZZ8nHLboaJFpvAzhZhe3PTVTciIj/aEqrD0M=",
+        "seqno": 393025,
+        "shard": "-9223372036854775808",
+        "workchain": 0
+      },
+      "file": "root-3/transactions/394340000003-08450552b05e618ad074b518256c82e54d5b40b9b096901415220aadf2c9941e.boc",
+      "lt": 394340000003,
+      "sha256": "70db90224c86687eaf040159fae62e39ffaf95c9dc69e2592c3466a6e4d62d05",
+      "transaction_hash": "08450552b05e618ad074b518256c82e54d5b40b9b096901415220aadf2c9941e"
+    },
+    {
+      "account": "0:6a454865a858b152f1678fed49e899e2a8ed1fbafb23d136a539c3aceb52c28d",
+      "block": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "oYBqOGD8ijRyKe/xOYryCs7pW/8+5ukbWcCeCyqPA98=",
+        "root_hash": "CSJVCSHZZ8nHLboaJFpvAzhZhe3PTVTciIj/aEqrD0M=",
+        "seqno": 393025,
+        "shard": "-9223372036854775808",
+        "workchain": 0
+      },
+      "file": "root-3/transactions/394340000005-1039b85f64948716df240e17841cae8f6954f1a150f1976cde1efc14118af81c.boc",
+      "lt": 394340000005,
+      "sha256": "ee7ea3ec77821c14e4dfa44335871be56803094184114508f6c8ccf058007b91",
+      "transaction_hash": "1039b85f64948716df240e17841cae8f6954f1a150f1976cde1efc14118af81c"
+    },
+    {
+      "account": "0:dab3c57e833459f6b2481148009a8c0817540da8cfc1e64248be612f1fe06df3",
+      "block": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "oYBqOGD8ijRyKe/xOYryCs7pW/8+5ukbWcCeCyqPA98=",
+        "root_hash": "CSJVCSHZZ8nHLboaJFpvAzhZhe3PTVTciIj/aEqrD0M=",
+        "seqno": 393025,
+        "shard": "-9223372036854775808",
+        "workchain": 0
+      },
+      "file": "root-3/transactions/394340000007-3fb7e019bdc33553256ea022e9b1a3724214e8c407d148b7781740211e1e7587.boc",
+      "lt": 394340000007,
+      "sha256": "017713f543a2aa076a75f39b1f9c8566e373b6bab4caec87ec524ed2983c7311",
+      "transaction_hash": "3fb7e019bdc33553256ea022e9b1a3724214e8c407d148b7781740211e1e7587"
+    },
+    {
+      "account": "0:6a454865a858b152f1678fed49e899e2a8ed1fbafb23d136a539c3aceb52c28d",
+      "block": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "oYBqOGD8ijRyKe/xOYryCs7pW/8+5ukbWcCeCyqPA98=",
+        "root_hash": "CSJVCSHZZ8nHLboaJFpvAzhZhe3PTVTciIj/aEqrD0M=",
+        "seqno": 393025,
+        "shard": "-9223372036854775808",
+        "workchain": 0
+      },
+      "file": "root-3/transactions/394340000010-4e933abadd83ab8ccb92b0cc9e435bc10ee9c03d5b558b22f6e2a68a646b9bf7.boc",
+      "lt": 394340000010,
+      "sha256": "4eb97af67e91590d73f31dba1b53282f7ae71ee59d3624b3f418aef666a56428",
+      "transaction_hash": "4e933abadd83ab8ccb92b0cc9e435bc10ee9c03d5b558b22f6e2a68a646b9bf7"
+    },
+    {
+      "account": "0:b8193deb9b1a5b89f4ca849ea96bab892adcfe6b3a2df97c57ba7fb6271d61ca",
+      "block": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "oYBqOGD8ijRyKe/xOYryCs7pW/8+5ukbWcCeCyqPA98=",
+        "root_hash": "CSJVCSHZZ8nHLboaJFpvAzhZhe3PTVTciIj/aEqrD0M=",
+        "seqno": 393025,
+        "shard": "-9223372036854775808",
+        "workchain": 0
+      },
+      "file": "root-3/transactions/394340000012-0b0aa6e9eb8f087a6e8e35320c94e9c439664f1f60d7686ab546e081f5938d60.boc",
+      "lt": 394340000012,
+      "sha256": "073a55ddf221e2ee21e37978f376b81089247f9b692087d8d5ecc34559daa8a2",
+      "transaction_hash": "0b0aa6e9eb8f087a6e8e35320c94e9c439664f1f60d7686ab546e081f5938d60"
+    },
+    {
+      "account": "0:dab3c57e833459f6b2481148009a8c0817540da8cfc1e64248be612f1fe06df3",
+      "block": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "oYBqOGD8ijRyKe/xOYryCs7pW/8+5ukbWcCeCyqPA98=",
+        "root_hash": "CSJVCSHZZ8nHLboaJFpvAzhZhe3PTVTciIj/aEqrD0M=",
+        "seqno": 393025,
+        "shard": "-9223372036854775808",
+        "workchain": 0
+      },
+      "file": "root-3/transactions/394340000014-87d9051a0847a22337a5a0d612f6595f09f57f940f707dcee7ea64b1afa2d229.boc",
+      "lt": 394340000014,
+      "sha256": "5894d8a258673c72e8400b18020b31d907a1deb356aac7548e6067b03c692157",
+      "transaction_hash": "87d9051a0847a22337a5a0d612f6595f09f57f940f707dcee7ea64b1afa2d229"
+    },
+    {
+      "account": "0:30dafeefd22a8fa0b41df503dbd9084eeb6d043c146083606061f09ad0b659a6",
+      "block": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "oYBqOGD8ijRyKe/xOYryCs7pW/8+5ukbWcCeCyqPA98=",
+        "root_hash": "CSJVCSHZZ8nHLboaJFpvAzhZhe3PTVTciIj/aEqrD0M=",
+        "seqno": 393025,
+        "shard": "-9223372036854775808",
+        "workchain": 0
+      },
+      "file": "root-3/transactions/394340000015-794af1e87f1d0d71eb802677e0de627babb1133d0c2582c8bd03a4970e02b3ce.boc",
+      "lt": 394340000015,
+      "sha256": "8127fed69d410fbf606ff0bf609d821325f78baf83261ed8148d18d58fc966d1",
+      "transaction_hash": "794af1e87f1d0d71eb802677e0de627babb1133d0c2582c8bd03a4970e02b3ce"
+    },
+    {
+      "account": "0:30dafeefd22a8fa0b41df503dbd9084eeb6d043c146083606061f09ad0b659a6",
+      "block": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "oYBqOGD8ijRyKe/xOYryCs7pW/8+5ukbWcCeCyqPA98=",
+        "root_hash": "CSJVCSHZZ8nHLboaJFpvAzhZhe3PTVTciIj/aEqrD0M=",
+        "seqno": 393025,
+        "shard": "-9223372036854775808",
+        "workchain": 0
+      },
+      "file": "root-3/transactions/394340000017-75b68cc474fc5be69f39b2f2899f53354e5da1d9d39d7aaa1ee91acc9eff0c4f.boc",
+      "lt": 394340000017,
+      "sha256": "01cfd86bf72a5fe6de53c575e5e0b6729ca639825de07823c208cf38fcfc16af",
+      "transaction_hash": "75b68cc474fc5be69f39b2f2899f53354e5da1d9d39d7aaa1ee91acc9eff0c4f"
+    },
+    {
+      "file": "root-3/verifiers/archival-verification-e94ff1ab9b54567f911675aba1ed88168cd25008979c549ee306e0f12d195588.json",
+      "sha256": "e94ff1ab9b54567f911675aba1ed88168cd25008979c549ee306e0f12d195588"
+    },
+    {
+      "file": "root-3/block-headers.json",
+      "sha256": "f079f79c4d98ccda9f7941a3b587269a92fa82bee53fb9de85f80f28e0732247"
+    },
+    {
+      "file": "root-3/checkpoint-selection.json",
+      "sha256": "140e0afc47cb01241a2ba5c69b1fa01d635fad250b18a719a72686ba6a6b2f92"
+    },
+    {
+      "file": "root-3/capture.json",
+      "sha256": "7420d414644c272b68ba64132f49c9cd98716783706dcef88f8bfd4974a41897"
+    }
+  ],
+  "identity": "d28ab1a3e5a0c321067e71b42fbfb65f9d796b2b1a4673b2e08687c716dc1a85",
+  "label": "response-and-surplus",
+  "mode": "separate canonical finalized checkpoint per transaction graph",
+  "roots": [
+    {
+      "account": "0:30dafeefd22a8fa0b41df503dbd9084eeb6d043c146083606061f09ad0b659a6",
+      "hash": "1fc7345ac631151ed5166e63b6202854edf3f9afed939841fc4e3d98c7b42fa2",
+      "lt": 393375000001
+    },
+    {
+      "account": "0:30dafeefd22a8fa0b41df503dbd9084eeb6d043c146083606061f09ad0b659a6",
+      "hash": "75b68cc474fc5be69f39b2f2899f53354e5da1d9d39d7aaa1ee91acc9eff0c4f",
+      "lt": 394340000017
+    },
+    {
+      "account": "0:30dafeefd22a8fa0b41df503dbd9084eeb6d043c146083606061f09ad0b659a6",
+      "hash": "794af1e87f1d0d71eb802677e0de627babb1133d0c2582c8bd03a4970e02b3ce",
+      "lt": 394340000015
+    },
+    {
+      "account": "0:30dafeefd22a8fa0b41df503dbd9084eeb6d043c146083606061f09ad0b659a6",
+      "hash": "0b306ec799fd55ebf555fbb9a27a44279059770cada6d189c94d552f37a1a31e",
+      "lt": 394340000001
+    }
+  ]
+}

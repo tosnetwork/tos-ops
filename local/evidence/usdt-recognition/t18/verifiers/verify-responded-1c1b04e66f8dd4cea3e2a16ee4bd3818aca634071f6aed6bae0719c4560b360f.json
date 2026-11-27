@@ -1,0 +1,107 @@
+{
+  "checkpoint": {
+    "block_file_hash": "sha256:46530bf22bf497772ba1c716a394a4ad5bc8b814e4c3417e8303467b91c9380b",
+    "block_root_hash": "sha256:e478e418b512b78fc45b3fe03f5873c087a8820f5bce5612631d9b3614c84253",
+    "chain_time": 1795781457,
+    "seqno": 362885
+  },
+  "checks": [
+    {
+      "detail": "complete actor history and typed pending, refund, payout and returned cells agree",
+      "id": "finalized-state",
+      "ok": true
+    },
+    {
+      "detail": "Quote, manifest, registry, immutable SAT1 and three funding hops bind the request",
+      "id": "bundle-binding",
+      "ok": true
+    },
+    {
+      "detail": "schema 2 Receipt and supplied artifact agree with the exact finalized response",
+      "id": "receipt",
+      "ok": true
+    }
+  ],
+  "funding_refusals": [],
+  "inputs": [
+    {
+      "bytes": 226,
+      "name": "network-domain",
+      "sha256": "sha256:620bbfa1d4b966471f03c4a960f5307812048fd1c01c468db24a1ee1710a8b26"
+    },
+    {
+      "bytes": 808,
+      "name": "asset-pins",
+      "sha256": "sha256:590e096183d536248beea5995fef12d8a490ad0e3861bdc98bede3619b53cc64"
+    },
+    {
+      "bytes": 5301,
+      "name": "evidence",
+      "sha256": "sha256:4273bfd2390054c15a2d17d59aa1d346667cb04ba8ff675cf8b16f7badef3f7f"
+    },
+    {
+      "bytes": 5597,
+      "name": "registry-code-boc",
+      "sha256": "sha256:ac3948e3685f4015ca2ce3c52e58150e7ef4ab0f75634f974124922b40fd07d9"
+    },
+    {
+      "bytes": 416,
+      "name": "receipt",
+      "sha256": "sha256:fbd212f69c82fe5b3f6e0b687c4651419102fe25239f1862b5f97c56ba05e6ed"
+    },
+    {
+      "bytes": 3072,
+      "name": "artifact",
+      "sha256": "sha256:f70c726f00a528a9987fab4142a1d42b0bfe3179251711e5a4023244bf18e271"
+    }
+  ],
+  "network": {
+    "genesis_file_hash": "sha256:c3860fe196a2a1b5e4e74a9cf9448624a353ce68a8c4c5f6413347586d688769",
+    "genesis_root_hash": "sha256:65735247a371030abe811aeac0afe357301ce90e161450d26f88b4beb5b4c366",
+    "network_id": "tos:global-id:3"
+  },
+  "not_claimed": [
+    "operator independence of the endpoints: agreeing endpoints run by one operator are one source",
+    "computation correctness: a Receipt is the provider's attested statement of the digests it binds",
+    "the identity or independence of the buyer, the provider or the verifier",
+    "anything after the checkpoint, or about a request the verification did not select"
+  ],
+  "reads": {
+    "endpoints": [
+      {
+        "genesis_ok": true,
+        "url": "http://127.0.0.1:8014"
+      },
+      {
+        "genesis_ok": true,
+        "url": "http://127.0.0.1:8015"
+      },
+      {
+        "genesis_ok": true,
+        "url": "http://127.0.0.1:8016"
+      }
+    ],
+    "quorum": 2
+  },
+  "requests": [
+    {
+      "call": {
+        "hash": "be01f9061238a3863cb30c7a433011f2d2877a130659a7dbb61cb09241a18783",
+        "lt": 393126000007
+      },
+      "caller": "0:d12563503aa251f30884e34e5a4103411fa001198302542c94c4d5bbf6bd89b1",
+      "price_atomic": "1000000",
+      "request_hash": "745ba75350f0e39a3d348e275b4dca04e8f5e1521a524534e884b6c8e4eb8433",
+      "request_id": 2,
+      "response_hash": "d62a80a031cfbfae24fd708625f0118e3aa8436ba38c55ac1b9023988c54c6e2",
+      "state": "responded"
+    }
+  ],
+  "result": "pass",
+  "schema": "tos.service.purchase-verdict.token.v1",
+  "tool": {
+    "go_version": "go1.26.11",
+    "module": "github.com/tosnetwork/ai",
+    "name": "tos-service-verify"
+  }
+}
