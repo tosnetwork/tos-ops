@@ -281,11 +281,13 @@ phase. The wallet itself also refuses outside id 3.
 Use a fresh private state directory. The namespace phase deploys unchanged bridge
 and minter code embedding the test wallet, under the vacant ConfigParam 81 slot.
 Its synthetic source-token identifier is the 20-byte `LOCAL_ONLY_TEST_REFU`.
-New namespaces reserve source-chain id `0x4c4f43414c543130` (ASCII `LOCALT10`)
-solely for this local fixture; it is not an EVM network deployment. The runtime
-and driver refuse non-local networks. The accepted historical run used id 56;
-its record is retained unchanged, and that legacy namespace cannot be reused by
-the new driver.
+The test namespace uses source-chain id `56`: the slot-81 bridge is compiled
+with `params/bsc.fc`, whose `MY_CHAIN_ID` requires that value in votes. Its
+ConfigParam 84 origin uses the distinct `LOCAL_ONLY_TEST_REFU` source-token
+bytes and the pinned refusing wallet code. The wallet requires `GLOBALID == 3`,
+and the driver verifies the approved local genesis on every endpoint. Reusing
+this compiled bridge's chain id does not identify the entry as a real asset.
+No recognition bypass or separately compiled bridge is used.
 There is no EVM deposit: local test oracles authorize exactly 5,000,000 atomic
 units in this separate namespace. Those units are not test USDC and have no
 redemption claim. The original asset and its 25,000,000 units are untouched.

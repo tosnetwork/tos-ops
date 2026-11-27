@@ -26,8 +26,10 @@ LABEL = "LOCAL-ONLY-TEST-REFUSAL-v1"
 TEST_WALLET_CODE_HASH = (
     "cf5c98a11cf3de09b1cf702fa1eba38d870c822abb866320bba2da59dac013df"
 )
-# Reserved by this local fixture; never a configured public EVM chain.
-TEST_SOURCE_CHAIN_ID = int.from_bytes(b"LOCALT10", "big")
+# Slot 81 uses the bridge compiled with params/bsc.fc: MY_CHAIN_ID = 56.
+# The distinct source token, pinned refusing wallet and local genesis isolate
+# this test entry; choosing another chain id would fail the bridge vote check.
+TEST_SOURCE_CHAIN_ID = 56
 SOURCE_TOKEN = b"LOCAL_ONLY_TEST_REFU".hex()
 EXTERNAL_NAMESPACE = int.from_bytes(hashlib.sha256(LABEL.encode()).digest()[:20], "big")
 
@@ -41,10 +43,6 @@ def local_only(args, chain, state):
         "approved local genesis differs",
     )
     u.require(args.approved_genesis != "0" * 64, "empty genesis pin")
-    u.require(
-        state.get("evm") is None or state["evm"]["chain_id"] == TEST_SOURCE_CHAIN_ID,
-        "legacy test chain id cannot be reused; keep its historical record",
-    )
     if state.get("network") is None:
         state.set("network", {"global_id": 3, "genesis": args.approved_genesis})
 
@@ -167,10 +165,6 @@ def require_original_payer_clear(args, state, address):
 
 
 def namespace(args, state, chain, tools):
-    u.require(
-        state.get("evm") is None or state["evm"]["chain_id"] == TEST_SOURCE_CHAIN_ID,
-        "legacy test chain id cannot be reused; keep its historical record",
-    )
     occupied = chain.config(81)
     if occupied is not None:
         u.require(

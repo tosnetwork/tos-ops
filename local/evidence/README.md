@@ -47,3 +47,13 @@ cited by its record and every removed JSON pointer. The checker verifies the
 original bytes, the citation, and the exact removal transform. All transaction
 cells remain byte-for-byte public chain data. The earlier pruning gap stays an
 accepted, explicit limitation; the new run does not fill it with invented cells.
+
+## Refusal namespace identity
+
+The local refusal entry uses source-chain id `56`, as required by the slot-81
+bridge compiled with `params/bsc.fc` (`MY_CHAIN_ID = 56`). Its distinct
+`LOCAL_ONLY_TEST_REFU` source-token bytes and pinned refusing wallet code mark
+it as a test asset. The wallet requires `GLOBALID == 3`; the driver also binds
+every endpoint to the approved local genesis. An arbitrary larger chain id
+would not fit ConfigParam 84 or the bridge's uint32 field and would fail its
+vote check. The retained returned-case evidence already used this valid id.

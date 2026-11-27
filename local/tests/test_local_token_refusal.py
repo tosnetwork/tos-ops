@@ -268,15 +268,6 @@ def test_source_payer_open_operations_are_never_bypassed(tmp_path, monkeypatch, 
         module.require_original_payer_clear(args, state, "payer")
 
 
-def test_test_namespace_has_a_reserved_local_source_chain_id(tmp_path):
-    assert module.TEST_SOURCE_CHAIN_ID == int.from_bytes(b"LOCALT10", "big")
-    assert module.TEST_SOURCE_CHAIN_ID > 2**32
-    state = module.u.State(tmp_path)
-    state.set("evm", {"chain_id": 56})
-    with pytest.raises(module.u.Refused, match="legacy test chain id"):
-        module.namespace(None, state, None, None)
-
-
 def test_marker_cannot_choose_the_wallet_code_hash(tmp_path, monkeypatch):
     import hashlib
 
@@ -316,3 +307,161 @@ def test_wallet_pin_matches_the_real_accepted_build():
         ).read_text()
     )
     assert module.TEST_WALLET_CODE_HASH == record["code_hashes"]["token-wallet"]
+
+
+@pytest.mark.parametrize("actual", ["00" * 32, module.TEST_WALLET_CODE_HASH])
+def test_compiled_wallet_must_match_the_pin(tmp_path, monkeypatch, actual):
+    import hashlib
+
+    output = tmp_path / "local-only-test-build"
+    output.mkdir()
+    wallet = b"staged fixture source"
+    for name in ("token-wallet-local-only-test.fc", "token-wallet.fc"):
+        (output / name).write_bytes(wallet)
+    (output / "LOCAL-ONLY-TEST.json").write_text(
+        json.dumps(
+            {
+                "label": module.LABEL,
+                "global_id": 3,
+                "wallet_code_hash": module.TEST_WALLET_CODE_HASH,
+                "wallet_source_sha256": hashlib.sha256(wallet).hexdigest(),
+            }
+        )
+    )
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    for name in ("new-bridge.fif", "new-multisig.fif"):
+        (contracts / name).write_text("")
+    monkeypatch.setattr(module.service, "run", lambda *a, **kw: "")
+    tools = SimpleNamespace(
+        contracts=contracts,
+        func=Path("func"),
+        fift_run=lambda root, name: (
+            "HASH "
+            + (actual if name == "hash-local-only-test-token-wallet.fif" else "11" * 32)
+        ),
+    )
+    state = module.u.State(tmp_path)
+    if actual == module.TEST_WALLET_CODE_HASH:
+        _, hashes = module.build(SimpleNamespace(), state, None, tools)
+        assert hashes["token-wallet"] == actual
+        assert state.get("build")["code_hashes"] == hashes
+    else:
+        with pytest.raises(
+            module.u.Refused, match="compiled test wallet code hash differs"
+        ):
+            module.build(SimpleNamespace(), state, None, tools)
+        assert state.get("build") is None
+
+
+def test_fresh_refusal_origin_builds_and_preflights_without_value_movement(
+    tmp_path, monkeypatch
+):
+    import os
+
+    cli = os.environ.get("TOS_SERVICE_TOSCTL")
+    if not cli:
+        pytest.skip("set TOS_SERVICE_TOSCTL to the pinned CLI for the real builder")
+    assert module.TEST_SOURCE_CHAIN_ID == 56
+    assert 0 <= module.TEST_SOURCE_CHAIN_ID < 2**32
+    bridge_state = tmp_path / "original"
+    bridge_state.mkdir()
+    # The original CP84 entry is retained, while the fresh namespace is added.
+    spec = {
+        "assets": [
+            {
+                "master": "11" * 32,
+                "status": "active",
+                "decimals": 6,
+                "minter_code_hash": "44" * 32,
+                "wallet_code_hash": "55" * 32,
+                "max_liability_per_actor": "10000000",
+                "origin": {
+                    "kind": "token_bridge",
+                    "bridge_address": "33" * 32,
+                    "source_chain_id": 56,
+                    "source_token": "66" * 20,
+                },
+            }
+        ]
+    }
+    original_spec = bridge_state / "config84-spec.json"
+    original_spec.write_text(json.dumps(spec))
+    original_boc = bridge_state / "config84.boc"
+    module.service.run(
+        [
+            cli,
+            "vote",
+            "offer",
+            "settlement-assets",
+            "build",
+            "--spec",
+            str(original_spec),
+            "--out",
+            str(original_boc),
+        ]
+    )
+    old = module.u.lib.parse_boc(original_boc.read_bytes())
+    root = tmp_path / "fresh"
+    root.mkdir(mode=0o700)
+    state = module.u.State(root)
+    state.set("mint", {"minter": "0:" + "22" * 32})
+    state.set(
+        "tvm",
+        {
+            "bridge": "-1:" + "77" * 32,
+            "minter_code_hash": "44" * 32,
+            "wallet_code_hash": module.TEST_WALLET_CODE_HASH,
+        },
+    )
+    (root / "keys").mkdir(mode=0o700)
+    (root / "keys/payer.addr").write_bytes(
+        bytes.fromhex("88" * 32) + bytes.fromhex("ffffffff")
+    )
+    gov = module.u.governance_module()
+    monkeypatch.setattr(gov, "status", lambda *a: None)
+    monkeypatch.setattr(module.u, "governance_module", lambda: gov)
+    cp11 = module.u.lib.parse_boc(
+        (
+            Path(__file__).parents[2] / "testnet/tests/data/governance/cp11.boc"
+        ).read_bytes()
+    )
+    checks = []
+
+    class Chain:
+        url = "unused-local-read"
+
+        def config(self, param):
+            assert param in (84, 11)
+            return old if param == 84 else cp11
+
+        def balance(self, address):
+            assert address == "-1:" + "88" * 32
+            checks.append("quoted-payer-balance")
+            return 1000 * module.u.NANO
+
+    monkeypatch.setattr(
+        module.u, "node_release_evidence", lambda *a: root / "release.json"
+    )
+
+    def no_broadcast(args, state, chain, tools, param, boc, extra):
+        # This is the first value-moving boundary: stop before proposal/signing.
+        assert checks == ["quoted-payer-balance"]
+        assert param == 84
+        entries = gov.decode_settlement_assets(module.u.lib.parse_boc(boc.read_bytes()))
+        origin = entries["22" * 32]["origin"]
+        assert origin["source_chain_id"] == 56
+        assert origin["source_token"] == module.SOURCE_TOKEN
+        assert entries["22" * 32]["wallet_code_hash"] == module.TEST_WALLET_CODE_HASH
+        assert entries["11" * 32] == gov.decode_settlement_assets(old)["11" * 32]
+        checks.append("build-and-preflight-complete-no-send")
+        return {"not_sent": True}
+
+    monkeypatch.setattr(module.u, "adopt", no_broadcast)
+    module.recognize(
+        SimpleNamespace(bridge_state=bridge_state, tosctl=Path(cli), data=tmp_path),
+        state,
+        Chain(),
+        None,
+    )
+    assert checks == ["quoted-payer-balance", "build-and-preflight-complete-no-send"]
