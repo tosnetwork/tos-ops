@@ -13,7 +13,12 @@ pytest_plugins = ("anvil_settlement_observer",)
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "testnet/scripts"))
 SPEC = importlib.util.spec_from_file_location(
-    "redemption", ROOT / "testnet/scripts/prepare-token-redemption.py"
+    "redemption",
+    Path(
+        os.environ.get(
+            "T19_REDEMPTION_SOURCE", ROOT / "testnet/scripts/prepare-token-redemption.py"
+        )
+    ),
 )
 redemption = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(redemption)
@@ -226,3 +231,88 @@ def test_all_issuer_reads_use_the_finalized_hash(redemption_world):
             assert params[-1] == dict(
                 blockHash=result["issuer"]["block_hash"], requireCanonical=True
             ), "issuer canonical hash pin lost"
+
+
+@pytest.mark.parametrize(
+    "amount,received,fee",
+    [
+        (100_000_001, 99_810_001, 190_000),
+        (526_315_789, 525_315_790, 999_999),
+        (526_315_790, 525_315_790, 1_000_000),
+        (526_316_316, 525_316_316, 1_000_000),
+    ],
+)
+def test_nondivisible_fee_and_cap_boundaries_match_real_locks(
+    redemption_world, amount, received, fee
+):
+    url, accounts, send, _, token, binding = redemption_world
+    send(token, "setParams(uint256,uint256)", 19, 1)
+    document = redemption.prepare(issuer.source.RPC(url), binding, accounts[1], amount, 7)
+    assert (
+        int(document["received_atomic"]) == received and int(document["issuer_fee_atomic"]) == fee
+    ), "floor/cap preview differs"
+    bridge = binding["bridge"]
+    send(token, "approve(address,uint256)", bridge, amount)
+    before = issuer.source.read_uint(issuer.source.RPC(url), token, "balance", "latest", bridge)
+    receipt = send(bridge, "deposit(address,uint256)", token, amount)
+    after = issuer.source.read_uint(issuer.source.RPC(url), token, "balance", "latest", bridge)
+    locks = [
+        log for log in receipt["logs"] if log["topics"][0].lower() == issuer.source.TOPICS["Lock"]
+    ]
+    assert after - before == received
+    assert len(locks) == 1 and issuer.source.words(locks[0]["data"], 5)[0] == received
+
+
+def test_issuer_read_rechecks_time_after_rpc(redemption_world):
+    url, accounts, _, _, _, binding = redemption_world
+    clock = [None]
+
+    class AdvancingRPC:
+        def __init__(self):
+            self.inner = issuer.source.RPC(url)
+
+        def call(self, method, *params):
+            value = self.inner.call(method, *params)
+            if method == "eth_getBlockByNumber":
+                stamp = issuer.source.quantity(value["timestamp"])
+                clock[0] = (
+                    stamp if params[0] == "finalized" else stamp + issuer.MAX_FINALIZED_AGE + 1
+                )
+            return value
+
+    with pytest.raises(issuer.Invalid, match="stale"):
+        redemption.prepare(
+            AdvancingRPC(), binding, accounts[1], 100_000_001, 7, now=lambda: clock[0]
+        )
+
+
+def test_truncated_rpc_cli_refuses_without_a_body(redemption_world, tmp_path, monkeypatch, capsys):
+    import http.client
+
+    binding = tmp_path / "binding.json"
+    issuer.source.monitor.atomic(binding, redemption_world[-1])
+
+    def truncated(*args):
+        raise http.client.IncompleteRead(b"untrusted partial response")
+
+    monkeypatch.setattr(issuer.source.RPC, "call", truncated)
+    assert (
+        redemption.main(
+            [
+                "--rpc",
+                redemption_world[0],
+                "--binding",
+                str(binding),
+                "--receiver",
+                redemption_world[1][1],
+                "--amount",
+                "100000001",
+                "--query-id",
+                "7",
+            ]
+        )
+        == 2
+    )
+    text = capsys.readouterr().out
+    assert "redemption refused; no burn body built" in text
+    assert "untrusted partial response" not in text and "body_boc" not in text

@@ -3,6 +3,7 @@
 
 import argparse
 import base64
+import http.client
 import json
 import time
 
@@ -54,7 +55,14 @@ def main(argv=None):
         )
         print(json.dumps(result, indent=2))
         return 0
-    except (OSError, ValueError, KeyError, TypeError, lib.TestnetError) as error:
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        http.client.HTTPException,
+        lib.TestnetError,
+    ) as error:
         # Do not print untrusted RPC bodies or produce a partially usable document.
         detail = str(error) if isinstance(error, issuer.Invalid) else type(error).__name__
         print("redemption refused; no burn body built: " + detail)

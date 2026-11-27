@@ -109,6 +109,47 @@ CASES = (
         "test_rpc_error_even_with_a_result_refuses",
     ),
 )
+CASES += (
+    (
+        "fee-ceil",
+        "settlement_issuer.py",
+        'amount * observation["fee_basis_points"] // 10000',
+        '(amount * observation["fee_basis_points"] + 9999) // 10000',
+        "test_nondivisible_fee_and_cap_boundaries_match_real_locks",
+        "floor/cap preview differs",
+    ),
+    (
+        "cap-one-low",
+        "settlement_issuer.py",
+        'int(observation["maximum_fee"])',
+        'int(observation["maximum_fee"]) - 1',
+        "test_nondivisible_fee_and_cap_boundaries_match_real_locks",
+        "floor/cap preview differs",
+    ),
+    (
+        "cap-one-high",
+        "settlement_issuer.py",
+        'int(observation["maximum_fee"])',
+        'int(observation["maximum_fee"]) + 1',
+        "test_nondivisible_fee_and_cap_boundaries_match_real_locks",
+        "floor/cap preview differs",
+    ),
+    (
+        "late-freshness",
+        "settlement_issuer.py",
+        "    fresh(target, now)\n    return dict(",
+        "    return dict(",
+        "test_issuer_read_rechecks_time_after_rpc",
+    ),
+    (
+        "truncated-rpc",
+        "prepare-token-redemption.py",
+        "        http.client.HTTPException,\n",
+        "",
+        "test_truncated_rpc_cli_refuses_without_a_body",
+        "IncompleteRead",
+    ),
+)
 
 
 def main():
@@ -123,6 +164,7 @@ def main():
             root = Path(directory)
             for sibling in (
                 "settlement_issuer.py",
+                "prepare-token-redemption.py",
                 "collect-settlement-evm.py",
                 "check-settlement.py",
             ):
@@ -141,7 +183,11 @@ def main():
                     "--junitxml=" + str(report),
                 ],
                 cwd=ROOT,
-                env={**os.environ, "T19_ISSUER_SOURCE": str(root / "settlement_issuer.py")},
+                env={
+                    **os.environ,
+                    "T19_ISSUER_SOURCE": str(root / "settlement_issuer.py"),
+                    "T19_REDEMPTION_SOURCE": str(root / "prepare-token-redemption.py"),
+                },
                 text=True,
                 capture_output=True,
                 timeout=180,
