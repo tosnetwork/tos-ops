@@ -86,7 +86,13 @@
     "source-gap-audit/chunk-751.json": "58d26576b7eb1e9933365b95b09247a2dfb9bd8f986f2961e57d70a8c885bae1",
     "source-gap-audit/chunk-815.json": "7aaa47ff362af0b9eda9134f963b70234bc5031b6d0bc16914f64dc6160a370b",
     "source-gap-audit/chunk-862.json": "3887b963ced5ada27bc66703c16a373bad4196dfc8fdc2edee453cfe85eb146e",
-    "config11.boc": "9020ad9a4fba2dc32cebf5dfcd9b1dc004b3b8ebba11f9b7b956efc901b7bed0"
+    "config11.boc": "9020ad9a4fba2dc32cebf5dfcd9b1dc004b3b8ebba11f9b7b956efc901b7bed0",
+    "provider-monitor-consumption.json": "53dd4ad483266d69e9f2f2ce506f7fcca0f832681757e7b9cedcee0d1589f358",
+    "provider-monitor-source-report.json": "6b1aa0f7f32df7286dd835f995c0aeb61ee68aabb6c2a9bdbe2e33e382ae31d1"
   },
-  "scope": "Local only; bridge/master monitoring, no actor payout/refusal coverage claimed yet."
+  "scope": "Local only; bridge/master monitoring, no actor payout/refusal coverage claimed yet.",
+  "sanitization": {
+    "mode": "none; archived files are byte-identical to their original sources",
+    "removed_json_pointers": []
+  }
 }

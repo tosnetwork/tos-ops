@@ -1,0 +1,16 @@
+{
+  "endpoints": [
+    "http://127.0.0.1:8014/jsonRPC",
+    "http://127.0.0.1:8015/jsonRPC",
+    "http://127.0.0.1:8016/jsonRPC"
+  ],
+  "helper_binary_sha256": "f56008a4464d005254daf991d9f9c53900f7ed02af1a1b570886c0941965aac7",
+  "helper_source_sha256": "6b73fcb51eaf28e693f072c52ab9ed4bd8262fd028975680284b3dc1466ca1bf",
+  "report": "provider-monitor-source-report.json",
+  "report_sha256": "6b1aa0f7f32df7286dd835f995c0aeb61ee68aabb6c2a9bdbe2e33e382ae31d1",
+  "report_unchanged_during_call": true,
+  "schema": "tos-local-provider-monitor-consumption/1",
+  "signing_disabled": true,
+  "verifier": "provider-monitor-accepted.json",
+  "verifier_sha256": "ad7d84270fd64efa36fd0bca15bf75cace3be32b34b8f0c1e3a3c3950aed711a"
+}
