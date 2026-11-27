@@ -1,0 +1,61 @@
+{
+  "checkpoint": {
+    "@type": "tos.blockIdExt",
+    "file_hash": "o0o8AJemv+dGDjGduxxLFPgxJPXNlzt7qgiSh6egTkg=",
+    "root_hash": "/1QxCPGUJAqJ1Xpc0qlSWpgRNaMl1V+309bSZHPZp+w=",
+    "seqno": 358802,
+    "shard": "-9223372036854775808",
+    "workchain": -1
+  },
+  "files": [
+    {
+      "account": "0:30dafeefd22a8fa0b41df503dbd9084eeb6d043c146083606061f09ad0b659a6",
+      "block": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "aUMh9XpLEoY+bmwTEXi80foR8ta6Lgu9U3xzzup3duI=",
+        "root_hash": "nEyNykW4/6bo4LWM2mH4z3vJmtgOnpoVRu958lA1hQ8=",
+        "seqno": 392064,
+        "shard": "-9223372036854775808",
+        "workchain": 0
+      },
+      "file": "transactions/393375000001-1fc7345ac631151ed5166e63b6202854edf3f9afed939841fc4e3d98c7b42fa2.boc",
+      "lt": 393375000001,
+      "sha256": "71d0969b7f3bbf0ee1a00786ae318db1c6fd7574cd3c9ab689319cdd2a624528",
+      "transaction_hash": "1fc7345ac631151ed5166e63b6202854edf3f9afed939841fc4e3d98c7b42fa2"
+    },
+    {
+      "account": "0:dab3c57e833459f6b2481148009a8c0817540da8cfc1e64248be612f1fe06df3",
+      "block": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "aUMh9XpLEoY+bmwTEXi80foR8ta6Lgu9U3xzzup3duI=",
+        "root_hash": "nEyNykW4/6bo4LWM2mH4z3vJmtgOnpoVRu958lA1hQ8=",
+        "seqno": 392064,
+        "shard": "-9223372036854775808",
+        "workchain": 0
+      },
+      "file": "transactions/393375000003-53269a83d8e38985be20ff9f1dbffb1ccdfbd311c5e5ec0298b9c42ac77e502e.boc",
+      "lt": 393375000003,
+      "sha256": "1f4777f334136935fcd1cc8b54db9316caaf5252563d7e2dc1e81a82371e26c5",
+      "transaction_hash": "53269a83d8e38985be20ff9f1dbffb1ccdfbd311c5e5ec0298b9c42ac77e502e"
+    },
+    {
+      "file": "verifiers/archival-verification-3b29f6f8dcf4e59c22e714415eb5fab6c2e926bbeea50ef0018172b75914b03d.json",
+      "sha256": "3b29f6f8dcf4e59c22e714415eb5fab6c2e926bbeea50ef0018172b75914b03d"
+    },
+    {
+      "file": "block-headers.json",
+      "sha256": "4d48a84ab7e8d48a8ac29ae79342af097537d14ed3e34bd24d277b6cf8dc3e47"
+    },
+    {
+      "file": "checkpoint-selection.json",
+      "sha256": "0971864e347b30df67a0be10ee7f1c91ebbc242db241cc643ef84dc7190ef07b"
+    }
+  ],
+  "roots": [
+    {
+      "account": "0:30dafeefd22a8fa0b41df503dbd9084eeb6d043c146083606061f09ad0b659a6",
+      "hash": "1fc7345ac631151ed5166e63b6202854edf3f9afed939841fc4e3d98c7b42fa2",
+      "lt": 393375000001
+    }
+  ]
+}

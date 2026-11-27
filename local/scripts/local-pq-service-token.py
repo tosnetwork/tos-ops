@@ -190,17 +190,52 @@ def recover_archive(args, state, chain):
     journal = archive.StepJournal(state.root / "archive")
     pending = journal.read()["pending"]
     require(pending is not None, "there is no pending evidence step")
+    directory = journal.directory / pending["label"]
 
     def no_action():
-        raise archive.Refused(
-            "action was interrupted; resume its original journaled command, not a new step"
+        # These three handlers send only through this state's write-before-send
+        # wallet journal. An unchanged map with no prior unfinished intent
+        # proves they never signed or rebroadcast; external runners do not
+        # have this property.
+        before = json.loads((directory / "before.json").read_text())
+        current = {
+            k: archive.digest(json.dumps(v, sort_keys=True).encode())
+            for k, v in state.intents().items()
+        }
+        archive.require(
+            pending["label"].startswith(("topup-", "send-", "call-"))
+            and before == current
+            and all(
+                record.get("state") == "done" for record in state.intents().values()
+            ),
+            "action was interrupted; resume its original journaled command, not a new step",
         )
+        archive.document(
+            directory / "not-sent.json",
+            {
+                "identity": pending["identity"],
+                "signed_intents_changed": False,
+                "reason": "no wallet signing intent was created or changed",
+            },
+        )
+
+    def capture(target):
+        marker = target / "not-sent.json"
+        if marker.exists():
+            return {
+                "outcome": "not_sent",
+                "roots": [],
+                "files": [
+                    {"file": marker.name, "sha256": archive.digest(marker.read_bytes())}
+                ],
+            }
+        return capture_step(target, state, chain, args.data)
 
     return journal.run(
         pending["label"],
         pending["identity"],
         no_action,
-        lambda directory: capture_step(directory, state, chain, args.data),
+        capture,
     )
 
 
@@ -587,6 +622,38 @@ def call_case(args, state, chain, bridge):
     snapshot(state, chain, "after-call-" + label)
 
 
+def refund_deadline(chain, actor, request_id, view):
+    """Expired requests live in refunds, at the request view's same checkpoint."""
+    point = view["read_at"]
+    urls = chain.validator_urls[:3]
+    require(len(set(urls)) == 3, "three refund references are required")
+    values = [
+        chain.call(
+            "runGetMethod",
+            url=url,
+            seqno=point["seqno"],
+            address=actor,
+            method="get_refund",
+            stack=[["num", str(int(request_id))]],
+        )
+        for url in urls
+    ]
+    require(
+        all(value == values[0] for value in values)
+        and all(
+            value["exit_code"] == 0
+            and value["block_id"]["seqno"] == point["seqno"]
+            and base64.b64decode(value["block_id"]["root_hash"], validate=True).hex()
+            == point["root_hash"]
+            for value in values
+        ),
+        "refund references disagree or escaped the checkpoint",
+    )
+    ordered = list(reversed(values[0]["stack"]))
+    require(len(ordered) == 6 and usdc.num(ordered[0]) == 1, "refund is absent")
+    return dict(view, found=True, refund_claim_deadline=usdc.num(ordered[5]))
+
+
 def send_operation(args, state, chain, bridge):
     label = args.case
     require(label, "operation requires a unique case name")
@@ -621,6 +688,10 @@ def send_operation(args, state, chain, bridge):
                 "sweep-expired-request": "refund_claim_deadline",
                 "sweep-returned": "return_deadline",
             }[op]
+            if op == "sweep-expired-request" and not view.get("found"):
+                view = refund_deadline(
+                    chain, state["deployment"]["address"], request_id, view
+                )
             require(
                 view.get("found") and view["read_at"]["gen_utime"] >= view[field],
                 f"{op} deadline has not arrived",

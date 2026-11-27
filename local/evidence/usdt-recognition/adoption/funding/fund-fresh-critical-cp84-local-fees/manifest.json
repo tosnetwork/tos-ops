@@ -1,0 +1,60 @@
+{
+  "checkpoint": {
+    "@type": "tos.blockIdExt",
+    "file_hash": "tAH6xjHjObWAzg9qW+UgEQCpCsvDJFX05Y+PDmVlNMo=",
+    "root_hash": "mBZWYb88bM45CApGkyrRtyyUA+YtBwKPLn4Uiv0OmGQ=",
+    "seqno": 347267,
+    "shard": "-9223372036854775808",
+    "workchain": -1
+  },
+  "complete": true,
+  "files": [
+    {
+      "account": "-1:0000000000000000000000000000000000000000000000000000000000000000",
+      "block": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "rHyvyiyiAc+e4GRQqQ86MplaIkSnbfw6hbdocT5YbeI=",
+        "root_hash": "hyk38o7C9eYmUnxhWE4cNGSBvKlN4ZDOvIoJoXTqV7w=",
+        "seqno": 347263,
+        "shard": "-9223372036854775808",
+        "workchain": -1
+      },
+      "file": "transactions/381860000001-9bec62083180703d28b182657b25cc055af855263a598c13fda636950d625cb3.boc",
+      "lt": 381860000001,
+      "sha256": "8f07db0dc13fe6e1e5cb0e29f2b20d878928e2c1efb8fbd688b587e1268f5e84",
+      "transaction_hash": "9bec62083180703d28b182657b25cc055af855263a598c13fda636950d625cb3"
+    },
+    {
+      "account": "-1:fdd7624cc5988ef69f527b226df5a886a30add77691c52ac32256cb71a0878df",
+      "block": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "rHyvyiyiAc+e4GRQqQ86MplaIkSnbfw6hbdocT5YbeI=",
+        "root_hash": "hyk38o7C9eYmUnxhWE4cNGSBvKlN4ZDOvIoJoXTqV7w=",
+        "seqno": 347263,
+        "shard": "-9223372036854775808",
+        "workchain": -1
+      },
+      "file": "transactions/381860000003-de1aa0faa99fd9ee5ea13b81237d96cb47d4daf487843bd5d837ae09c28fefcf.boc",
+      "lt": 381860000003,
+      "sha256": "68037a19f9acfc92c4d63b463d25c509c28fe0bd46efabff69d73946f6ab262e",
+      "transaction_hash": "de1aa0faa99fd9ee5ea13b81237d96cb47d4daf487843bd5d837ae09c28fefcf"
+    },
+    {
+      "file": "verifiers/archival-verification-72d06f9281debff0a38348db62425d25a6d480b9212d7b4c56c1546bb4dee235.json",
+      "sha256": "72d06f9281debff0a38348db62425d25a6d480b9212d7b4c56c1546bb4dee235"
+    },
+    {
+      "file": "block-headers.json",
+      "sha256": "d94c58db8ca18d7a8a2483e48c7b4483ac5573c1244f74b61145ebabd532dda6"
+    }
+  ],
+  "identity": "1d220a2ffc9a0ef79bea1321e6c6b15a39780d4659ed87ab5d77bf4bbace93f6",
+  "label": "fund-fresh-critical-cp84-local-fees",
+  "roots": [
+    {
+      "account": "-1:0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "9bec62083180703d28b182657b25cc055af855263a598c13fda636950d625cb3",
+      "lt": 381860000001
+    }
+  ]
+}

@@ -38,7 +38,12 @@ def source_net(tmp_path_factory):
     assert solc and Path(solc).is_dir(), "TOS_EVM_SOLC_MODULE is required"
     sources = {
         "LocalUSDT.sol": {
-            "content": (ROOT / "local/contracts/test-usdt/LocalUSDT.sol").read_text()
+            "content": Path(
+                os.environ.get("TOS_USDT_FIXTURE", ROOT / "local/contracts/test-usdt/LocalUSDT.sol")
+            ).read_text()
+        },
+        "Silent.sol": {
+            "content": 'import "LocalUSDT.sol"; contract Silent is LocalUSDT { constructor(uint256 n) LocalUSDT(n) {} function silentBlacklist(address a) external onlyOwner { isBlackListed[a] = true; } }'
         },
         "StandardIssuerFixture.sol": {
             "content": (
@@ -81,6 +86,7 @@ def source_net(tmp_path_factory):
         name: compiled["contracts"][file][name]["evm"]["bytecode"]["object"]
         for name, file in (
             ("LocalUSDT", "LocalUSDT.sol"),
+            ("Silent", "Silent.sol"),
             ("BridgeFixture", "BridgeFixture.sol"),
             ("StandardObserverFixture", "StandardObserverFixture.sol"),
             ("StandardIssuerFixture", "StandardIssuerFixture.sol"),
@@ -156,7 +162,7 @@ def source_net(tmp_path_factory):
 
             def deploy(kind):
                 code = codes[kind]
-                if kind == "LocalUSDT":
+                if kind in ("LocalUSDT", "Silent"):
                     code += (10**12).to_bytes(32, "big").hex()
                 return send("0x" + code)["contractAddress"].lower()
 
@@ -218,9 +224,9 @@ def world(source_net):
         send=send,
         deploy=deploy,
         binding=binding,
+        policy=policy,
         base=base,
         initial=initial,
-        policy=policy,
         observe=observe,
     )
 
@@ -417,6 +423,47 @@ def test_local_fixture_exception_cannot_hide_a_freezable_token(world):
     bad["assets"][0]["profile"] = "local_test"
     with pytest.raises(observer.Invalid, match="local fixture profile refused"):
         observer.collect(observer.RPC(w["url"]), bad, base, None)
+
+
+def test_blacklist_without_an_event_is_still_detected(world):
+    w = world
+    token = w["deploy"]("Silent")
+    w["send"](token, "transfer(address,uint256)", w["bridge"], 500_000_000)
+    binding, base, policy = (
+        copy.deepcopy(w["binding"]),
+        copy.deepcopy(w["base"]),
+        copy.deepcopy(w["policy"]),
+    )
+    binding["assets"][1].update(
+        token=token, code_sha256=observer.code_hash(observer.RPC(w["url"]), token, "latest")
+    )
+    base["assets"][1]["source_token"] = token
+    policy["assets"][1]["source_token"] = token
+    initial = observer.collect(observer.RPC(w["url"]), binding, base, None)
+    policy["assets"][1]["implementation"] = initial["assets"][1]["implementation"]
+    initial["checkpoint"]["utime"] = initial["source_checkpoint"]["utime"]
+    receipt = w["send"](token, "silentBlacklist(address)", w["bridge"])
+    assert receipt["logs"] == []
+    value = observer.collect(observer.RPC(w["url"]), binding, base, initial)
+    value["checkpoint"].update(height=101, hash="d" * 64, utime=value["source_checkpoint"]["utime"])
+    report = observer.monitor.evaluate(
+        policy, value, initial, now=value["source_checkpoint"]["utime"]
+    )
+    assert value["assets"][1]["bridge_blacklisted"] is True, "silent blacklist not detected"
+    assert report["provider_pause_assets"] == ["usdt"]
+
+
+def test_blacklist_events_and_destroy_deprecation_boundary(world):
+    w = world
+    token = w["tokens"][1]
+    added = w["send"](token, "addBlackList(address)", w["bridge"])
+    removed = w["send"](token, "removeBlackList(address)", w["bridge"])
+    assert len(added["logs"]) == len(removed["logs"]) == 1, "blacklist event missing"
+    assert added["logs"][0]["topics"] != removed["logs"][0]["topics"]
+    w["send"](token, "addBlackList(address)", w["bridge"])
+    w["send"](token, "deprecate(address)", w["tokens"][0])
+    with pytest.raises(AssertionError, match="destroy after deprecation"):
+        w["send"](token, "destroyBlackFunds(address)", w["bridge"])
 
 
 @pytest.fixture

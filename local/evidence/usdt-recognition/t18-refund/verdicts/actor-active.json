@@ -1,0 +1,326 @@
+{
+  "active": true,
+  "block": {
+    "@type": "tos.blockIdExt",
+    "file_hash": "/V6KWrnPg9pHAA7UZpi49LqajVmyeGom98AqKf1BFlc=",
+    "root_hash": "DKH6oMzHyNd2GxICZETXAQYmkG9JqrI8syUDTMlmI00=",
+    "seqno": 386440,
+    "shard": "-9223372036854775808",
+    "workchain": -1
+  },
+  "policy_version": 3,
+  "responses": [
+    {
+      "@type": "smc.runResult",
+      "block_id": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "/V6KWrnPg9pHAA7UZpi49LqajVmyeGom98AqKf1BFlc=",
+        "root_hash": "DKH6oMzHyNd2GxICZETXAQYmkG9JqrI8syUDTMlmI00=",
+        "seqno": 386440,
+        "shard": "-9223372036854775808",
+        "workchain": -1
+      },
+      "exit_code": 0,
+      "gas_used": 0,
+      "last_transaction_id": null,
+      "stack": [
+        [
+          "slice",
+          {
+            "bytes": "te6ccgEBAQEAJAAAQ4AGG1/d+kVR9BaDvqB7eyEJ3W2gh4KMEGwMDD4TWhbLNNA="
+          }
+        ],
+        [
+          "num",
+          "1"
+        ],
+        [
+          "num",
+          "3"
+        ],
+        [
+          "num",
+          "1000000"
+        ],
+        [
+          "num",
+          "200000000"
+        ],
+        [
+          "num",
+          "100000000"
+        ],
+        [
+          "num",
+          "600"
+        ],
+        [
+          "num",
+          "600"
+        ],
+        [
+          "num",
+          "1"
+        ],
+        [
+          "num",
+          "0"
+        ],
+        [
+          "slice",
+          {
+            "bytes": "te6ccgEBAQEAJAAAQ4AGG1/d+kVR9BaDvqB7eyEJ3W2gh4KMEGwMDD4TWhbLNNA="
+          }
+        ],
+        [
+          "num",
+          "100"
+        ],
+        [
+          "num",
+          "89103877454212828105669779312764014923509433965421688969218529643482196412205"
+        ],
+        [
+          "num",
+          "30224688344621035502679212167204707595108425657468807197462512342826373282585"
+        ],
+        [
+          "num",
+          "1"
+        ],
+        [
+          "num",
+          "97981943965138568979968677903713754490665600201906528712734555370848050129625"
+        ],
+        [
+          "num",
+          "10000000"
+        ],
+        [
+          "num",
+          "4"
+        ],
+        [
+          "num",
+          "0"
+        ],
+        [
+          "num",
+          "0"
+        ],
+        [
+          "num",
+          "7"
+        ]
+      ]
+    },
+    {
+      "@type": "smc.runResult",
+      "block_id": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "/V6KWrnPg9pHAA7UZpi49LqajVmyeGom98AqKf1BFlc=",
+        "root_hash": "DKH6oMzHyNd2GxICZETXAQYmkG9JqrI8syUDTMlmI00=",
+        "seqno": 386440,
+        "shard": "-9223372036854775808",
+        "workchain": -1
+      },
+      "exit_code": 0,
+      "gas_used": 0,
+      "last_transaction_id": null,
+      "stack": [
+        [
+          "slice",
+          {
+            "bytes": "te6ccgEBAQEAJAAAQ4AGG1/d+kVR9BaDvqB7eyEJ3W2gh4KMEGwMDD4TWhbLNNA="
+          }
+        ],
+        [
+          "num",
+          "1"
+        ],
+        [
+          "num",
+          "3"
+        ],
+        [
+          "num",
+          "1000000"
+        ],
+        [
+          "num",
+          "200000000"
+        ],
+        [
+          "num",
+          "100000000"
+        ],
+        [
+          "num",
+          "600"
+        ],
+        [
+          "num",
+          "600"
+        ],
+        [
+          "num",
+          "1"
+        ],
+        [
+          "num",
+          "0"
+        ],
+        [
+          "slice",
+          {
+            "bytes": "te6ccgEBAQEAJAAAQ4AGG1/d+kVR9BaDvqB7eyEJ3W2gh4KMEGwMDD4TWhbLNNA="
+          }
+        ],
+        [
+          "num",
+          "100"
+        ],
+        [
+          "num",
+          "89103877454212828105669779312764014923509433965421688969218529643482196412205"
+        ],
+        [
+          "num",
+          "30224688344621035502679212167204707595108425657468807197462512342826373282585"
+        ],
+        [
+          "num",
+          "1"
+        ],
+        [
+          "num",
+          "97981943965138568979968677903713754490665600201906528712734555370848050129625"
+        ],
+        [
+          "num",
+          "10000000"
+        ],
+        [
+          "num",
+          "4"
+        ],
+        [
+          "num",
+          "0"
+        ],
+        [
+          "num",
+          "0"
+        ],
+        [
+          "num",
+          "7"
+        ]
+      ]
+    },
+    {
+      "@type": "smc.runResult",
+      "block_id": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "/V6KWrnPg9pHAA7UZpi49LqajVmyeGom98AqKf1BFlc=",
+        "root_hash": "DKH6oMzHyNd2GxICZETXAQYmkG9JqrI8syUDTMlmI00=",
+        "seqno": 386440,
+        "shard": "-9223372036854775808",
+        "workchain": -1
+      },
+      "exit_code": 0,
+      "gas_used": 0,
+      "last_transaction_id": null,
+      "stack": [
+        [
+          "slice",
+          {
+            "bytes": "te6ccgEBAQEAJAAAQ4AGG1/d+kVR9BaDvqB7eyEJ3W2gh4KMEGwMDD4TWhbLNNA="
+          }
+        ],
+        [
+          "num",
+          "1"
+        ],
+        [
+          "num",
+          "3"
+        ],
+        [
+          "num",
+          "1000000"
+        ],
+        [
+          "num",
+          "200000000"
+        ],
+        [
+          "num",
+          "100000000"
+        ],
+        [
+          "num",
+          "600"
+        ],
+        [
+          "num",
+          "600"
+        ],
+        [
+          "num",
+          "1"
+        ],
+        [
+          "num",
+          "0"
+        ],
+        [
+          "slice",
+          {
+            "bytes": "te6ccgEBAQEAJAAAQ4AGG1/d+kVR9BaDvqB7eyEJ3W2gh4KMEGwMDD4TWhbLNNA="
+          }
+        ],
+        [
+          "num",
+          "100"
+        ],
+        [
+          "num",
+          "89103877454212828105669779312764014923509433965421688969218529643482196412205"
+        ],
+        [
+          "num",
+          "30224688344621035502679212167204707595108425657468807197462512342826373282585"
+        ],
+        [
+          "num",
+          "1"
+        ],
+        [
+          "num",
+          "97981943965138568979968677903713754490665600201906528712734555370848050129625"
+        ],
+        [
+          "num",
+          "10000000"
+        ],
+        [
+          "num",
+          "4"
+        ],
+        [
+          "num",
+          "0"
+        ],
+        [
+          "num",
+          "0"
+        ],
+        [
+          "num",
+          "7"
+        ]
+      ]
+    }
+  ]
+}

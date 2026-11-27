@@ -1,0 +1,208 @@
+{
+  "schema": "tos.service.purchase-verdict.token.v1",
+  "result": "pass",
+  "network": {
+    "network_id": "local-usdc-t10",
+    "genesis_root_hash": "sha256:65735247a371030abe811aeac0afe357301ce90e161450d26f88b4beb5b4c366",
+    "genesis_file_hash": "sha256:c3860fe196a2a1b5e4e74a9cf9448624a353ce68a8c4c5f6413347586d688769"
+  },
+  "checkpoint": {
+    "seqno": 358203,
+    "chain_time": 1795779585,
+    "block_root_hash": "sha256:7357ed8966bbcc254dd47d455ad236a6c528ab12488f535faed122443aced6e5",
+    "block_file_hash": "sha256:c743393a2d3d3b34b5ac646de49264e5fd77ddd83e5b7d34d17005b84dfdd2be"
+  },
+  "requests": [],
+  "funding_refusals": [
+    {
+      "call": {
+        "lt": 392565000007,
+        "hash": "9e1cf3466b54786ca911679cfdb7683e1bda9d5f9177896d3941ca620f123b4e",
+        "now": 1795779491,
+        "kind": "funding_refused",
+        "sender": "0:6a454865a858b152f1678fed49e899e2a8ed1fbafb23d136a539c3aceb52c28d",
+        "value_nanotos": "993756770",
+        "exit_code": 0,
+        "bounced": false,
+        "took_effect": true,
+        "inbound_message_hash": "9e769aab97a2ded5ee2f90fb048b187b932cc1be763b1ca34dfe1dfff23b9733",
+        "body_boc": "te6ccgEBAgEAegABYnNi0JwAAAAAAAAAADD0JAgAKdtGxcGWZfkiG1UP/6PvCBXRQqROv8bIo0mqKESQkvMBAIhTVEMB3yVWwDLgZSxjyDNAdZX/qSwzXd2zGlevPFYR9dBBqZ0AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+        "opcode": 1935855772,
+        "notification": {
+          "query_id": 0,
+          "amount_atomic": "1000000",
+          "from": "0:14eda362e0cb32fc910daa87ffd1f7840ae8a152275fe36451a4d51422484979",
+          "forward_payload_boc": "te6ccgEBAgEASgABAcABAIhTVEMB3yVWwDLgZSxjyDNAdZX/qSwzXd2zGlevPFYR9dBBqZ0AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+          "payload": {
+            "RequestHash": [
+              223,
+              37,
+              86,
+              192,
+              50,
+              224,
+              101,
+              44,
+              99,
+              200,
+              51,
+              64,
+              117,
+              149,
+              255,
+              169,
+              44,
+              51,
+              93,
+              221,
+              179,
+              26,
+              87,
+              175,
+              60,
+              86,
+              17,
+              245,
+              208,
+              65,
+              169,
+              157
+            ],
+            "ExpectedTermsHash": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        },
+        "logs": [
+          {
+            "Tag": 1396786737,
+            "Snapshot": null,
+            "Funding": {
+              "QueryID": 0,
+              "From": {
+                "Kind": 2,
+                "AnycastDepth": -1,
+                "AnycastPrefix": null,
+                "Workchain": 0,
+                "AddressBits": 256,
+                "Address": "FO2jYuDLMvyRDaqH/9H3hArooVInX+NkUaTVFCJISXk=",
+                "Bits": "gAKdtGxcGWZfkiG1UP/6PvCBXRQqROv8bIo0mqKESQkvIA==",
+                "BitLen": 267
+              },
+              "Amount": 1000000,
+              "Reason": 1926,
+              "PayoutID": 2
+            },
+            "Outcome": null,
+            "Balance": null
+          }
+        ],
+        "log_body_bocs": [
+          "te6ccgEBAQEAPQAAdVNBRjEAAAAAAAAAAIACnbRsXBlmX5IhtVD/+j7wgV0UKkTr/GyKNJqihEkJLyYehIAPDAAAAAAAAAAF"
+        ],
+        "outputs": [
+          {
+            "hash": "23fa0fd779cfe99ebdf7f48211a330c835fe38a798a29ae467d6b5aed550c911",
+            "destination": "0:6a454865a858b152f1678fed49e899e2a8ed1fbafb23d136a539c3aceb52c28d",
+            "value_nanotos": "963709627",
+            "bounce": true,
+            "bounced": false,
+            "has_state_init": false,
+            "body_boc": "te6ccgEBAQEAWQAArVJUUjEAAAAAAAAAAjD0JAgAKdtGxcGWZfkiG1UP/6PvCBXRQqROv8bIo0mqKESQkvMABTto2LgyzL8kQ2qh//R94QK6KFSJ1/jZFGk1RQiSEl5NrK8wEA=="
+          }
+        ]
+      },
+      "reason": 1926,
+      "payout_id": 2,
+      "active_payout_id": 2,
+      "caller": "0:14eda362e0cb32fc910daa87ffd1f7840ae8a152275fe36451a4d51422484979",
+      "amount_atomic": "1000000",
+      "state": "funding_returned"
+    }
+  ],
+  "checks": [
+    {
+      "id": "finalized-state",
+      "ok": true,
+      "detail": "complete actor history and typed pending, refund, payout and returned cells agree"
+    }
+  ],
+  "not_claimed": [
+    "operator independence of the endpoints: agreeing endpoints run by one operator are one source",
+    "computation correctness: a Receipt is the provider's attested statement of the digests it binds",
+    "the identity or independence of the buyer, the provider or the verifier",
+    "anything after the checkpoint, or about a request the verification did not select",
+    "without an evidence bundle, only the caller wallet of each request is proven: not its Quote, its Capability binding or whose purchase it is; bind the reported caller to the buyer's declared wallet",
+    "without a token bundle, no asset-recognition or funding-chain claim is made"
+  ],
+  "reads": {
+    "endpoints": [
+      {
+        "url": "http://127.0.0.1:8014",
+        "genesis_ok": true
+      },
+      {
+        "url": "http://127.0.0.1:8015",
+        "genesis_ok": true
+      },
+      {
+        "url": "http://127.0.0.1:8016",
+        "genesis_ok": true
+      }
+    ],
+    "quorum": 3
+  },
+  "tool": {
+    "name": "tos-service-verify",
+    "module": "github.com/tosnetwork/ai",
+    "go_version": "go1.26.11"
+  },
+  "inputs": [
+    {
+      "name": "network-domain",
+      "sha256": "sha256:e2054d9ab121384462030f96b7526416445d9ee177a9ef0af78c73a462167662",
+      "bytes": 233
+    },
+    {
+      "name": "asset-pins",
+      "sha256": "sha256:590e096183d536248beea5995fef12d8a490ad0e3861bdc98bede3619b53cc64",
+      "bytes": 808
+    },
+    {
+      "name": "registry-code-boc",
+      "sha256": "sha256:ac3948e3685f4015ca2ce3c52e58150e7ef4ab0f75634f974124922b40fd07d9",
+      "bytes": 5597
+    }
+  ]
+}

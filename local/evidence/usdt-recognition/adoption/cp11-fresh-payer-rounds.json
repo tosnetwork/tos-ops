@@ -1,0 +1,22 @@
+{
+  "authority": "live CP11; coordinator correction 2026-11-27",
+  "cell_hash": "0c6ad16bc411ce9c6b838f518092e1b1de5bed8a06251685b50ac7a9925763aa",
+  "checkpoint": {
+    "@type": "tos.blockIdExt",
+    "file_hash": "TOtx5AYZvdgCWNNOnoFVjuQSWJY/DhtmKdFwO/3nsW8=",
+    "root_hash": "mRvJPunCdr90n1ixR8qngMJ6OmVM3DDc1XG9ut0+rZY=",
+    "seqno": 347261,
+    "shard": "-9223372036854775808",
+    "workchain": -1
+  },
+  "critical_rules": {
+    "bit_price": 2,
+    "cell_price": 1000,
+    "max_losses": 2,
+    "max_store_sec": 20000000,
+    "max_tot_rounds": 7,
+    "min_store_sec": 5000000,
+    "min_tot_rounds": 4,
+    "min_wins": 4
+  }
+}

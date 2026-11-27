@@ -1,0 +1,386 @@
+{
+  "checkpoint": {
+    "@type": "tos.blockIdExt",
+    "file_hash": "IGqzpwsW+ZKGcLQLimADSgD9DKh11gPatqH4n4ulkrg=",
+    "root_hash": "bU5M3RaHBOcE9PibxKXcREnSsOXgx2iMoWiij7HwOOs=",
+    "seqno": 350196,
+    "shard": "-9223372036854775808",
+    "workchain": -1
+  },
+  "endpoints": [
+    "http://127.0.0.1:8014",
+    "http://127.0.0.1:8015",
+    "http://127.0.0.1:8016"
+  ],
+  "losses": 0,
+  "proposal": "8fc5d5874afac08f88c791fd6d3abf9f4ac4586700456015e943bfb98c9fece5",
+  "responses": [
+    {
+      "@type": "smc.runResult",
+      "block_id": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "IGqzpwsW+ZKGcLQLimADSgD9DKh11gPatqH4n4ulkrg=",
+        "root_hash": "bU5M3RaHBOcE9PibxKXcREnSsOXgx2iMoWiij7HwOOs=",
+        "seqno": 350196,
+        "shard": "-9223372036854775808",
+        "workchain": -1
+      },
+      "exit_code": 0,
+      "gas_used": 0,
+      "last_transaction_id": null,
+      "stack": [
+        [
+          "tuple",
+          {
+            "elements": [
+              [
+                "num",
+                "1800775236"
+              ],
+              [
+                "num",
+                "-1"
+              ],
+              [
+                "tuple",
+                {
+                  "elements": [
+                    [
+                      "num",
+                      "84"
+                    ],
+                    [
+                      "cell",
+                      {
+                        "bytes": "te6ccgECCQEAAgMAAQMBwAECASACAwICcQQFAdO/+bNlmSZ9wLD/0GKvAH1EosXuDFgfufjFp7fOUpFHfYMAgIMzyTNE7J8gWcaDX2XbmrEjvhlvpCf7f/27iqWY6M0qijqd746+d+tFf4vtsG7D/pspYJNbAi4KCFHNR6RcrcllqBKgXyAECAHPvuBK74Up/8Oae1Zsfd8IGR6BrYGzi1z/GPlV+bgKKtZACAg1EUJmstDc2VYY7o9heL3oY3ZqK4kI4Gs9JLvtAO0C/SZ65MUI557wTY57gX0PXRxsOGQRVdwzGQXdFtLO1gCe+cxLQEAGAc++wPAH7/UvdmWEzZdvCwG68QNvPqM1ReNaY8qrvAusrIgICDM8kzROyfIFnGg19l25qxI74Zb6Qn+3/9u4qlmOjNKoo6ne+OvnfrRX+L7bBuw/6bKWCTWwIuCghRzUekXK3JZZzEtAQAcAcgGQfgoJEdfEOpmcVzhZUxV6aYYhuW/d+bcsqxgLuCMRrwAAADhMT0NBTF9PTkxZX1RFU1RfUkVGVQByAXM7MhoKJVbv9WN9QNfgVySmn4+lHI7X39Iph7pv5qWxAAAAAWEBeNohH+99QXvA5v7TnwVgmteIAHIBczsyGgolVu/1Y31A1+BXJKafj6Ucjtff0imHum/mpbEAAAABX72yMVZ4r+yzZ/Ay2T9kL2QYCqM="
+                      }
+                    ],
+                    [
+                      "num",
+                      "47639111021787766086562036597143092500544787790864875288187068559480529367971"
+                    ]
+                  ]
+                }
+              ],
+              [
+                "num",
+                "108497794760964768622446139083755868640730309799604541498255128577195080060043"
+              ],
+              [
+                "tuple",
+                {
+                  "elements": [
+                    [
+                      "num",
+                      "0"
+                    ],
+                    [
+                      "tuple",
+                      {
+                        "elements": [
+                          [
+                            "num",
+                            "1"
+                          ],
+                          [
+                            "tuple",
+                            {
+                              "elements": [
+                                [
+                                  "num",
+                                  "2"
+                                ],
+                                [
+                                  "tuple",
+                                  {
+                                    "elements": [
+                                      [
+                                        "num",
+                                        "3"
+                                      ],
+                                      [
+                                        "list",
+                                        {
+                                          "elements": []
+                                        }
+                                      ]
+                                    ]
+                                  }
+                                ]
+                              ]
+                            }
+                          ]
+                        ]
+                      }
+                    ]
+                  ]
+                }
+              ],
+              [
+                "num",
+                "-288230376151711744"
+              ],
+              [
+                "num",
+                "5"
+              ],
+              [
+                "num",
+                "0"
+              ],
+              [
+                "num",
+                "3"
+              ]
+            ]
+          }
+        ]
+      ]
+    },
+    {
+      "@type": "smc.runResult",
+      "block_id": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "IGqzpwsW+ZKGcLQLimADSgD9DKh11gPatqH4n4ulkrg=",
+        "root_hash": "bU5M3RaHBOcE9PibxKXcREnSsOXgx2iMoWiij7HwOOs=",
+        "seqno": 350196,
+        "shard": "-9223372036854775808",
+        "workchain": -1
+      },
+      "exit_code": 0,
+      "gas_used": 0,
+      "last_transaction_id": null,
+      "stack": [
+        [
+          "tuple",
+          {
+            "elements": [
+              [
+                "num",
+                "1800775236"
+              ],
+              [
+                "num",
+                "-1"
+              ],
+              [
+                "tuple",
+                {
+                  "elements": [
+                    [
+                      "num",
+                      "84"
+                    ],
+                    [
+                      "cell",
+                      {
+                        "bytes": "te6ccgECCQEAAgMAAQMBwAECASACAwICcQQFAdO/+bNlmSZ9wLD/0GKvAH1EosXuDFgfufjFp7fOUpFHfYMAgIMzyTNE7J8gWcaDX2XbmrEjvhlvpCf7f/27iqWY6M0qijqd746+d+tFf4vtsG7D/pspYJNbAi4KCFHNR6RcrcllqBKgXyAECAHPvuBK74Up/8Oae1Zsfd8IGR6BrYGzi1z/GPlV+bgKKtZACAg1EUJmstDc2VYY7o9heL3oY3ZqK4kI4Gs9JLvtAO0C/SZ65MUI557wTY57gX0PXRxsOGQRVdwzGQXdFtLO1gCe+cxLQEAGAc++wPAH7/UvdmWEzZdvCwG68QNvPqM1ReNaY8qrvAusrIgICDM8kzROyfIFnGg19l25qxI74Zb6Qn+3/9u4qlmOjNKoo6ne+OvnfrRX+L7bBuw/6bKWCTWwIuCghRzUekXK3JZZzEtAQAcAcgGQfgoJEdfEOpmcVzhZUxV6aYYhuW/d+bcsqxgLuCMRrwAAADhMT0NBTF9PTkxZX1RFU1RfUkVGVQByAXM7MhoKJVbv9WN9QNfgVySmn4+lHI7X39Iph7pv5qWxAAAAAWEBeNohH+99QXvA5v7TnwVgmteIAHIBczsyGgolVu/1Y31A1+BXJKafj6Ucjtff0imHum/mpbEAAAABX72yMVZ4r+yzZ/Ay2T9kL2QYCqM="
+                      }
+                    ],
+                    [
+                      "num",
+                      "47639111021787766086562036597143092500544787790864875288187068559480529367971"
+                    ]
+                  ]
+                }
+              ],
+              [
+                "num",
+                "108497794760964768622446139083755868640730309799604541498255128577195080060043"
+              ],
+              [
+                "tuple",
+                {
+                  "elements": [
+                    [
+                      "num",
+                      "0"
+                    ],
+                    [
+                      "tuple",
+                      {
+                        "elements": [
+                          [
+                            "num",
+                            "1"
+                          ],
+                          [
+                            "tuple",
+                            {
+                              "elements": [
+                                [
+                                  "num",
+                                  "2"
+                                ],
+                                [
+                                  "tuple",
+                                  {
+                                    "elements": [
+                                      [
+                                        "num",
+                                        "3"
+                                      ],
+                                      [
+                                        "list",
+                                        {
+                                          "elements": []
+                                        }
+                                      ]
+                                    ]
+                                  }
+                                ]
+                              ]
+                            }
+                          ]
+                        ]
+                      }
+                    ]
+                  ]
+                }
+              ],
+              [
+                "num",
+                "-288230376151711744"
+              ],
+              [
+                "num",
+                "5"
+              ],
+              [
+                "num",
+                "0"
+              ],
+              [
+                "num",
+                "3"
+              ]
+            ]
+          }
+        ]
+      ]
+    },
+    {
+      "@type": "smc.runResult",
+      "block_id": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "IGqzpwsW+ZKGcLQLimADSgD9DKh11gPatqH4n4ulkrg=",
+        "root_hash": "bU5M3RaHBOcE9PibxKXcREnSsOXgx2iMoWiij7HwOOs=",
+        "seqno": 350196,
+        "shard": "-9223372036854775808",
+        "workchain": -1
+      },
+      "exit_code": 0,
+      "gas_used": 0,
+      "last_transaction_id": null,
+      "stack": [
+        [
+          "tuple",
+          {
+            "elements": [
+              [
+                "num",
+                "1800775236"
+              ],
+              [
+                "num",
+                "-1"
+              ],
+              [
+                "tuple",
+                {
+                  "elements": [
+                    [
+                      "num",
+                      "84"
+                    ],
+                    [
+                      "cell",
+                      {
+                        "bytes": "te6ccgECCQEAAgMAAQMBwAECASACAwICcQQFAdO/+bNlmSZ9wLD/0GKvAH1EosXuDFgfufjFp7fOUpFHfYMAgIMzyTNE7J8gWcaDX2XbmrEjvhlvpCf7f/27iqWY6M0qijqd746+d+tFf4vtsG7D/pspYJNbAi4KCFHNR6RcrcllqBKgXyAECAHPvuBK74Up/8Oae1Zsfd8IGR6BrYGzi1z/GPlV+bgKKtZACAg1EUJmstDc2VYY7o9heL3oY3ZqK4kI4Gs9JLvtAO0C/SZ65MUI557wTY57gX0PXRxsOGQRVdwzGQXdFtLO1gCe+cxLQEAGAc++wPAH7/UvdmWEzZdvCwG68QNvPqM1ReNaY8qrvAusrIgICDM8kzROyfIFnGg19l25qxI74Zb6Qn+3/9u4qlmOjNKoo6ne+OvnfrRX+L7bBuw/6bKWCTWwIuCghRzUekXK3JZZzEtAQAcAcgGQfgoJEdfEOpmcVzhZUxV6aYYhuW/d+bcsqxgLuCMRrwAAADhMT0NBTF9PTkxZX1RFU1RfUkVGVQByAXM7MhoKJVbv9WN9QNfgVySmn4+lHI7X39Iph7pv5qWxAAAAAWEBeNohH+99QXvA5v7TnwVgmteIAHIBczsyGgolVu/1Y31A1+BXJKafj6Ucjtff0imHum/mpbEAAAABX72yMVZ4r+yzZ/Ay2T9kL2QYCqM="
+                      }
+                    ],
+                    [
+                      "num",
+                      "47639111021787766086562036597143092500544787790864875288187068559480529367971"
+                    ]
+                  ]
+                }
+              ],
+              [
+                "num",
+                "108497794760964768622446139083755868640730309799604541498255128577195080060043"
+              ],
+              [
+                "tuple",
+                {
+                  "elements": [
+                    [
+                      "num",
+                      "0"
+                    ],
+                    [
+                      "tuple",
+                      {
+                        "elements": [
+                          [
+                            "num",
+                            "1"
+                          ],
+                          [
+                            "tuple",
+                            {
+                              "elements": [
+                                [
+                                  "num",
+                                  "2"
+                                ],
+                                [
+                                  "tuple",
+                                  {
+                                    "elements": [
+                                      [
+                                        "num",
+                                        "3"
+                                      ],
+                                      [
+                                        "list",
+                                        {
+                                          "elements": []
+                                        }
+                                      ]
+                                    ]
+                                  }
+                                ]
+                              ]
+                            }
+                          ]
+                        ]
+                      }
+                    ]
+                  ]
+                }
+              ],
+              [
+                "num",
+                "-288230376151711744"
+              ],
+              [
+                "num",
+                "5"
+              ],
+              [
+                "num",
+                "0"
+              ],
+              [
+                "num",
+                "3"
+              ]
+            ]
+          }
+        ]
+      ]
+    }
+  ],
+  "wins": 3
+}

@@ -1,0 +1,13 @@
+{
+  "complete": true,
+  "files": [
+    {
+      "file": "not-sent.json",
+      "sha256": "f74b5527d6f6d3bacc5690a7f689a1d3647dd1f6b2d9b4bce0e8cd27a85f8902"
+    }
+  ],
+  "identity": "d512b20091a5f3178be7a9915b3e773221b81db76f05aab2c6930b5d8f8bd331",
+  "label": "send-refunded-claim",
+  "outcome": "not_sent",
+  "roots": []
+}

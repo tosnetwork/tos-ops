@@ -29,6 +29,8 @@ contract LocalUSDT {
     event Transfer(address indexed from, address indexed to, uint256 amount);
     event Approval(address indexed owner, address indexed spender, uint256 amount);
     event DestroyedBlackFunds(address account, uint256 amount);
+    event AddedBlackList(address account);
+    event RemovedBlackList(address account);
     event Pause();
     event Unpause();
     event Deprecate(address upgradedAddress);
@@ -53,9 +55,17 @@ contract LocalUSDT {
     }
     function pause() external onlyOwner { require(!paused, "paused"); paused = true; emit Pause(); }
     function unpause() external onlyOwner { require(paused, "not paused"); paused = false; emit Unpause(); }
-    function addBlackList(address account) external onlyOwner { isBlackListed[account] = true; }
-    function removeBlackList(address account) external onlyOwner { isBlackListed[account] = false; }
+    function addBlackList(address account) external onlyOwner {
+        isBlackListed[account] = true;
+        emit AddedBlackList(account);
+    }
+    function removeBlackList(address account) external onlyOwner {
+        isBlackListed[account] = false;
+        emit RemovedBlackList(account);
+    }
     function destroyBlackFunds(address account) external onlyOwner {
+        // Separate rehearsals: legacy forwarding has no backing in local balances.
+        require(!deprecated, "destroy after deprecation is not a rehearsal");
         require(isBlackListed[account], "not blacklisted");
         uint256 amount = balanceOf(account);
         balances[account] = 0;

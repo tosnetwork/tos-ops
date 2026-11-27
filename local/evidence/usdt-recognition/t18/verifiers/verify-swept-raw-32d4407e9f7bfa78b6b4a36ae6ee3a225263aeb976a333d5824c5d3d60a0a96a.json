@@ -1,0 +1,85 @@
+{
+  "schema": "tos.service.purchase-verdict.token.v1",
+  "result": "pass",
+  "network": {
+    "network_id": "local-usdc-t10",
+    "genesis_root_hash": "sha256:65735247a371030abe811aeac0afe357301ce90e161450d26f88b4beb5b4c366",
+    "genesis_file_hash": "sha256:c3860fe196a2a1b5e4e74a9cf9448624a353ce68a8c4c5f6413347586d688769"
+  },
+  "checkpoint": {
+    "seqno": 357444,
+    "chain_time": 1795779282,
+    "block_root_hash": "sha256:338ea8daf2bb394679e62a5ce4f3c688516c1aea32df4105244974ae326549fc",
+    "block_file_hash": "sha256:b887e52464fa2275a8e6bdd063365f06f44960e5ae0f921b7d27aaed076834a3"
+  },
+  "requests": [
+    {
+      "request_id": 0,
+      "request_hash": "28129ff6e678c95d449c80762fbd1755f7d6a36c14482c3b31c6d1e37f8e12f0",
+      "caller": "0:14eda362e0cb32fc910daa87ffd1f7840ae8a152275fe36451a4d51422484979",
+      "state": "swept",
+      "price_atomic": "1000000",
+      "payout_id": 1,
+      "destination": "0:14eda362e0cb32fc910daa87ffd1f7840ae8a152275fe36451a4d51422484979",
+      "call": {
+        "lt": 388214000007,
+        "hash": "d09d36c7af73391a54358214d6d20c1715bce5cbe6104246dce1fd866600eb91"
+      }
+    }
+  ],
+  "funding_refusals": [],
+  "checks": [
+    {
+      "id": "finalized-state",
+      "ok": true,
+      "detail": "complete actor history and typed pending, refund, payout and returned cells agree"
+    }
+  ],
+  "not_claimed": [
+    "operator independence of the endpoints: agreeing endpoints run by one operator are one source",
+    "computation correctness: a Receipt is the provider's attested statement of the digests it binds",
+    "the identity or independence of the buyer, the provider or the verifier",
+    "anything after the checkpoint, or about a request the verification did not select",
+    "without an evidence bundle, only the caller wallet of each request is proven: not its Quote, its Capability binding or whose purchase it is; bind the reported caller to the buyer's declared wallet",
+    "without a token bundle, no asset-recognition or funding-chain claim is made"
+  ],
+  "reads": {
+    "endpoints": [
+      {
+        "url": "http://127.0.0.1:8014",
+        "genesis_ok": true
+      },
+      {
+        "url": "http://127.0.0.1:8015",
+        "genesis_ok": true
+      },
+      {
+        "url": "http://127.0.0.1:8016",
+        "genesis_ok": true
+      }
+    ],
+    "quorum": 3
+  },
+  "tool": {
+    "name": "tos-service-verify",
+    "module": "github.com/tosnetwork/ai",
+    "go_version": "go1.26.11"
+  },
+  "inputs": [
+    {
+      "name": "network-domain",
+      "sha256": "sha256:e2054d9ab121384462030f96b7526416445d9ee177a9ef0af78c73a462167662",
+      "bytes": 233
+    },
+    {
+      "name": "asset-pins",
+      "sha256": "sha256:590e096183d536248beea5995fef12d8a490ad0e3861bdc98bede3619b53cc64",
+      "bytes": 808
+    },
+    {
+      "name": "registry-code-boc",
+      "sha256": "sha256:ac3948e3685f4015ca2ce3c52e58150e7ef4ab0f75634f974124922b40fd07d9",
+      "bytes": 5597
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "actors": [
+    "usdt",
+    "usdc"
+  ],
+  "genesis": "65735247a371030abe811aeac0afe357301ce90e161450d26f88b4beb5b4c366",
+  "implementation": "production CheckTokenSafety",
+  "operation": "pause only alarmed own asset"
+}

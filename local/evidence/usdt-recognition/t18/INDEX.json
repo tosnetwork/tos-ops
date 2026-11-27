@@ -1,0 +1,854 @@
+{
+  "schema": "local-token-second-asset-evidence/1",
+  "status": "PARTIAL",
+  "network": "local global id 3",
+  "archive_note": "Original bytes; no sanitization. Response graph captured after the later recovery send, not before it. Each historical transaction graph retains its actual canonical finalized checkpoint and unchanged ancestry checks. Business resolver results each use one finalized checkpoint.",
+  "files": [
+    {
+      "file": "usdt/call-surplus/transactions/387549000001-32e597d1afaee5e110743fa75157b064a664aecf5657a3ac720fbfe1a9c914ed.boc",
+      "original_sha256": "7bf1e99a1f781c90c8b9ccbc65216e3aa53a924773b4c2a451c585138b467a00",
+      "sha256": "7bf1e99a1f781c90c8b9ccbc65216e3aa53a924773b4c2a451c585138b467a00",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-surplus/transactions/387549000003-da43b4cd745fd74c8706a01bd8fd287134b08af90cc978b11ea72c15701438ab.boc",
+      "original_sha256": "138bb9c51459c23e7e674cd48dff806db3e8bab2eb03c78407cc3dd842cc91f1",
+      "sha256": "138bb9c51459c23e7e674cd48dff806db3e8bab2eb03c78407cc3dd842cc91f1",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-surplus/transactions/387549000005-a761c24d302c667cdd4e5b875946433f0083c6d9859ab72cf0ed5db5bc74fbd9.boc",
+      "original_sha256": "31ff4781531721302ce410095213c2a71a1e781df27a3b0bc0ce9c2bd2ef17d2",
+      "sha256": "31ff4781531721302ce410095213c2a71a1e781df27a3b0bc0ce9c2bd2ef17d2",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-surplus/transactions/387549000007-a55945adbba08558be7e45526a46a6adde0e597a5981c1e74a84c4dab8862e47.boc",
+      "original_sha256": "ab880310dd919d3d5eb891c9fe9013321f47a09e6613bffa047f8a8a5c4b9fd7",
+      "sha256": "ab880310dd919d3d5eb891c9fe9013321f47a09e6613bffa047f8a8a5c4b9fd7",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-surplus/transactions/387549000008-e99c62f3e10c4a808d714f336d67bb7a11917680fd3b5d2fb548d095246d508d.boc",
+      "original_sha256": "f8931fd74cddc28fb890b0e7bf37b7b4d7c81328ff32feb73ed844a871d6119f",
+      "sha256": "f8931fd74cddc28fb890b0e7bf37b7b4d7c81328ff32feb73ed844a871d6119f",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-surplus/verifiers/archival-verification-390f029723d9c95c0e96adc40877edc657822c29158519b6cf7cf34afe1776b9.json",
+      "original_sha256": "390f029723d9c95c0e96adc40877edc657822c29158519b6cf7cf34afe1776b9",
+      "sha256": "390f029723d9c95c0e96adc40877edc657822c29158519b6cf7cf34afe1776b9",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-surplus/block-headers.json",
+      "original_sha256": "44c8839e076a9a011ffcb180d888d761898817fcb6cc7e6c7905710b33e99ba9",
+      "sha256": "44c8839e076a9a011ffcb180d888d761898817fcb6cc7e6c7905710b33e99ba9",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-surplus/manifest.json",
+      "original_sha256": "c8541a033d8fe3e12d16b0f0ed5a1779553ce87d568416aea36c66d86a4c040d",
+      "sha256": "c8541a033d8fe3e12d16b0f0ed5a1779553ce87d568416aea36c66d86a4c040d",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-swept/transactions/388214000001-30346d889faf876c04a57c5dfe5545c47e46b3dd6546514ee58d69493e023ea9.boc",
+      "original_sha256": "c4589421445e8ae06b8b9c419292ac3962c38ec3ef7954dbeffaad6ef24760c7",
+      "sha256": "c4589421445e8ae06b8b9c419292ac3962c38ec3ef7954dbeffaad6ef24760c7",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-swept/transactions/388214000003-c058d3a2c2702521dbc4409fb27666434abec6c4997cac3e445e1b74601a831f.boc",
+      "original_sha256": "0b784c32ab776d042c7488a9303ae2acdc76c1b09a5773ac36b0f9145a609c61",
+      "sha256": "0b784c32ab776d042c7488a9303ae2acdc76c1b09a5773ac36b0f9145a609c61",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-swept/transactions/388214000005-3f9004d09e056fc01f7b03b918559912991f50551c0d89e5d11ead3d7e7e838d.boc",
+      "original_sha256": "51cedc1587b1186a4a35e408f7521f9e0ad335264e52b3ea564b4439b72029c9",
+      "sha256": "51cedc1587b1186a4a35e408f7521f9e0ad335264e52b3ea564b4439b72029c9",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-swept/transactions/388214000007-d09d36c7af73391a54358214d6d20c1715bce5cbe6104246dce1fd866600eb91.boc",
+      "original_sha256": "89fce68bd39b0950727eabfec263801e33017b8361a89d1991b2a992e336618d",
+      "sha256": "89fce68bd39b0950727eabfec263801e33017b8361a89d1991b2a992e336618d",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-swept/transactions/388214000008-1f2008bd796b113b67ae6c60d46733e69aa3ab00f26a7adb2b0311ac09aaa4bc.boc",
+      "original_sha256": "42f68a1e3bc3b0e42d9fd419a3747cd402f5bafc501067ffed78cbb23d1f1e42",
+      "sha256": "42f68a1e3bc3b0e42d9fd419a3747cd402f5bafc501067ffed78cbb23d1f1e42",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-swept/transactions/388214000010-14eaf5a92b7ce3c831c56984085146fe73d384a4d5d3f01fbef64a2017c15231.boc",
+      "original_sha256": "59f7f484005caa6038674d58b504f4522c2d83d982782b7a286eab1bd0a976bc",
+      "sha256": "59f7f484005caa6038674d58b504f4522c2d83d982782b7a286eab1bd0a976bc",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-swept/verifiers/archival-verification-aa1abd81ee438b0babcdbed8868100cb1f65126e5034631f786e7879f4f734b5.json",
+      "original_sha256": "aa1abd81ee438b0babcdbed8868100cb1f65126e5034631f786e7879f4f734b5",
+      "sha256": "aa1abd81ee438b0babcdbed8868100cb1f65126e5034631f786e7879f4f734b5",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-swept/block-headers.json",
+      "original_sha256": "7b9211a7a009b6ded41d368939937d6b8552f789ddc9452441316d747b37af2e",
+      "sha256": "7b9211a7a009b6ded41d368939937d6b8552f789ddc9452441316d747b37af2e",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-swept/manifest.json",
+      "original_sha256": "76a6355ea83bad7a08dcc2d3c7e52f2392ec60595cf71a3bcc686ef9fedf9fb4",
+      "sha256": "76a6355ea83bad7a08dcc2d3c7e52f2392ec60595cf71a3bcc686ef9fedf9fb4",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/send-swept-expire/transactions/389799000001-850c03b2c8f7b5f2227c0868daa0e4ac285f2be783bfd826600b1756156dcbe4.boc",
+      "original_sha256": "7774ee887f48b2d6d5fd97ffa0c12e59554f2afca5c749d1cd29203cd0833952",
+      "sha256": "7774ee887f48b2d6d5fd97ffa0c12e59554f2afca5c749d1cd29203cd0833952",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/send-swept-expire/transactions/389799000003-3a0a583f6c0099c5043bc425f1c2d586f227972296be848a3da635aa335b1673.boc",
+      "original_sha256": "4184d727471c60ab5ff95cbdae3c0054b60d5e46d7b3e8805cb768f73c150745",
+      "sha256": "4184d727471c60ab5ff95cbdae3c0054b60d5e46d7b3e8805cb768f73c150745",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/send-swept-expire/verifiers/archival-verification-08207def2f52d76e88acb6ea036dfdb8a6c92eebf46b4500c227a150f917efc8.json",
+      "original_sha256": "08207def2f52d76e88acb6ea036dfdb8a6c92eebf46b4500c227a150f917efc8",
+      "sha256": "08207def2f52d76e88acb6ea036dfdb8a6c92eebf46b4500c227a150f917efc8",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/send-swept-expire/block-headers.json",
+      "original_sha256": "5d134053c4eb6edfe1bfb1f05cb9b0392b1bfb94440badf32c280f13a418f34c",
+      "sha256": "5d134053c4eb6edfe1bfb1f05cb9b0392b1bfb94440badf32c280f13a418f34c",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/send-swept-expire/manifest.json",
+      "original_sha256": "236bdb458ebfb76a789aaf0131f3bc47fc907f948abaa6f6e3163e4336ccbf66",
+      "sha256": "236bdb458ebfb76a789aaf0131f3bc47fc907f948abaa6f6e3163e4336ccbf66",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/send-swept-after-expire/transactions/392019000001-0ea9b44639497dbacf0a5272141fbd594ab94b7b5d001e2deb5d359f88b0b8d0.boc",
+      "original_sha256": "70d884dbff36495239effbac9b35d92f98ea6b7e1279594f170bae23f58b748e",
+      "sha256": "70d884dbff36495239effbac9b35d92f98ea6b7e1279594f170bae23f58b748e",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/send-swept-after-expire/transactions/392019000003-52bccf539190255cc246c9281f4a4ab33258398f7f91351fd3b7a4d68f17f50f.boc",
+      "original_sha256": "40ca66325bd4409701960964bf28b850ef43048ce2dde84db1666823556bec0c",
+      "sha256": "40ca66325bd4409701960964bf28b850ef43048ce2dde84db1666823556bec0c",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/send-swept-after-expire/transactions/392019000005-2a50b40c30edd0ff7e3a50e3a8e1833ab25c4b76724658063b649df62a24eacf.boc",
+      "original_sha256": "3fab28b201e0b922a867b79c55ec79e13c2d11cad2285e83865678a356e1b99e",
+      "sha256": "3fab28b201e0b922a867b79c55ec79e13c2d11cad2285e83865678a356e1b99e",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/send-swept-after-expire/transactions/392019000007-ec356f9122b37e3cb512a268ba8477d2855cac874c9048dac21634865fc4f33f.boc",
+      "original_sha256": "a6c1a8873996a5846e9b3701f963f3e0a9c7c7847915a92179638672e36a4629",
+      "sha256": "a6c1a8873996a5846e9b3701f963f3e0a9c7c7847915a92179638672e36a4629",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/send-swept-after-expire/transactions/392019000009-9994c5a2731cf52f6a071aa68cf8434e327748a913a491ad51e4d7acf0d3b2ca.boc",
+      "original_sha256": "d9abb94725c70eb45ae4bf0965bbcdb762cb44213daeb667326159bfad5636be",
+      "sha256": "d9abb94725c70eb45ae4bf0965bbcdb762cb44213daeb667326159bfad5636be",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/send-swept-after-expire/transactions/392019000010-bffd0e0cfc621840e4cfac855fd6b4efac6616138aa77d75a813d85b3fac078e.boc",
+      "original_sha256": "9dd038da1b97b5b97704e4da74e6775aa63638755ba7adef15889a6ef79dce5b",
+      "sha256": "9dd038da1b97b5b97704e4da74e6775aa63638755ba7adef15889a6ef79dce5b",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/send-swept-after-expire/transactions/392019000012-cd78dc02352f0bfe96eb5797b58a32ff87ace16006a2931eba07132897382d44.boc",
+      "original_sha256": "4528e5f19830680a6ff240115049da41b2b50b22c80493cf41d736ccd572b610",
+      "sha256": "4528e5f19830680a6ff240115049da41b2b50b22c80493cf41d736ccd572b610",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/send-swept-after-expire/verifiers/archival-verification-d199c9887543305e23705d0825438246625e46d45ecdcb6d5b6843df3281e58c.json",
+      "original_sha256": "d199c9887543305e23705d0825438246625e46d45ecdcb6d5b6843df3281e58c",
+      "sha256": "d199c9887543305e23705d0825438246625e46d45ecdcb6d5b6843df3281e58c",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/send-swept-after-expire/block-headers.json",
+      "original_sha256": "7d97359c09bea881f227b5800860f3ea4566b9bf9ce653b08a36d6437a152367",
+      "sha256": "7d97359c09bea881f227b5800860f3ea4566b9bf9ce653b08a36d6437a152367",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/send-swept-after-expire/manifest.json",
+      "original_sha256": "55c12547467baf5234f534433ca30e6c370b1d5c433f6d2be33089007f6f8d11",
+      "sha256": "55c12547467baf5234f534433ca30e6c370b1d5c433f6d2be33089007f6f8d11",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-funding-refused/transactions/392565000001-f88912ad860fbee9cfd85d3db773cb21fe4eae054990e1eb6eb632ee03bd67b1.boc",
+      "original_sha256": "37bbeda2a154a9a550549cf800206e25cf823fd968ec22f4093fc45b140e11cb",
+      "sha256": "37bbeda2a154a9a550549cf800206e25cf823fd968ec22f4093fc45b140e11cb",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-funding-refused/transactions/392565000003-8f1b6161b797ba8ed3308ba779ec2a4cfbf6c79b68a17e99e0af8e46604f230e.boc",
+      "original_sha256": "d93365cec3277bc5e55628c24c916757aa31fb58d93e55248dad0970d84f6d9a",
+      "sha256": "d93365cec3277bc5e55628c24c916757aa31fb58d93e55248dad0970d84f6d9a",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-funding-refused/transactions/392565000005-8fefcb0c3e1d80ffe40349436dcf9a15b17e2ac77a967ef14ca8f0832d1200e0.boc",
+      "original_sha256": "323512f2437512dbc60289354b49d7a1d16420602f511ccaa4ccb1ab90797369",
+      "sha256": "323512f2437512dbc60289354b49d7a1d16420602f511ccaa4ccb1ab90797369",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-funding-refused/transactions/392565000007-9e1cf3466b54786ca911679cfdb7683e1bda9d5f9177896d3941ca620f123b4e.boc",
+      "original_sha256": "dd8d06c21088b449c26965bd96024ef5b21c1c7080770570f079644e76798ea2",
+      "sha256": "dd8d06c21088b449c26965bd96024ef5b21c1c7080770570f079644e76798ea2",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-funding-refused/transactions/392565000008-e141885ee17440dad77d62c89a316aec96ba879bc603371cb0641c69b914a430.boc",
+      "original_sha256": "738a25f7295dcd98e87c653c6c1f8cd1d66a09220bdf57e0f4a5e8a42d82fee6",
+      "sha256": "738a25f7295dcd98e87c653c6c1f8cd1d66a09220bdf57e0f4a5e8a42d82fee6",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-funding-refused/transactions/392565000010-51bc5fc20d6f7f1c8b8a305fd13cd256083f69906dce347727090c3944daf3d7.boc",
+      "original_sha256": "2d4142592a7bc2adefd41acba0a8f5682e9a7caa3111d07d41683e342b5118bc",
+      "sha256": "2d4142592a7bc2adefd41acba0a8f5682e9a7caa3111d07d41683e342b5118bc",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-funding-refused/transactions/392565000012-72e6e1225e7249e1f2bc267e6cec3d9fa0115a7cde5e0ae126fccc24366a933d.boc",
+      "original_sha256": "ea3eaa025fcea1fa02e1e978ad72e4ac614a1c1585419b6c9b2e2e713b10fb77",
+      "sha256": "ea3eaa025fcea1fa02e1e978ad72e4ac614a1c1585419b6c9b2e2e713b10fb77",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-funding-refused/transactions/392565000014-5f4eb043aad343592c145affc751cc7a6b12f8d23683c772982016251302dcaa.boc",
+      "original_sha256": "0efd591d80fb50950b034eec624ae47374459e940df3a1be533a8fa0004db698",
+      "sha256": "0efd591d80fb50950b034eec624ae47374459e940df3a1be533a8fa0004db698",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-funding-refused/transactions/392565000015-ca29ac2860096bbcc23fa4d149f5fd810da4e09cd4d82b0ecbf180fdd85530fc.boc",
+      "original_sha256": "894c396859dfd6d5ce6e9efb1bd9164cdcd7587c6f31f545d3e6e5bd59b95ef6",
+      "sha256": "894c396859dfd6d5ce6e9efb1bd9164cdcd7587c6f31f545d3e6e5bd59b95ef6",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-funding-refused/transactions/392565000017-6b9683090e817e19bf0421ae6e572bdc669fef01237f845c251da0ba903afa0d.boc",
+      "original_sha256": "f37984287c3e49b2c07a9b23df24a26861370ecbec92ab663c50ea79fc040b6f",
+      "sha256": "f37984287c3e49b2c07a9b23df24a26861370ecbec92ab663c50ea79fc040b6f",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-funding-refused/verifiers/archival-verification-41c8cd8f79fe3fae18c43b8225c7c1853db96e901b41a86cf044289af36ae42f.json",
+      "original_sha256": "41c8cd8f79fe3fae18c43b8225c7c1853db96e901b41a86cf044289af36ae42f",
+      "sha256": "41c8cd8f79fe3fae18c43b8225c7c1853db96e901b41a86cf044289af36ae42f",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-funding-refused/block-headers.json",
+      "original_sha256": "631072d4212ec6c62c808cdb8aa48f2dc34f04783cdb1a6b1392fead922f1a9c",
+      "sha256": "631072d4212ec6c62c808cdb8aa48f2dc34f04783cdb1a6b1392fead922f1a9c",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-funding-refused/manifest.json",
+      "original_sha256": "b5dd8c2690edd1f8f924948f0752bf1dfb4e07721fb652b626f4fc5a3e040020",
+      "sha256": "b5dd8c2690edd1f8f924948f0752bf1dfb4e07721fb652b626f4fc5a3e040020",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-refunded/transactions/392803000001-3eb59bc937757a28339620ef7577263b596c8888e8f58ddf4589dd044aac0e57.boc",
+      "original_sha256": "3e14e11af449842985703f72dcd3b653a2a87cff3d13b3801166dd72c1a18553",
+      "sha256": "3e14e11af449842985703f72dcd3b653a2a87cff3d13b3801166dd72c1a18553",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-refunded/transactions/392803000003-a3aae667ff3e3a4301847b57af622edd4a8eec6c3bc3f3352b223a31b5f556b8.boc",
+      "original_sha256": "70a719d41919e4587090bc31342c9ced02b19cbe3b3daa47dc70ecfbe8c81cd0",
+      "sha256": "70a719d41919e4587090bc31342c9ced02b19cbe3b3daa47dc70ecfbe8c81cd0",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-refunded/transactions/392803000005-f991704b3ee6b883362dac1309cfa18492bfc6107b188bc7502d58bd4d632f8a.boc",
+      "original_sha256": "9f31b68d4a0fea6ed7bd3fb5e1ac13ae6267d1addefa9b55781d8aff6101779f",
+      "sha256": "9f31b68d4a0fea6ed7bd3fb5e1ac13ae6267d1addefa9b55781d8aff6101779f",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-refunded/transactions/392803000007-4ba5eb305e1a972ae3855cf77314b05438fe9e9573065658006c9a4672618c30.boc",
+      "original_sha256": "b84904f2b51dd237ae478ea52439928e6261131beedc3286be2c45c98287d280",
+      "sha256": "b84904f2b51dd237ae478ea52439928e6261131beedc3286be2c45c98287d280",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-refunded/transactions/392803000008-f3c85d4fc48ae23e0cfb252ed27b2c42156b781e03d610a6356deedc0665e8cf.boc",
+      "original_sha256": "31bf4fabef36344cc456f8da309cc481642c0dbd917c0ef90e092bbd302e9bd6",
+      "sha256": "31bf4fabef36344cc456f8da309cc481642c0dbd917c0ef90e092bbd302e9bd6",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-refunded/transactions/392803000010-97a81290f843afe2ba57e5d02d72d129d95bea2aee99f23d8a7f13708708d1e8.boc",
+      "original_sha256": "139ae253369d17dc54eaf356cfac9d5ec24086d58207332ff19985693a3eb74f",
+      "sha256": "139ae253369d17dc54eaf356cfac9d5ec24086d58207332ff19985693a3eb74f",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-refunded/verifiers/archival-verification-d7acb9b5165662fa7152285e4a65160ee946b8d0055a88c980ece5e658dff657.json",
+      "original_sha256": "d7acb9b5165662fa7152285e4a65160ee946b8d0055a88c980ece5e658dff657",
+      "sha256": "d7acb9b5165662fa7152285e4a65160ee946b8d0055a88c980ece5e658dff657",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-refunded/block-headers.json",
+      "original_sha256": "de59fb6f518f2c0a384e9fe60d86506fa97b2ea3c9614cf92b4303f0e2a94f52",
+      "sha256": "de59fb6f518f2c0a384e9fe60d86506fa97b2ea3c9614cf92b4303f0e2a94f52",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/call-refunded/manifest.json",
+      "original_sha256": "7b0052a4cb12e6f001283773f31e9b47b0e79c988083040a28e9d4d88b47204b",
+      "sha256": "7b0052a4cb12e6f001283773f31e9b47b0e79c988083040a28e9d4d88b47204b",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/send-refunded-expire/transactions/395636000001-1985c658ea93a8d83d3cae0659a0dd90ef0777107628667a317d6eb4fe555fb6.boc",
+      "original_sha256": "8b16e435b78fbcb4679931b4e7d44f551b929f85690e8858f1ec5e4cae2dd9d9",
+      "sha256": "8b16e435b78fbcb4679931b4e7d44f551b929f85690e8858f1ec5e4cae2dd9d9",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/send-refunded-expire/transactions/395636000003-31678c538452696cfb0eebfb54050684727ddb43c2908fd303f44967934348c5.boc",
+      "original_sha256": "c8e8e906be1b976c1ce05b643a65dc326f8096a8d3d2bb5a58e117f9f1314487",
+      "sha256": "c8e8e906be1b976c1ce05b643a65dc326f8096a8d3d2bb5a58e117f9f1314487",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/send-refunded-expire/verifiers/archival-verification-c4bfe0dff83aacafe68fdcf5067f117003a867a54e1b05f8dd7d90ce16828768.json",
+      "original_sha256": "c4bfe0dff83aacafe68fdcf5067f117003a867a54e1b05f8dd7d90ce16828768",
+      "sha256": "c4bfe0dff83aacafe68fdcf5067f117003a867a54e1b05f8dd7d90ce16828768",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/send-refunded-expire/block-headers.json",
+      "original_sha256": "bcfbbc1b7a8e70467f92edb938d0dbfcb12a1c79f9b9ac0069769165a469c22d",
+      "sha256": "bcfbbc1b7a8e70467f92edb938d0dbfcb12a1c79f9b9ac0069769165a469c22d",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/send-refunded-expire/manifest.json",
+      "original_sha256": "a12cac8b04ac29547f5365fe38e334a34b239639c6aab7d5530eb7affb8f5000",
+      "sha256": "a12cac8b04ac29547f5365fe38e334a34b239639c6aab7d5530eb7affb8f5000",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/send-refunded-claim/not-sent.json",
+      "original_sha256": "f74b5527d6f6d3bacc5690a7f689a1d3647dd1f6b2d9b4bce0e8cd27a85f8902",
+      "sha256": "f74b5527d6f6d3bacc5690a7f689a1d3647dd1f6b2d9b4bce0e8cd27a85f8902",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/send-refunded-claim/manifest.json",
+      "original_sha256": "75a5b1e2ed85c70ed0bface77177d928360656aa97a96b9fd5cd662e1a9a775a",
+      "sha256": "75a5b1e2ed85c70ed0bface77177d928360656aa97a96b9fd5cd662e1a9a775a",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-0/transactions/393375000001-1fc7345ac631151ed5166e63b6202854edf3f9afed939841fc4e3d98c7b42fa2.boc",
+      "original_sha256": "71d0969b7f3bbf0ee1a00786ae318db1c6fd7574cd3c9ab689319cdd2a624528",
+      "sha256": "71d0969b7f3bbf0ee1a00786ae318db1c6fd7574cd3c9ab689319cdd2a624528",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-0/transactions/393375000003-53269a83d8e38985be20ff9f1dbffb1ccdfbd311c5e5ec0298b9c42ac77e502e.boc",
+      "original_sha256": "1f4777f334136935fcd1cc8b54db9316caaf5252563d7e2dc1e81a82371e26c5",
+      "sha256": "1f4777f334136935fcd1cc8b54db9316caaf5252563d7e2dc1e81a82371e26c5",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-0/verifiers/archival-verification-3b29f6f8dcf4e59c22e714415eb5fab6c2e926bbeea50ef0018172b75914b03d.json",
+      "original_sha256": "3b29f6f8dcf4e59c22e714415eb5fab6c2e926bbeea50ef0018172b75914b03d",
+      "sha256": "3b29f6f8dcf4e59c22e714415eb5fab6c2e926bbeea50ef0018172b75914b03d",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-0/block-headers.json",
+      "original_sha256": "4d48a84ab7e8d48a8ac29ae79342af097537d14ed3e34bd24d277b6cf8dc3e47",
+      "sha256": "4d48a84ab7e8d48a8ac29ae79342af097537d14ed3e34bd24d277b6cf8dc3e47",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-0/checkpoint-selection.json",
+      "original_sha256": "0971864e347b30df67a0be10ee7f1c91ebbc242db241cc643ef84dc7190ef07b",
+      "sha256": "0971864e347b30df67a0be10ee7f1c91ebbc242db241cc643ef84dc7190ef07b",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-0/capture.json",
+      "original_sha256": "87eec401fbe15cbfbf07f776cabb3bcd384e9a7d356ee2f41f11d941fe1e4508",
+      "sha256": "87eec401fbe15cbfbf07f776cabb3bcd384e9a7d356ee2f41f11d941fe1e4508",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-1/transactions/394340000017-75b68cc474fc5be69f39b2f2899f53354e5da1d9d39d7aaa1ee91acc9eff0c4f.boc",
+      "original_sha256": "01cfd86bf72a5fe6de53c575e5e0b6729ca639825de07823c208cf38fcfc16af",
+      "sha256": "01cfd86bf72a5fe6de53c575e5e0b6729ca639825de07823c208cf38fcfc16af",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-1/verifiers/archival-verification-7ee538feaa7f112cb3a8628c6028b2eee5d7951cad5eb74490bd1c3780d838c0.json",
+      "original_sha256": "7ee538feaa7f112cb3a8628c6028b2eee5d7951cad5eb74490bd1c3780d838c0",
+      "sha256": "7ee538feaa7f112cb3a8628c6028b2eee5d7951cad5eb74490bd1c3780d838c0",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-1/block-headers.json",
+      "original_sha256": "f079f79c4d98ccda9f7941a3b587269a92fa82bee53fb9de85f80f28e0732247",
+      "sha256": "f079f79c4d98ccda9f7941a3b587269a92fa82bee53fb9de85f80f28e0732247",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-1/checkpoint-selection.json",
+      "original_sha256": "cce8f3fb2a265d2c13a695eaa409693f8f66757c9202e23c539b66ece7814f69",
+      "sha256": "cce8f3fb2a265d2c13a695eaa409693f8f66757c9202e23c539b66ece7814f69",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-1/capture.json",
+      "original_sha256": "6cf0e2d57c783329044c0e3d89d9fb3e4f243dd40a547018ee610375d99ca5cf",
+      "sha256": "6cf0e2d57c783329044c0e3d89d9fb3e4f243dd40a547018ee610375d99ca5cf",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-2/transactions/394340000015-794af1e87f1d0d71eb802677e0de627babb1133d0c2582c8bd03a4970e02b3ce.boc",
+      "original_sha256": "8127fed69d410fbf606ff0bf609d821325f78baf83261ed8148d18d58fc966d1",
+      "sha256": "8127fed69d410fbf606ff0bf609d821325f78baf83261ed8148d18d58fc966d1",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-2/verifiers/archival-verification-04b21293ac2d665a32be2b18ae70193e7fd1fde05589837f460ed6fea4083587.json",
+      "original_sha256": "04b21293ac2d665a32be2b18ae70193e7fd1fde05589837f460ed6fea4083587",
+      "sha256": "04b21293ac2d665a32be2b18ae70193e7fd1fde05589837f460ed6fea4083587",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-2/block-headers.json",
+      "original_sha256": "f079f79c4d98ccda9f7941a3b587269a92fa82bee53fb9de85f80f28e0732247",
+      "sha256": "f079f79c4d98ccda9f7941a3b587269a92fa82bee53fb9de85f80f28e0732247",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-2/checkpoint-selection.json",
+      "original_sha256": "b84a196744514aa32da1a43da6eef25f0e049e3a6e8e9bab0dcc953c5d464b99",
+      "sha256": "b84a196744514aa32da1a43da6eef25f0e049e3a6e8e9bab0dcc953c5d464b99",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-2/capture.json",
+      "original_sha256": "c6430906203006974e0bfda42957a7c3254dd13715a259cad430e6cbe4b8d3a9",
+      "sha256": "c6430906203006974e0bfda42957a7c3254dd13715a259cad430e6cbe4b8d3a9",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-3/transactions/394340000001-0b306ec799fd55ebf555fbb9a27a44279059770cada6d189c94d552f37a1a31e.boc",
+      "original_sha256": "b14bb530b436d63128e2228910a2c42778b461e7f3b621f8fc41b52524c30fe9",
+      "sha256": "b14bb530b436d63128e2228910a2c42778b461e7f3b621f8fc41b52524c30fe9",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-3/transactions/394340000003-08450552b05e618ad074b518256c82e54d5b40b9b096901415220aadf2c9941e.boc",
+      "original_sha256": "70db90224c86687eaf040159fae62e39ffaf95c9dc69e2592c3466a6e4d62d05",
+      "sha256": "70db90224c86687eaf040159fae62e39ffaf95c9dc69e2592c3466a6e4d62d05",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-3/transactions/394340000005-1039b85f64948716df240e17841cae8f6954f1a150f1976cde1efc14118af81c.boc",
+      "original_sha256": "ee7ea3ec77821c14e4dfa44335871be56803094184114508f6c8ccf058007b91",
+      "sha256": "ee7ea3ec77821c14e4dfa44335871be56803094184114508f6c8ccf058007b91",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-3/transactions/394340000007-3fb7e019bdc33553256ea022e9b1a3724214e8c407d148b7781740211e1e7587.boc",
+      "original_sha256": "017713f543a2aa076a75f39b1f9c8566e373b6bab4caec87ec524ed2983c7311",
+      "sha256": "017713f543a2aa076a75f39b1f9c8566e373b6bab4caec87ec524ed2983c7311",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-3/transactions/394340000010-4e933abadd83ab8ccb92b0cc9e435bc10ee9c03d5b558b22f6e2a68a646b9bf7.boc",
+      "original_sha256": "4eb97af67e91590d73f31dba1b53282f7ae71ee59d3624b3f418aef666a56428",
+      "sha256": "4eb97af67e91590d73f31dba1b53282f7ae71ee59d3624b3f418aef666a56428",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-3/transactions/394340000012-0b0aa6e9eb8f087a6e8e35320c94e9c439664f1f60d7686ab546e081f5938d60.boc",
+      "original_sha256": "073a55ddf221e2ee21e37978f376b81089247f9b692087d8d5ecc34559daa8a2",
+      "sha256": "073a55ddf221e2ee21e37978f376b81089247f9b692087d8d5ecc34559daa8a2",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-3/transactions/394340000014-87d9051a0847a22337a5a0d612f6595f09f57f940f707dcee7ea64b1afa2d229.boc",
+      "original_sha256": "5894d8a258673c72e8400b18020b31d907a1deb356aac7548e6067b03c692157",
+      "sha256": "5894d8a258673c72e8400b18020b31d907a1deb356aac7548e6067b03c692157",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-3/transactions/394340000015-794af1e87f1d0d71eb802677e0de627babb1133d0c2582c8bd03a4970e02b3ce.boc",
+      "original_sha256": "8127fed69d410fbf606ff0bf609d821325f78baf83261ed8148d18d58fc966d1",
+      "sha256": "8127fed69d410fbf606ff0bf609d821325f78baf83261ed8148d18d58fc966d1",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-3/transactions/394340000017-75b68cc474fc5be69f39b2f2899f53354e5da1d9d39d7aaa1ee91acc9eff0c4f.boc",
+      "original_sha256": "01cfd86bf72a5fe6de53c575e5e0b6729ca639825de07823c208cf38fcfc16af",
+      "sha256": "01cfd86bf72a5fe6de53c575e5e0b6729ca639825de07823c208cf38fcfc16af",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-3/verifiers/archival-verification-e94ff1ab9b54567f911675aba1ed88168cd25008979c549ee306e0f12d195588.json",
+      "original_sha256": "e94ff1ab9b54567f911675aba1ed88168cd25008979c549ee306e0f12d195588",
+      "sha256": "e94ff1ab9b54567f911675aba1ed88168cd25008979c549ee306e0f12d195588",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-3/block-headers.json",
+      "original_sha256": "f079f79c4d98ccda9f7941a3b587269a92fa82bee53fb9de85f80f28e0732247",
+      "sha256": "f079f79c4d98ccda9f7941a3b587269a92fa82bee53fb9de85f80f28e0732247",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-3/checkpoint-selection.json",
+      "original_sha256": "140e0afc47cb01241a2ba5c69b1fa01d635fad250b18a719a72686ba6a6b2f92",
+      "sha256": "140e0afc47cb01241a2ba5c69b1fa01d635fad250b18a719a72686ba6a6b2f92",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/root-3/capture.json",
+      "original_sha256": "7420d414644c272b68ba64132f49c9cd98716783706dcef88f8bfd4974a41897",
+      "sha256": "7420d414644c272b68ba64132f49c9cd98716783706dcef88f8bfd4974a41897",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/runtime/response-and-surplus/manifest.json",
+      "original_sha256": "58cffa5d091cd00b45c86b743020ab93fc4f7aef61134348d3613a8a5e480461",
+      "sha256": "58cffa5d091cd00b45c86b743020ab93fc4f7aef61134348d3613a8a5e480461",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/publish-default/transactions/387945000001-0177b79c17679cc162ce345e9966126be425fb0c95b219b510d740611a478165.boc",
+      "original_sha256": "81e64448b28d024f1e5feb7fcf678852aaaa8a69499c8ccd150503fa2311d3f9",
+      "sha256": "81e64448b28d024f1e5feb7fcf678852aaaa8a69499c8ccd150503fa2311d3f9",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/publish-default/transactions/387951000001-9bb0cd2cbd3fa14be9edfc1ab88ec10b19b85bd05964defdf0ab2f9c1c0ff420.boc",
+      "original_sha256": "c0dc510f56f83cd2b80304e3c198721408e51b8dc271f09d6f4d4e0bc00f6583",
+      "sha256": "c0dc510f56f83cd2b80304e3c198721408e51b8dc271f09d6f4d4e0bc00f6583",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/publish-default/transactions/387956000001-7387b257f8c8af78af602c4318eafb46f995d00ac065e6987ad11f09cdc306e3.boc",
+      "original_sha256": "2bae399a0d9e7b07c0e8326c33479138283e2580cee2ea215b24d95e225601ff",
+      "sha256": "2bae399a0d9e7b07c0e8326c33479138283e2580cee2ea215b24d95e225601ff",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/publish-default/transactions/387945000003-6058c21ef96ebd7962e976f283b509a60f1dcb09ac009a84508b2d2f76156c4a.boc",
+      "original_sha256": "80aac683d8fbbd3d3537a103f6beee6a0d390ec44259c86a484fec7d55e302f7",
+      "sha256": "80aac683d8fbbd3d3537a103f6beee6a0d390ec44259c86a484fec7d55e302f7",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/publish-default/transactions/387951000003-c9234717c1d5fe119e7ad678db48b10d30445178e9e6b52154b425f2d2cfb2b1.boc",
+      "original_sha256": "11801bfa9a136c9ea8948f4e05e37c61cdb76e01539bd82a2595ce21cd2a725b",
+      "sha256": "11801bfa9a136c9ea8948f4e05e37c61cdb76e01539bd82a2595ce21cd2a725b",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/publish-default/transactions/387956000003-93b5027190179bf8d747af91206549618a70c6111aee0f8822af59bf9648d111.boc",
+      "original_sha256": "b2bae6b22d1141d5de462c8a66d5d0f1f714f1f32bee39c68c65da9c2dc403a1",
+      "sha256": "b2bae6b22d1141d5de462c8a66d5d0f1f714f1f32bee39c68c65da9c2dc403a1",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/publish-default/transactions/387945000005-6ac37645e0df246970a2a789b342fd6e956834516562eab02bdf9a99d40b715c.boc",
+      "original_sha256": "41d9509d12805c231502c9f9f2b39096cae1a2c1d37156b73ad7ad19029ebcdb",
+      "sha256": "41d9509d12805c231502c9f9f2b39096cae1a2c1d37156b73ad7ad19029ebcdb",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/publish-default/verifiers/archival-verification-634a80ca1aa54a4a60c876da008c07f24fc0703150cf152bebac1b1fe68718f5.json",
+      "original_sha256": "634a80ca1aa54a4a60c876da008c07f24fc0703150cf152bebac1b1fe68718f5",
+      "sha256": "634a80ca1aa54a4a60c876da008c07f24fc0703150cf152bebac1b1fe68718f5",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/publish-default/block-headers.json",
+      "original_sha256": "e7c8ea3ff157b448f3eebabdfad3f6340aa0434ebc3908a43c89e1b0eb09e1b6",
+      "sha256": "e7c8ea3ff157b448f3eebabdfad3f6340aa0434ebc3908a43c89e1b0eb09e1b6",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/publish-default/manifest.json",
+      "original_sha256": "a379cfb1fb6d2545ebf6963886cf3e6659cd6d25d794a1f765e85586d8872f1f",
+      "sha256": "a379cfb1fb6d2545ebf6963886cf3e6659cd6d25d794a1f765e85586d8872f1f",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/provider-init/register-agent/transactions/387787000001-e6bd09aa48c8262c5f155e252d90a60c95ade703f941c33dbd94329b28d34c41.boc",
+      "original_sha256": "084dc1274c8240af22af4555e6993da7845e27168817bb298576c4be0391ca39",
+      "sha256": "084dc1274c8240af22af4555e6993da7845e27168817bb298576c4be0391ca39",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/provider-init/register-agent/transactions/387787000003-4be8c455b8ab5a9840f334b90bd2fb238a46bf5bc25cbff2acffc255b86762be.boc",
+      "original_sha256": "6c4e759768a2191a8def8f8296597356ca53c3f7906b29aac1632401af9631c2",
+      "sha256": "6c4e759768a2191a8def8f8296597356ca53c3f7906b29aac1632401af9631c2",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/provider-init/register-agent/verifiers/archival-verification-fa56e36661244f750012fb46c4eaba44f2e56ece79fee5abccd436dd383bed92.json",
+      "original_sha256": "fa56e36661244f750012fb46c4eaba44f2e56ece79fee5abccd436dd383bed92",
+      "sha256": "fa56e36661244f750012fb46c4eaba44f2e56ece79fee5abccd436dd383bed92",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/provider-init/register-agent/block-headers.json",
+      "original_sha256": "51a573599db928995c1d0eae38a41ddd1367ded16084b690645368a5502b8b86",
+      "sha256": "51a573599db928995c1d0eae38a41ddd1367ded16084b690645368a5502b8b86",
+      "removed_fields": []
+    },
+    {
+      "file": "usdt/provider-init/register-agent/manifest.json",
+      "original_sha256": "d87ae49185c250633b66bcf5a3fb9313ad1a6effe45d2e46834f8cc0be7da6d7",
+      "sha256": "d87ae49185c250633b66bcf5a3fb9313ad1a6effe45d2e46834f8cc0be7da6d7",
+      "removed_fields": []
+    },
+    {
+      "file": "verifiers/verify-buyer-pending-37a4f0e1199c6480f83e410f659869ba48af555d7ec708f52f9734091da42455.json",
+      "original_sha256": "37a4f0e1199c6480f83e410f659869ba48af555d7ec708f52f9734091da42455",
+      "sha256": "37a4f0e1199c6480f83e410f659869ba48af555d7ec708f52f9734091da42455",
+      "removed_fields": []
+    },
+    {
+      "file": "verifiers/verify-buyer-pending-raw-cbd212bec169fd13721bb9a5b3792a98d67911a52e7d52d660aeff01b5571f4a.json",
+      "original_sha256": "cbd212bec169fd13721bb9a5b3792a98d67911a52e7d52d660aeff01b5571f4a",
+      "sha256": "cbd212bec169fd13721bb9a5b3792a98d67911a52e7d52d660aeff01b5571f4a",
+      "removed_fields": []
+    },
+    {
+      "file": "verifiers/verify-funding-refused-7ca6c40a030de034c84ea569eafb6c7ccddcbdee71b8cb1fe35a1cd0400630e6.json",
+      "original_sha256": "7ca6c40a030de034c84ea569eafb6c7ccddcbdee71b8cb1fe35a1cd0400630e6",
+      "sha256": "7ca6c40a030de034c84ea569eafb6c7ccddcbdee71b8cb1fe35a1cd0400630e6",
+      "removed_fields": []
+    },
+    {
+      "file": "verifiers/verify-funding-refused-raw-d1f9a31b20b816ec9c9e9011cf6c32bebbee35c72ac3a3883c9352c47d91881d.json",
+      "original_sha256": "d1f9a31b20b816ec9c9e9011cf6c32bebbee35c72ac3a3883c9352c47d91881d",
+      "sha256": "d1f9a31b20b816ec9c9e9011cf6c32bebbee35c72ac3a3883c9352c47d91881d",
+      "removed_fields": []
+    },
+    {
+      "file": "verifiers/verify-responded-1c1b04e66f8dd4cea3e2a16ee4bd3818aca634071f6aed6bae0719c4560b360f.json",
+      "original_sha256": "1c1b04e66f8dd4cea3e2a16ee4bd3818aca634071f6aed6bae0719c4560b360f",
+      "sha256": "1c1b04e66f8dd4cea3e2a16ee4bd3818aca634071f6aed6bae0719c4560b360f",
+      "removed_fields": []
+    },
+    {
+      "file": "verifiers/verify-responded-c941cbb884ca54eea55957cf3962bd095e069d0823736f50f11a39621c952ab9.json",
+      "original_sha256": "c941cbb884ca54eea55957cf3962bd095e069d0823736f50f11a39621c952ab9",
+      "sha256": "c941cbb884ca54eea55957cf3962bd095e069d0823736f50f11a39621c952ab9",
+      "removed_fields": []
+    },
+    {
+      "file": "verifiers/verify-responded-raw-113165b45d677723cf10c1c5fa03654ae6bd5c223fc40f81f47aa9a01a90714d.json",
+      "original_sha256": "113165b45d677723cf10c1c5fa03654ae6bd5c223fc40f81f47aa9a01a90714d",
+      "sha256": "113165b45d677723cf10c1c5fa03654ae6bd5c223fc40f81f47aa9a01a90714d",
+      "removed_fields": []
+    },
+    {
+      "file": "verifiers/verify-responded-raw-6e8a1787446eb7158850b7124372ecdc5cbb9975f2d883cc10755452b8ac1bda.json",
+      "original_sha256": "6e8a1787446eb7158850b7124372ecdc5cbb9975f2d883cc10755452b8ac1bda",
+      "sha256": "6e8a1787446eb7158850b7124372ecdc5cbb9975f2d883cc10755452b8ac1bda",
+      "removed_fields": []
+    },
+    {
+      "file": "verifiers/verify-surplus-f506f6041c828bca73810e2a998e668ee9a010e28b5d831d75668f7fb861ff4c.json",
+      "original_sha256": "f506f6041c828bca73810e2a998e668ee9a010e28b5d831d75668f7fb861ff4c",
+      "sha256": "f506f6041c828bca73810e2a998e668ee9a010e28b5d831d75668f7fb861ff4c",
+      "removed_fields": []
+    },
+    {
+      "file": "verifiers/verify-surplus-raw-ff43eed5dc8f14620b289e3b8c1116cd57ba112fde97b7bb38c1f687ea5eb3ae.json",
+      "original_sha256": "ff43eed5dc8f14620b289e3b8c1116cd57ba112fde97b7bb38c1f687ea5eb3ae",
+      "sha256": "ff43eed5dc8f14620b289e3b8c1116cd57ba112fde97b7bb38c1f687ea5eb3ae",
+      "removed_fields": []
+    },
+    {
+      "file": "verifiers/verify-swept-02cf1de71af722d70df50c7cb07f499385313f8adba99365c14647670ddc1b47.json",
+      "original_sha256": "02cf1de71af722d70df50c7cb07f499385313f8adba99365c14647670ddc1b47",
+      "sha256": "02cf1de71af722d70df50c7cb07f499385313f8adba99365c14647670ddc1b47",
+      "removed_fields": []
+    },
+    {
+      "file": "verifiers/verify-swept-raw-32d4407e9f7bfa78b6b4a36ae6ee3a225263aeb976a333d5824c5d3d60a0a96a.json",
+      "original_sha256": "32d4407e9f7bfa78b6b4a36ae6ee3a225263aeb976a333d5824c5d3d60a0a96a",
+      "sha256": "32d4407e9f7bfa78b6b4a36ae6ee3a225263aeb976a333d5824c5d3d60a0a96a",
+      "removed_fields": []
+    },
+    {
+      "file": "verdicts/verify-responded.json",
+      "original_sha256": "1c1b04e66f8dd4cea3e2a16ee4bd3818aca634071f6aed6bae0719c4560b360f",
+      "sha256": "1c1b04e66f8dd4cea3e2a16ee4bd3818aca634071f6aed6bae0719c4560b360f",
+      "removed_fields": []
+    },
+    {
+      "file": "verdicts/verify-responded-provenance.json",
+      "original_sha256": "8f8828c49bdb05cc6a79fd05d63c5b3185a19dad6faea0349b015fc4094e1b73",
+      "sha256": "8f8828c49bdb05cc6a79fd05d63c5b3185a19dad6faea0349b015fc4094e1b73",
+      "removed_fields": []
+    },
+    {
+      "file": "verdicts/verify-swept.json",
+      "original_sha256": "02cf1de71af722d70df50c7cb07f499385313f8adba99365c14647670ddc1b47",
+      "sha256": "02cf1de71af722d70df50c7cb07f499385313f8adba99365c14647670ddc1b47",
+      "removed_fields": []
+    },
+    {
+      "file": "verdicts/verify-swept-provenance.json",
+      "original_sha256": "8f8828c49bdb05cc6a79fd05d63c5b3185a19dad6faea0349b015fc4094e1b73",
+      "sha256": "8f8828c49bdb05cc6a79fd05d63c5b3185a19dad6faea0349b015fc4094e1b73",
+      "removed_fields": []
+    },
+    {
+      "file": "verdicts/verify-funding-refused.json",
+      "original_sha256": "7ca6c40a030de034c84ea569eafb6c7ccddcbdee71b8cb1fe35a1cd0400630e6",
+      "sha256": "7ca6c40a030de034c84ea569eafb6c7ccddcbdee71b8cb1fe35a1cd0400630e6",
+      "removed_fields": []
+    },
+    {
+      "file": "verdicts/verify-funding-refused-provenance.json",
+      "original_sha256": "8f8828c49bdb05cc6a79fd05d63c5b3185a19dad6faea0349b015fc4094e1b73",
+      "sha256": "8f8828c49bdb05cc6a79fd05d63c5b3185a19dad6faea0349b015fc4094e1b73",
+      "removed_fields": []
+    },
+    {
+      "file": "verdicts/verify-surplus.json",
+      "original_sha256": "f506f6041c828bca73810e2a998e668ee9a010e28b5d831d75668f7fb861ff4c",
+      "sha256": "f506f6041c828bca73810e2a998e668ee9a010e28b5d831d75668f7fb861ff4c",
+      "removed_fields": []
+    },
+    {
+      "file": "verdicts/verify-surplus-provenance.json",
+      "original_sha256": "8f8828c49bdb05cc6a79fd05d63c5b3185a19dad6faea0349b015fc4094e1b73",
+      "sha256": "8f8828c49bdb05cc6a79fd05d63c5b3185a19dad6faea0349b015fc4094e1b73",
+      "removed_fields": []
+    },
+    {
+      "file": "verdicts/token-supply.json",
+      "original_sha256": "f3399f5336ebe9042b46ab590404d07f6f0ad4901a35897d99a42f4a3dbd014c",
+      "sha256": "f3399f5336ebe9042b46ab590404d07f6f0ad4901a35897d99a42f4a3dbd014c",
+      "removed_fields": []
+    },
+    {
+      "file": "verdicts/pre-alarm.json",
+      "original_sha256": "248ca543747d2528631c053f1eabce4d48829c3c69564261224ae0290cb88f93",
+      "sha256": "248ca543747d2528631c053f1eabce4d48829c3c69564261224ae0290cb88f93",
+      "removed_fields": []
+    },
+    {
+      "file": "buyer-responded/evidence.json",
+      "original_sha256": "4273bfd2390054c15a2d17d59aa1d346667cb04ba8ff675cf8b16f7badef3f7f",
+      "sha256": "4273bfd2390054c15a2d17d59aa1d346667cb04ba8ff675cf8b16f7badef3f7f",
+      "removed_fields": []
+    },
+    {
+      "file": "buyer-responded/receipt.boc",
+      "original_sha256": "fbd212f69c82fe5b3f6e0b687c4651419102fe25239f1862b5f97c56ba05e6ed",
+      "sha256": "fbd212f69c82fe5b3f6e0b687c4651419102fe25239f1862b5f97c56ba05e6ed",
+      "removed_fields": []
+    },
+    {
+      "file": "buyer-responded/artifact.tar",
+      "original_sha256": "f70c726f00a528a9987fab4142a1d42b0bfe3179251711e5a4023244bf18e271",
+      "sha256": "f70c726f00a528a9987fab4142a1d42b0bfe3179251711e5a4023244bf18e271",
+      "removed_fields": []
+    },
+    {
+      "file": "buyer-responded/network.json",
+      "original_sha256": "620bbfa1d4b966471f03c4a960f5307812048fd1c01c468db24a1ee1710a8b26",
+      "sha256": "620bbfa1d4b966471f03c4a960f5307812048fd1c01c468db24a1ee1710a8b26",
+      "removed_fields": []
+    },
+    {
+      "file": "buyer-funded/transactions/393126000010-2e1da742272559be105835b114fad9964e95100ded35ed70927898f06c6f2805.boc",
+      "original_sha256": "716b8c9131509e357e6f62d42be2dcf602fce9509b48e193501860a94a68afe7",
+      "sha256": "716b8c9131509e357e6f62d42be2dcf602fce9509b48e193501860a94a68afe7",
+      "removed_fields": []
+    },
+    {
+      "file": "buyer-funded/transactions/393126000008-1fc8efb21d761c8a781f9aa49c1823d62004cae323a9ff07d57419758ee398d7.boc",
+      "original_sha256": "e1e1fe8920cfc838970bc0f735d4362a34c6f287f5542c04afcc7dbf6371cbbf",
+      "sha256": "e1e1fe8920cfc838970bc0f735d4362a34c6f287f5542c04afcc7dbf6371cbbf",
+      "removed_fields": []
+    },
+    {
+      "file": "buyer-funded/transactions/393126000001-8b9b77c819a2763c94c3fb7cb939c9fcc52eabc8bc716f4893c213f16dc50fcc.boc",
+      "original_sha256": "bc0840ad514d9ef5ced2dd1495432fabeeb4f4265136151e7b5c57187fdd7daa",
+      "sha256": "bc0840ad514d9ef5ced2dd1495432fabeeb4f4265136151e7b5c57187fdd7daa",
+      "removed_fields": []
+    },
+    {
+      "file": "buyer-funded/transactions/393126000003-d5486a8b3d4ec456ca26b2e225da81400d34e5f3da4ecea6a39ec2595f8af46b.boc",
+      "original_sha256": "e32a58514f0747f433934ee64fa47612b9f6e796995ce4a16301db9313edbc2e",
+      "sha256": "e32a58514f0747f433934ee64fa47612b9f6e796995ce4a16301db9313edbc2e",
+      "removed_fields": []
+    },
+    {
+      "file": "buyer-funded/transactions/393126000005-22cb1878e3d927328295ceb986cf1a471f982e301420812ebf64d39cca8e3331.boc",
+      "original_sha256": "ccb70b332fab2e12ec4ef2073c5b0e43659cdfd041e058fdf9c679ea31cb2e03",
+      "sha256": "ccb70b332fab2e12ec4ef2073c5b0e43659cdfd041e058fdf9c679ea31cb2e03",
+      "removed_fields": []
+    },
+    {
+      "file": "buyer-funded/transactions/393126000007-be01f9061238a3863cb30c7a433011f2d2877a130659a7dbb61cb09241a18783.boc",
+      "original_sha256": "1cc6b18be6236b50c1c3a75d5d815e1368a17732de44828cf2a97142c3b69243",
+      "sha256": "1cc6b18be6236b50c1c3a75d5d815e1368a17732de44828cf2a97142c3b69243",
+      "removed_fields": []
+    },
+    {
+      "file": "buyer-funded/verifiers/archival-verification-c551122246fcb40d1e827a09fa8a880c2ddfaba8402c3dc812697028f92d9d0f.json",
+      "original_sha256": "c551122246fcb40d1e827a09fa8a880c2ddfaba8402c3dc812697028f92d9d0f",
+      "sha256": "c551122246fcb40d1e827a09fa8a880c2ddfaba8402c3dc812697028f92d9d0f",
+      "removed_fields": []
+    },
+    {
+      "file": "buyer-funded/block-headers.json",
+      "original_sha256": "3a21cac960838225bed3f43c462aa9163f6ae33aee07017dbefec259dea78e50",
+      "sha256": "3a21cac960838225bed3f43c462aa9163f6ae33aee07017dbefec259dea78e50",
+      "removed_fields": []
+    },
+    {
+      "file": "buyer-funded/manifest.json",
+      "original_sha256": "5477fe384fee314b4afd8a96d56d004e073f75d1684654bd253551b8e243ab83",
+      "sha256": "5477fe384fee314b4afd8a96d56d004e073f75d1684654bd253551b8e243ab83",
+      "removed_fields": []
+    }
+  ]
+}

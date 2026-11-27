@@ -3,13 +3,19 @@
 import base64
 import importlib.util
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
 import nacl.signing
 import pytest
 
-SCRIPT = Path(__file__).parents[1] / "scripts/local-pq-service-token.py"
+SCRIPT = Path(
+    os.environ.get(
+        "TOS_SERVICE_TOKEN_DRIVER",
+        Path(__file__).parents[1] / "scripts/local-pq-service-token.py",
+    )
+)
 spec = importlib.util.spec_from_file_location("service_token", SCRIPT)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
@@ -1011,3 +1017,167 @@ def test_historical_gap_does_not_exempt_any_new_or_pending_send(tmp_path, monkey
     assert len(captured) == 2
     assert all(x["lt"] == 2 for x in captured)
     assert set(state.archive_legacy) == {"historical"}
+
+
+def test_recover_unsigned_topup_does_not_block_a_new_step(tmp_path):
+    state = module.usdc.State(tmp_path)
+    state.put_intent("earlier", {"state": "done", "tx": {"hash": "old"}})
+    state.archive_completed_sends = lambda: None
+    args = SimpleNamespace(
+        step="topup",
+        case="undeployed",
+        operation_args=[],
+        destination=None,
+        sender_wallet="owner",
+        data=tmp_path,
+    )
+
+    def refuse():
+        raise module.usdc.Refused("wallet is not deployed")
+
+    with pytest.raises(module.usdc.Refused, match="wallet is not deployed"):
+        module.archived_action(args, state, None, refuse)
+    result = module.recover_archive(args, state, None)
+    assert result["outcome"] == "not_sent"
+    journal = module.archive.StepJournal(state.root / "archive")
+    assert journal.read()["pending"] is None
+    assert (
+        json.loads((journal.directory / "topup-undeployed/not-sent.json").read_text())[
+            "signed_intents_changed"
+        ]
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    "change", ["signed", "done", "removed", "publish", "already-signed"]
+)
+def test_recover_without_finished_action_keeps_uncertain_steps_fenced(tmp_path, change):
+    state = module.usdc.State(tmp_path)
+    state.archive_completed_sends = lambda: None
+    state.put_intent("earlier", {"state": "done"})
+    if change == "already-signed":
+        state.put_intent("earlier", {"state": "signed", "boc": "previous-attempt"})
+    args = SimpleNamespace(
+        step="publish" if change == "publish" else "topup",
+        case="interrupted",
+        operation_args=[],
+        destination=None,
+        sender_wallet="owner",
+        data=tmp_path,
+    )
+
+    def refuse():
+        raise module.usdc.Refused("interrupted")
+
+    with pytest.raises(module.usdc.Refused):
+        module.archived_action(args, state, None, refuse)
+    if change in ("signed", "done"):
+        state.put_intent("new-send", {"state": change})
+    elif change == "removed":
+        state.data["intents"] = {}
+    with pytest.raises(module.archive.Refused, match="resume its original"):
+        module.recover_archive(args, state, None)
+    assert (
+        module.archive.StepJournal(state.root / "archive").read()["pending"] is not None
+    )
+
+
+@pytest.mark.parametrize(
+    "fault", [None, "missing", "different", "wrong-block", "wrong-height"]
+)
+def test_refund_deadline_after_expire_uses_one_checkpoint(tmp_path, fault):
+    point = {"seqno": 123, "root_hash": "11" * 32, "gen_utime": 1000}
+    view = {"found": False, "read_at": point}
+
+    class Chain:
+        validator_urls = ("a", "b", "c")
+
+        def call(self, rpc_method, **kw):
+            assert rpc_method == "runGetMethod"
+            assert kw["seqno"] == 123 and kw["method"] == "get_refund"
+            stack = [
+                ["num", "1"],
+                ["slice", {}],
+                ["num", "1000000"],
+                ["num", "200000000"],
+                ["num", "100000000"],
+                ["num", "1100"],
+            ]
+            if fault == "missing":
+                stack[0] = ["num", "0"]
+            if fault == "different" and kw["url"] == "c":
+                stack[-1] = ["num", "1101"]
+            result = {
+                "exit_code": 0,
+                "stack": list(reversed(stack)),
+                "block_id": {
+                    "seqno": 124 if fault == "wrong-height" else 123,
+                    "root_hash": base64.b64encode(
+                        bytes.fromhex(
+                            "22" * 32 if fault == "wrong-block" else "11" * 32
+                        )
+                    ).decode(),
+                },
+            }
+            return result
+
+    if fault:
+        with pytest.raises(module.usdc.Refused):
+            module.refund_deadline(Chain(), "actor", "0", view)
+    else:
+        result = module.refund_deadline(Chain(), "actor", "0", view)
+        assert result["found"] and result["refund_claim_deadline"] == 1100
+        assert result["read_at"]["gen_utime"] < result["refund_claim_deadline"]
+        assert view["found"] is False
+
+
+@pytest.mark.parametrize("now, sends", [(1000, 0), (1200, 1)])
+def test_sweep_preflight_uses_refund_deadline_without_weakening_it(
+    tmp_path, monkeypatch, now, sends
+):
+    state = module.usdc.State(tmp_path)
+    state.set("deployment", {"address": "actor"})
+    args = SimpleNamespace(
+        case="sweep",
+        operation_args=["--operation", "sweep-expired-request", "--request-id", "0"],
+        sender_wallet="owner",
+        step="send",
+        tosctl=tmp_path / "tosctl",
+    )
+    view = {"found": False, "read_at": {"gen_utime": now}}
+    monkeypatch.setattr(module, "run", lambda *a, **k: json.dumps(view))
+    calls = []
+
+    def refund(*unused):
+        calls.append("refund-read")
+        return dict(view, found=True, refund_claim_deadline=1100)
+
+    monkeypatch.setattr(module, "refund_deadline", refund)
+    monkeypatch.setattr(module, "snapshot", lambda *a: None)
+    monkeypatch.setattr(module.time, "sleep", lambda *a: None)
+    monkeypatch.setattr(
+        module,
+        "cli_document",
+        lambda *a, **k: {
+            "destination": "actor",
+            "value_nanotos": "1",
+            "body_boc": module.usdc.boc64(module.usdc.Builder().end()),
+        },
+    )
+
+    class Owner:
+        address = "owner"
+
+        def transfer(self, *a, **k):
+            calls.append("send")
+            return {}
+
+    monkeypatch.setattr(module, "Owner", lambda *a: Owner())
+    if sends:
+        module.send_operation(args, state, None, {})
+    else:
+        with pytest.raises(module.usdc.Refused, match="deadline has not arrived"):
+            module.send_operation(args, state, None, {})
+    assert calls.count("send") == sends
+    assert calls[0] == "refund-read"

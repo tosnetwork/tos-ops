@@ -1,6 +1,8 @@
 # Local second-asset recognition: review gate
 
-Status: **PREPARATION ONLY; no USDT record proposed or adopted by this work.**
+Status: **Analysis approved; local recognition adopted.**
+See [the local execution record](T15-local-20261127.md) for adoption and the
+[refund/returned continuation](T18-refund-completion-20261127.md) for later lifecycle evidence.
 This document is the behavioural review input, not a production release pin or
 an assertion that the live acceptance cases have passed. A non-author must review
 this analysis before the second record is proposed. There is no external-audit
@@ -62,6 +64,7 @@ References to `issuer:n` below name that exact source and line.
 For bridge references, `B:n` means `contracts/Bridge.sol:n` at the running release.
 `A:n` means `crypto/smartcont/service-actor-token-code.fc:n` in tools commit
 `58015fcdfe3d3ea23ff23c1bfc6aec377361b38e`.
+Actor citations describe that T3 tools commit, not the running `b9a5a0406` node release.
 `M:n` means this repository's `testnet/scripts/check-settlement.py:n` at
 `a841db9`; `P:n` means ai `provider/pkg/servicebridge/token_monitor.go:n` at
 `9a35bd893f2cb0dfba47be258c6e7c1d41f13705`.
@@ -110,6 +113,8 @@ approval, DestroyedBlackFunds without Transfer, uint256 decimals and
 legacy-forwarding deprecation. It is not a production clone or a complete
 issuer-security proof; in particular it does not reproduce the old compiler's
 short-payload modifier. Canonical clients must send full ABI arguments.
+Do not combine deprecation and destruction in one rehearsal; the fixture
+refuses `destroyBlackFunds` once deprecated.
 It is not installed by any node or public profile. Build artifacts and keys stay
 outside Git. Test both fields and behaviour against the actual compiled fixture.
 

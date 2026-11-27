@@ -1,0 +1,85 @@
+{
+  "checkpoint": {
+    "block_file_hash": "sha256:8ca73c42c57cc92cd0909595ad43068ffac17f4de7e577c0b86afdccc6f6dd0b",
+    "block_root_hash": "sha256:173b4d4fd445cd1de1b834ec913221cb1b6ab364b96caebf01a7810d3792e66b",
+    "chain_time": 1795782185,
+    "seqno": 364709
+  },
+  "checks": [
+    {
+      "detail": "complete actor history and typed pending, refund, payout and returned cells agree",
+      "id": "finalized-state",
+      "ok": true
+    }
+  ],
+  "funding_refusals": [],
+  "inputs": [
+    {
+      "bytes": 233,
+      "name": "network-domain",
+      "sha256": "sha256:e2054d9ab121384462030f96b7526416445d9ee177a9ef0af78c73a462167662"
+    },
+    {
+      "bytes": 808,
+      "name": "asset-pins",
+      "sha256": "sha256:590e096183d536248beea5995fef12d8a490ad0e3861bdc98bede3619b53cc64"
+    },
+    {
+      "bytes": 5597,
+      "name": "registry-code-boc",
+      "sha256": "sha256:ac3948e3685f4015ca2ce3c52e58150e7ef4ab0f75634f974124922b40fd07d9"
+    }
+  ],
+  "network": {
+    "genesis_file_hash": "sha256:c3860fe196a2a1b5e4e74a9cf9448624a353ce68a8c4c5f6413347586d688769",
+    "genesis_root_hash": "sha256:65735247a371030abe811aeac0afe357301ce90e161450d26f88b4beb5b4c366",
+    "network_id": "local-usdc-t10"
+  },
+  "not_claimed": [
+    "operator independence of the endpoints: agreeing endpoints run by one operator are one source",
+    "computation correctness: a Receipt is the provider's attested statement of the digests it binds",
+    "the identity or independence of the buyer, the provider or the verifier",
+    "anything after the checkpoint, or about a request the verification did not select",
+    "without an evidence bundle, only the caller wallet of each request is proven: not its Quote, its Capability binding or whose purchase it is; bind the reported caller to the buyer's declared wallet",
+    "without a token bundle, no asset-recognition or funding-chain claim is made"
+  ],
+  "reads": {
+    "endpoints": [
+      {
+        "genesis_ok": true,
+        "url": "http://127.0.0.1:8014"
+      },
+      {
+        "genesis_ok": true,
+        "url": "http://127.0.0.1:8015"
+      },
+      {
+        "genesis_ok": true,
+        "url": "http://127.0.0.1:8016"
+      }
+    ],
+    "quorum": 2
+  },
+  "requests": [
+    {
+      "call": {
+        "hash": "4ba5eb305e1a972ae3855cf77314b05438fe9e9573065658006c9a4672618c30",
+        "lt": 392803000007
+      },
+      "caller": "0:14eda362e0cb32fc910daa87ffd1f7840ae8a152275fe36451a4d51422484979",
+      "destination": "0:14eda362e0cb32fc910daa87ffd1f7840ae8a152275fe36451a4d51422484979",
+      "payout_id": 5,
+      "price_atomic": "1000000",
+      "request_hash": "11f755b0fa1aba7396c5031ff1dea057376193e94de5ae3ca75b5d62ab810657",
+      "request_id": 1,
+      "state": "swept"
+    }
+  ],
+  "result": "pass",
+  "schema": "tos.service.purchase-verdict.token.v1",
+  "tool": {
+    "go_version": "go1.26.11",
+    "module": "github.com/tosnetwork/ai",
+    "name": "tos-service-verify"
+  }
+}
