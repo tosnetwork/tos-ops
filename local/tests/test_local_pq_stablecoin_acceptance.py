@@ -528,8 +528,9 @@ def monitor_dir(tmp_path, alarms=(), incidents=None, age=0):
     ],
 )
 def test_clean_observation_refuses_alarms_latches_and_staleness(
-    tmp_path, alarms, incidents, age, message
+    monkeypatch, tmp_path, alarms, incidents, age, message
 ):
+    monkeypatch.setattr(m.time, "sleep", lambda seconds: None)
     (tmp_path / "monitor").mkdir()
     root = monitor_dir(tmp_path / "monitor", alarms, incidents, age)
     state = State(tmp_path / "state")
@@ -692,3 +693,15 @@ def test_resolution_requires_a_fresh_report_afterwards(monkeypatch, tmp_path):
     monkeypatch.setattr(m.time, "monotonic", lambda: next(clock))
     with pytest.raises(Refused, match="no fresh report"):
         m.step_resolve_incident(args, state, None)
+
+
+def test_observation_waits_for_the_published_report(monkeypatch, tmp_path):
+    (tmp_path / "monitor").mkdir()
+    root = monitor_dir(tmp_path / "monitor")
+    published = (root / "report.json").read_text()
+    stale = json.loads(published)
+    stale["checkpoint"] = dict(stale["checkpoint"], utime=0)
+    (root / "report.json").write_text(json.dumps(stale))
+    monkeypatch.setattr(m.time, "sleep", lambda seconds: (root / "report.json").write_text(published))
+    args = SimpleNamespace(label="observe", monitor_state=root, expect_clean=True, expect_alarm=None)
+    assert m.step_observe(args, State(tmp_path / "state"))["report"]["alarms"] == []

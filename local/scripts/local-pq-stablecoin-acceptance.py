@@ -100,6 +100,7 @@ LOCK_EVENT = "Lock(address,address,bytes32,uint256,uint256,uint8,uint64,uint32)"
 LOG_BURN = 0xC0470CCF
 OP_BURN = 0x595F07BC
 WALLET_V3_TTL = 600
+OBSERVE_ATTEMPTS = 10
 # The checker's emergency codes (testnet/scripts/check-settlement.py): each latches
 # an incident and names its asset alone in provider_pause_assets.
 EMERGENCIES = {
@@ -1030,10 +1031,17 @@ def step_observe(args, state):
     latches. Read-only: the monitor's lock is not taken and nothing is written to
     its state directory."""
     root = args.monitor_state
-    report = json.loads((root / "report.json").read_text())
-    snapshot = (root / "snapshot.json").read_bytes()
-    incidents = json.loads((root / "incidents.json").read_text())
-    observation = json.loads(snapshot)
+    # The collector marks report.json stale (utime 0) at the start of every tick
+    # and the checker republishes it at the end: read only a published report
+    # that names the same checkpoint as the snapshot it was checked from.
+    for _ in range(OBSERVE_ATTEMPTS):
+        report = json.loads((root / "report.json").read_text())
+        snapshot = (root / "snapshot.json").read_bytes()
+        incidents = json.loads((root / "incidents.json").read_text())
+        observation = json.loads(snapshot)
+        if report["checkpoint"]["utime"] == observation["checkpoint"]["utime"] > 0:
+            break
+        time.sleep(3)
     sources = {
         a["id"]: {
             k: a.get(k)
