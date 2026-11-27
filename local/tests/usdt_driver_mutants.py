@@ -20,6 +20,42 @@ UNIT = "local/tests/test_local_pq_usdt.py"
 ANVIL = "testnet/tests/anvil_settlement_observer.py"
 CASES = [
     (
+        "unsigned-recovery-excludes-prior-signatures",
+        "local/scripts/local-pq-service-token.py",
+        'and all(record.get("state") == "done" for record in state.intents().values())',
+        "and True",
+        "local/tests/test_local_pq_service_token.py",
+        "test_recover_without_finished_action_keeps_uncertain_steps_fenced",
+        "DID NOT RAISE",
+    ),
+    (
+        "unsigned-recovery-available",
+        "local/scripts/local-pq-service-token.py",
+        "and before == current",
+        "and False",
+        "local/tests/test_local_pq_service_token.py",
+        "test_recover_unsigned_topup_does_not_block_a_new_step",
+        "resume its original",
+    ),
+    (
+        "unsigned-recovery-checks-intents",
+        "local/scripts/local-pq-service-token.py",
+        "and before == current",
+        "and True",
+        "local/tests/test_local_pq_service_token.py",
+        "test_recover_without_finished_action_keeps_uncertain_steps_fenced",
+        "DID NOT RAISE",
+    ),
+    (
+        "unsigned-recovery-excludes-external-runners",
+        "local/scripts/local-pq-service-token.py",
+        'pending["label"].startswith(("topup-", "send-", "call-"))',
+        "True",
+        "local/tests/test_local_pq_service_token.py",
+        "test_recover_without_finished_action_keeps_uncertain_steps_fenced",
+        "DID NOT RAISE",
+    ),
+    (
         "monitor-namespace",
         DRIVER,
         'actual == expected and len(actual) == len(policy["assets"])',
@@ -209,6 +245,9 @@ def run(root, selection, log):
         "TOS_USDT_DRIVER": str(root / DRIVER),
         "TOS_USDT_FIXTURE": str(root / FIXTURE),
         "TOS_SETTLEMENT_COLLECTOR": str(root / COLLECTOR),
+        "TOS_SERVICE_TOKEN_DRIVER": str(
+            root / "local/scripts/local-pq-service-token.py"
+        ),
     }
     with log.open("w") as stream:
         result = subprocess.run(
@@ -236,7 +275,11 @@ def main():
     parser.add_argument("--log-dir", type=Path, required=True)
     args = parser.parse_args()
     args.log_dir.mkdir(parents=True, exist_ok=True)
-    code, report = run(ROOT, [UNIT, ANVIL], args.log_dir / "baseline.log")
+    code, report = run(
+        ROOT,
+        [UNIT, ANVIL, "local/tests/test_local_pq_service_token.py"],
+        args.log_dir / "baseline.log",
+    )
     if code or not list(report.iter("testcase")):
         raise RuntimeError("invalid positive baseline")
     for label, relative, before, after, file, test, expected in CASES:

@@ -190,17 +190,52 @@ def recover_archive(args, state, chain):
     journal = archive.StepJournal(state.root / "archive")
     pending = journal.read()["pending"]
     require(pending is not None, "there is no pending evidence step")
+    directory = journal.directory / pending["label"]
 
     def no_action():
-        raise archive.Refused(
-            "action was interrupted; resume its original journaled command, not a new step"
+        # These three handlers send only through this state's write-before-send
+        # wallet journal. An unchanged map with no prior unfinished intent
+        # proves they never signed or rebroadcast; external runners do not
+        # have this property.
+        before = json.loads((directory / "before.json").read_text())
+        current = {
+            k: archive.digest(json.dumps(v, sort_keys=True).encode())
+            for k, v in state.intents().items()
+        }
+        archive.require(
+            pending["label"].startswith(("topup-", "send-", "call-"))
+            and before == current
+            and all(
+                record.get("state") == "done" for record in state.intents().values()
+            ),
+            "action was interrupted; resume its original journaled command, not a new step",
         )
+        archive.document(
+            directory / "not-sent.json",
+            {
+                "identity": pending["identity"],
+                "signed_intents_changed": False,
+                "reason": "no wallet signing intent was created or changed",
+            },
+        )
+
+    def capture(target):
+        marker = target / "not-sent.json"
+        if marker.exists():
+            return {
+                "outcome": "not_sent",
+                "roots": [],
+                "files": [
+                    {"file": marker.name, "sha256": archive.digest(marker.read_bytes())}
+                ],
+            }
+        return capture_step(target, state, chain, args.data)
 
     return journal.run(
         pending["label"],
         pending["identity"],
         no_action,
-        lambda directory: capture_step(directory, state, chain, args.data),
+        capture,
     )
 
 

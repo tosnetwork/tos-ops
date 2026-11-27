@@ -3,13 +3,19 @@
 import base64
 import importlib.util
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
 import nacl.signing
 import pytest
 
-SCRIPT = Path(__file__).parents[1] / "scripts/local-pq-service-token.py"
+SCRIPT = Path(
+    os.environ.get(
+        "TOS_SERVICE_TOKEN_DRIVER",
+        Path(__file__).parents[1] / "scripts/local-pq-service-token.py",
+    )
+)
 spec = importlib.util.spec_from_file_location("service_token", SCRIPT)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
@@ -1011,3 +1017,67 @@ def test_historical_gap_does_not_exempt_any_new_or_pending_send(tmp_path, monkey
     assert len(captured) == 2
     assert all(x["lt"] == 2 for x in captured)
     assert set(state.archive_legacy) == {"historical"}
+
+
+def test_recover_unsigned_topup_does_not_block_a_new_step(tmp_path):
+    state = module.usdc.State(tmp_path)
+    state.put_intent("earlier", {"state": "done", "tx": {"hash": "old"}})
+    state.archive_completed_sends = lambda: None
+    args = SimpleNamespace(
+        step="topup",
+        case="undeployed",
+        operation_args=[],
+        destination=None,
+        sender_wallet="owner",
+        data=tmp_path,
+    )
+
+    def refuse():
+        raise module.usdc.Refused("wallet is not deployed")
+
+    with pytest.raises(module.usdc.Refused, match="wallet is not deployed"):
+        module.archived_action(args, state, None, refuse)
+    result = module.recover_archive(args, state, None)
+    assert result["outcome"] == "not_sent"
+    journal = module.archive.StepJournal(state.root / "archive")
+    assert journal.read()["pending"] is None
+    assert (
+        json.loads((journal.directory / "topup-undeployed/not-sent.json").read_text())[
+            "signed_intents_changed"
+        ]
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    "change", ["signed", "done", "removed", "publish", "already-signed"]
+)
+def test_recover_without_finished_action_keeps_uncertain_steps_fenced(tmp_path, change):
+    state = module.usdc.State(tmp_path)
+    state.archive_completed_sends = lambda: None
+    state.put_intent("earlier", {"state": "done"})
+    if change == "already-signed":
+        state.put_intent("earlier", {"state": "signed", "boc": "previous-attempt"})
+    args = SimpleNamespace(
+        step="publish" if change == "publish" else "topup",
+        case="interrupted",
+        operation_args=[],
+        destination=None,
+        sender_wallet="owner",
+        data=tmp_path,
+    )
+
+    def refuse():
+        raise module.usdc.Refused("interrupted")
+
+    with pytest.raises(module.usdc.Refused):
+        module.archived_action(args, state, None, refuse)
+    if change in ("signed", "done"):
+        state.put_intent("new-send", {"state": change})
+    elif change == "removed":
+        state.data["intents"] = {}
+    with pytest.raises(module.archive.Refused, match="resume its original"):
+        module.recover_archive(args, state, None)
+    assert (
+        module.archive.StepJournal(state.root / "archive").read()["pending"] is not None
+    )
