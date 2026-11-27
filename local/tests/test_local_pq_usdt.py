@@ -179,3 +179,34 @@ def test_namespace_dry_run_has_no_broadcast_or_record(tmp_path):
         {"bytecode": "0x01", "source_sha256": "00" * 32},
     )
     assert result["dry_run"] and not state.path.exists()
+
+
+def test_reverted_source_is_archived_and_stops_the_next_send(tmp_path):
+    source = Source()
+    source.receipt["status"] = "0x0"
+    state = m.EvidenceState(tmp_path, source)
+    record = dict(
+        kind="evm",
+        state="done",
+        tx=source.hash,
+        **{"from": source.sender},
+        nonce=0,
+        to=None,
+        data="0x1234",
+    )
+    with pytest.raises(m.u.Refused, match="source transaction reverted"):
+        state.put_intent("deployment", record)
+    assert (tmp_path / "source-transactions/deployment.json").exists()
+    assert (tmp_path / "source-finality/deployment.json").exists()
+
+
+def test_mint_requires_a_finalized_namespace_before_any_send(tmp_path):
+    state = m.EvidenceState(tmp_path, Source())
+    state.set("namespace", {"source_finalized": False, "token": "0x" + "11" * 20})
+
+    class NoSource:
+        def code(self, token):
+            pytest.fail("unfinalized namespace reached source")
+
+    with pytest.raises(m.u.Refused, match="namespace must finalize first"):
+        m.mint(SimpleNamespace(execute=True), state, NoSource(), {}, None, {})

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Local USDT namespace and prospective CP84 preparation; never vote.
+"""Local USDT deployment, mint and prospective CP84 preparation; never vote.
 
-Namespace defaults to a dry run. It journals a single source deployment when
+The local source clock uses one-second blocks, letting real finalized checkpoints
+advance without state overrides. Namespace and mint default to a dry run. It journals a single source deployment when
 --execute is given. Preparation always uses that receipt's real address, not a
 CREATE prediction, and refuses governance readiness until the minter exists.
 """
@@ -68,11 +69,28 @@ class EvidenceState(u.State):
     def __init__(self, root, evm):
         super().__init__(root)
         self.evm = evm
+        self.chain = None
 
     def put_intent(self, name, record):
         super().put_intent(name, record)
         if record.get("kind") == "evm" and record.get("state") == "done":
             self.retain_source(name, record)
+        if record.get("kind") == "tos" and record.get("state") == "done":
+            self.retain_tos(name, record)
+
+    def retain_tos(self, name, record):
+        require(self.chain is not None, "TOS archive is not bound")
+        tx = record["tx"]
+        root = {"account": record["wallet"], "lt": int(tx["lt"]), "hash": tx["hash"]}
+        identity = archive.digest(json.dumps(root, sort_keys=True).encode())
+        archive.StepJournal(self.root / "archive/sends").run(
+            name,
+            identity,
+            lambda: None,
+            lambda directory: archive.TransactionArchive(
+                directory, self.chain.urls[3:6], GENESIS
+            ).capture_wait([root]),
+        )
 
     def retain_source(self, name, record):
         require(archive.LABEL.fullmatch(name), "invalid source evidence name")
@@ -118,19 +136,45 @@ class EvidenceState(u.State):
             == header["hash"],
             "source finality reorg",
         )
-        archive.document(
-            self.root / "source-finality" / (name + ".json"),
-            {
-                "transaction": record["tx"],
-                "receipt_block": header["hash"],
-                "finalized": point,
-            },
+        finality_path = self.root / "source-finality" / (name + ".json")
+        finality = {
+            "transaction": record["tx"],
+            "receipt_block": header["hash"],
+            "finalized": point,
+        }
+        if finality_path.exists():
+            saved = json.loads(finality_path.read_text())
+            require(
+                saved["transaction"] == record["tx"]
+                and saved["receipt_block"] == header["hash"],
+                "source finality evidence differs",
+            )
+            require(
+                self.evm.rpc(
+                    "eth_getBlockByNumber", saved["finalized"]["number"], False
+                )["hash"]
+                == saved["finalized"]["hash"],
+                "archived source finality reorg",
+            )
+        else:
+            archive.document(finality_path, finality)
+        require(
+            int(receipt["status"], 16) == 1,
+            "source transaction reverted; evidence retained",
         )
 
     def recover_source(self):
         for name, record in self.intents().items():
             if record.get("kind") == "evm" and record.get("state") == "done":
                 self.retain_source(name, record)
+            if record.get("kind") == "tos" and record.get("state") == "done":
+                self.retain_tos(name, record)
+
+    def evidence(self, name, value):
+        require(archive.LABEL.fullmatch(name), "invalid evidence name")
+        path = self.root / "evidence" / (name + ".json")
+        archive.document(path, value)
+        return path
 
 
 class View:
@@ -396,6 +440,161 @@ def archive_namespace(state, evm, record, token, artifact):
     return status
 
 
+def mint(args, state, evm, source, chain, artifact):
+    require(
+        state.get("namespace", {}).get("source_finalized") is True,
+        "namespace must finalize first",
+    )
+    token = state["namespace"]["token"]
+    require(
+        evm.code(token).lower() == artifact["deployedBytecode"].lower(),
+        "namespace code differs",
+    )
+    require(evm.call(token, "decimals()(uint256)") == "6", "source decimals differ")
+    require(
+        evm.call(token, "basisPointsRate()(uint256)") == "0",
+        "mint rehearsal requires no source fee",
+    )
+    state.set("evm", {**source["evm"], "token": token})
+    state.set("tvm", source["tvm"])
+    state.set("wallets", source["wallets"])
+    bridge, sender, locker = (
+        source["evm"]["bridge"],
+        source["evm"]["deployer"],
+        source["evm"]["locker"],
+    )
+    amount = u.LOCK_AMOUNT
+    caps = [str(x) for x in u.LOCK_CAPS]
+    if not args.execute:
+        return {
+            "dry_run": True,
+            "token": token,
+            "amount_atomic": amount,
+            "caps": caps,
+            "buyer": source["wallets"]["buyer"],
+        }
+    u.CAST[0] = args.cast
+    if state.intent("usdt-caps") is None:
+        require(
+            u.evm_values(evm.call(bridge, u.CAPS, token))[0] == "0",
+            "unexpected pre-existing source cap",
+        )
+    last = u.evm_values(evm.call(bridge, "lastLockCapNonce(address)(uint256)", token))[
+        0
+    ]
+    u.evm_vote(
+        evm,
+        state,
+        args.keys,
+        "usdt-caps",
+        "getNewLockCapId(address,uint256,uint256,uint256,uint256,uint256)(bytes32)",
+        [token, *caps, str(int(last) + 1)],
+        "voteForLockCap(address,uint256,uint256,uint256,uint256,uint256,(address,bytes)[])",
+        [token, *caps, str(int(last) + 1)],
+    )
+    require(u.evm_values(evm.call(bridge, u.CAPS, token)) == caps, "source caps differ")
+    u.evm_send_once(
+        evm,
+        state,
+        "usdt-locker-funds",
+        sender,
+        token,
+        "transfer(address,uint256)",
+        locker,
+        str(amount),
+    )
+    if state.intent("usdt-approve") is None:
+        require(
+            u.evm_values(
+                evm.call(token, "allowance(address,address)(uint256)", locker, bridge)
+            )[0]
+            == "0",
+            "clear unknown allowance before preparing a new approval",
+        )
+    u.evm_send_once(
+        evm,
+        state,
+        "usdt-approve",
+        locker,
+        token,
+        "approve(address,uint256)",
+        bridge,
+        str(amount),
+    )
+    planned = (
+        (state.intent("usdt-lock") or {})
+        .get("meta", {})
+        .get("n", u.lock_nonce(evm, bridge))
+    )
+    target = "0x" + u.split(source["wallets"]["buyer"])[1].hex()
+    record = u.evm_send_once(
+        evm,
+        state,
+        "usdt-lock",
+        locker,
+        bridge,
+        u.LOCK,
+        token,
+        str(amount),
+        target,
+        meta={"n": planned},
+    )
+    require(record["status"] == 1, "source lock refused")
+    actual = u.evm_values(
+        evm.call(
+            bridge, "locks(uint64)(address,address,uint256,uint32,uint8)", str(planned)
+        )
+    )
+    require(
+        actual[0].lower() == locker.lower()
+        and actual[1].lower() == token.lower()
+        and int(actual[2]) == amount
+        and int(actual[3]) == u.GENERATION
+        and int(actual[4]) == 1,
+        "source lock differs from intent",
+    )
+    state.set(
+        "lock",
+        {
+            "n": planned,
+            "amount": amount,
+            "to_address_hash": target,
+            "tx": {k: record[k] for k in ("tx", "block", "status")},
+        },
+    )
+    tools = u.Tools(args)
+    u.step_mint(args, state, chain, tools, args.keys)
+    view = View(chain, state.root / "mint-references")
+    minter = state["mint"]["minter"]
+    supply = view.read(
+        "runGetMethod", address=minter, method="get_supply_state", stack=[]
+    )
+    require(
+        all(
+            v["exit_code"] == 0
+            and u.num(v["stack"][0]) == amount
+            and u.num(v["stack"][1]) == 0
+            for v in supply
+        ),
+        "finalized supply differs",
+    )
+    require(
+        u.lib.parse_boc(base64.b64decode(view.account(minter)["code"])).hash().hex()
+        == source["tvm"]["minter_code_hash"],
+        "minted master code differs",
+    )
+    report = {
+        "token": token,
+        "master": minter,
+        "amount_atomic": amount,
+        "checkpoint": view.point,
+        "source_lock": record["tx"],
+        "archive": "archive/sends",
+    }
+    state.evidence("mint-finalized", report)
+    return report
+
+
 def prepare(args, state, evm, source, artifact, view, codes):
     record = state.intent("deploy-usdt")
     require(
@@ -490,7 +689,7 @@ def prepare(args, state, evm, source, artifact, view, codes):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("step", choices=("clock", "namespace", "prepare"))
+    parser.add_argument("step", choices=("clock", "namespace", "mint", "prepare"))
     parser.add_argument("--data", type=Path, default=Path("/data"))
     parser.add_argument("--source-state", type=Path, required=True)
     parser.add_argument("--state", type=Path, required=True)
@@ -500,6 +699,7 @@ def main(argv=None):
     parser.add_argument("--tosctl", required=True)
     parser.add_argument("--cast", default=shutil.which("cast") or "cast")
     parser.add_argument("--evm-rpc", default="http://127.0.0.1:18545")
+    parser.add_argument("--keys", type=Path, default=Path("/data/usdc/keys"))
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args(argv)
     try:
@@ -515,25 +715,31 @@ def main(argv=None):
                 all(r.get("state") == "done" for r in source["intents"].values()),
                 "original source run has unresolved operations",
             )
-            view = View(u.Chain(args.data), root / "references")
+            chain = u.Chain(args.data)
+            view = View(chain, root / "references")
             codes = bridge_codes(view, source)
             artifact = artifact_at(args.artifact, args.build_log)
             args.evm_artifacts = ""
             evm = u.Evm(u.Tools(args))
             state = EvidenceState(root, evm)
+            state.chain = chain
             state.recover_source()
             if args.step == "clock":
                 require(evm.chain_id() == 1, "not the approved source chain")
                 clock = {
-                    "interval_ms": 1000,
+                    "interval_seconds": 1,
                     "genesis": GENESIS["root"],
                     "source_chain_id": 1,
                 }
                 if args.execute:
                     state.set("source_clock_intent", clock)
-                    evm.rpc("evm_setIntervalMining", 1000)
+                    evm.rpc("evm_setIntervalMining", 1)
                     state.set("source_clock", clock)
                 print(json.dumps({"source_clock": clock, "dry_run": not args.execute}))
+                return 0
+            if args.step == "mint":
+                report = mint(args, state, evm, source, chain, artifact)
+                print(json.dumps(report, sort_keys=True))
                 return 0
             report = (
                 namespace(args, state, evm, source, artifact)
