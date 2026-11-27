@@ -15,8 +15,8 @@ import pytest
 pytest_plugins = ("anvil_redemption",)
 
 
-def probe(world, *, rpc=None, clock=None):
-    url, accounts, _, _, token, binding = world
+def probe(redemption_world, *, rpc=None, clock=None):
+    url, accounts, _, _, token, binding = redemption_world
     binary = Path(os.environ["T19_AI_ISSUER_PROBE"])
     assert binary.is_file(), "build the T19 ai issuer fixture probe first"
     request = dict(
@@ -44,8 +44,8 @@ def probe(world, *, rpc=None, clock=None):
 
 
 @pytest.mark.parametrize("profile", ["legacy_usdt", "standard"])
-def test_go_reader_accepts_clear_receiver(world, profile):
-    _, _, _, deploy, _, binding = world
+def test_go_reader_accepts_clear_receiver(redemption_world, profile):
+    _, _, _, deploy, _, binding = redemption_world
     if profile == "standard":
         import anvil_redemption
 
@@ -54,15 +54,15 @@ def test_go_reader_accepts_clear_receiver(world, profile):
             token=token,
             profile=profile,
             code_sha256=anvil_redemption.issuer.source.code_hash(
-                anvil_redemption.issuer.source.RPC(world[0]), token, "latest"
+                anvil_redemption.issuer.source.RPC(redemption_world[0]), token, "latest"
             ),
         )
-        world = (*world[:4], token, binding)
-    result = probe(world)
+        redemption_world = (*redemption_world[:4], token, binding)
+    result = probe(redemption_world)
     assert result.returncode == 0, result.stderr
     value = json.loads(result.stdout)
     assert value["received"] == "100000000" and value["fee"] == "0"
-    assert value["observation"]["token"] == world[4]
+    assert value["observation"]["token"] == redemption_world[4]
 
 
 @pytest.mark.parametrize(
@@ -73,35 +73,35 @@ def test_go_reader_accepts_clear_receiver(world, profile):
         ("deprecated", "deprecate(address)", "target"),
     ],
 )
-def test_go_reader_refuses_restrictions(world, flag, signature, args):
-    _, accounts, send, _, token, _ = world
+def test_go_reader_refuses_restrictions(redemption_world, flag, signature, args):
+    _, accounts, send, _, token, _ = redemption_world
     parameters = [] if args is None else [accounts[1] if args == "receiver" else accounts[2]]
     send(token, signature, *parameters)
-    result = probe(world)
+    result = probe(redemption_world)
     assert result.returncode == 2 and flag in result.stderr, result.stdout + result.stderr
     assert result.stdout == ""
 
 
-def test_go_reader_prices_the_real_fee(world):
-    _, _, send, _, token, _ = world
+def test_go_reader_prices_the_real_fee(redemption_world):
+    _, _, send, _, token, _ = redemption_world
     send(token, "setParams(uint256,uint256)", 19, 1)
-    result = probe(world)
+    result = probe(redemption_world)
     assert result.returncode == 0, result.stderr
     value = json.loads(result.stdout)
     assert value["received"] == "99810000" and value["fee"] == "190000"
 
 
-def test_go_reader_refuses_stale_or_failed_source(world):
+def test_go_reader_refuses_stale_or_failed_source(redemption_world):
     import anvil_redemption
 
     block = anvil_redemption.issuer.source.block(
-        anvil_redemption.issuer.source.RPC(world[0]), "finalized"
+        anvil_redemption.issuer.source.RPC(redemption_world[0]), "finalized"
     )
-    stale = probe(world, clock=int(block["timestamp"], 16) + 1801)
+    stale = probe(redemption_world, clock=int(block["timestamp"], 16) + 1801)
     assert stale.returncode == 2 and "stale" in stale.stderr and stale.stdout == ""
     with socket.socket() as unavailable:
         unavailable.bind(("127.0.0.1", 0))
         port = unavailable.getsockname()[1]
         # Bound but not listening: the connection is refused deterministically.
-        failed = probe(world, rpc=f"http://127.0.0.1:{port}")
+        failed = probe(redemption_world, rpc=f"http://127.0.0.1:{port}")
     assert failed.returncode == 2 and "unavailable" in failed.stderr and failed.stdout == ""

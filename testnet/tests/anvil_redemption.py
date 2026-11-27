@@ -26,7 +26,7 @@ if os.environ.get("T19_ISSUER_SOURCE"):
 
 
 @pytest.fixture
-def world(source_net):
+def redemption_world(source_net):
     url, accounts, send, deploy = source_net
     token = deploy("LocalUSDT")
     binding = dict(
@@ -42,13 +42,13 @@ def world(source_net):
     return url, accounts, send, deploy, token, binding
 
 
-def build(world, now=time.time):
-    url, accounts, _, _, _, binding = world
+def build(redemption_world, now=time.time):
+    url, accounts, _, _, _, binding = redemption_world
     return redemption.prepare(issuer.source.RPC(url), binding, accounts[1], 100_000_000, 7, now)
 
 
-def test_clear_receiver_builds_only_the_bridge_burn(world):
-    document = build(world)
+def test_clear_receiver_builds_only_the_bridge_burn(redemption_world):
+    document = build(redemption_world)
     assert document["received_atomic"] == "100000000"
     assert "recorded burn is final" in document["warning"]
     import base64
@@ -60,51 +60,55 @@ def test_clear_receiver_builds_only_the_bridge_burn(world):
     assert lib.read_grams(s) == 100_000_000
     assert s.bits(2) == 0 and s.bits(1) == 1
     receiver = lib.Slice(s.take_ref())
-    assert receiver.bits(160) == int(world[1][1], 16) and receiver.end() and s.end()
+    assert receiver.bits(160) == int(redemption_world[1][1], 16) and receiver.end() and s.end()
 
 
 @pytest.mark.parametrize("profile", ["legacy_usdt", "standard"])
-def test_blacklisted_receiver_refuses_before_body(world, profile):
-    _, accounts, send, deploy, token, binding = world
+def test_blacklisted_receiver_refuses_before_body(redemption_world, profile):
+    _, accounts, send, deploy, token, binding = redemption_world
     if profile == "standard":
         token = deploy("StandardIssuerFixture")
         binding.update(
             token=token,
             profile=profile,
-            code_sha256=issuer.source.code_hash(issuer.source.RPC(world[0]), token, "latest"),
+            code_sha256=issuer.source.code_hash(
+                issuer.source.RPC(redemption_world[0]), token, "latest"
+            ),
         )
     send(token, "addBlackList(address)", accounts[1])
     with pytest.raises(issuer.Invalid, match="receiver is blacklisted"):
-        build(world)
+        build(redemption_world)
 
 
 @pytest.mark.parametrize("profile", ["legacy_usdt", "standard"])
-def test_paused_issuer_refuses_before_body(world, profile):
-    _, _, send, deploy, token, binding = world
+def test_paused_issuer_refuses_before_body(redemption_world, profile):
+    _, _, send, deploy, token, binding = redemption_world
     if profile == "standard":
         token = deploy("StandardIssuerFixture")
         binding.update(
             token=token,
             profile=profile,
-            code_sha256=issuer.source.code_hash(issuer.source.RPC(world[0]), token, "latest"),
+            code_sha256=issuer.source.code_hash(
+                issuer.source.RPC(redemption_world[0]), token, "latest"
+            ),
         )
     send(token, "pause()")
     with pytest.raises(issuer.Invalid, match="token is paused"):
-        build(world)
+        build(redemption_world)
 
 
-def test_deprecated_issuer_refuses_before_body(world):
-    _, accounts, send, _, token, _ = world
+def test_deprecated_issuer_refuses_before_body(redemption_world):
+    _, accounts, send, _, token, _ = redemption_world
     send(token, "deprecate(address)", accounts[2])
     with pytest.raises(issuer.Invalid, match="token is deprecated"):
-        build(world)
+        build(redemption_world)
 
 
-def test_fee_preview_matches_actual_received_delta_and_cap(world):
-    url, accounts, send, _, token, binding = world
-    assert build(world)["issuer_fee_atomic"] == "0"
+def test_fee_preview_matches_actual_received_delta_and_cap(redemption_world):
+    url, accounts, send, _, token, binding = redemption_world
+    assert build(redemption_world)["issuer_fee_atomic"] == "0"
     send(token, "setParams(uint256,uint256)", 19, 1)
-    document = build(world)
+    document = build(redemption_world)
     assert document["received_atomic"] == "99810000"
     assert document["issuer_fee_atomic"] == "190000"
     before = issuer.source.read_uint(
@@ -116,47 +120,47 @@ def test_fee_preview_matches_actual_received_delta_and_cap(world):
     observation = issuer.read_issuer(issuer.source.RPC(url), binding, accounts[1])
     assert issuer.received_amount(3_000_000_000, observation) == (2_999_000_000, 1_000_000)
     send(token, "setParams(uint256,uint256)", 0, 0)
-    assert build(world)["issuer_fee_atomic"] == "0"
+    assert build(redemption_world)["issuer_fee_atomic"] == "0"
 
 
-def test_stale_finalized_read_refuses(world):
+def test_stale_finalized_read_refuses(redemption_world):
     with pytest.raises(issuer.Invalid, match="stale"):
-        build(world, now=lambda: time.time() + issuer.MAX_FINALIZED_AGE + 100)
+        build(redemption_world, now=lambda: time.time() + issuer.MAX_FINALIZED_AGE + 100)
 
 
-def test_failed_rpc_never_builds_a_body(world, monkeypatch):
+def test_failed_rpc_never_builds_a_body(redemption_world, monkeypatch):
     def fail(*args):
         raise OSError("fixture unavailable")
 
     monkeypatch.setattr(issuer.source.RPC, "call", fail)
     with pytest.raises(OSError):
-        build(world)
+        build(redemption_world)
 
 
-def test_changed_issuer_code_refuses(world):
-    world[-1]["code_sha256"] = "0" * 64
+def test_changed_issuer_code_refuses(redemption_world):
+    redemption_world[-1]["code_sha256"] = "0" * 64
     with pytest.raises(issuer.Invalid, match="issuer code differs"):
-        build(world)
+        build(redemption_world)
 
 
-def test_standard_fixture_rejects_blacklisted_receiver_on_transfer(world):
-    _, accounts, send, deploy, _, _ = world
+def test_standard_fixture_rejects_blacklisted_receiver_on_transfer(redemption_world):
+    _, accounts, send, deploy, _, _ = redemption_world
     token = deploy("StandardIssuerFixture")
     send(token, "addBlackList(address)", accounts[1])
     with pytest.raises(AssertionError):
         send(token, "transfer(address,uint256)", accounts[1], 100)
 
 
-def test_wrong_source_chain_refuses(world):
-    world[-1]["chain_id"] = 2
+def test_wrong_source_chain_refuses(redemption_world):
+    redemption_world[-1]["chain_id"] = 2
     with pytest.raises(issuer.Invalid, match="issuer chain differs"):
-        build(world)
+        build(redemption_world)
 
 
-def test_finalized_hash_change_refuses(world):
+def test_finalized_hash_change_refuses(redemption_world):
     class ChangedHash:
         def __init__(self):
-            self.rpc = issuer.source.RPC(world[0])
+            self.rpc = issuer.source.RPC(redemption_world[0])
 
         def call(self, method, *params):
             value = self.rpc.call(method, *params)
@@ -165,10 +169,12 @@ def test_finalized_hash_change_refuses(world):
             return value
 
     with pytest.raises(issuer.Invalid, match="checkpoint changed"):
-        redemption.prepare(ChangedHash(), world[-1], world[1][1], 100000000, 7)
+        redemption.prepare(
+            ChangedHash(), redemption_world[-1], redemption_world[1][1], 100000000, 7
+        )
 
 
-def test_rpc_error_even_with_a_result_refuses(world, monkeypatch):
+def test_rpc_error_even_with_a_result_refuses(redemption_world, monkeypatch):
     import io
     import json
 
@@ -182,11 +188,11 @@ def test_rpc_error_even_with_a_result_refuses(world, monkeypatch):
 
     monkeypatch.setattr(issuer.source.urllib.request, "urlopen", ambiguous)
     with pytest.raises(issuer.Invalid, match="source RPC refused"):
-        build(world)
+        build(redemption_world)
 
 
-def test_blacklisted_bridge_refuses_before_body(world):
-    _, _, send, _, token, binding = world
+def test_blacklisted_bridge_refuses_before_body(redemption_world):
+    _, _, send, _, token, binding = redemption_world
     send(token, "addBlackList(address)", binding["bridge"])
     with pytest.raises(issuer.Invalid, match="source bridge is blacklisted"):
-        build(world)
+        build(redemption_world)
