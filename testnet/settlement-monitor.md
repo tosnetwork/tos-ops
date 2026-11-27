@@ -285,6 +285,14 @@ holdings reconcile); it is not a way to resume an asset that is still affected.
    was not replaced but the record could not be withdrawn, or a partial record
    file could not be removed. Stop the schedule, keep every file and compare
    `incidents_sha256_current` with the record before doing anything else.
+
+   **An interrupted run** (killed or crashed after the record was written,
+   printing no result), or power loss after the replace but before its
+   directory fsync, can leave a durable record whose removal never took
+   effect. Such a record is void when its `incidents_sha256_after` does not
+   match the current `incidents.json`, or when its incident is still present
+   there. Keep the void record beside the evidence (rename it with a `.void`
+   suffix rather than deleting it), then rerun with a new `--record` path.
 4. The next checker run publishes `provider_pause_assets` without that asset if
    no other incident of it is latched. A condition that returns latches again.
    One run resolves one incident; repeat per incident, each with its own record.
