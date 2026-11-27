@@ -9,7 +9,7 @@ import time
 import settlement_issuer as issuer
 import testnet_lib as lib
 
-FINALITY_WARNING = "A recorded burn is final. Issuer restrictions may change after this check; a failed unlock can leave the tokens unredeemable to this receiver."
+FINALITY_WARNING = "A recorded burn is final. Issuer restrictions and fees may change after this check; a failed unlock can leave the tokens unredeemable to this receiver."
 
 
 def prepare(rpc, binding, receiver, amount, query_id, now=time.time):
@@ -56,7 +56,8 @@ def main(argv=None):
         return 0
     except (OSError, ValueError, KeyError, TypeError, lib.TestnetError) as error:
         # Do not print untrusted RPC bodies or produce a partially usable document.
-        print("redemption refused; no burn body built: " + type(error).__name__)
+        detail = str(error) if isinstance(error, issuer.Invalid) else type(error).__name__
+        print("redemption refused; no burn body built: " + detail)
         return 2
 
 

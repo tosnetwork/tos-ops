@@ -136,3 +136,49 @@ def test_changed_issuer_code_refuses(world):
     world[-1]["code_sha256"] = "0" * 64
     with pytest.raises(issuer.Invalid, match="issuer code differs"):
         build(world)
+
+
+def test_standard_fixture_rejects_blacklisted_receiver_on_transfer(world):
+    _, accounts, send, deploy, _, _ = world
+    token = deploy("StandardIssuerFixture")
+    send(token, "addBlackList(address)", accounts[1])
+    with pytest.raises(AssertionError):
+        send(token, "transfer(address,uint256)", accounts[1], 100)
+
+
+def test_wrong_source_chain_refuses(world):
+    world[-1]["chain_id"] = 2
+    with pytest.raises(issuer.Invalid, match="issuer chain differs"):
+        build(world)
+
+
+def test_finalized_hash_change_refuses(world):
+    class ChangedHash:
+        def __init__(self):
+            self.rpc = issuer.source.RPC(world[0])
+
+        def call(self, method, *params):
+            value = self.rpc.call(method, *params)
+            if method == "eth_getBlockByNumber" and params[0] != "finalized":
+                value["hash"] = "0x" + "f" * 64
+            return value
+
+    with pytest.raises(issuer.Invalid, match="checkpoint changed"):
+        redemption.prepare(ChangedHash(), world[-1], world[1][1], 100000000, 7)
+
+
+def test_rpc_error_even_with_a_result_refuses(world, monkeypatch):
+    import io
+    import json
+
+    real = issuer.source.urllib.request.urlopen
+
+    def ambiguous(*args, **kwargs):
+        with real(*args, **kwargs) as response:
+            answer = json.loads(response.read())
+        answer["error"] = dict(code=-32000, message="fixture error")
+        return io.BytesIO(json.dumps(answer).encode())
+
+    monkeypatch.setattr(issuer.source.urllib.request, "urlopen", ambiguous)
+    with pytest.raises(issuer.Invalid, match="source RPC refused"):
+        build(world)
