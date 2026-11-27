@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import copy
 import hashlib
+import http.client
 import importlib.util
 import json
 import re
@@ -228,7 +229,8 @@ def receipts(rpc, previous, target):
             )
             for log in receipt["logs"]:
                 require(
-                    log["transactionHash"] == tx
+                    isinstance(log, dict)
+                    and log["transactionHash"] == tx
                     and log["blockHash"] == parent
                     and quantity(log["blockNumber"]) == height
                     and quantity(log["transactionIndex"]) == index
@@ -271,8 +273,10 @@ def asset_events(logs, token, bridge):
         if sender == token:
             if topics[0] == TOPICS["DestroyedBlackFunds"]:
                 require(len(topics) == 1, "invalid destruction event")
-                words(log["data"], 2)
-                destroys += 1
+                destroyed, _ = words(log["data"], 2)
+                require(destroyed < 2**160, "noncanonical destroyed address")
+                if destroyed == int(bridge, 16):
+                    destroys += 1
             elif topics[0] in (TOPICS["Pause"], TOPICS["Paused"]):
                 # Legacy Pause() has no arguments; standard Paused(address) is data.
                 require(len(topics) == 1, "invalid pause event")
@@ -495,7 +499,7 @@ def main(argv=None):
         )
         monitor.atomic(args.out, value)
         return 0
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException, RecursionError):
         # Never leave a previously healthy report usable after an RPC failure.
         stale_report(args.report)
         monitor.atomic(args.out, dict(schema="tos-settlement-observation/1", complete=False))

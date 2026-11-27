@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "testnet/scripts/check-settlement.py"
 TEST = ROOT / "testnet/tests/test_check_settlement.py"
 MUTANTS = {
+    "deprecated_emergency": ('    "token_deprecated",', ""),
     "payout_age": ('height - created > limits["payout_blocks"]', "False"),
     "returned_count": ('len(returned) >= limits["returned_count"]', "False"),
     "returned_age": ('seconds > limits["returned_seconds"]', "False"),

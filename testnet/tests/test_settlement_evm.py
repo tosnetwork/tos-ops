@@ -332,3 +332,121 @@ def test_receipt_inventory_has_an_aggregate_byte_bound(monkeypatch):
     monkeypatch.setattr(collector, "MAX_LOG_BYTES", 16)
     with pytest.raises(collector.Invalid, match="log byte budget"):
         collector.receipts(LogRPC(), dict(height=0, hash=prior[2:]), target)
+
+
+def test_wrong_chain_refuses():
+    binding, base = standard_inputs()
+    binding["chain_id"] = 2
+    with pytest.raises(collector.Invalid, match="source chain differs"):
+        collector.collect(SourceRPC(), binding, base, None)
+
+
+def test_final_checkpoint_reorg_refuses():
+    class ReorgRPC(SourceRPC):
+        def call(self, method, *args):
+            value = super().call(method, *args)
+            if method == "eth_getBlockByNumber" and args[0] == "0x1":
+                reads = sum(m == method and a[0] == "0x1" for m, a in self.calls)
+                if reads == 2:
+                    value["hash"] = "0x" + "ff" * 32
+            return value
+
+    binding, base = standard_inputs()
+    with pytest.raises(collector.Invalid, match="source checkpoint reorg"):
+        collector.collect(ReorgRPC(), binding, base, None)
+
+
+class IntervalRPC(SourceRPC):
+    prior = "0x" + "00" * 32
+    tx = "0x" + "44" * 32
+
+    def __init__(self, fault):
+        super().__init__()
+        self.fault = fault
+
+    def call(self, method, *args):
+        if method == "eth_getBlockByNumber":
+            height = int(args[0], 16)
+            return dict(
+                number=hex(height + (self.fault == "number" and height == 1)),
+                hash=self.point_hash if height else self.prior,
+                parentHash=("0x" + "ff" * 32 if self.fault == "parent" else self.prior),
+                timestamp="0x1",
+                transactions=[self.tx] if height else [],
+            )
+        assert method == "eth_getTransactionReceipt"
+        return dict(
+            transactionHash=self.tx,
+            blockHash=self.prior if self.fault == "receipt" else self.point_hash,
+            blockNumber="0x1",
+            transactionIndex="0x0",
+            status="0x1",
+            logs=[None] if self.fault == "log" else [],
+        )
+
+
+@pytest.mark.parametrize(
+    "fault,reason",
+    [
+        ("number", "not contiguous"),
+        ("parent", "not contiguous"),
+        ("receipt", "receipt missing or mismatched"),
+        ("log", "log identity differs"),
+    ],
+)
+def test_interval_identities_refuse(fault, reason):
+    rpc = IntervalRPC(fault)
+    with pytest.raises(collector.Invalid, match=reason):
+        collector.receipts(
+            rpc, dict(height=0, hash=rpc.prior[2:]), dict(number="0x1", hash=rpc.point_hash)
+        )
+
+
+def test_unrelated_destroy_is_not_bridge_destroy():
+    rpc = SourceRPC()
+    log = dict(
+        address=rpc.token,
+        topics=[collector.TOPICS["DestroyedBlackFunds"]],
+        data="0x" + int(rpc.token, 16).to_bytes(32, "big").hex() + (100).to_bytes(32, "big").hex(),
+    )
+    assert collector.asset_events([log], rpc.token, rpc.bridge)[2] == 0, (
+        "unrelated destroy paused bridge"
+    )
+    log["data"] = (
+        "0x" + int(rpc.bridge, 16).to_bytes(32, "big").hex() + (100).to_bytes(32, "big").hex()
+    )
+    assert collector.asset_events([log], rpc.token, rpc.bridge)[2] == 1
+
+
+@pytest.mark.parametrize(
+    "failure", [collector.http.client.IncompleteRead(b"partial"), RecursionError("nested JSON")]
+)
+def test_transport_and_recursion_fail_stale(tmp_path, monkeypatch, failure):
+    binding, base = standard_inputs()
+    for name, value in [("binding", binding), ("tos", base)]:
+        collector.monitor.atomic(tmp_path / name, value)
+
+    class Broken(SourceRPC):
+        def call(self, *args):
+            raise failure
+
+    monkeypatch.setattr(collector, "RPC", lambda url: Broken())
+    assert (
+        collector.main(
+            [
+                "--rpc",
+                SourceRPC.url,
+                "--binding",
+                str(tmp_path / "binding"),
+                "--tos-snapshot",
+                str(tmp_path / "tos"),
+                "--initialize-baseline",
+                "--out",
+                str(tmp_path / "out"),
+                "--report",
+                str(tmp_path / "report"),
+            ]
+        )
+        == 2
+    )
+    assert json.loads((tmp_path / "report").read_text())["checkpoint"]["utime"] == 0

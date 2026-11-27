@@ -19,7 +19,10 @@ SPEC.loader.exec_module(collector)
 
 @pytest.mark.parametrize(
     "kind,data,counts",
-    [("Pause", "0x", (1, 0)), ("DestroyedBlackFunds", "0x" + "00" * 63 + "01", (0, 1))],
+    [
+        ("Pause", "0x", (1, 0)),
+        ("DestroyedBlackFunds", "0x" + "00" * 12 + "cd" * 20 + "00" * 31 + "01", (0, 1)),
+    ],
 )
 def test_valid_uppercase_event_topic_is_not_ignored(kind, data, counts):
     token, bridge = "0x" + "ab" * 20, "0x" + "cd" * 20
