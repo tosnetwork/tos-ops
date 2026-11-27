@@ -937,3 +937,36 @@ def test_implementation_change_is_an_asset_local_emergency(index):
         row["code"] == "token_upgrade" and row["asset"] == asset for row in result["alarms"]
     ), "upgrade alarm missing"
     assert result["provider_pause_assets"] == [asset], "upgrade did not pause only its asset"
+
+
+@pytest.mark.parametrize("index,code", [(0, "token_upgrade"), (1, "token_deprecated")])
+def test_issuer_incidents_latch_the_specific_emergency(tmp_path, monkeypatch, index, code):
+    monkeypatch.setattr(monitor.time, "time", lambda: NOW)
+    policy, snapshot = fixture()
+    if code == "token_upgrade":
+        snapshot["assets"][index]["implementation"] = "unreviewed-target"
+    else:
+        snapshot["assets"][index]["deprecated"] = True
+    policy_path, snapshot_path, state = (
+        tmp_path / "policy",
+        tmp_path / "snapshot",
+        tmp_path / "state",
+    )
+    monitor.atomic(policy_path, policy)
+    monitor.atomic(snapshot_path, snapshot)
+    assert (
+        monitor.main(
+            [
+                "--policy",
+                str(policy_path),
+                "--snapshot",
+                str(snapshot_path),
+                "--state-dir",
+                str(state),
+                "--initialize-baseline",
+            ]
+        )
+        == 2
+    )
+    incidents = monitor.read_json(state / "incidents.json")
+    assert ("usdc", "usdt")[index] + ":" + code in incidents, "issuer incident did not latch"

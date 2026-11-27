@@ -259,6 +259,25 @@ def block_logs(rpc, previous, target, addresses):
     return all_logs
 
 
+def retained_log_bytes(logs):
+    size = 0
+    for log in logs:
+        require(
+            isinstance(log, dict)
+            and set(log) == {"address", "topics", "data", "blockHash", "logIndex"},
+            "invalid archived log",
+        )
+        address(log["address"])
+        raw(log["blockHash"], 32)
+        quantity(log["logIndex"])
+        require(isinstance(log["topics"], list) and len(log["topics"]) <= 4, "archived topic bound")
+        for topic in log["topics"]:
+            raw(topic, 32)
+        size += len(raw(log["data"])) + 32 * len(log["topics"]) + 160
+        require(size <= MAX_LOG_BYTES, "source retained log byte bound")
+    return size
+
+
 def binding_hash(binding):
     return hashlib.sha256(
         json.dumps(binding, sort_keys=True, separators=(",", ":")).encode()
@@ -276,7 +295,7 @@ def gap_history(directory, binding, origin):
     )
     paths = sorted(directory.iterdir())
     require(len(paths) <= MAX_GAP_BATCHES, "gap archive batch bound")
-    cursor, logs, prior_hash = origin, [], "0" * 64
+    cursor, logs, prior_hash, log_bytes = origin, [], "0" * 64, 0
     for index, path in enumerate(paths):
         require(
             path.name == f"{index:06d}.json" and not path.is_symlink(),
@@ -304,6 +323,8 @@ def gap_history(directory, binding, origin):
         )
         monitor.digest(end["hash"])
         require(isinstance(batch["logs"], list), "gap archive logs missing")
+        log_bytes += retained_log_bytes(batch["logs"])
+        require(log_bytes <= MAX_LOG_BYTES, "source retained log byte bound")
         logs.extend(batch["logs"])
         require(len(logs) <= MAX_LOGS, "gap archive log bound")
         prior_hash = hashlib.sha256(data).hexdigest()
@@ -382,6 +403,7 @@ def collect(rpc, binding, base, previous, gap_dir=None):
     cursor, logs, _, _ = gap_history(gap_dir, binding, previous_point)
     logs += block_logs(rpc, cursor, target, [bridge] + [cfg["token"] for cfg in binding["assets"]])
     require(len(logs) <= MAX_LOGS, "source log aggregate bound")
+    retained_log_bytes(logs)
     require(code_hash(rpc, bridge, point) == binding["bridge_code_sha256"], "bridge code differs")
     configs = {a["id"]: a for a in binding["assets"]}
     require(

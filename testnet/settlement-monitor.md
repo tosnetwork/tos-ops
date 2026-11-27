@@ -120,7 +120,8 @@ For each source token, at one finalized source checkpoint, collect:
 - `bridge_blacklisted`, `paused`, `pause_events`, `destroy_events`, and pending
   `redemptions` (`id`, `blacklisted`). Event counts cover the entire interval,
   so pause followed by unpause still alarms. For USDT also collect
-  `fee_basis_points`, `maximum_fee`, `deprecated`, `implementation`; the latter
+  `fee_basis_points`, `maximum_fee`, `deprecated`. For either asset collect
+  `implementation`; the latter
   is a pinned identity including code/forwarding target, not merely a display
   version. A proxy target/code change must change this identity.
 
@@ -216,7 +217,7 @@ On **freeze, pause, bridge-fund destruction or legacy deprecation** (also unexpl
    critical governance ceremony. It is a slow admission stop, not immediate
    redemption recovery. Existing TOS payouts/refunds still settle in the same
    token; never misrepresent them as redeemable backing.
-4. Retain observations, source logs and receipts. Freeze/pause/bridge-destroy/deprecation/backing
+4. Retain observations, source logs and receipts. Freeze/pause/bridge-destroy/deprecation/implementation-change/backing
    incidents latch durably in `incidents.json`; later healthy samples do not
    clear the provider pause hook. Only an explicit reviewed incident resolution
    may archive those latches. No automatic unpause, cap increase or compensation.
@@ -278,7 +279,8 @@ the checker's `--snapshot`, and `--report` must be that state directory's
 Use `--initialize-baseline` instead of `--previous` only for the explicitly
 approved first observation. Never reset a missing interval as a new baseline.
 Run frequently enough to cover every finalized source block. The adapter is
-bounded to 64 source blocks, 4,096 transactions, 16,384 logs (16 MiB aggregate retained log bytes),
+bounded to 64 source blocks, 4,096 filtered logs and 1 MiB retained log bytes per block,
+16,384 logs and 16 MiB retained log bytes in total,
 256 redemption receivers per asset, 4 MiB per RPC
 response, a 45-second RPC-start budget and a 10-second per-I/O timeout.
 The checker imposes the outer 60-second process deadline. A longer/missing interval refuses; it
@@ -305,10 +307,19 @@ exactly one source binding. There are no keys or implicit production addresses.
   unknown issuer interfaces and cannot be enabled on another network or code.
 
 All calls/code/storage reads use the finalized block's hash and
-`requireCanonical`; the block is checked again before publication. The complete
-transaction list and every receipt in the interval are read, with receipt/log
-identity and duplicate checks. No paged `getLogs` query can silently truncate
-this inventory. A missing receipt, reorg, changed code, wrong chain, malformed
+`requireCanonical`; the block is checked again before publication. Block headers retain the
+transaction-hash list, but no receipt is fetched. Each block uses one EIP-234
+`eth_getLogs({blockHash, address: [bridge, tokens...]})` request, without range
+pagination or a topic filter. Every log must name the exact block and a matching
+transaction hash/index from its header, have removed=false, be in the address
+filter and have unique, strictly increasing logIndex with nondecreasing
+transactionIndex. The parent-hash chain starts at the approved previous hash.
+A block-global logIndex is **not consecutive after address filtering**: unrelated
+contracts create valid gaps. Ordering catches duplicates/reordering, but cannot
+prove that a trusted endpoint did not omit a filtered log (including an empty
+answer). EIP-234 binds empty answers to the requested hash under the endpoint
+contract; it is not a cryptographic completeness proof.
+A missing/non-array log answer, reorg, changed code, wrong chain, malformed
 return, bound, timeout or RPC failure invalidates the entire sample. These are
 **trusted endpoint** observations, not receipt-trie proofs or atomic
 cross-domain backing proofs.
@@ -323,7 +334,13 @@ legacy interface no longer observes the forwarded implementation reliably.
 Amounts stay in integer atomic units. Issuer identity is SHA-256 over the domain
 `source-issuer-v1\0`, runtime-code SHA-256, 20-byte forwarding address and target
 code SHA-256; the constituent fields are retained as `issuer_identity`. Pin this
-identity after source/code review, never by silently accepting its next value.
+identity in the checker policy after source/code review, never by silently accepting its next value.
+For **both** assets any mismatch raises `token_upgrade`, immediately pauses the
+affected asset through the provider hook and latches an incident. This includes
+a standard issuer EIP-1967 target/code change. Pause/blacklist remain independent
+checks; an implementation change need not alter those getters to be an emergency.
+As with other finalized observations, a target change and reversal entirely
+between observations is not continuous implementation attestation.
 
 Before its first RPC, the adapter atomically makes `report.json` stale
 (`utime = 0`), so even an interrupted/hung collector cannot leave old health
@@ -386,10 +403,87 @@ remains stale until it advances; this adapter does not rewrite chain times.
 
 ## Pre-production collector scale gate
 
-Before production, replace the per-transaction receipt inventory with per-block
-`eth_getLogs` using blockHash and the bridge/token address filter, retaining the
-parent-hash chain. A reviewed gap-reconciliation procedure must cover outages
-beyond the observation window. This is pending; no automatic baseline reset is
-permitted. Standard issuer interface coverage on the local EVM chain and an
-explicit implementation-change alarm or corrected identity-pinning policy are
-also pending production gates. These do not gate the local recognition rehearsal.
+T14c implements block-hash log collection, the explicit gap walk below and the
+standard issuer ABI/implementation-change alarm. Local tests exercise 6,001
+transactions in a block and a 32-block busy step (66 RPC calls, no receipts),
+per-block and aggregate bounds, a 130-block catch-up, and corrupt/missing batches.
+An isolated source fixture covers `isBlacklisted`, `paused` and the real EIP-1967
+storage slot. It models the slot/interface, not a production proxy release.
+The standard and legacy upgrade alarms are asset-local emergencies and remain
+latched. This closes tooling gates, not approval of a production deployment or
+issuer policy. Before T12, review the actual endpoint's filtered-log completeness
+contract, latency at the chosen step and issuer implementation pins.
+
+### Runbook: explicit gap reconciliation
+
+An outage over 64 finalized source blocks refuses normal collection. **Never**
+use `--initialize-baseline` to get past that refusal, edit `previous.json`, or
+clear incidents. Provider execution remains stopped by the stale report until
+the original interval is accounted for.
+
+1. Pause the periodic monitor schedule and retain its state/incident/outbox files
+   and their digests as evidence. Use the same reviewed binding and private state
+   directory; no payment adapter is invoked by this procedure. The gap command
+   acquires the same nonblocking `monitor.lock` as the checker and marks the
+   report STALE before any RPC. A competing checker must not be run separately.
+2. Run **one bounded batch**, inspect its exit code and checkpoint, then repeat
+   explicitly as needed. Paths below are operator-selected, not model inputs:
+
+   ```sh
+   python3 testnet/scripts/reconcile-settlement-gap.py \
+     --rpc https://RPC_ENDPOINT --binding source-binding.json \
+     --state-dir monitor-state --gap-dir source-gap-evidence --blocks 32
+   ```
+
+   `--blocks` is 1..32. Every batch starts at the original approved source
+   checkpoint or the last checked archive checkpoint, walks every block with the
+   same parent/log/transaction checks, and rechecks its endpoint and finalized
+   anchor. It appends one atomic numbered JSON file only after all checks pass.
+   The binding, original checkpoint, from/to hashes and previous-file digest
+   form a linked archive. No baseline, incidents, outbox or healthy report is
+   advanced. A crash before an append repeats read-only work; after an append,
+   the next invocation resumes from it. The directory must be private and owned;
+   unexpected, missing, renamed or symlinked files refuse. Retain the directory
+   as trusted operator evidence, not as a cross-domain proof.
+3. Exit 0 means only that this batch succeeded. `caught_up: true` says its end
+   reached the finalized height observed by that invocation, not that monitoring
+   is healthy. Exit 2 means stop: retain STALE and the last valid batch, diagnose
+   the failed block/RPC read without skipping it. No partial batch is accepted.
+   An interrupted atomic-write temporary file also needs operator inspection;
+   do not discard a committed batch or substitute a new origin.
+4. Fetch a fresh authenticated TOS snapshot and use the **original** monitor
+   `previous.json` in the normal collector/checker wrapper, adding
+   `--gap-dir source-gap-evidence` to the collector. The archive must match
+   that exact origin and binding. The collector includes **all** archived events
+   plus any bounded new tail, rereads current issuer/balance/cap state, and
+   rechecks the final source hash. The normal checker then evaluates the full
+   event/balance interval and latches emergencies before advancing state. If the
+   tail already exceeds 64 blocks, run another explicit batch first. Historical
+   batches do not bypass the checker's normal final-checkpoint freshness rule.
+5. Only after the checker has successfully advanced `previous.json`, remove the
+   gap argument from the periodic wrapper and resume its schedule. Retain the
+   archive and report/incident receipts. Reusing an archive with a new baseline
+   refuses; never edit its origin to make it fit. A successful observation with
+   alarms is not permission to clear incidents or resume the affected asset.
+
+The archive is bounded to 1,024 batches, 8 MiB per file and 16,384 logs/16 MiB
+retained log bytes across the interval, matching the normal collector's retained
+inventory bounds. A dense batch may be retried read-only with fewer blocks;
+an aggregate-bound refusal requires a separately reviewed extended audit, **not**
+a silent baseline reset or a skipped block. Keep each invocation within the
+45-second RPC-start budget and supervise it with a 60-second process deadline.
+
+Additional verification:
+
+```sh
+python3 -m pytest -q testnet/tests/test_settlement_evm_scale.py
+python3 testnet/tests/settlement_evm_mutants.py --log-dir SOURCE_CONTROL_LOGS
+python3 testnet/tests/settlement_gap_mutants.py --log-dir GAP_CONTROL_LOGS
+python3 testnet/tests/settlement_monitor_mutants.py
+```
+
+The protocol/filter semantics follow [EIP-234](https://eips.ethereum.org/EIPS/eip-234).
+This is new TOS operational code: the fetched upstream core at
+`99143587e6babb2e577eadea0fc741cb1b413fab` has no collector, gap runner or issuer
+alarm counterpart, and no upstream repair to port. No consensus or bridge
+contract code is changed.
