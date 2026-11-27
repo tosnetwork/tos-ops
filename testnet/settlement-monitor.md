@@ -251,3 +251,101 @@ actor getter and accounting layout at `12cf5522801a30806eeb7cda9ee85fbd051ecbca`
 The upstream default branch at `99143587e6babb2e577eadea0fc741cb1b413fab`
 has neither this actor nor this operational checker; there is no corresponding
 upstream repair to port.
+
+## Read-only EVM observation adapter
+
+`collect-settlement-evm.py` supplies the source half of an observation. Its
+`--tos-snapshot` must already contain the authenticated, complete TOS actor,
+wallet, supply, recognition and shared-window reads at one finalized checkpoint;
+this adapter does not invent them or turn JSON into a proof. Configure it through
+`check-settlement.py --collect` so the checker holds its existing monitor lock.
+Do not run overlapping collectors and checkers against the same files.
+
+```sh
+python3 testnet/scripts/collect-settlement-evm.py \
+  --rpc http://127.0.0.1:18545 --binding source-binding.json \
+  --tos-snapshot tos-observation.json --previous monitor-state/previous.json \
+  --out observation.json --report monitor-state/report.json
+```
+
+Use `--initialize-baseline` instead of `--previous` only for the explicitly
+approved first observation. Never reset a missing interval as a new baseline.
+Run frequently enough to cover every finalized source block. The adapter is
+bounded to 64 source blocks, 4,096 transactions, 16,384 logs,
+256 redemption receivers per asset, 4 MiB per RPC
+response and 45 seconds per collection. A longer/missing interval refuses; it
+needs read-only reconciliation, not an automatic baseline reset.
+
+Binding schema `tos-settlement-source/1` contains `network` (the approved TOS
+zero-state root), integer `chain_id`, EVM `bridge`, `bridge_code_sha256`, and
+unique `assets` (at most 16). Every asset contains `id`, `token`,
+`code_sha256`, `profile`, and `redemptions` (`id`, pinned EVM `receiver` for each
+redemption already listed by the TOS observation). Every TOS asset must have
+exactly one source binding. There are no keys or implicit production addresses.
+
+- `legacy_usdt` reads `isBlackListed(address)`, `paused`, `basisPointsRate`,
+  `maximumFee`, `deprecated` and `upgradedAddress`. Blacklisting is sender-only:
+  the bridge can still receive locks while it cannot send unlocks/refunds. No
+  balance shortfall is required for a `bridge_frozen` alarm.
+- `standard` reads `isBlacklisted(address)` and `paused`. Pin that issuer's exact
+  32-byte `implementation_slot`; the adapter reads the forwarding address and
+  target code at the same checkpoint. A getter failure is never a false flag.
+- `local_test` is limited to the approved existing local genesis, a loopback
+  endpoint and the exact original test-USDC runtime hash. That fixture has no
+  blacklist, pause or upgrade mechanism; those observations are fixed false,
+  and a nonzero `feeBasisPoints` refuses collection. It is not a fallback for
+  unknown issuer interfaces and cannot be enabled on another network or code.
+
+All calls/code/storage reads use the finalized block's hash and
+`requireCanonical`; the block is checked again before publication. The complete
+transaction list and every receipt in the interval are read, with receipt/log
+identity and duplicate checks. No paged `getLogs` query can silently truncate
+this inventory. A missing receipt, reorg, changed code, wrong chain, malformed
+return, bound, timeout or RPC failure invalidates the entire sample. These are
+**trusted endpoint** observations, not receipt-trie proofs or atomic
+cross-domain backing proofs.
+
+The adapter collects actual `balanceOf`, all seven `getLockCapState` words,
+bridge Lock/Unlock/LockRefunded events, Pause/Paused events (including pause then
+unpause), and DestroyedBlackFunds even though it emits no Transfer event.
+Amounts stay in integer atomic units. Issuer identity is SHA-256 over the domain
+`source-issuer-v1\0`, runtime-code SHA-256, 20-byte forwarding address and target
+code SHA-256; the constituent fields are retained as `issuer_identity`. Pin this
+identity after source/code review, never by silently accepting its next value.
+
+On failure, the adapter atomically makes `report.json` stale (`utime = 0`) and
+publishes an incomplete observation, then exits 2. This immediately triggers
+existing provider stale-monitor refusal; it does not wait for the former healthy
+report's age limit. Existing incident latches remain in the checker's state and
+are reapplied on the next successful sample. A filesystem that cannot persist
+that stale marker is also a failed collection: supervise the nonzero exit and
+retain the normal freshness watchdog. No adapter can promise durable output on
+a full or failed disk.
+
+The adapter never votes, signs, builds a burn or changes an actor. Its RPC method
+allowlist rejects signing and state-override methods before transport. Immediate
+oracle disable/lock-stop remains an operator/oracle action. Redemption-build
+prechecks and received-amount previews are separate tooling work; monitoring an
+unsafe receiver is not a substitute for those guards.
+
+### Adapter verification
+
+The explicit source-only acceptance suite starts a separate ephemeral loopback
+Anvil instance. It never resets or writes the existing TOS/EVM network. It uses
+local behavioural fixtures; it does not certify a production issuer release.
+Run under the shared thermal guard, with `anvil`, `cast`, Node and the pinned
+Solidity compiler module available:
+
+```sh
+export TOS_EVM_SOLC_MODULE="$TOS_ROOT/crosschain/token-bridge/evm/node_modules/solc"
+"$TOS_ROOT/.venv/bin/python" -m pytest -q \
+  testnet/tests/test_settlement_evm.py testnet/tests/anvil_settlement_observer.py
+"$TOS_ROOT/.venv/bin/python" testnet/tests/settlement_evm_mutants.py \
+  --log-dir /path/to/evidence/source-mutants
+```
+
+Dependencies are mandatory, with no skipped missing-compiler tests. Mutation
+controls operate in isolated temporary copies; syntax/build/setup errors,
+timeouts and survivors fail the run rather than count as kills. Source
+collection is TOS-specific operations code, absent in the upstream core at
+`99143587e6babb2e577eadea0fc741cb1b413fab`.
