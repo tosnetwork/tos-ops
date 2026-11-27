@@ -1,0 +1,65 @@
+{
+  "schema": "tos.service.purchase-verdict.token.v1",
+  "result": "pass",
+  "network": {
+    "network_id": "local-usdc-t10",
+    "genesis_root_hash": "sha256:65735247a371030abe811aeac0afe357301ce90e161450d26f88b4beb5b4c366",
+    "genesis_file_hash": "sha256:c3860fe196a2a1b5e4e74a9cf9448624a353ce68a8c4c5f6413347586d688769"
+  },
+  "checkpoint": {
+    "seqno": 211011,
+    "chain_time": 1795706397,
+    "block_root_hash": "sha256:6b700551f83f7013ebebc871c066128ddc2a516e1504ff55634f2d84df9286b1",
+    "block_file_hash": "sha256:dd93af165b4b1e778b2cdfdb4b6d4d191b47184b6fde2d50aa97355a259e1cd6"
+  },
+  "requests": [
+    {
+      "request_id": 1,
+      "request_hash": "28129ff6e678c95d449c80762fbd1755f7d6a36c14482c3b31c6d1e37f8e12f0",
+      "caller": "0:510bc7733e4a8058776761f7d63d03ec7ecf5ca54557ce8e8c05198d72aca673",
+      "state": "returned",
+      "price_atomic": "1000000",
+      "payout_id": 3,
+      "returned_id": 3,
+      "destination": "0:3d2fb0706f712e7381879eebe13b6d8592de53053281559786549cee58939a19",
+      "call": {
+        "lt": 209159000007,
+        "hash": "8876b4777fe9bd5289f6241b5ecd3b38e916e85f5e55430f1095b160b769f4af"
+      },
+      "next_action": "claim_returned with the returned entry id"
+    }
+  ],
+  "funding_refusals": [],
+  "checks": [
+    {
+      "id": "finalized-state",
+      "ok": true,
+      "detail": "complete actor history and typed pending, refund, payout and returned cells agree"
+    }
+  ],
+  "not_claimed": [
+    "operator independence of the endpoints: agreeing endpoints run by one operator are one source",
+    "computation correctness: a Receipt is the provider's attested statement of the digests it binds",
+    "the identity or independence of the buyer, the provider or the verifier",
+    "anything after the checkpoint, or about a request the verification did not select",
+    "without an evidence bundle, only the caller wallet of each request is proven: not its Quote, its Capability binding or whose purchase it is; bind the reported caller to the buyer's declared wallet",
+    "without a token bundle, no asset-recognition or funding-chain claim is made"
+  ],
+  "reads": {
+    "endpoints": [
+      {
+        "url": "http://127.0.0.1:8014/jsonRPC",
+        "genesis_ok": true
+      },
+      {
+        "url": "http://127.0.0.1:8015/jsonRPC",
+        "genesis_ok": true
+      },
+      {
+        "url": "http://127.0.0.1:8016/jsonRPC",
+        "genesis_ok": true
+      }
+    ],
+    "quorum": 3
+  }
+}

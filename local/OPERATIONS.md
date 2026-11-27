@@ -167,3 +167,9 @@ Evidence is written to `/data/usdc/evidence/`, one JSON file per step; `status`
 prints the recorded facts and the live token balance and ConfigParams.
 Tests: `local/tests/test_local_pq_usdc.py` and
 `testnet/tests/test_governance_settlement_assets.py`.
+
+## Token actor lifecycle checks
+
+The journaled [local token actor procedure](SERVICE-TOKEN.md) reuses the bridge
+run and its minted test balance without resetting this network. Its evidence
+distinguishes contract-driven checks from the complete buyer/provider run.

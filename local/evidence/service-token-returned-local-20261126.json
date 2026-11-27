@@ -1,0 +1,420 @@
+{
+  "schema": "local.service-token.returned-evidence.v1",
+  "scope": "LOCAL ONLY; synthetic oracle-authorized test namespace; not a lock-backed asset",
+  "global_id": 3,
+  "genesis": "65735247a371030abe811aeac0afe357301ce90e161450d26f88b4beb5b4c366",
+  "label": "LOCAL-ONLY-TEST-REFUSAL-v1",
+  "source_token_ascii": "LOCAL_ONLY_TEST_REFU",
+  "bridge_config_param": 81,
+  "source_chain_id": 56,
+  "master": "0:14095df0a53ff8734f6acd8fbbe10323d035b036716b9fe31f2abf3701455ac8",
+  "bridge": "-1:907e0a0911d7c43a999c57385953157a698621b96fddf9b72cab180bb82311af",
+  "actor": "0:d045ca0abde9d0f2884794bd319082fbb3358092f5bf8bbacdd199550bff2853",
+  "code_hashes": {
+    "multisig": "41c27cbfd770d6adbe71ea40b4672e0e415eef78e56ae57a2fe6586be5f91f09",
+    "token-bridge": "147e81325f1b2ffc6281346df79dbb30624a13ce5393907c8424d711c2e82f63",
+    "token-minter": "a2284cd65a1b9b2ac31dd1ec2f17bd0c6ecd4571211c0d67a4977da01da05fa4",
+    "token-wallet": "cf5c98a11cf3de09b1cf702fa1eba38d870c822abb866320bba2da59dac013df",
+    "votes-collector": "e873e06844c046b3ff7fed53740ae5bff2e62c2d9afee7cf8f05c45ddff6179e"
+  },
+  "actor_code_hash": "edf727b8bb61786e33e3e00dc57fa1db41f8eeb6cbddc0382b3e8daf227e4c89",
+  "recognition": {
+    "config84_value_hash": "6952c8042728755c2c46a42c4d9d396602266e6dff739f8a8abe18b57ffc33a3",
+    "critical_set_wins": 4,
+    "normal_governance": true,
+    "original_entry_unchanged": true,
+    "original_entry_fields_sha256": "36d21e03d254e074989ecbd228416689a4093a04f2ff347619756de8063072aa"
+  },
+  "returned_0": {
+    "result": "pass",
+    "requests": [
+      {
+        "request_id": 0,
+        "request_hash": "11f755b0fa1aba7396c5031ff1dea057376193e94de5ae3ca75b5d62ab810657",
+        "caller": "0:510bc7733e4a8058776761f7d63d03ec7ecf5ca54557ce8e8c05198d72aca673",
+        "state": "returned",
+        "price_atomic": "1000000",
+        "payout_id": 1,
+        "returned_id": 1,
+        "destination": "0:3d2fb0706f712e7381879eebe13b6d8592de53053281559786549cee58939a19",
+        "call": {
+          "lt": 209138000007,
+          "hash": "f54c3a11c8891bc91130ed3af9c57a181ce55215c423e3bc97d71b714d0f1545"
+        },
+        "next_action": "claim_returned with the returned entry id"
+      }
+    ],
+    "record_sha256": "67ab9cc12966b973d4a90c1ddca97d915768a6fabd197a5dbcf96151e60f6be5"
+  },
+  "claimed_0": {
+    "result": "pass",
+    "requests": [
+      {
+        "request_id": 0,
+        "request_hash": "11f755b0fa1aba7396c5031ff1dea057376193e94de5ae3ca75b5d62ab810657",
+        "caller": "0:510bc7733e4a8058776761f7d63d03ec7ecf5ca54557ce8e8c05198d72aca673",
+        "state": "refunded",
+        "price_atomic": "1000000",
+        "payout_id": 2,
+        "returned_id": 1,
+        "destination": "0:510bc7733e4a8058776761f7d63d03ec7ecf5ca54557ce8e8c05198d72aca673",
+        "call": {
+          "lt": 209138000007,
+          "hash": "f54c3a11c8891bc91130ed3af9c57a181ce55215c423e3bc97d71b714d0f1545"
+        }
+      }
+    ],
+    "record_sha256": "b3c286539e6aca082670158da425fd045db7c1d8651692fe1cb6e653c55727d5"
+  },
+  "returned_1": {
+    "result": "pass",
+    "requests": [
+      {
+        "request_id": 1,
+        "request_hash": "28129ff6e678c95d449c80762fbd1755f7d6a36c14482c3b31c6d1e37f8e12f0",
+        "caller": "0:510bc7733e4a8058776761f7d63d03ec7ecf5ca54557ce8e8c05198d72aca673",
+        "state": "returned",
+        "price_atomic": "1000000",
+        "payout_id": 3,
+        "returned_id": 3,
+        "destination": "0:3d2fb0706f712e7381879eebe13b6d8592de53053281559786549cee58939a19",
+        "call": {
+          "lt": 209159000007,
+          "hash": "8876b4777fe9bd5289f6241b5ecd3b38e916e85f5e55430f1095b160b769f4af"
+        },
+        "next_action": "claim_returned with the returned entry id"
+      }
+    ],
+    "record_sha256": "d5abe6a3f5673bba8aa8e8e3f6a8e35ed5b03e16f57718f6ae6cd55ff44fae6a"
+  },
+  "receiver_receipt_chains": [
+    {
+      "source_transaction": {
+        "lt": 211049000005,
+        "hash": "e262e56f8ea7fdd3ca4826b0e2589fabffb9c8c88e2d441bd9b32c1340e37647"
+      },
+      "message_hash": "dad1b4130f845df181c3ff3171bec08335f750fb4421c614175cd7abd788b1e0",
+      "receiver": "0:0738922a214f784dba709977b7773d2eb63cf086032803c45229ba8c91438432",
+      "receiver_transaction": {
+        "lt": 211049000007,
+        "hash": "f896d7ba5432b8ecaadf6456f1dab9509606f78ab3d101911b55506bc86e84be"
+      },
+      "compute_exit": 1980,
+      "aborted": true,
+      "bounce_message_hash": "0835f6463f8d5fe8fae887a063db2af7e22c713fa404ecd2f85c0e2293110643",
+      "source_bounce_transaction": {
+        "lt": 211049000009,
+        "hash": "73950352baae27939b08df5652163435c71a39bc2dbc845ff085f6cdae9c77a2"
+      },
+      "refused_message_hash": "3f45c70e130db1ad969c97a98e681714bf2475a4ae2a1fa5a47d0bcdc4bfdc99",
+      "actor_outcome_transaction": {
+        "lt": 211049000011,
+        "hash": "de1e7fe4e9c37d5e4f99f8208cd3d5fb6d11da8421f02af4f5e2d18373c601e4"
+      },
+      "actor_opcode": "0x52544631",
+      "two_nodes_same_boc": true,
+      "state_init_hash": "0738922a214f784dba709977b7773d2eb63cf086032803c45229ba8c91438432",
+      "wallet_code_hash": "cf5c98a11cf3de09b1cf702fa1eba38d870c822abb866320bba2da59dac013df"
+    },
+    {
+      "source_transaction": {
+        "lt": 211091000005,
+        "hash": "cca8060af5a623119597ecbcfc2d87b988bd686867f01b7d65074fccc5c89d6f"
+      },
+      "message_hash": "7f137d325efafc24f6a11eeee2ed610716e47e92999a51c60be3aa724bf80fd2",
+      "receiver": "0:0738922a214f784dba709977b7773d2eb63cf086032803c45229ba8c91438432",
+      "receiver_transaction": {
+        "lt": 211091000007,
+        "hash": "bce8f33c2232d2c3aa97a2faec65884a0badc012719902fa9d9ba3141cb21632"
+      },
+      "compute_exit": 1980,
+      "aborted": true,
+      "bounce_message_hash": "cffdc41370c44dfcd643a57323afefec9fcc7822c56ac0b7038cb61ef6ef5b2a",
+      "source_bounce_transaction": {
+        "lt": 211091000009,
+        "hash": "5b70574ac1306f0097a8666e4b58fff05d2d2e26bb0f63e25810e9bee63e9498"
+      },
+      "refused_message_hash": "45905a3afd5fcf3d80b6e74b67c614228d1d131fcce00182ce0cd4886898ef34",
+      "actor_outcome_transaction": {
+        "lt": 211091000011,
+        "hash": "88f53664c05e63ec57594b13b4fb3b016ed610017841f747f5b70dd8f9348dcb"
+      },
+      "actor_opcode": "0x52544631",
+      "two_nodes_same_boc": true,
+      "state_init_hash": "0738922a214f784dba709977b7773d2eb63cf086032803c45229ba8c91438432",
+      "wallet_code_hash": "cf5c98a11cf3de09b1cf702fa1eba38d870c822abb866320bba2da59dac013df"
+    }
+  ],
+  "final_test_balances": {
+    "balance_checkpoint": 211204,
+    "block": {
+      "@type": "tos.blockIdExt",
+      "workchain": -1,
+      "shard": "-9223372036854775808",
+      "seqno": 211204,
+      "root_hash": "uUKqZbbHf4H/YLUgwUwLyV9csoqZfC/buXqoHWoQqa4=",
+      "file_hash": "psPQlw/a8S1R51F/x1y4oLHQU3AainK0PcuAG0GqARI="
+    },
+    "buyer_wallet_atomic": 4000000,
+    "actor_wallet_atomic": 1000000,
+    "supply_atomic": 5000000,
+    "actor_ledger": [
+      0,
+      0,
+      1000000,
+      0,
+      0
+    ]
+  },
+  "sweep": {
+    "classification": "NOT RUN",
+    "reason": "30-day return deadline has not arrived",
+    "returned_id": 3,
+    "deadline": 1798298390,
+    "deadline_utc": "2026-12-26T15:19:50+00:00"
+  },
+  "early_sweep": {
+    "result": "PASS",
+    "returned_id": 3,
+    "return_deadline": 1798298390,
+    "reason": "sweep-returned deadline has not arrived",
+    "no_new_signed_intent": true
+  },
+  "original_asset": {
+    "balances_atomic": {
+      "actor": 1000000,
+      "actor_owner": 2000000,
+      "bridge_buyer": 20000000,
+      "work_buyer": 2000000
+    },
+    "block": {
+      "@type": "tos.blockIdExt",
+      "file_hash": "CpXZhHgJIjRk5u52lktp2mWb6rqHfK7CVFNg0VETUT4=",
+      "root_hash": "t19pDl4DpBEmkxympCYhHzMpHHnBCgnZjDU8FeL6SIQ=",
+      "seqno": 211320,
+      "shard": "-9223372036854775808",
+      "workchain": -1
+    },
+    "checkpoint": 211320,
+    "rpc_count": 3,
+    "supply_atomic": 25000000,
+    "wallets": {
+      "actor": "0:47a698f96279b2b1dcf9dc69896b7d9f94e8776a88df4a9462646332387b20ff",
+      "actor_owner": "0:20b9e283d9497e8aadecc97ab9edb7b6b9dc9a9b4f2179f1e92e459d49234ad4",
+      "bridge_buyer": "0:f4e1d7eea4e37c69705a44a5a90cdbf524a2a07f2f6e61280304230f60ac70de",
+      "work_buyer": "0:66e3d7a382b9b382605cfe0dca6f6254d73b4ad5bd7c89c7bc8f66d7ce80e112"
+    }
+  },
+  "native_setup_funding": {
+    "namespace-fund": {
+      "state": "done",
+      "wallet": "-1:30b6e856375c15a24a205f525912cc5e8496c8f9956ed6f770036ffada233513",
+      "external_message_hash": "126203f4c0c10d87d3e44e5e4bca5d92e4c68f8ded0f1be9ed2d59bf11ecc43e",
+      "destination": "-1:d5ceb38e655c14ac8834e7d387898c9de9277ac44fab589ae4b6cb7ee9cc59a1",
+      "value_nanotos": 45000000000,
+      "source_transaction": {
+        "lt": 204031000001,
+        "hash": "b6e418bfdadd50ecdae7fbd1f621841199c35d88bb04011705bffaa370e424cb"
+      }
+    },
+    "fund-governance-payer": {
+      "state": "done",
+      "wallet": "-1:30b6e856375c15a24a205f525912cc5e8496c8f9956ed6f770036ffada233513",
+      "external_message_hash": "e43ff50d2b3bb53c3e7c018daeeed62a06a24e6a5d943444eb7dfb2057ff6236",
+      "destination": "-1:6668d6d5ae1f04693baf3c4d38e66e7a61ca310e6d210bfba712564344036b87",
+      "value_nanotos": 35000000000,
+      "source_transaction": {
+        "lt": 204319000001,
+        "hash": "a4d0231e466ce301e18ba045d4237771f5d0295d9aa46d55a0960c039149cfc8"
+      }
+    },
+    "critical-recognition-fees": {
+      "state": "done",
+      "wallet": "-1:0000000000000000000000000000000000000000000000000000000000000000",
+      "external_message_hash": "61d63f390e383fba7b33416e730f490f741d7e6cd409d1ec1fa7cd362e8c7d54",
+      "destination": "-1:6668d6d5ae1f04693baf3c4d38e66e7a61ca310e6d210bfba712564344036b87",
+      "value_nanotos": 60000000000,
+      "source_transaction": {
+        "lt": 205344000001,
+        "hash": "8b625648e7a7452e4c09627e0480618fde99cf3b5589b4895c11d98d5cdad0b7"
+      }
+    }
+  },
+  "sends": {
+    "activate-owner": {
+      "state": "done",
+      "wallet": null,
+      "external_message_hash": "a553c8ff08023c74496ab9a30def6f611c0528e2c78d042f8e4f46fe3c308545",
+      "destination": null,
+      "value_nanotos": null,
+      "source_transaction": {
+        "lt": 205168000001,
+        "hash": "0452ec4f39a8b667118d94998b6b538aff642f4c304376637cd0087800646648"
+      }
+    },
+    "call-refunded": {
+      "state": "done",
+      "wallet": "0:510bc7733e4a8058776761f7d63d03ec7ecf5ca54557ce8e8c05198d72aca673",
+      "external_message_hash": "c50b96b12c6e87b273e8b5e6ff7d6bfee5d8093a7fa55c21c72544e7b977c680",
+      "destination": "0:047a075927c953b6534268efda6e368588e9069649ce7cd7ad0e3d5bd3c858a0",
+      "value_nanotos": 1134151976,
+      "source_transaction": {
+        "lt": 209138000001,
+        "hash": "7ac8d6d15e347009b912688f71d052221eac654f56e4e58867ccec30774ebc1a"
+      }
+    },
+    "call-swept": {
+      "state": "done",
+      "wallet": "0:510bc7733e4a8058776761f7d63d03ec7ecf5ca54557ce8e8c05198d72aca673",
+      "external_message_hash": "ab409df3dae292b06e3a081483517fefab51e726f26b2242979e28b78625a872",
+      "destination": "0:047a075927c953b6534268efda6e368588e9069649ce7cd7ad0e3d5bd3c858a0",
+      "value_nanotos": 1134151976,
+      "source_transaction": {
+        "lt": 209159000001,
+        "hash": "6bb35c9c112ecdbd97410320194ea16526b23d99ca152b21df8535a1949b5c0e"
+      }
+    },
+    "deploy-actor": {
+      "state": "done",
+      "wallet": "0:745a7f916957c9100365ab1671110b714ca48d9dbbe5b2bfa3ec7303c5e82891",
+      "external_message_hash": "25d4b9053a0b233be22bc02fcd59bf3fe10dacbcfbf108dfe14782feff8e72f4",
+      "destination": "0:d045ca0abde9d0f2884794bd319082fbb3358092f5bf8bbacdd199550bff2853",
+      "value_nanotos": 5000000000,
+      "source_transaction": {
+        "lt": 205173000001,
+        "hash": "50bd7c4248f09c43a0b8d6024e10382c02fd0d3968c316591b7d0fc0057b187e"
+      }
+    },
+    "fund-owner": {
+      "state": "done",
+      "wallet": "-1:d5ceb38e655c14ac8834e7d387898c9de9277ac44fab589ae4b6cb7ee9cc59a1",
+      "external_message_hash": "f0f9090d799b9c149c1f098d39c05e70f8c4be65e2a7fadd7d527bcc93b85376",
+      "destination": "0:745a7f916957c9100365ab1671110b714ca48d9dbbe5b2bfa3ec7303c5e82891",
+      "value_nanotos": 20000000000,
+      "source_transaction": {
+        "lt": 205163000001,
+        "hash": "13d98c014d788980857667664069f2270e0f2275cacf28ad4aee7a7427756585"
+      }
+    },
+    "fund-refusal-buyer": {
+      "state": "done",
+      "wallet": "0:745a7f916957c9100365ab1671110b714ca48d9dbbe5b2bfa3ec7303c5e82891",
+      "external_message_hash": "7fbb6de0bb1fcf404f84a0dfbf4fc7035644f058f0f13ee90d7c1fb05057064d",
+      "destination": "0:510bc7733e4a8058776761f7d63d03ec7ecf5ca54557ce8e8c05198d72aca673",
+      "value_nanotos": 2000000000,
+      "source_transaction": {
+        "lt": 207555000001,
+        "hash": "d10855cd8ea8885d85ceb990e0a2f8015d67e305e24da44ec80c84da8263b518"
+      }
+    },
+    "returned-claim-1": {
+      "state": "done",
+      "wallet": "0:510bc7733e4a8058776761f7d63d03ec7ecf5ca54557ce8e8c05198d72aca673",
+      "external_message_hash": "53552c18684ce5dee1fc358789ed030d68dfd4911c8576da3900635cdf112e1b",
+      "destination": "0:d045ca0abde9d0f2884794bd319082fbb3358092f5bf8bbacdd199550bff2853",
+      "value_nanotos": 989260496,
+      "source_transaction": {
+        "lt": 211070000001,
+        "hash": "9b0f321d6ecc2afe72c5a4a49dfcefd12ba5a205ec0467309b4f05c4cca11080"
+      }
+    },
+    "returned-expire-0": {
+      "state": "done",
+      "wallet": "0:745a7f916957c9100365ab1671110b714ca48d9dbbe5b2bfa3ec7303c5e82891",
+      "external_message_hash": "bad043d6a0a2e3831eaf5b4a7dc63901318a4d8b5ee88da9e9138097498f49ea",
+      "destination": "0:d045ca0abde9d0f2884794bd319082fbb3358092f5bf8bbacdd199550bff2853",
+      "value_nanotos": 10000000,
+      "source_transaction": {
+        "lt": 210673000001,
+        "hash": "36ed2bf906cb348d540c07f8c08b30208eb3d1f2648453217a126e648c832fab"
+      }
+    },
+    "returned-expire-1": {
+      "state": "done",
+      "wallet": "0:745a7f916957c9100365ab1671110b714ca48d9dbbe5b2bfa3ec7303c5e82891",
+      "external_message_hash": "010a2f1cbc6baf5581bd301b6c2d9f7530d32d4a816e140c037808fd8d990d72",
+      "destination": "0:d045ca0abde9d0f2884794bd319082fbb3358092f5bf8bbacdd199550bff2853",
+      "value_nanotos": 10000000,
+      "source_transaction": {
+        "lt": 210695000001,
+        "hash": "a2d2e1c042ed2f4eeb3714ef653587bfbe093bd5a2eb716b65594102cc6419d1"
+      }
+    },
+    "returned-refund-final-0": {
+      "state": "done",
+      "wallet": "0:510bc7733e4a8058776761f7d63d03ec7ecf5ca54557ce8e8c05198d72aca673",
+      "external_message_hash": "a7f26629c5815ded0d83e658a2e22ddd0eb3bf5aca05693f5f9e13c8615ed81f",
+      "destination": "0:d045ca0abde9d0f2884794bd319082fbb3358092f5bf8bbacdd199550bff2853",
+      "value_nanotos": 989260496,
+      "source_transaction": {
+        "lt": 211049000001,
+        "hash": "c713628855a1baa0b578fd4a350cfdf283123d5cd7352c962a2ce867622c78a7"
+      }
+    },
+    "returned-refund-final-1": {
+      "state": "done",
+      "wallet": "0:510bc7733e4a8058776761f7d63d03ec7ecf5ca54557ce8e8c05198d72aca673",
+      "external_message_hash": "e2384807e58cb95e9b30f11cbab800cb1c4aed30a07dbdbb0d5204ca6524d5ec",
+      "destination": "0:d045ca0abde9d0f2884794bd319082fbb3358092f5bf8bbacdd199550bff2853",
+      "value_nanotos": 989260496,
+      "source_transaction": {
+        "lt": 211091000001,
+        "hash": "e4512b4777e5d1d48aff499e8384f83ebfb9fbdce203d14fd32c2ea5458784f7"
+      }
+    },
+    "returned-wallet-reserve": {
+      "state": "done",
+      "wallet": "0:745a7f916957c9100365ab1671110b714ca48d9dbbe5b2bfa3ec7303c5e82891",
+      "external_message_hash": "c0add5aa80df9d69081c30f8dae0f79a333a133df60f5c415f72168185d21a4f",
+      "destination": "0:545df61e49a879711bc4f11a6ccf047b496d7fae53e0070ba75912749837beb7",
+      "value_nanotos": 1000000000,
+      "source_transaction": {
+        "lt": 209180000001,
+        "hash": "fbedf60895d8e47b8f92885c14c10325cfcc8adc634c3ef58814a1785b943291"
+      }
+    }
+  },
+  "independent_resolver_rpc_nodes": [
+    4,
+    5,
+    6
+  ],
+  "receipt_equality_nodes": [
+    4,
+    5
+  ],
+  "no_state_override": true,
+  "recognition_bypass": false,
+  "release_artifacts_changed": false,
+  "namespace_rerun_signed_intents_unchanged": true,
+  "limitations": [
+    "The returned sweep has not run: its unmodified 30-day deadline is in the future.",
+    "This synthetic namespace proves receiver-refusal and returned-entry handling; it is not an additional test USDC issuance."
+  ],
+  "upstream": {
+    "commit": "99143587e6babb2e577eadea0fc741cb1b413fab",
+    "comparison": "Settlement runtime and this fixture are absent upstream; inherited VM and delivery code is unchanged."
+  },
+  "provenance": {
+    "node_revision": "b9a5a0406193d3577022b5c856bab9f77836f58b",
+    "tos_tools_revision": "58015fcdfe3d3ea23ff23c1bfc6aec377361b38e",
+    "test_source_revision": "1b7118107021e8590e596f7930a42f161237890b",
+    "test_artifacts_sha256": {
+      "token-wallet-local-only-test.fc": "6ef0fb3cdd3809a75b36c5fa1d2b7b7368045627ea8720689566eda21d032456",
+      "local-only-test-token-wallet.fif": "3a2c900b21a3fb26afa31ac90d4682296f0bc04560b503e0533825afb7f1b6a8",
+      "LOCAL-ONLY-TEST.json": "77431976d89444cf010eba2247a2208064c4aa17397f6542939894ce31df0d08"
+    },
+    "tools_sha256": {
+      "tosctl": "4da61d5595f6d3c78f4361790b182c0d6953d0ed32bd3b9b990ea3e65fcf2141",
+      "unsigned_fixture": "f589858ae61df258b80b07e1f0031b0551baba9338deba1d38d92300d7b0d9b1",
+      "independent_resolver": "32ea9d51930e48a30af975cc125bafd5769762a110f2b0357147e4585aa1ee6d",
+      "func": "6469c2813702b47c610d30c86cdfca4697ad228e5d0de6644d236baaa0c738b0",
+      "fift": "a6a382c33d1f2a2a58c2a2990f3d427a3f64ade9408350067a7ffc5d6be0e69d"
+    },
+    "clean_fixture_reproduction": {
+      "ai_head": "5d38efa1f816ed7171f876006133f0052218475e",
+      "state_init_and_plan_byte_identical": true,
+      "fixture_sha256": "da632006e590ec382a80364fd492e3726f512694a17bbf9b87c13f7d12dfa832"
+    }
+  }
+}

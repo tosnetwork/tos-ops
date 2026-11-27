@@ -1,0 +1,62 @@
+{
+  "schema": "tos.service.purchase-verdict.token.v1",
+  "result": "pass",
+  "network": {
+    "network_id": "local-usdc-t10",
+    "genesis_root_hash": "sha256:65735247a371030abe811aeac0afe357301ce90e161450d26f88b4beb5b4c366",
+    "genesis_file_hash": "sha256:c3860fe196a2a1b5e4e74a9cf9448624a353ce68a8c4c5f6413347586d688769"
+  },
+  "checkpoint": {
+    "seqno": 171164,
+    "chain_time": 1795690491,
+    "block_root_hash": "sha256:1f2cbc41077a1692a1862642eb7720b9fe5cb821c0d0db3f2fc296e9fcc4bc30",
+    "block_file_hash": "sha256:45233dd0dac6d381c1478a21eec8494ed10bf47774317180df070156a46b7371"
+  },
+  "requests": [
+    {
+      "request_id": 0,
+      "request_hash": "e1e9e1e7ea13d90af2e99cbc4a1887665c68235b9032e49c7f486b51c2d26985",
+      "caller": "0:14eda362e0cb32fc910daa87ffd1f7840ae8a152275fe36451a4d51422484979",
+      "state": "responded",
+      "price_atomic": "1000000",
+      "call": {
+        "lt": 171051000007,
+        "hash": "62d696dcaee2034f99f10a9a25256887b84950544fbc2e514223de39d00fe24f"
+      },
+      "response_hash": "4424ed58174473922c4b1866d5ed352f50f4317903efc47fbaee81b3a80125cf"
+    }
+  ],
+  "funding_refusals": [],
+  "checks": [
+    {
+      "id": "finalized-state",
+      "ok": true,
+      "detail": "complete actor history and typed pending, refund, payout and returned cells agree"
+    }
+  ],
+  "not_claimed": [
+    "operator independence of the endpoints: agreeing endpoints run by one operator are one source",
+    "computation correctness: a Receipt is the provider's attested statement of the digests it binds",
+    "the identity or independence of the buyer, the provider or the verifier",
+    "anything after the checkpoint, or about a request the verification did not select",
+    "without an evidence bundle, only the caller wallet of each request is proven: not its Quote, its Capability binding or whose purchase it is; bind the reported caller to the buyer's declared wallet",
+    "without a token bundle, no asset-recognition or funding-chain claim is made"
+  ],
+  "reads": {
+    "endpoints": [
+      {
+        "url": "http://127.0.0.1:8011/jsonRPC",
+        "genesis_ok": true
+      },
+      {
+        "url": "http://127.0.0.1:8012/jsonRPC",
+        "genesis_ok": true
+      },
+      {
+        "url": "http://127.0.0.1:8013/jsonRPC",
+        "genesis_ok": true
+      }
+    ],
+    "quorum": 3
+  }
+}

@@ -1,0 +1,270 @@
+{
+  "entries": [
+    {
+      "archive_file": "verifiers/00-archival-verification-f3deaf6d6e2252c597711891bf2349456d5d54035205c298e76d19139654733b.json",
+      "original_record_citations": [
+        {
+          "pointer": "/verifier_outputs/0/original_sha256",
+          "record": "service-token-monitor-local-20261127.json"
+        }
+      ],
+      "original_sha256": "f3deaf6d6e2252c597711891bf2349456d5d54035205c298e76d19139654733b",
+      "removed_json_pointers": [],
+      "sanitized_sha256": "f3deaf6d6e2252c597711891bf2349456d5d54035205c298e76d19139654733b"
+    },
+    {
+      "archive_file": "verifiers/01-archival-verification-912059f579447cb102b0a49b08edf72276824406f25acd273a912439a547a1a7.json",
+      "original_record_citations": [
+        {
+          "pointer": "/verifier_outputs/1/original_sha256",
+          "record": "service-token-monitor-local-20261127.json"
+        }
+      ],
+      "original_sha256": "912059f579447cb102b0a49b08edf72276824406f25acd273a912439a547a1a7",
+      "removed_json_pointers": [],
+      "sanitized_sha256": "912059f579447cb102b0a49b08edf72276824406f25acd273a912439a547a1a7"
+    },
+    {
+      "archive_file": "verifiers/02-archival-verification-daaeb574392aa108a180df52b047eb36fcfc5769fe04b011d71bee6dda17ee24.json",
+      "original_record_citations": [
+        {
+          "pointer": "/verifier_outputs/2/original_sha256",
+          "record": "service-token-monitor-local-20261127.json"
+        }
+      ],
+      "original_sha256": "daaeb574392aa108a180df52b047eb36fcfc5769fe04b011d71bee6dda17ee24",
+      "removed_json_pointers": [],
+      "sanitized_sha256": "daaeb574392aa108a180df52b047eb36fcfc5769fe04b011d71bee6dda17ee24"
+    },
+    {
+      "archive_file": "verifiers/03-archival-verification-40afbf63b7f319ab63bed343e43447f21991a1523a14db02affa443c8c3150a1.json",
+      "original_record_citations": [
+        {
+          "pointer": "/verifier_outputs/3/original_sha256",
+          "record": "service-token-monitor-local-20261127.json"
+        }
+      ],
+      "original_sha256": "40afbf63b7f319ab63bed343e43447f21991a1523a14db02affa443c8c3150a1",
+      "removed_json_pointers": [],
+      "sanitized_sha256": "40afbf63b7f319ab63bed343e43447f21991a1523a14db02affa443c8c3150a1"
+    },
+    {
+      "archive_file": "verifiers/04-archival-verification-5e0d398bb9f1b83561f7038b5dd345506b7143139486845b7dad4c24343ff5fd.json",
+      "original_record_citations": [
+        {
+          "pointer": "/verifier_outputs/4/original_sha256",
+          "record": "service-token-monitor-local-20261127.json"
+        }
+      ],
+      "original_sha256": "5e0d398bb9f1b83561f7038b5dd345506b7143139486845b7dad4c24343ff5fd",
+      "removed_json_pointers": [],
+      "sanitized_sha256": "5e0d398bb9f1b83561f7038b5dd345506b7143139486845b7dad4c24343ff5fd"
+    },
+    {
+      "archive_file": "verifiers/05-archival-verification-1639263b7dde17a08a9604d1025d8e733ddfb10559ba74bb9875153dbef1a85b.json",
+      "original_record_citations": [
+        {
+          "pointer": "/verifier_outputs/5/original_sha256",
+          "record": "service-token-monitor-local-20261127.json"
+        }
+      ],
+      "original_sha256": "1639263b7dde17a08a9604d1025d8e733ddfb10559ba74bb9875153dbef1a85b",
+      "removed_json_pointers": [],
+      "sanitized_sha256": "1639263b7dde17a08a9604d1025d8e733ddfb10559ba74bb9875153dbef1a85b"
+    },
+    {
+      "archive_file": "verifiers/06-archival-verification-a1bf83e6e67519561efab2263d0886889ad9d51f694501263e66608c4c874d65.json",
+      "original_record_citations": [
+        {
+          "pointer": "/verifier_outputs/6/original_sha256",
+          "record": "service-token-monitor-local-20261127.json"
+        }
+      ],
+      "original_sha256": "a1bf83e6e67519561efab2263d0886889ad9d51f694501263e66608c4c874d65",
+      "removed_json_pointers": [],
+      "sanitized_sha256": "a1bf83e6e67519561efab2263d0886889ad9d51f694501263e66608c4c874d65"
+    },
+    {
+      "archive_file": "verifiers/07-archival-verification-457ae827ac2ad140296dfb8dfe0beb88c0737781ecbfe656ff8cb92d6a2a8046.json",
+      "original_record_citations": [
+        {
+          "pointer": "/verifier_outputs/7/original_sha256",
+          "record": "service-token-monitor-local-20261127.json"
+        }
+      ],
+      "original_sha256": "457ae827ac2ad140296dfb8dfe0beb88c0737781ecbfe656ff8cb92d6a2a8046",
+      "removed_json_pointers": [],
+      "sanitized_sha256": "457ae827ac2ad140296dfb8dfe0beb88c0737781ecbfe656ff8cb92d6a2a8046"
+    },
+    {
+      "archive_file": "verifiers/08-archival-verification-7d39ffdf4704e43daec0bba89f5c65a0ebca1c2c1c97d67736193f861698db13.json",
+      "original_record_citations": [
+        {
+          "pointer": "/verifier_outputs/8/original_sha256",
+          "record": "service-token-monitor-local-20261127.json"
+        }
+      ],
+      "original_sha256": "7d39ffdf4704e43daec0bba89f5c65a0ebca1c2c1c97d67736193f861698db13",
+      "removed_json_pointers": [],
+      "sanitized_sha256": "7d39ffdf4704e43daec0bba89f5c65a0ebca1c2c1c97d67736193f861698db13"
+    },
+    {
+      "archive_file": "verifiers/09-archival-verification-0b40a8b5927fc60b7eb2b6dd43a0ce36a1efaa6697a67e9e475fdeee23ec55b1.json",
+      "original_record_citations": [
+        {
+          "pointer": "/verifier_outputs/9/original_sha256",
+          "record": "service-token-monitor-local-20261127.json"
+        }
+      ],
+      "original_sha256": "0b40a8b5927fc60b7eb2b6dd43a0ce36a1efaa6697a67e9e475fdeee23ec55b1",
+      "removed_json_pointers": [],
+      "sanitized_sha256": "0b40a8b5927fc60b7eb2b6dd43a0ce36a1efaa6697a67e9e475fdeee23ec55b1"
+    },
+    {
+      "archive_file": "verifiers/10-archival-verification-8f17292f860c2330195984cea8e6d38f052640a08b50e8e3ff6259c58976c531.json",
+      "original_record_citations": [
+        {
+          "pointer": "/verifier_outputs/10/original_sha256",
+          "record": "service-token-monitor-local-20261127.json"
+        }
+      ],
+      "original_sha256": "8f17292f860c2330195984cea8e6d38f052640a08b50e8e3ff6259c58976c531",
+      "removed_json_pointers": [],
+      "sanitized_sha256": "8f17292f860c2330195984cea8e6d38f052640a08b50e8e3ff6259c58976c531"
+    },
+    {
+      "archive_file": "verifiers/11-archival-verification-e6b08007cf1eda284197a87f89bda70f703d4cb419c0bca5f232ae39c5eef490.json",
+      "original_record_citations": [
+        {
+          "pointer": "/verifier_outputs/11/original_sha256",
+          "record": "service-token-monitor-local-20261127.json"
+        }
+      ],
+      "original_sha256": "e6b08007cf1eda284197a87f89bda70f703d4cb419c0bca5f232ae39c5eef490",
+      "removed_json_pointers": [],
+      "sanitized_sha256": "e6b08007cf1eda284197a87f89bda70f703d4cb419c0bca5f232ae39c5eef490"
+    },
+    {
+      "archive_file": "verifiers/12-archival-verification-645b0fe0c230b5a73eb8e89c306c6b06700b56fe5adbf5ca4a2bdfbf81bf2932.json",
+      "original_record_citations": [
+        {
+          "pointer": "/verifier_outputs/12/original_sha256",
+          "record": "service-token-monitor-local-20261127.json"
+        }
+      ],
+      "original_sha256": "645b0fe0c230b5a73eb8e89c306c6b06700b56fe5adbf5ca4a2bdfbf81bf2932",
+      "removed_json_pointers": [],
+      "sanitized_sha256": "645b0fe0c230b5a73eb8e89c306c6b06700b56fe5adbf5ca4a2bdfbf81bf2932"
+    },
+    {
+      "archive_file": "verifiers/13-archival-verification-45d7b132d20657acaee8253dee40a4d962752a2f4d650a5e1ecc36262adb3d41.json",
+      "original_record_citations": [
+        {
+          "pointer": "/verifier_outputs/13/original_sha256",
+          "record": "service-token-monitor-local-20261127.json"
+        }
+      ],
+      "original_sha256": "45d7b132d20657acaee8253dee40a4d962752a2f4d650a5e1ecc36262adb3d41",
+      "removed_json_pointers": [],
+      "sanitized_sha256": "45d7b132d20657acaee8253dee40a4d962752a2f4d650a5e1ecc36262adb3d41"
+    },
+    {
+      "archive_file": "verifiers/14-archival-verification-066628e88d99508c9fd7ac9c863fd5871d87a70400e45ea34eee7d1efe0bc030.json",
+      "original_record_citations": [
+        {
+          "pointer": "/verifier_outputs/14/original_sha256",
+          "record": "service-token-monitor-local-20261127.json"
+        }
+      ],
+      "original_sha256": "066628e88d99508c9fd7ac9c863fd5871d87a70400e45ea34eee7d1efe0bc030",
+      "removed_json_pointers": [],
+      "sanitized_sha256": "066628e88d99508c9fd7ac9c863fd5871d87a70400e45ea34eee7d1efe0bc030"
+    },
+    {
+      "archive_file": "verifiers/15-monitor-alarm-52c2a2abba90edb5ce621dcf175c94b304de998a1c328cb25811e0c58d9994ae.json",
+      "original_record_citations": [
+        {
+          "pointer": "/verifier_outputs/15/original_sha256",
+          "record": "service-token-monitor-local-20261127.json"
+        }
+      ],
+      "original_sha256": "52c2a2abba90edb5ce621dcf175c94b304de998a1c328cb25811e0c58d9994ae",
+      "removed_json_pointers": [],
+      "sanitized_sha256": "52c2a2abba90edb5ce621dcf175c94b304de998a1c328cb25811e0c58d9994ae"
+    },
+    {
+      "archive_file": "verifiers/16-monitor-stale-a7ef9b3915f79572a6d2cb1c049287e37704a95b5d785c1c086415c3ceb96548.json",
+      "original_record_citations": [
+        {
+          "pointer": "/verifier_outputs/16/original_sha256",
+          "record": "service-token-monitor-local-20261127.json"
+        }
+      ],
+      "original_sha256": "a7ef9b3915f79572a6d2cb1c049287e37704a95b5d785c1c086415c3ceb96548",
+      "removed_json_pointers": [],
+      "sanitized_sha256": "a7ef9b3915f79572a6d2cb1c049287e37704a95b5d785c1c086415c3ceb96548"
+    },
+    {
+      "archive_file": "verifiers/17-verify-pending-57573f5cd991812af90266626c0df232d7a678df8223a5aa4202a3b389f5b3eb.json",
+      "original_record_citations": [
+        {
+          "pointer": "/verifier_outputs/17/original_sha256",
+          "record": "service-token-monitor-local-20261127.json"
+        }
+      ],
+      "original_sha256": "57573f5cd991812af90266626c0df232d7a678df8223a5aa4202a3b389f5b3eb",
+      "removed_json_pointers": [
+        "/tool",
+        "/inputs"
+      ],
+      "sanitized_sha256": "d1f05b5d373094c5b7d086363cb07849038f86baddfcdc60335c8edc22b99072"
+    },
+    {
+      "archive_file": "verifiers/18-verify-pending-raw-88e5f293099daa72ca98821423c450595bcf07fa7e133e40f0371d89f8b35b69.json",
+      "original_record_citations": [
+        {
+          "pointer": "/verifier_outputs/18/original_sha256",
+          "record": "service-token-monitor-local-20261127.json"
+        }
+      ],
+      "original_sha256": "88e5f293099daa72ca98821423c450595bcf07fa7e133e40f0371d89f8b35b69",
+      "removed_json_pointers": [
+        "/tool",
+        "/inputs"
+      ],
+      "sanitized_sha256": "582f0c8cfdc1eb61295bd77bd99ab6835e8d7fbed0795a9511a206d6901a3195"
+    },
+    {
+      "archive_file": "verifiers/19-verify-responded-fadc852f25f9208e22d4459e1fa5cf45d098b2b1f358d1b3566d37c94ce2dc18.json",
+      "original_record_citations": [
+        {
+          "pointer": "/verifier_outputs/19/original_sha256",
+          "record": "service-token-monitor-local-20261127.json"
+        }
+      ],
+      "original_sha256": "fadc852f25f9208e22d4459e1fa5cf45d098b2b1f358d1b3566d37c94ce2dc18",
+      "removed_json_pointers": [
+        "/tool",
+        "/inputs"
+      ],
+      "sanitized_sha256": "069bc3c890d3c19a721b1454263132d23929c4ae9afa908db195eeb12cda3a7d"
+    },
+    {
+      "archive_file": "verifiers/20-verify-responded-raw-9f8ca3daafc7ef8764047f70dd9b64f24a0b738058c3f426ff1754cb2a2063cd.json",
+      "original_record_citations": [
+        {
+          "pointer": "/verifier_outputs/20/original_sha256",
+          "record": "service-token-monitor-local-20261127.json"
+        }
+      ],
+      "original_sha256": "9f8ca3daafc7ef8764047f70dd9b64f24a0b738058c3f426ff1754cb2a2063cd",
+      "removed_json_pointers": [
+        "/tool",
+        "/inputs"
+      ],
+      "sanitized_sha256": "062d524cd23b6a71fe7a46a488d65ba9099ca8aeeef113507a61b06cda2d1f01"
+    }
+  ],
+  "schema": "verifier-sanitization.v1",
+  "serialization": "UTF-8 JSON, original key order preserved, two-space indentation and trailing newline"
+}

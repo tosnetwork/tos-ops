@@ -952,6 +952,8 @@ def sign_local(args, proposal: str) -> dict:
             "hash": cell.hash().hex(),
         }
         print(f"{name}: idx {idx}")
+        if len(votes) == members:
+            break  # every member signed; extra local candidates are not required
     if len(votes) != members:
         raise lib.TestnetError(f"{len(votes)} votes for a set of {members}; skipped {skipped}")
     return votes

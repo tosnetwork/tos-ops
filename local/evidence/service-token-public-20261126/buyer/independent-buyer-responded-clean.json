@@ -1,0 +1,70 @@
+{
+  "schema": "tos.service.purchase-verdict.token.v1",
+  "result": "pass",
+  "network": {
+    "network_id": "tos:global-id:3",
+    "genesis_root_hash": "sha256:65735247a371030abe811aeac0afe357301ce90e161450d26f88b4beb5b4c366",
+    "genesis_file_hash": "sha256:c3860fe196a2a1b5e4e74a9cf9448624a353ce68a8c4c5f6413347586d688769"
+  },
+  "checkpoint": {
+    "seqno": 196659,
+    "chain_time": 1795700670,
+    "block_root_hash": "sha256:770dab7ef5194550e50be98ec141f4e17e1d8c6096dc543834485e3bf66d7fc5",
+    "block_file_hash": "sha256:b625cd360f70300f924b0c8d9ddfa9cd0715b3e6d6a1b97b3c7872d6d465515b"
+  },
+  "requests": [
+    {
+      "request_id": 3,
+      "request_hash": "7cc5b4be001e7123a9973858509890f0caf14087831907e29f7275ee27450cf5",
+      "caller": "0:cfe6bca561bf8a1dcc17fa0162c2ef2c1e0fb6bbb56a4da1a580229173a9f6d0",
+      "state": "responded",
+      "price_atomic": "1000000",
+      "call": {
+        "lt": 194154000007,
+        "hash": "9cf06df3d939bbb9162e360060c2023df3638754aa548e1480abd2f260c0b30a"
+      },
+      "response_hash": "0013aa7493c1edf42669306cf8c87137cc7cc8b06f7f7cf6e4b18fbf7077a8cf"
+    }
+  ],
+  "funding_refusals": [],
+  "checks": [
+    {
+      "id": "finalized-state",
+      "ok": true,
+      "detail": "complete actor history and typed pending, refund, payout and returned cells agree"
+    },
+    {
+      "id": "bundle-binding",
+      "ok": true,
+      "detail": "Quote, manifest, registry, immutable SAT1 and three funding hops bind the request"
+    },
+    {
+      "id": "receipt",
+      "ok": true,
+      "detail": "schema 2 Receipt and supplied artifact agree with the exact finalized response"
+    }
+  ],
+  "not_claimed": [
+    "operator independence of the endpoints: agreeing endpoints run by one operator are one source",
+    "computation correctness: a Receipt is the provider's attested statement of the digests it binds",
+    "the identity or independence of the buyer, the provider or the verifier",
+    "anything after the checkpoint, or about a request the verification did not select"
+  ],
+  "reads": {
+    "endpoints": [
+      {
+        "url": "http://127.0.0.1:8014/jsonRPC",
+        "genesis_ok": true
+      },
+      {
+        "url": "http://127.0.0.1:8015/jsonRPC",
+        "genesis_ok": true
+      },
+      {
+        "url": "http://127.0.0.1:8016/jsonRPC",
+        "genesis_ok": true
+      }
+    ],
+    "quorum": 3
+  }
+}

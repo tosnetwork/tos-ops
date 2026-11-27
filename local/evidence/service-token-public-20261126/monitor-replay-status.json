@@ -1,0 +1,31 @@
+{
+  "schema": "local-token-monitor-replay-followup.v1",
+  "ai_commit": "8dbd70830e2c98e14cabda6f4e0bd1c1181ae21a",
+  "provider_sha256": "dc7f82c8b5533e075b7c3794276d78fbd7b2aedbdc8f30693dd5b1a7f4f614f5",
+  "verifier_sha256": "32ea9d51930e48a30af975cc125bafd5769762a110f2b0357147e4585aa1ee6d",
+  "committed_build_live_injection": "BLOCKED_BEFORE_INJECTION",
+  "reason": "The finalized registry and actor transaction histories are pruned on all references. No funded pending task can be verified using the original records. No recognition bypass, journal rewrite, reset or new payment was used.",
+  "current_read_only_preflight_exit": 3,
+  "preflight_file": "committed-build-preflight.json",
+  "historical_injection_only": {
+    "request_id": 4,
+    "call_lt": 194649000007,
+    "call_hash": "94b9c705ffcb5e7136c0462fb78ae759bb649792784b733ca1278bad29e1eb32",
+    "slot_id": null,
+    "provider_record_id": null,
+    "note": "Both refusals occurred before admission. No slot or provider record was created for request 4. The only recorded slot and provider record belong to the preceding completed request 3.",
+    "preceding_completed_slot_and_record_id": "6dce57e8cf9759f5b49cb91cf9d8d359c73b84a3668a8aee63ebcad66a6c2255",
+    "refusals": [
+      {
+        "utc": "2026-11-26T13:31:00Z",
+        "text": "rail message: servicebridge: asset alarm refuses token execution"
+      },
+      {
+        "utc": "2026-11-26T13:31:07Z",
+        "text": "rail message: monitor report is stale, future or malformed"
+      }
+    ],
+    "rerun_on_this_commit": false
+  },
+  "unit_regression": "The admitted-slot guard regression and ExecuteOnce retry regression pass with the committed implementation. They are not claimed as live fault injections."
+}

@@ -1,0 +1,61 @@
+{
+  "checkpoint": {
+    "block_file_hash": "sha256:caa762bb9f7b1e0e95e02ca8ec9606d034b1731d80b4916f60bb22b886fec453",
+    "block_root_hash": "sha256:39101cfdde7421f07a3dc355a08fa68b4074fab1ba8ccdaa63597863ede1066c",
+    "chain_time": 1795739322,
+    "seqno": 276844
+  },
+  "checks": [
+    {
+      "detail": "complete actor history and typed pending, refund, payout and returned cells agree",
+      "id": "finalized-state",
+      "ok": true
+    }
+  ],
+  "funding_refusals": [],
+  "network": {
+    "genesis_file_hash": "sha256:c3860fe196a2a1b5e4e74a9cf9448624a353ce68a8c4c5f6413347586d688769",
+    "genesis_root_hash": "sha256:65735247a371030abe811aeac0afe357301ce90e161450d26f88b4beb5b4c366",
+    "network_id": "tos:global-id:3"
+  },
+  "not_claimed": [
+    "operator independence of the endpoints: agreeing endpoints run by one operator are one source",
+    "computation correctness: a Receipt is the provider's attested statement of the digests it binds",
+    "the identity or independence of the buyer, the provider or the verifier",
+    "anything after the checkpoint, or about a request the verification did not select",
+    "without an evidence bundle, only the caller wallet of each request is proven: not its Quote, its Capability binding or whose purchase it is; bind the reported caller to the buyer's declared wallet",
+    "without a token bundle, no asset-recognition or funding-chain claim is made"
+  ],
+  "reads": {
+    "endpoints": [
+      {
+        "genesis_ok": true,
+        "url": "http://127.0.0.1:8014"
+      },
+      {
+        "genesis_ok": true,
+        "url": "http://127.0.0.1:8015"
+      },
+      {
+        "genesis_ok": true,
+        "url": "http://127.0.0.1:8016"
+      }
+    ],
+    "quorum": 3
+  },
+  "requests": [
+    {
+      "call": {
+        "hash": "b2ad6796b26e113fd3ccb9b6d4e09bdc07389d619c5f4cb947a901562b63e275",
+        "lt": 292742000007
+      },
+      "caller": "0:cfe6bca561bf8a1dcc17fa0162c2ef2c1e0fb6bbb56a4da1a580229173a9f6d0",
+      "price_atomic": "100000",
+      "request_hash": "697731589bb73742c11e058e01a9c4dcbec1a787cb0e5f0f7f120cae0c12f01d",
+      "request_id": 0,
+      "state": "pending"
+    }
+  ],
+  "result": "pass",
+  "schema": "tos.service.purchase-verdict.token.v1"
+}
