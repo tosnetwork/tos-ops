@@ -268,6 +268,13 @@ python3 testnet/scripts/collect-settlement-evm.py \
   --out observation.json --report monitor-state/report.json
 ```
 
+For periodic use, put that exact reviewed command in an executable wrapper and
+pass only its filename to the checker, for example
+`--collect /path/to/collect-source`. This avoids treating the adapter's own
+`--rpc`/`--binding` options as checker options. The wrapper's `--out` must equal
+the checker's `--snapshot`, and `--report` must be that state directory's
+`report.json`. Do not select these paths from buyer/model input.
+
 Use `--initialize-baseline` instead of `--previous` only for the explicitly
 approved first observation. Never reset a missing interval as a new baseline.
 Run frequently enough to cover every finalized source block. The adapter is
