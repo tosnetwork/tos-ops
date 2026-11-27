@@ -741,6 +741,16 @@ def verify(args, state, chain, bridge):
     require(args.case, "verify requires --case")
     config = json.loads((state.root / "rail.json").read_text())
     endpoints = chain.urls[3:6]
+    # The retained-history transport (local/tests/helpers/retained_transactions_rpc.py)
+    # serves pruned actor history from archived cells; its reference routes map to
+    # nodes 4-6 and reject every submission. Only loopback routes are accepted.
+    override = getattr(args, "resolver_rpc", None)
+    if override:
+        endpoints = override.split(",")
+        require(
+            all(e.startswith("http://127.0.0.1:") for e in endpoints),
+            "resolver routes must be loopback",
+        )
     require(
         len(endpoints) == 3 and len(set(endpoints)) == 3,
         "three independent resolver endpoints are required",
@@ -815,6 +825,7 @@ def verify(args, state, chain, bridge):
             "resolver_endpoints": endpoints,
             "sending_endpoints": config["rpc_endpoints"],
             "resolver": "independent process using the same production resolver code",
+            "retained_history_routes": bool(getattr(args, "resolver_rpc", None)),
         },
     )
 
@@ -1524,6 +1535,7 @@ def main():
     p.add_argument("--destination")
     p.add_argument("--sender-wallet", choices=("owner", "buyer"), default="owner")
     p.add_argument("--funding-atomic", type=int)
+    p.add_argument("--resolver-rpc", help="three loopback resolver routes, comma-separated")
     p.add_argument(
         "--expect-state",
         choices=("funding_returned", "pending", "responded", "refunded", "swept"),
@@ -1534,6 +1546,7 @@ def main():
         "--funding-atomic belongs to call",
     )
     require(args.expect_state is None or args.step == "verify", "--expect-state belongs to verify")
+    require(args.resolver_rpc is None or args.step == "verify", "--resolver-rpc belongs to verify")
     args.operation_args = extra
     if args.step == "send" and args.destination:
         # This flag also belongs to the funding helper. Forward it explicitly

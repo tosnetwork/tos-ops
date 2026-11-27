@@ -1301,3 +1301,30 @@ def test_verify_requires_the_expected_state(monkeypatch, tmp_path, expect, docum
     else:
         with pytest.raises(module.usdc.Refused):
             module.verify(args, state, chain, {})
+
+
+@pytest.mark.parametrize(
+    "routes, message",
+    [
+        ("http://10.0.0.1:19014/jsonRPC,http://127.0.0.1:19015/jsonRPC,http://127.0.0.1:19016/jsonRPC", "loopback"),
+        ("http://127.0.0.1:19014/jsonRPC,http://127.0.0.1:19014/jsonRPC,http://127.0.0.1:19016/jsonRPC", "three independent"),
+        ("http://127.0.0.1:8011/jsonRPC,http://127.0.0.1:19015/jsonRPC,http://127.0.0.1:19016/jsonRPC", "overlap"),
+    ],
+)
+def test_resolver_routes_are_loopback_distinct_and_not_senders(monkeypatch, tmp_path, routes, message):
+    state, chain = verify_world(monkeypatch, tmp_path, {"result": "pass"})
+    args = SimpleNamespace(verifier=Path("/verifier"), case="x", operation_args=[],
+                           expect_state=None, resolver_rpc=routes)
+    with pytest.raises(module.usdc.Refused, match=message):
+        module.verify(args, state, chain, {})
+
+
+def test_resolver_routes_replace_the_direct_references(monkeypatch, tmp_path):
+    seen = []
+    state, chain = verify_world(monkeypatch, tmp_path, {"result": "pass"})
+    monkeypatch.setattr(module, "run", lambda argv: seen.append(argv) or json.dumps({"result": "pass"}))
+    routes = "http://127.0.0.1:19014/jsonRPC,http://127.0.0.1:19015/jsonRPC,http://127.0.0.1:19016/jsonRPC"
+    args = SimpleNamespace(verifier=Path("/verifier"), case="x", operation_args=[],
+                           expect_state=None, resolver_rpc=routes)
+    module.verify(args, state, chain, {})
+    assert seen[0][seen[0].index("--rpc") + 1] == routes
