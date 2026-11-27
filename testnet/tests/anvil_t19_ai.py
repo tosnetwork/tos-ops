@@ -66,15 +66,29 @@ def test_go_reader_accepts_clear_receiver(redemption_world, profile):
 
 
 @pytest.mark.parametrize(
-    "flag,signature,args",
+    "profile,flag,signature,args",
     [
-        ("blacklisted", "addBlackList(address)", "receiver"),
-        ("paused", "pause()", None),
-        ("deprecated", "deprecate(address)", "target"),
+        ("legacy_usdt", "blacklisted", "addBlackList(address)", "receiver"),
+        ("standard", "blacklisted", "addBlackList(address)", "receiver"),
+        ("legacy_usdt", "paused", "pause()", None),
+        ("standard", "paused", "pause()", None),
+        ("legacy_usdt", "deprecated", "deprecate(address)", "target"),
     ],
 )
-def test_go_reader_refuses_restrictions(redemption_world, flag, signature, args):
-    _, accounts, send, _, token, _ = redemption_world
+def test_go_reader_refuses_restrictions(redemption_world, profile, flag, signature, args):
+    _, accounts, send, deploy, token, binding = redemption_world
+    if profile == "standard":
+        import anvil_redemption
+
+        token = deploy("StandardIssuerFixture")
+        binding.update(
+            token=token,
+            profile=profile,
+            code_sha256=anvil_redemption.issuer.source.code_hash(
+                anvil_redemption.issuer.source.RPC(redemption_world[0]), token, "latest"
+            ),
+        )
+        redemption_world = (*redemption_world[:4], token, binding)
     parameters = [] if args is None else [accounts[1] if args == "receiver" else accounts[2]]
     send(token, signature, *parameters)
     result = probe(redemption_world)
