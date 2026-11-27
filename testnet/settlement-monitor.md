@@ -355,3 +355,19 @@ controls operate in isolated temporary copies; syntax/build/setup errors,
 timeouts and survivors fail the run rather than count as kills. Source
 collection is TOS-specific operations code, absent in the upstream core at
 `99143587e6babb2e577eadea0fc741cb1b413fab`.
+
+The original local source-code exception is backed by
+[checkpoint evidence](tests/data/settlement-source/local-usdc-code.json). That
+identity capture is explicitly **not** a finalized monitor observation: at
+capture, the idle local source tip was block 16 and its finalized tag was block
+0. The collector must refuse until the bridge/token exist at a fresh finalized
+source checkpoint; it must not silently substitute `latest`. Only a separate
+local test driver may advance empty source blocks. The acceptance fixture uses
+its own short-epoch source node and mines empty confirmations after sends; the
+collector's read-only allowlist still forbids mining methods.
+
+Set the approved checker's freshness budget from the source chain's actual
+finality delay (within the existing 3,600-second bound), not an assumption that
+its finalized block is near the tip. The provider's report-age guard still
+uses the fresh TOS checkpoint. An idle source with an old finalized timestamp
+remains stale until it advances; this adapter does not rewrite chain times.
