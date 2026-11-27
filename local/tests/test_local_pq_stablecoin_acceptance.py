@@ -348,7 +348,7 @@ def lock_world(monkeypatch, tmp_path, simulate=(True, ""), received=100, supply=
     state = State(tmp_path)
     sent = []
     chain = SimpleNamespace(
-        get=lambda address, method, *a: [["num", "25"]],
+        get=chain_get,
         wait=lambda what, predicate, timeout=0: predicate() or (_ for _ in ()).throw(
             Refused("timed out waiting for " + what)
         ),
@@ -574,7 +574,9 @@ def test_issuer_fee_outside_the_fixture_bounds_refuses_before_sending(
     monkeypatch.setattr(m, "values", lambda *a, **k: ["0x" + "77" * 20])
     monkeypatch.setattr(m, "source_facts", lambda *a, **k: {})
     sent = []
-    monkeypatch.setattr(m.u, "evm_send_once", lambda *a, **k: sent.append(a))
+    monkeypatch.setattr(
+        m.u, "evm_send_once", lambda *a, **k: sent.append(a) or {"status": 0, "tx": "0x", "block": 1}
+    )
     args = SimpleNamespace(label="fee", asset="usdt", op="set-fee", basis_points=bps,
                            max_fee=maximum, execute=True)
     with pytest.raises(Refused, match="fee bounds"):
@@ -601,3 +603,12 @@ def test_source_endpoint_must_be_loopback(capsys):
     code = m.main(["status", "--state", "/nonexistent", "--tos-root", "/x",
                    "--evm-rpc", "http://10.0.0.1:8545"])
     assert code == 2 and "local source endpoint required" in capsys.readouterr().out
+
+
+def test_a_latch_on_disk_is_not_clean_even_if_the_report_omits_it(tmp_path):
+    (tmp_path / "monitor").mkdir()
+    root = monitor_dir(tmp_path / "monitor")
+    (root / "incidents.json").write_text(json.dumps({"usdt:bridge_frozen": {}}))
+    args = SimpleNamespace(label="observe", monitor_state=root, expect_clean=True, expect_alarm=None)
+    with pytest.raises(Refused, match="not clean"):
+        m.step_observe(args, State(tmp_path / "state"))
