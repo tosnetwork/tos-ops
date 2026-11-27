@@ -45,11 +45,21 @@ def source_net(tmp_path_factory):
         "Silent.sol": {
             "content": 'import "LocalUSDT.sol"; contract Silent is LocalUSDT { constructor(uint256 n) LocalUSDT(n) {} function silentBlacklist(address a) external onlyOwner { isBlackListed[a] = true; } }'
         },
+        "StandardIssuerFixture.sol": {
+            "content": (
+                ROOT / "testnet/tests/fixtures/settlement-source/StandardIssuerFixture.sol"
+            ).read_text()
+        },
         "BridgeFixture.sol": {
             "content": (
                 ROOT / "testnet/tests/fixtures/settlement-source/BridgeFixture.sol"
             ).read_text()
         },
+    }
+    sources["StandardObserverFixture.sol"] = {
+        "content": (
+            ROOT / "testnet/tests/fixtures/settlement-source/StandardObserverFixture.sol"
+        ).read_text()
     }
     program = 'const fs=require("fs");const solc=require(process.argv[1]);process.stdout.write(solc.compile(fs.readFileSync(0,"utf8")));'
     request = dict(
@@ -78,6 +88,8 @@ def source_net(tmp_path_factory):
             ("LocalUSDT", "LocalUSDT.sol"),
             ("Silent", "Silent.sol"),
             ("BridgeFixture", "BridgeFixture.sol"),
+            ("StandardObserverFixture", "StandardObserverFixture.sol"),
+            ("StandardIssuerFixture", "StandardIssuerFixture.sol"),
         )
     }
     with socket.socket() as sock:
@@ -387,19 +399,19 @@ def test_fixture_has_capped_owner_paid_fees_and_no_return_approval(world):
     assert answer == "0x", "approval unexpectedly returns a bool or is paused"
 
 
-def test_receipt_missing_refuses_instead_of_claiming_complete(world):
+def test_log_reply_missing_refuses_instead_of_claiming_complete(world):
     w = world
     w["send"](w["tokens"][1], "pause()")
 
-    class MissingReceipt:
+    class MissingLogs:
         def __init__(self):
             self.inner = observer.RPC(w["url"])
 
         def call(self, method, *args):
-            return None if method == "eth_getTransactionReceipt" else self.inner.call(method, *args)
+            return None if method == "eth_getLogs" else self.inner.call(method, *args)
 
-    with pytest.raises(observer.Invalid, match="receipt missing"):
-        observer.collect(MissingReceipt(), w["binding"], w["base"], w["initial"])
+    with pytest.raises(observer.Invalid, match="logs missing"):
+        observer.collect(MissingLogs(), w["binding"], w["base"], w["initial"])
 
 
 def test_local_fixture_exception_cannot_hide_a_freezable_token(world):
@@ -452,3 +464,66 @@ def test_blacklist_events_and_destroy_deprecation_boundary(world):
     w["send"](token, "deprecate(address)", w["tokens"][0])
     with pytest.raises(AssertionError, match="destroy after deprecation"):
         w["send"](token, "destroyBlackFunds(address)", w["bridge"])
+
+
+@pytest.fixture
+def standard_world(world):
+    w = world
+    token = w["deploy"]("StandardObserverFixture")
+    w["send"](token, "transfer(address,uint256)", w["bridge"], 500_000_000)
+    # Real EIP-1967 slot; the fixture records identity but does not delegate calls.
+    w["send"](token, "setImplementation(address)", w["tokens"][0])
+    w["tokens"][0] = token
+    cfg = w["binding"]["assets"][0]
+    cfg.update(
+        token=token,
+        profile="standard",
+        code_sha256=observer.code_hash(observer.RPC(w["url"]), token, "latest"),
+        implementation_slot="0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc",
+    )
+    w["base"]["assets"][0]["source_token"] = token
+    w["policy"]["assets"][0]["source_token"] = token
+    initial = observer.collect(observer.RPC(w["url"]), w["binding"], w["base"], None)
+    initial["checkpoint"]["utime"] = initial["source_checkpoint"]["utime"]
+    for pin, entry in zip(w["policy"]["assets"], initial["assets"], strict=True):
+        pin["implementation"] = entry["implementation"]
+    w["initial"] = initial
+    return w
+
+
+def standard_report(w):
+    value = observer.collect(observer.RPC(w["url"]), w["binding"], w["base"], w["initial"])
+    value["checkpoint"].update(height=101, hash="d" * 64, utime=value["source_checkpoint"]["utime"])
+    return value, observer.monitor.evaluate(
+        w["policy"], value, w["initial"], now=value["source_checkpoint"]["utime"]
+    )
+
+
+def test_standard_blacklist_and_pause_are_real_getter_reads(standard_world):
+    w = standard_world
+    _, healthy = standard_report(w)
+    assert not healthy["provider_pause_assets"]
+    w["send"](w["tokens"][0], "addBlackList(address)", w["bridge"])
+    value, report = standard_report(w)
+    assert value["assets"][0]["bridge_blacklisted"] is True
+    assert "bridge_frozen" in codes(report, "usdc")
+    assert report["provider_pause_assets"] == ["usdc"]
+    w["send"](w["tokens"][0], "pause()")
+    value, report = standard_report(w)
+    assert value["assets"][0]["paused"] is True
+    assert "token_paused" in codes(report, "usdc")
+
+
+def test_standard_implementation_change_is_an_emergency(standard_world):
+    w = standard_world
+    value, healthy = standard_report(w)
+    assert not codes(healthy, "usdc")
+    assert (
+        value["assets"][0]["issuer_identity"]["target"]
+        == w["initial"]["assets"][0]["issuer_identity"]["target"]
+    )
+    w["send"](w["tokens"][0], "setImplementation(address)", w["bridge"])
+    value, report = standard_report(w)
+    assert value["assets"][0]["issuer_identity"]["target"] == w["bridge"]
+    assert "token_upgrade" in codes(report, "usdc"), "standard upgrade alarm missing"
+    assert report["provider_pause_assets"] == ["usdc"], "standard upgrade did not pause"
