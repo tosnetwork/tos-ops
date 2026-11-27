@@ -1090,6 +1090,81 @@ def step_observe(args, state):
     return result
 
 
+# What must hold at the finalized source block before each latched emergency of
+# the LocalUSDT fixture may be resolved: the condition is gone, the token is
+# re-enabled on the bridge, and locks are open.
+CLEARED = {
+    "bridge_frozen": lambda f: not f["bridge_blacklisted"],
+    "token_paused": lambda f: not f["paused"],
+}
+
+
+def step_resolve_incident(args, state, evm):
+    """The explicit incident resolution of the monitor runbook: archive one latch
+    after the operator has shown, at a finalized source block, that its condition
+    is gone and the token is re-enabled. It holds the checker's own monitor.lock
+    for the edit (a concurrent tick publishes STALE once and retries), removes
+    only the named latch, keeps a byte copy of every state file before the edit,
+    and then requires the next published report to be clean. It never touches the
+    baseline, the outbox or the policy, and never resolves a latch whose
+    condition still holds."""
+    asset, code = args.incident.split(":", 1)
+    require(asset in ASSETS and code in CLEARED, f"no resolution rule for {args.incident}")
+    require(asset == "usdt", "only the LocalUSDT fixture's latches are resolved here")
+    require(len(args.authorization or "") >= 16, "--authorization must name who approved it")
+    root = args.monitor_state
+    out = state.root / "incident-resolution" / args.label
+    point = finalized_source(evm)
+    facts = source_facts(evm, state, asset, point["number"])
+    require(CLEARED[code](facts), f"{args.incident} still holds at source block {point['number']}")
+    require(not facts["disabled"] and facts["allow_lock"], "re-enable the token before resolving")
+    incidents = json.loads((root / "incidents.json").read_text())
+    require(args.incident in incidents, f"{args.incident} is not latched")
+    report = json.loads((root / "report.json").read_text())
+    require(
+        int(time.time()) - report["checkpoint"]["utime"] <= 120,
+        "the monitor report is stale; resolve against a fresh report",
+    )
+    require(
+        not any(a["asset"] == asset and a["code"] == code for a in report["alarms"]),
+        f"the monitor still reports {args.incident}",
+    )
+    intent = {
+        "incident": args.incident,
+        "authorization": args.authorization,
+        "source_finalized": point,
+        "source_facts": facts,
+        "report_checkpoint": report["checkpoint"],
+        "other_incidents_kept": sorted(k for k in incidents if k != args.incident),
+    }
+    if not args.execute:
+        return {"dry_run": True, **intent}
+    archive.document(out / "intent.json", intent)
+    with (root / "monitor.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        original = (root / "incidents.json").read_bytes()
+        require(json.loads(original) == incidents, "the latches changed while resolving")
+        for name in ("incidents", "previous", "report", "policy", "binding"):
+            archive.sync_write(out / f"before-{name}.json", (root / f"{name}.json").read_bytes())
+        remaining = {k: v for k, v in incidents.items() if k != args.incident}
+        archive.document(root / "incidents.json", remaining)
+    deadline = time.monotonic() + 120
+    while True:
+        after = json.loads((root / "report.json").read_text())
+        if after["checkpoint"]["utime"] > report["checkpoint"]["utime"] and after["checkpoint"][
+            "utime"
+        ] > 0:
+            break
+        require(time.monotonic() < deadline, "no fresh report after the resolution")
+        time.sleep(3)
+    require(args.incident not in after["latched_incidents"], "the latch came back")
+    result = {**intent, "result": "resolved", "after_report": after}
+    archive.sync_write(out / "after-report.json", (root / "report.json").read_bytes())
+    archive.document(out / "resolved.json", result)
+    state.evidence(args.label, result)
+    return result
+
+
 def step_reconcile(args, state, evm, chain):
     """Supply against backing for both assets: the TOS minter supply at one
     checkpoint on nodes 4-6, and the bridge balance at one finalized source block.
@@ -1153,6 +1228,7 @@ def parser():
             "unlock",
             "observe",
             "reconcile",
+            "resolve-incident",
         ),
     )
     p.add_argument("--data", type=Path, default=Path("/data"))
@@ -1183,6 +1259,8 @@ def parser():
     p.add_argument("--expect-clean", action="store_true")
     p.add_argument("--expect-alarm", help="asset:code the monitor must report")
     p.add_argument("--expect-reconciled", action="store_true")
+    p.add_argument("--incident", help="asset:code of the latch to resolve")
+    p.add_argument("--authorization", help="who approved the resolution")
     p.add_argument("--execute", action="store_true")
     return p
 
@@ -1200,6 +1278,7 @@ NEEDS = {
     "unlock": ("label", "asset", "burn", "receiver"),
     "observe": ("label",),
     "reconcile": ("label",),
+    "resolve-incident": ("label", "incident", "authorization"),
 }
 
 
@@ -1267,6 +1346,8 @@ def main(argv=None):
                 result = step_unlock(args, state, evm)
             elif args.step == "observe":
                 result = step_observe(args, state)
+            elif args.step == "resolve-incident":
+                result = step_resolve_incident(args, state, evm)
             elif args.step == "reconcile":
                 result = step_reconcile(args, state, evm, chain)
             else:

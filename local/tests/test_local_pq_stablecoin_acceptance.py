@@ -612,3 +612,83 @@ def test_a_latch_on_disk_is_not_clean_even_if_the_report_omits_it(tmp_path):
     args = SimpleNamespace(label="observe", monitor_state=root, expect_clean=True, expect_alarm=None)
     with pytest.raises(Refused, match="not clean"):
         m.step_observe(args, State(tmp_path / "state"))
+
+
+def resolution_world(monkeypatch, tmp_path, blacklisted=False, disabled=False, alarms=(),
+                     incidents=None, publish=True):
+    import time
+
+    (tmp_path / "monitor").mkdir()
+    root = monitor_dir(tmp_path / "monitor", alarms)
+    latched = incidents if incidents is not None else {"usdt:bridge_frozen": {"x": 1},
+                                                       "usdc:token_paused": {"y": 2}}
+    (root / "incidents.json").write_text(json.dumps(latched))
+    for name in ("previous", "policy", "binding"):
+        (root / f"{name}.json").write_text("{}")
+    monkeypatch.setattr(m, "finalized_source", lambda evm: {"number": 9, "hash": "0x9"})
+    monkeypatch.setattr(
+        m, "source_facts",
+        lambda *a, **k: {"bridge_blacklisted": blacklisted, "paused": False, "disabled": disabled,
+                         "allow_lock": True},
+    )
+    sleeps = []
+
+    def tick(seconds):
+        sleeps.append(seconds)
+        if publish:
+            report = json.loads((root / "report.json").read_text())
+            report["checkpoint"]["utime"] = int(time.time()) + 1
+            report["latched_incidents"] = sorted(json.loads((root / "incidents.json").read_text()))
+            (root / "report.json").write_text(json.dumps(report))
+
+    monkeypatch.setattr(m.time, "sleep", tick)
+    state = State(tmp_path / "state")
+    state.root.mkdir()
+    args = SimpleNamespace(label="resolve", incident="usdt:bridge_frozen", monitor_state=root,
+                           authorization="coordinator approved the drill", execute=True)
+    return state, args, root
+
+
+def test_resolution_removes_only_the_named_latch_and_keeps_copies(monkeypatch, tmp_path):
+    state, args, root = resolution_world(monkeypatch, tmp_path)
+    result = m.step_resolve_incident(args, state, None)
+    assert json.loads((root / "incidents.json").read_text()) == {"usdc:token_paused": {"y": 2}}
+    before = json.loads((state.root / "incident-resolution/resolve/before-incidents.json").read_text())
+    assert "usdt:bridge_frozen" in before and result["other_incidents_kept"] == ["usdc:token_paused"]
+
+
+@pytest.mark.parametrize(
+    "kwargs, message",
+    [
+        ({"blacklisted": True}, "still holds"),
+        ({"disabled": True}, "re-enable the token"),
+        ({"alarms": [{"asset": "usdt", "code": "bridge_frozen"}]}, "still reports"),
+        ({"incidents": {}}, "is not latched"),
+    ],
+)
+def test_resolution_refuses_while_its_condition_holds(monkeypatch, tmp_path, kwargs, message):
+    state, args, root = resolution_world(monkeypatch, tmp_path, **kwargs)
+    before = (root / "incidents.json").read_bytes()
+    with pytest.raises(Refused, match=message):
+        m.step_resolve_incident(args, state, None)
+    assert (root / "incidents.json").read_bytes() == before
+
+
+def test_resolution_refuses_while_the_checker_holds_its_lock(monkeypatch, tmp_path):
+    import fcntl
+
+    state, args, root = resolution_world(monkeypatch, tmp_path)
+    before = (root / "incidents.json").read_bytes()
+    with (root / "monitor.lock").open("a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        with pytest.raises(BlockingIOError):
+            m.step_resolve_incident(args, state, None)
+    assert (root / "incidents.json").read_bytes() == before
+
+
+def test_resolution_requires_a_fresh_report_afterwards(monkeypatch, tmp_path):
+    state, args, root = resolution_world(monkeypatch, tmp_path, publish=False)
+    clock = iter(range(0, 10**6, 1000))
+    monkeypatch.setattr(m.time, "monotonic", lambda: next(clock))
+    with pytest.raises(Refused, match="no fresh report"):
+        m.step_resolve_incident(args, state, None)
