@@ -53,3 +53,23 @@ The explicit isolated fixture lane is `testnet/tests/anvil_redemption.py`.
 It starts its own loopback node, requires its dependencies, exercises both
 issuer ABIs, and compares fee previews with a real received-balance delta.
 No live TOS value is moved.
+
+
+Run each explicit anvil lane in a **separate pytest process**. Do not combine
+these modules in one invocation: their plugin-provided fixture namespaces are
+not a supported combined lane and can produce fixture setup errors. With the
+compiler-module environment set as above, run from this checkout:
+
+```sh
+python3 -m pytest -q testnet/tests/anvil_settlement_observer.py
+python3 -m pytest -q testnet/tests/anvil_redemption.py
+T19_AI_ISSUER_PROBE=/path/to/issuer-probe python3 -m pytest -q testnet/tests/anvil_t19_ai.py
+```
+
+Build the read-only Go probe from the companion ai checkout using
+`go build -o /path/to/issuer-probe ./protocol/tests/token-issuer-fixture`.
+The tests include a non-divisible 100,000,001 atomic-unit amount at 19 bps,
+explicit fees just below/at/above the cap, and a fake clock that becomes stale
+only after RPC reads. Integer division floors before applying the cap; ceiling
+rounding and either one-unit cap error are red-controlled. A truncated HTTP
+answer exits as a fixed refusal without a body or echoed partial reply.

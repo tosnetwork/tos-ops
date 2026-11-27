@@ -15,7 +15,7 @@ import pytest
 pytest_plugins = ("anvil_redemption",)
 
 
-def probe(redemption_world, *, rpc=None, clock=None):
+def probe(redemption_world, *, rpc=None, clock=None, amount="100000000"):
     url, accounts, _, _, token, binding = redemption_world
     binary = Path(os.environ["T19_AI_ISSUER_PROBE"])
     assert binary.is_file(), "build the T19 ai issuer fixture probe first"
@@ -29,7 +29,7 @@ def probe(redemption_world, *, rpc=None, clock=None):
             profile=binding["profile"],
         ),
         receiver=accounts[1],
-        amount="100000000",
+        amount=amount,
     )
     if clock is not None:
         request["now_unix"] = clock
@@ -119,3 +119,21 @@ def test_go_reader_refuses_stale_or_failed_source(redemption_world):
         # Bound but not listening: the connection is refused deterministically.
         failed = probe(redemption_world, rpc=f"http://127.0.0.1:{port}")
     assert failed.returncode == 2 and "unavailable" in failed.stderr and failed.stdout == ""
+
+
+@pytest.mark.parametrize(
+    "amount,received,fee",
+    [
+        (100_000_001, 99_810_001, 190_000),
+        (526_315_789, 525_315_790, 999_999),
+        (526_315_790, 525_315_790, 1_000_000),
+        (526_316_316, 525_316_316, 1_000_000),
+    ],
+)
+def test_go_reader_floors_and_caps_fee(redemption_world, amount, received, fee):
+    _, _, send, _, token, _ = redemption_world
+    send(token, "setParams(uint256,uint256)", 19, 1)
+    result = probe(redemption_world, amount=str(amount))
+    assert result.returncode == 0, result.stderr
+    value = json.loads(result.stdout)
+    assert value["received"] == str(received) and value["fee"] == str(fee)
