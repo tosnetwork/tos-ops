@@ -1,0 +1,32 @@
+{
+  "bridge": "-1:733b321a0a2556eff5637d40d7e05724a69f8fa51c8ed7dfd22987ba6fe6a5b1",
+  "checkpoint": {
+    "@type": "tos.blockIdExt",
+    "file_hash": "IXLpmdOxL104EvFts7xP1aXU5hTIbfQKfvDi4yKKyoY=",
+    "root_hash": "ER2QBlpKd5nDYoTdrICQ49wfWDAPxwQwfVn+Cz8zU1k=",
+    "seqno": 351708,
+    "shard": "-9223372036854775808",
+    "workchain": -1
+  },
+  "config84_hash": "0f5b7178fa825b9f2e52b038f1437a09f294935c932f0551f62aa673fbe67163",
+  "critical_rules": {
+    "bit_price": 2,
+    "cell_price": 1000,
+    "max_losses": 2,
+    "max_store_sec": 20000000,
+    "max_tot_rounds": 7,
+    "min_store_sec": 5000000,
+    "min_tot_rounds": 4,
+    "min_wins": 4
+  },
+  "independent_endpoints": [
+    "http://127.0.0.1:8014",
+    "http://127.0.0.1:8015",
+    "http://127.0.0.1:8016"
+  ],
+  "master": "0:181e00fdfea5eeccb099b2ede160375e206de7d466a8bc6b4c79557781759591",
+  "minter_code_hash": "67926689d93e40b38d06becbb73562477c32df484ff6fffb77154b31d19a5514",
+  "preserved_records": true,
+  "source_token": "0x610178da211fef7d417bc0e6fed39f05609ad788",
+  "wallet_code_hash": "753bdf1d7cefd68aff17db60dd87fd3652c126b6045c1410a39a8f48b95b92cb"
+}
