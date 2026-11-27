@@ -352,7 +352,8 @@ Solidity compiler module available:
 ```sh
 export TOS_EVM_SOLC_MODULE="$TOS_ROOT/crosschain/token-bridge/evm/node_modules/solc"
 "$TOS_ROOT/.venv/bin/python" -m pytest -q \
-  testnet/tests/test_settlement_evm.py testnet/tests/anvil_settlement_observer.py
+  testnet/tests/test_settlement_evm.py testnet/tests/test_settlement_evm_topic_case.py \
+  testnet/tests/anvil_settlement_observer.py
 "$TOS_ROOT/.venv/bin/python" testnet/tests/settlement_evm_mutants.py \
   --log-dir /path/to/evidence/source-mutants
 ```
