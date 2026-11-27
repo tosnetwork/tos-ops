@@ -22,6 +22,14 @@ UNIT = "testnet/tests/test_settlement_evm.py"
 ANVIL = "testnet/tests/anvil_settlement_observer.py"
 CASES = (
     (
+        "hex-letter-case",
+        'topics = [topic.lower() for topic in log["topics"]]',
+        'topics = log["topics"]',
+        "testnet/tests/test_settlement_evm_topic_case.py",
+        "test_valid_uppercase_event_topic_is_not_ignored",
+        "valid uppercase event topic ignored",
+    ),
+    (
         "log-byte-bound",
         "aggregate_log_bytes <= MAX_LOG_BYTES",
         "True",
@@ -174,7 +182,11 @@ def main():
         if original.count(before) != 1:
             raise RuntimeError("pattern must occur exactly once: " + label)
         ast.parse(original.replace(before, after))
-    code, result = run([UNIT, ANVIL], SOURCE, args.log_dir / "baseline.log")
+    code, result = run(
+        [UNIT, "testnet/tests/test_settlement_evm_topic_case.py", ANVIL],
+        SOURCE,
+        args.log_dir / "baseline.log",
+    )
     if code != 0 or not list(ET.parse(result).getroot().iter("testcase")):
         raise RuntimeError("positive baseline invalid")
     for label, before, after, file, test, expected in CASES:

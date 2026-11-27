@@ -264,7 +264,7 @@ def receipts(rpc, previous, target):
 def asset_events(logs, token, bridge):
     events, pauses, destroys = [], 0, 0
     for log in logs:
-        topics = log["topics"]
+        topics = [topic.lower() for topic in log["topics"]]
         if not topics:
             continue
         sender = address(log["address"])
