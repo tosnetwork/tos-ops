@@ -1081,3 +1081,103 @@ def test_recover_without_finished_action_keeps_uncertain_steps_fenced(tmp_path, 
     assert (
         module.archive.StepJournal(state.root / "archive").read()["pending"] is not None
     )
+
+
+@pytest.mark.parametrize(
+    "fault", [None, "missing", "different", "wrong-block", "wrong-height"]
+)
+def test_refund_deadline_after_expire_uses_one_checkpoint(tmp_path, fault):
+    point = {"seqno": 123, "root_hash": "11" * 32, "gen_utime": 1000}
+    view = {"found": False, "read_at": point}
+
+    class Chain:
+        validator_urls = ("a", "b", "c")
+
+        def call(self, rpc_method, **kw):
+            assert rpc_method == "runGetMethod"
+            assert kw["seqno"] == 123 and kw["method"] == "get_refund"
+            stack = [
+                ["num", "1"],
+                ["slice", {}],
+                ["num", "1000000"],
+                ["num", "200000000"],
+                ["num", "100000000"],
+                ["num", "1100"],
+            ]
+            if fault == "missing":
+                stack[0] = ["num", "0"]
+            if fault == "different" and kw["url"] == "c":
+                stack[-1] = ["num", "1101"]
+            result = {
+                "exit_code": 0,
+                "stack": list(reversed(stack)),
+                "block_id": {
+                    "seqno": 124 if fault == "wrong-height" else 123,
+                    "root_hash": base64.b64encode(
+                        bytes.fromhex(
+                            "22" * 32 if fault == "wrong-block" else "11" * 32
+                        )
+                    ).decode(),
+                },
+            }
+            return result
+
+    if fault:
+        with pytest.raises(module.usdc.Refused):
+            module.refund_deadline(Chain(), "actor", "0", view)
+    else:
+        result = module.refund_deadline(Chain(), "actor", "0", view)
+        assert result["found"] and result["refund_claim_deadline"] == 1100
+        assert result["read_at"]["gen_utime"] < result["refund_claim_deadline"]
+        assert view["found"] is False
+
+
+@pytest.mark.parametrize("now, sends", [(1000, 0), (1200, 1)])
+def test_sweep_preflight_uses_refund_deadline_without_weakening_it(
+    tmp_path, monkeypatch, now, sends
+):
+    state = module.usdc.State(tmp_path)
+    state.set("deployment", {"address": "actor"})
+    args = SimpleNamespace(
+        case="sweep",
+        operation_args=["--operation", "sweep-expired-request", "--request-id", "0"],
+        sender_wallet="owner",
+        step="send",
+        tosctl=tmp_path / "tosctl",
+    )
+    view = {"found": False, "read_at": {"gen_utime": now}}
+    monkeypatch.setattr(module, "run", lambda *a, **k: json.dumps(view))
+    calls = []
+
+    def refund(*unused):
+        calls.append("refund-read")
+        return dict(view, found=True, refund_claim_deadline=1100)
+
+    monkeypatch.setattr(module, "refund_deadline", refund)
+    monkeypatch.setattr(module, "snapshot", lambda *a: None)
+    monkeypatch.setattr(module.time, "sleep", lambda *a: None)
+    monkeypatch.setattr(
+        module,
+        "cli_document",
+        lambda *a, **k: {
+            "destination": "actor",
+            "value_nanotos": "1",
+            "body_boc": module.usdc.boc64(module.usdc.Builder().end()),
+        },
+    )
+
+    class Owner:
+        address = "owner"
+
+        def transfer(self, *a, **k):
+            calls.append("send")
+            return {}
+
+    monkeypatch.setattr(module, "Owner", lambda *a: Owner())
+    if sends:
+        module.send_operation(args, state, None, {})
+    else:
+        with pytest.raises(module.usdc.Refused, match="deadline has not arrived"):
+            module.send_operation(args, state, None, {})
+    assert calls.count("send") == sends
+    assert calls[0] == "refund-read"
