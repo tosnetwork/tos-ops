@@ -3,7 +3,7 @@
 [2026-12-05 public testnet genesis and validator invitation](ANNOUNCEMENT-20261205.md)
 
 Use this guide to run your own validator in a coordinated public testnet
-ceremony. You need a dedicated host you administer, running Ubuntu 24.04 LTS (recommended) or a later LTS release such as 26.04 after confirming it with the coordinator, and a registered
+ceremony. You need a dedicated host you administer, running Ubuntu 24.04 LTS or 26.04 LTS (the host build is verified on both; a later LTS release after confirming it with the coordinator), and a registered
 seat: on December 5, 2026 the genesis validator set is the team's two
 validators, and an external validator registers its public record and pool
 before genesis (registration closes on November 30), is written to the
