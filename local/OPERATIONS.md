@@ -173,3 +173,10 @@ Tests: `local/tests/test_local_pq_usdc.py` and
 The journaled [local token actor procedure](SERVICE-TOKEN.md) reuses the bridge
 run and its minted test balance without resetting this network. Its evidence
 distinguishes contract-driven checks from the complete buyer/provider run.
+
+## Second token recognition review
+
+The local test-USDT addition is gated by the
+[behavioural analysis and execution checklist](evidence/usdt-recognition/README.md).
+This preparation does not authorize replacing an existing bridge or adopting a
+record before non-author review. Production release pins remain absent.
