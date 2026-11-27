@@ -14,6 +14,22 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "testnet/scripts"
 CASES = (
     (
+        "finalized-tag",
+        "settlement_issuer.py",
+        'source.block(rpc, "finalized")',
+        'source.block(rpc, "latest")',
+        "test_all_issuer_reads_use_the_finalized_hash",
+        "issuer finality tag lost",
+    ),
+    (
+        "canonical-point",
+        "settlement_issuer.py",
+        'dict(blockHash=target["hash"], requireCanonical=True)',
+        'dict(blockHash=target["hash"], requireCanonical=False)',
+        "test_all_issuer_reads_use_the_finalized_hash",
+        "issuer canonical hash pin lost",
+    ),
+    (
         "fee-math",
         "settlement_issuer.py",
         'fee = min(amount * observation["fee_basis_points"] // 10000, int(observation["maximum_fee"]))',

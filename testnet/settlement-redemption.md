@@ -43,8 +43,8 @@ integer arithmetic: `min(amount * basisPointsRate / 10000, maximumFee)`. Source
 locks mint that received delta; redemptions receive that delta. TOS wallet
 transfers have no such issuer fee and still obey the actor's exact-amount rule.
 
-**A recorded burn is final.** An issuer may change restrictions after the
-finalized read; an unlock that then reverts can remain unredeemable to the
+**A recorded burn is final.** Issuer restrictions and fees can already differ from the finalized
+checkpoint, and can change again before submission or unlock; an unlock that then reverts can remain unredeemable to the
 chosen receiver. A preview is not a durable authorization or a promise of
 execution. Re-run the precheck immediately before any later manual signing;
 never reuse an old prepared body merely because it exists.

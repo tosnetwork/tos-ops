@@ -204,3 +204,25 @@ def test_blacklisted_bridge_refuses_before_body(redemption_world):
     send(token, "addBlackList(address)", binding["bridge"])
     with pytest.raises(issuer.Invalid, match="source bridge is blacklisted"):
         build(redemption_world)
+
+
+def test_all_issuer_reads_use_the_finalized_hash(redemption_world):
+    class RecordingRPC:
+        def __init__(self):
+            self.inner = issuer.source.RPC(redemption_world[0])
+            self.calls = []
+
+        def call(self, method, *params):
+            self.calls.append((method, params))
+            return self.inner.call(method, *params)
+
+    rpc = RecordingRPC()
+    result = redemption.prepare(rpc, redemption_world[-1], redemption_world[1][1], 100000000, 7)
+    blocks = [params for method, params in rpc.calls if method == "eth_getBlockByNumber"]
+    assert blocks[0][0] == "finalized", "issuer finality tag lost"
+    assert blocks[-1][0] == hex(result["issuer"]["block_number"])
+    for method, params in rpc.calls:
+        if method in ("eth_call", "eth_getCode"):
+            assert params[-1] == dict(
+                blockHash=result["issuer"]["block_hash"], requireCanonical=True
+            ), "issuer canonical hash pin lost"

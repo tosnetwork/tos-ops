@@ -9,7 +9,7 @@ import time
 import settlement_issuer as issuer
 import testnet_lib as lib
 
-FINALITY_WARNING = "A recorded burn is final. Issuer restrictions and fees may change after this check; a failed unlock can leave the tokens unredeemable to this receiver."
+FINALITY_WARNING = "A recorded burn is final. Issuer restrictions and fees may differ from this finalized observation by submission or unlock; a failed unlock can leave the tokens unredeemable to this receiver."
 
 
 def prepare(rpc, binding, receiver, amount, query_id, now=time.time):
