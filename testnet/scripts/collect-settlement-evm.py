@@ -30,6 +30,7 @@ Invalid = monitor.Invalid
 MAX_BLOCKS = 64
 MAX_TRANSACTIONS = 4096
 MAX_LOGS = 16384
+MAX_LOG_BYTES = 16 << 20
 MAX_RESPONSE = 4 << 20
 SELECTORS = {
     "balance": "70a08231",
@@ -196,6 +197,7 @@ def receipts(rpc, previous, target):
     require(prior["hash"][2:] == previous["hash"], "source baseline reorg")
     all_logs, count, parent = [], 0, prior["hash"]
     seen = set()
+    aggregate_log_bytes = 0
     for height in range(start + 1, stop + 1):
         current = block(rpc, hex(height))
         require(
@@ -246,7 +248,15 @@ def receipts(rpc, previous, target):
                 for topic in log["topics"]:
                     raw(topic, 32)
                 raw(log["data"])
-                all_logs.append(log)
+                aggregate_log_bytes += len(log["data"]) // 2 + len(log["topics"]) * 32 + 160
+                require(aggregate_log_bytes <= MAX_LOG_BYTES, "source log byte budget")
+                # Drop unrelated endpoint extensions before retaining a log.
+                all_logs.append(
+                    {
+                        key: log[key]
+                        for key in ("address", "topics", "data", "blockHash", "logIndex")
+                    }
+                )
     require(parent == target["hash"], "source target changed")
     return all_logs
 

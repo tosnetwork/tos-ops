@@ -286,3 +286,49 @@ def test_local_fixture_pin_is_copied_from_checkpoint_evidence():
         == pin["runtime_sha256"]
     )
     assert pin["source_chain_id"] == 1 and pin["source_file"].endswith("/TestFeeToken.sol")
+
+
+def test_receipt_inventory_has_an_aggregate_byte_bound(monkeypatch):
+    prior, target_hash, tx_hash = "0x" + "11" * 32, "0x" + "22" * 32, "0x" + "33" * 32
+    target = dict(
+        number="0x1", hash=target_hash, parentHash=prior, timestamp="0x1", transactions=[tx_hash]
+    )
+
+    class LogRPC:
+        def call(self, method, *args):
+            if method == "eth_getBlockByNumber":
+                return (
+                    target
+                    if args[0] == "0x1"
+                    else dict(
+                        number="0x0",
+                        hash=prior,
+                        parentHash="0x" + "00" * 32,
+                        timestamp="0x0",
+                        transactions=[],
+                    )
+                )
+            return dict(
+                transactionHash=tx_hash,
+                blockHash=target_hash,
+                blockNumber="0x1",
+                transactionIndex="0x0",
+                status="0x1",
+                logs=[
+                    dict(
+                        address="0x" + "44" * 20,
+                        topics=[],
+                        data="0x" + "00" * 32,
+                        transactionHash=tx_hash,
+                        blockHash=target_hash,
+                        blockNumber="0x1",
+                        transactionIndex="0x0",
+                        logIndex="0x0",
+                        removed=False,
+                    )
+                ],
+            )
+
+    monkeypatch.setattr(collector, "MAX_LOG_BYTES", 16)
+    with pytest.raises(collector.Invalid, match="log byte budget"):
+        collector.receipts(LogRPC(), dict(height=0, hash=prior[2:]), target)

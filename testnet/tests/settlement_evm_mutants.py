@@ -22,6 +22,14 @@ UNIT = "testnet/tests/test_settlement_evm.py"
 ANVIL = "testnet/tests/anvil_settlement_observer.py"
 CASES = (
     (
+        "log-byte-bound",
+        "aggregate_log_bytes <= MAX_LOG_BYTES",
+        "True",
+        UNIT,
+        "test_receipt_inventory_has_an_aggregate_byte_bound",
+        "DID NOT RAISE",
+    ),
+    (
         "pre-rpc-stale",
         "    stale_report(args.report)\n    try:",
         "    try:",

@@ -271,7 +271,7 @@ python3 testnet/scripts/collect-settlement-evm.py \
 Use `--initialize-baseline` instead of `--previous` only for the explicitly
 approved first observation. Never reset a missing interval as a new baseline.
 Run frequently enough to cover every finalized source block. The adapter is
-bounded to 64 source blocks, 4,096 transactions, 16,384 logs,
+bounded to 64 source blocks, 4,096 transactions, 16,384 logs (16 MiB aggregate retained log bytes),
 256 redemption receivers per asset, 4 MiB per RPC
 response, a 45-second RPC-start budget and a 10-second per-I/O timeout.
 The checker imposes the outer 60-second process deadline. A longer/missing interval refuses; it
