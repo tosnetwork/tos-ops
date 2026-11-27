@@ -31,6 +31,7 @@ def world(source_net):
     token = deploy("LocalUSDT")
     binding = dict(
         schema="tos-settlement-issuer/1",
+        bridge=deploy("BridgeFixture"),
         chain_id=1,
         token=token,
         profile="legacy_usdt",
@@ -181,4 +182,11 @@ def test_rpc_error_even_with_a_result_refuses(world, monkeypatch):
 
     monkeypatch.setattr(issuer.source.urllib.request, "urlopen", ambiguous)
     with pytest.raises(issuer.Invalid, match="source RPC refused"):
+        build(world)
+
+
+def test_blacklisted_bridge_refuses_before_body(world):
+    _, _, send, _, token, binding = world
+    send(token, "addBlackList(address)", binding["bridge"])
+    with pytest.raises(issuer.Invalid, match="source bridge is blacklisted"):
         build(world)

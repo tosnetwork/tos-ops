@@ -14,6 +14,13 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "testnet/scripts"
 CASES = (
     (
+        "bridge-blacklist",
+        "settlement_issuer.py",
+        'not bridge_blocked, "redemption source bridge is blacklisted"',
+        'True, "redemption source bridge is blacklisted"',
+        "test_blacklisted_bridge_refuses_before_body",
+    ),
+    (
         "blacklist",
         "settlement_issuer.py",
         'not blacklisted, "redemption receiver is blacklisted"',

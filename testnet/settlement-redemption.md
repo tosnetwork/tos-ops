@@ -13,6 +13,7 @@ The operator-owned binding has exactly these fields:
 - `schema`: `tos-settlement-issuer/1`;
 - `chain_id`: the source chain id;
 - `token`: its canonical `0x` issuer token address;
+- `bridge`: the source bridge address, whose sender blacklist must also be clear;
 - `code_sha256`: SHA-256 of the expected deployed runtime code;
 - `profile`: `standard` for `isBlacklisted`/`paused`, or `legacy_usdt` for
   `isBlackListed`/`paused`/`deprecated` and the fee getters;

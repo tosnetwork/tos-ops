@@ -28,7 +28,7 @@ def require(ok, message):
 def validate_binding(binding):
     require(
         set(binding)
-        == {"schema", "chain_id", "token", "code_sha256", "profile", "master", "wallet"},
+        == {"schema", "chain_id", "token", "code_sha256", "profile", "bridge", "master", "wallet"},
         "issuer binding fields differ",
     )
     require(binding["schema"] == "tos-settlement-issuer/1", "unknown issuer binding schema")
@@ -38,6 +38,7 @@ def validate_binding(binding):
     require(binding["profile"] in ("standard", "legacy_usdt"), "unknown issuer profile")
     require(re.fullmatch(r"[0-9a-f]{64}", binding["code_sha256"] or ""), "invalid issuer code pin")
     require(int(source.address(binding["token"]), 16) != 0, "zero issuer address")
+    require(int(source.address(binding["bridge"]), 16) != 0, "zero source bridge")
     for field in ("master", "wallet"):
         require(
             isinstance(binding[field], str) and re.fullmatch(r"0:[0-9a-f]{64}", binding[field]),
@@ -67,6 +68,8 @@ def read_issuer(rpc, binding, receiver, now=time.time):
     blacklist = "blacklist_legacy" if legacy else "blacklist_standard"
     blacklisted = source.read_bool(rpc, token, blacklist, point, receiver)
     require(not blacklisted, "redemption receiver is blacklisted")
+    bridge_blocked = source.read_bool(rpc, token, blacklist, point, binding["bridge"])
+    require(not bridge_blocked, "redemption source bridge is blacklisted")
     paused = source.read_bool(rpc, token, "paused", point)
     require(not paused, "issuer token is paused")
     deprecated = source.read_bool(rpc, token, "deprecated", point) if legacy else False
