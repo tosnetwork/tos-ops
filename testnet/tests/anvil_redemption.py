@@ -286,7 +286,52 @@ def test_issuer_read_rechecks_time_after_rpc(redemption_world):
         )
 
 
-def test_truncated_rpc_cli_refuses_without_a_body(redemption_world, tmp_path, monkeypatch, capsys):
+@pytest.fixture
+def truncated_rpc_endpoint():
+    import http.server
+    import threading
+
+    calls = []
+
+    class Truncated(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_POST(self):
+            import json
+
+            request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            calls.append(request["method"])
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            # Declare 64 bytes, write fewer, close without a final chunk.
+            self.wfile.write(b"40\r\nuntrusted partial response")
+            self.wfile.flush()
+            self.close_connection = True
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Truncated)
+    thread = threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+    )
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}", calls
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        assert not thread.is_alive(), "truncated fixture server did not stop"
+
+
+@pytest.mark.parametrize("transport", ["raised-exception", "truncated-http"])
+def test_truncated_rpc_cli_refuses_without_a_body(
+    redemption_world, tmp_path, monkeypatch, capsys, truncated_rpc_endpoint, transport
+):
     import http.client
 
     binding = tmp_path / "binding.json"
@@ -295,12 +340,14 @@ def test_truncated_rpc_cli_refuses_without_a_body(redemption_world, tmp_path, mo
     def truncated(*args):
         raise http.client.IncompleteRead(b"untrusted partial response")
 
-    monkeypatch.setattr(issuer.source.RPC, "call", truncated)
+    endpoint, calls = truncated_rpc_endpoint
+    if transport == "raised-exception":
+        monkeypatch.setattr(issuer.source.RPC, "call", truncated)
     assert (
         redemption.main(
             [
                 "--rpc",
-                redemption_world[0],
+                endpoint,
                 "--binding",
                 str(binding),
                 "--receiver",
@@ -313,6 +360,9 @@ def test_truncated_rpc_cli_refuses_without_a_body(redemption_world, tmp_path, mo
         )
         == 2
     )
-    text = capsys.readouterr().out
-    assert "redemption refused; no burn body built" in text
-    assert "untrusted partial response" not in text and "body_boc" not in text
+    captured = capsys.readouterr()
+    assert captured.out == "redemption refused; no burn body built: IncompleteRead\n", (
+        "fixed refusal line changed"
+    )
+    assert captured.err == ""
+    assert calls == (["eth_chainId"] if transport == "truncated-http" else [])

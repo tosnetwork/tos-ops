@@ -150,6 +150,16 @@ CASES += (
         "IncompleteRead",
     ),
 )
+CASES += (
+    (
+        "truncated-details",
+        "prepare-token-redemption.py",
+        "detail = str(error) if isinstance(error, issuer.Invalid) else type(error).__name__",
+        "detail = str(error)",
+        "test_truncated_rpc_cli_refuses_without_a_body",
+        "fixed refusal line changed",
+    ),
+)
 
 
 def main():
