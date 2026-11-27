@@ -25,28 +25,18 @@ integration have no counterpart in the upstream core at
 `99143587e6babb2e577eadea0fc741cb1b413fab`. This is local deployment work;
 no inherited core path is changed.
 
-### Bridge selection hold
+### Confirmed bridge selection
 
-Read-only inspection found normal test USDC on chain id **1**, ConfigParam
+Test USDT shares the normal USDC bridge: source chain id **1**, ConfigParam
 **79**, TOS bridge
-`-1:733b321a0a2556eff5637d40d7e05724a69f8fa51c8ed7dfd22987ba6fe6a5b1`.
-Its EVM bridge is `0xe7f1725e7734ce288f8367e1bb143e90bb3f0512`.
+`-1:733b321a0a2556eff5637d40d7e05724a69f8fa51c8ed7dfd22987ba6fe6a5b1`,
+EVM bridge `0xe7f1725e7734ce288f8367e1bb143e90bb3f0512`.
 Its normal wallet code hash is
 `753bdf1d7cefd68aff17db60dd87fd3652c126b6045c1410a39a8f48b95b92cb`.
-
-ConfigParam **81** instead names the earlier local-only refusal namespace,
-chain id 56, TOS bridge
-`-1:907e0a0911d7c43a999c57385953157a698621b96fddf9b72cab180bb82311af`.
-That bridge embeds the deliberately modified wallet code hash
-`cf5c98a11cf3de09b1cf702fa1eba38d870c822abb866320bba2da59dac013df`.
-It is not the normal bridge and has no corresponding deployed EVM bridge.
-
-The instruction to share USDC's bridge and the instruction to use slot 81
-therefore cannot both be applied to this network as it stands. No bridge
-replacement, generation change or reuse of refusal code is implicit. Confirm
-whether to share the existing normal slot-79 bridge; otherwise a separate
-reviewed migration is needed. Preserve every existing ConfigParam 84 entry,
-including the local refusal test entry.
+ConfigParam **81** remains the local refusal-test namespace only. No bridge or
+code is replaced. ConfigParam 84 will contain **three** records: normal USDC,
+the existing refusal test, and normal USDT. Every existing entry's actual cell
+content must be preserved, not merely a decoded approximation or overall hash.
 
 ## Behavioural analysis before recognition
 
@@ -56,27 +46,77 @@ no production token address, code, proxy implementation or release pin is
 provided. Production recognition remains absent until governance and its own
 review. Tests with an issuer-like fixture do not prove issuer trustworthiness.
 
-| Behaviour | Source fact and consequence | Required local evidence / operational rule |
-| --- | --- | --- |
-| Transfer-fee switch | `contracts/Bridge.sol:191-215` measures pre/post bridge balances, records and emits the **received delta**, then charges caps on that delta. A fee on unlock/refund can still reduce what the recipient receives: `:277-287`, `:312-320` use the nominal amount in the event. | Start the local fixture at zero fee; verify received delta, lock record and minted amount at one source block. Never infer a redemption credit from the nominal event amount alone. The public-testnet fee variant remains a later case. |
-| Blacklist, pause and destroyed backing | `Bridge.sol:184-189` has an oracle-controlled disabled-token gate; transfers can also revert. Neither that gate nor caps undo an existing issuer freeze, burn or shortfall. Caps read the actual balance, so destruction may reduce apparent exposure while wrapped supply stays unchanged (`:67-95`). | The local fixture must have explicit blacklist and pause switches. Later freeze rehearsal observes the report, disables new business, pauses only the affected actors and keeps existing TOS requests settleable. Check both bridge and receiver restrictions before redemption. Never claim the bridge can recover issuer-destroyed backing. |
-| No boolean return | `lock`, `unlock` and `refundLock` use optional-return transfer calls. The pinned helper's `token/ERC20/utils/SafeERC20.sol:99-114` requires a successful call, accepts empty return data and refuses a returned false. | A genuine no-return fixture is supported without a recognition bypass. Reverted, false and malformed returns are failures. The separate public-testnet no-return exercise remains pending. |
-| Approval race | `Bridge.sol:193` consumes the user's allowance. It cannot make replacing one nonzero allowance with another atomic with respect to a spender. | Only approve the named bridge and the exact intended lock amount. If allowance is nonzero, first journal and finalize a zero approval, then the new approval. Reconcile nonce and receipt on interruption; do not blindly resend or issue an unlimited allowance. |
-| Upgrade path | The bridge neither pins a source token's implementation nor vetoes its upgrades. Its disabled-token and cap votes are controls, not guarantees about an issuer's next implementation. | The local fixture is non-proxy, with runtime bytecode archived. That does not cover a production proxy. A production review must identify admin/implementation, upgrade authority and delay, supported getters, and monitoring/review triggers before a record is proposed. |
-| Decimal width | `Bridge.sol:434-440` calls `decimals()` as `uint8`, returning zero on failure. An ABI `uint256` value of six has the same 32-byte word and is representable; this does not justify accepting arbitrary values. | The new fixture must expose `uint256 decimals()` returning exactly six. Archive the raw return word and the bridge getter result, and refuse any other value or malformed answer. |
-| Caps and oracle admission | `Bridge.sol:223-268` enforces total/per-lock/fixed-hour/fixed-day caps on received amounts; an unset cap refuses locks. Fixed buckets allow two buckets' worth across a boundary. Caps do not govern refunds/unlocks. | Independently allowlist the exact test token in the oracle, vote test-sized caps, archive `getLockCapState` at the lock's block and verify headroom. Open its minter channel before unrelated locks can consume capacity. Do not change another asset's caps. |
+### Verified issuer source and limits of the check
 
-The existing `contracts/TestFeeToken.sol` is insufficient for the full freeze
-rehearsal: it has six decimals as **uint8**, no-return transfers and a fee switch,
-but no blacklist, pause, destroy or upgrade mechanism. It also permits direct
-nonzero-to-nonzero approvals. A local-only fixture with the stated interface must
-be reviewed and its source/compiler/runtime hashes recorded; it is not a
-production substitute.
+The read-only verified-source response for EVM chain 1 contract
+`0xdAC17F958D2ee523a2206206994597C13D831ec7` was retrieved on 2026-11-27:
+[verification metadata and source](https://sourcify.dev/server/v2/contract/1/0xdAC17F958D2ee523a2206206994597C13D831ec7?fields=all).
+It reports creation and runtime `match`; the source is `TetherToken.sol`, UTF-8
+SHA-256 `36bf0b5747dfe7f79a03c9bc09af63e93e352d3c61199fbf025fd2c962b485f8`
+(including its CRLF line endings). The source and verification response are
+retained outside Git as review evidence. This checks the published matching
+source, **not current issuer settings**, backing, control of admin keys, a future
+upgrade, or deployment approval. No transaction was sent to that contract.
+References to `issuer:n` below name that exact source and line.
 
-## Execution and evidence checklist after both review gates
+For bridge references, `B:n` means `contracts/Bridge.sol:n` at the running release.
+`A:n` means `crypto/smartcont/service-actor-token-code.fc:n` in tools commit
+`58015fcdfe3d3ea23ff23c1bfc6aec377361b38e`.
+`M:n` means this repository's `testnet/scripts/check-settlement.py:n` at
+`a841db9`; `P:n` means ai `provider/pkg/servicebridge/token_monitor.go:n` at
+`9a35bd893f2cb0dfba47be258c6e7c1d41f13705`.
+
+The actor has no EVM issuer oracle. TOS wallet transfers remain exact. An EVM
+lock of the quoted price with a fee produces fewer wrapped tokens: funding an
+actor with that price-minus-fee amount is refused by `A:1630-1631`, and the
+funding return is created/sent by `A:1693-1715` when return capacity and funding
+permit. If no return can be recorded, the tokens are surplus, explicitly logged;
+this is not an accepted request. Existing TOS requests can still settle even
+when their EVM backing is frozen; that is not a promise of EVM redeemability.
+This actor behaviour applies to every row below.
+
+| Behaviour and exact source semantics | Bridge handling | T3 actor handling | Control and present/absent status |
+| --- | --- | --- | --- |
+| **Fee switch:** `issuer:122-134,167-187,425-433`: `basisPointsRate < 20`, `maxFee < 50` whole tokens, `maximumFee = maxFee * 10^decimals`. Fee = min(value * rate / 10000, maximumFee); sender loses full value, owner receives fee; supply is not burned. | `B:191-215` locks/records/mints received balance delta; caps use that delta (`B:223-232`). `B:277-287,312-320` pay nominal unlock/refund amounts; recipients may receive less. | Exact-price rule above. Price-minus-fee funding is refused and returned, not silently accepted as full price. | **PRESENT checker:** `M:349-353` transfer_fee alarm; caps/headroom `M:295-314`. **ABSENT until T14b:** live issuer collection. **ABSENT until T19:** received-amount previews and budgeting from minted amount; current previews must not be described as fee-adjusted. |
+| **Blacklist:** `issuer:336-352` checks only sender (`msg.sender` / `_from`), never recipient. Blacklisting the bridge leaves balance unchanged and still permits user-to-bridge locks and minting; bridge-to-user unlock/refund reverts. | `B:193` succeeds with a blacklisted bridge recipient; `B:286,318` fail when the bridge sends. Backing balance equality alone cannot detect this freeze. | No issuer blacklist read; exact TOS admission/settlement still applies. | **PRESENT checker:** `M:337-338` bridge_blacklisted -> bridge_frozen. **Immediate response required:** oracles vote `voteForDisableToken`, or `voteForSwitchLock` (the latter stops both assets); do not wait for status 2. `M:345-348` receiver alarm exists but is conservative: issuer recipient blacklisting alone does not reject receipt. **ABSENT until T14b:** issuer collection. **ABSENT until T19:** redemption-tool prechecks. |
+| **destroyBlackFunds:** `issuer:287-295` zeros the blacklisted account, decreases supply and emits **DestroyedBlackFunds without Transfer**. | No bridge compensation; balanceOf can fall without an unlock/refund, while wrapped supply is unchanged (`B:67-95`). | Existing TOS liability remains; no automatic balance haircut or fabricated repayment. | **PRESENT checker:** `M:341-342` destroyed_funds; `M:315-336` unexplained_decrease; `M:298-300` backing_shortfall. These latch the emergency hook. **ABSENT until T14b:** issuer-event and complete balance-interval collection; Transfer logs alone are insufficient. |
+| **Pause:** `issuer:336,346` transfers are guarded by whenNotPaused. `approve` at `:365-370` is not pause-guarded. | TransferFrom/transfer revert, so lock/unlock/refund fail without crediting a successful lock. | Issuer pause does not alter TOS transfer semantics; existing requests still reconcile. | **PRESENT checker:** `M:339-344` current paused or any interval Pause event -> token_paused. **ABSENT until T14b:** current flag and event interval collection, including pause then unpause between observations. **ABSENT until T19:** burn-build pause check. |
+| **No boolean return:** `issuer:336-370,195-204`: transfer, transferFrom **and approve** return no bool. | The pinned optional-return helper (`token/ERC20/utils/SafeERC20.sol:99-114`) accepts empty successful transfer returns, refuses false/revert; approval tooling must accept empty success too. | The EVM ABI is not used by the actor; ordinary exact TOS transfers apply. | **PRESENT:** bridge optional-return handling. Test fixture uses no-return calls. Public-testnet lock/unlock evidence remains a later case; it is not supplied by source inspection. |
+| **Approval race:** `issuer:195-204` requires zero before changing a nonzero allowance to nonzero; approve is no-return and not paused. | TransferFrom consumes allowance. The bridge cannot make a user's allowance replacement atomic. | No EVM allowance handling in T3. | **REQUIRED driver rule:** journal/finalize zero approval first when needed, then exact lock allowance; reconcile each nonce/receipt before proceeding. No unlimited approval. Test and archive this before the local lock is claimed complete. |
+| **deprecate/upgradedAddress:** `issuer:336-394` forwards transfers, approval, balances, allowance and totalSupply to `*ByLegacy`/getters after owner `deprecate` sets flag and target; **not a proxy upgrade**. | Bridge does not pin/veto the forwarding target. Its successful ABI calls may now have different behaviour or balances. | No source-upgrade detector; route remains its fixed TOS master, not a promise about upgraded backing. | **PRESENT checker:** `M:354-355` deprecated or changed implementation identity -> token_upgrade. **ABSENT until T14b:** flag, target and code-identity reads. Local fixture **includes deprecate and forwarding** to exercise it. A production review must re-pin the exact target code and behaviour before resuming. |
+
+For all emergency rows, `M:27-33,364` emits the asset-scoped
+`provider_pause_assets` hook (freeze, pause, destroy, unexplained decrease,
+backing shortfall). Provider filtering is `P:63-71,103-124`; its own signed
+`update_policy` clears active only for its actors of that asset. Fee and upgrade
+alarms are **not** latched emergency execution stops. A stale or missing report
+refuses paid execution via ai `provider/pkg/servicebridge/token_execution.go:16-36`.
+Without T14b, the source inputs are missing: the checker and provider integration
+are real, but there is no genuine live issuer observation to feed them.
+**T14b is now a hard gate before the local USDT proposal and before production.**
+T19 redemption/previews is a local follow-up and a hard production gate.
+
+`B:434-442` uses a `uint8` decimals return type. An ABI `uint256` word containing
+six is representable and decodes identically. A malformed or out-of-range return
+can fail decoding in the caller: the `try/catch` must **not** be described as
+converting every such failure to zero. Reverted calls may take the fallback;
+a local decimal test must verify the actual raw 32-byte return and reject wrong
+or malformed values.
+
+The local fixture source is
+[LocalUSDT.sol](../../contracts/test-usdt/LocalUSDT.sol). It models sender-only
+blacklist, pause, capped owner-paid fee, no-return approve/transfers, zero-first
+approval, DestroyedBlackFunds without Transfer, uint256 decimals and
+legacy-forwarding deprecation. It is not a production clone or a complete
+issuer-security proof; in particular it does not reproduce the old compiler's
+short-payload modifier. Canonical clients must send full ABI arguments.
+It is not installed by any node or public profile. Build artifacts and keys stay
+outside Git. Test both fields and behaviour against the actual compiled fixture.
+
+## Execution and evidence checklist after the review and collector gates
 
 1. Re-check health, zero-state equality and on-chain global id 3 on both send
-   references. Use only loopback RPC. Confirm the chosen bridge's deployed code,
+   references. Use only loopback RPC. Confirm the slot-79 bridge's deployed code,
    immutable namespace, generation, codes and channel room at one finalized
    checkpoint. Keep all existing services and CPU caps unchanged.
 2. Deploy the reviewed six-decimal local fixture with a durable intent before
@@ -88,7 +128,7 @@ production substitute.
    Archive each finalized source transaction and each transitive TOS message graph
    before the next step. No reset, direct mint, state override or recognition
    bypass is permitted.
-4. Derive the new master from the chosen bridge's **on-chain** minter/wallet
+4. Derive the new master from the slot-79 bridge's **on-chain** minter/wallet
    codes and the new source token. Record one canonical checkpoint and its block
    root/file hashes, bridge storage and code BOCs, master code/data and getters.
    Both validators must agree at that checkpoint. Source bytecode pins supplement,
