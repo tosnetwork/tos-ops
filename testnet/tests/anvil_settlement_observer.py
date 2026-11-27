@@ -214,7 +214,9 @@ def codes(report, asset):
 
 
 @pytest.mark.parametrize("index", [0, 1])
-def test_blacklisted_bridge_accepts_lock_but_observation_stops_it(world, index):
+def test_legacy_sender_only_freeze_is_asset_scoped(world, index):
+    # The issuer fixture is legacy-shaped under each policy label; this proves
+    # alarm scoping, not a production standard-issuer blacklist implementation.
     w = world
     token = w["tokens"][index]
     w["send"](token, "addBlackList(address)", w["bridge"])

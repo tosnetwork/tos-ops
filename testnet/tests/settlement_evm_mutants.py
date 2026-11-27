@@ -66,7 +66,7 @@ CASES = (
         "read_bool(rpc, token, blacklist, point, bridge)",
         "False",
         ANVIL,
-        "test_blacklisted_bridge_accepts_lock_but_observation_stops_it",
+        "test_legacy_sender_only_freeze_is_asset_scoped",
         "blacklist alarm missing",
     ),
     (
