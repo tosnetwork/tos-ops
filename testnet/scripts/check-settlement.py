@@ -29,6 +29,7 @@ EMERGENCIES = {
     "token_paused",
     "destroyed_funds",
     "token_deprecated",
+    "token_upgrade",
     "unexplained_decrease",
     "backing_shortfall",
 }
@@ -354,8 +355,10 @@ def evaluate(policy, observation, previous=None, now=None):
                 alarm(rows, aid, None, "transfer_fee")
             if flag(asset, "deprecated"):
                 alarm(rows, aid, None, "token_deprecated")
-            if flag(asset, "deprecated") or asset["implementation"] != pin["implementation"]:
-                alarm(rows, aid, None, "token_upgrade")
+        if asset["implementation"] != pin["implementation"] or (
+            pin["symbol"] == "USDT" and flag(asset, "deprecated")
+        ):
+            alarm(rows, aid, None, "token_upgrade")
         if not flag(asset, "events_complete"):
             raise Invalid("incomplete source events")
     return dict(

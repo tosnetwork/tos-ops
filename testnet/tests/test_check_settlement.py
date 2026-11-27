@@ -925,3 +925,15 @@ def test_deprecated_legacy_asset_is_an_asset_local_emergency():
     report = monitor.evaluate(policy, snapshot, None, NOW)
     assert report["provider_pause_assets"] == ["usdt"], "deprecated asset not paused locally"
     assert any(a["code"] == "token_deprecated" for a in report["alarms"])
+
+
+@pytest.mark.parametrize("index", [0, 1])
+def test_implementation_change_is_an_asset_local_emergency(index):
+    policy, snapshot = fixture()
+    snapshot["assets"][index]["implementation"] = "unreviewed-target"
+    result = monitor.evaluate(policy, snapshot, now=NOW)
+    asset = ("usdc", "usdt")[index]
+    assert any(
+        row["code"] == "token_upgrade" and row["asset"] == asset for row in result["alarms"]
+    ), "upgrade alarm missing"
+    assert result["provider_pause_assets"] == [asset], "upgrade did not pause only its asset"

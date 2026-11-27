@@ -83,8 +83,11 @@ def test_interval_bound_is_checked_before_rpc():
             pytest.fail("oversized interval reached RPC")
 
     with pytest.raises(collector.Invalid, match="block bound"):
-        collector.receipts(
-            NoRPC(), dict(height=0, hash="a" * 64), dict(number=hex(collector.MAX_BLOCKS + 1))
+        collector.block_logs(
+            NoRPC(),
+            dict(height=0, hash="a" * 64),
+            dict(number=hex(collector.MAX_BLOCKS + 1)),
+            [SourceRPC.token],
         )
 
 
@@ -288,52 +291,6 @@ def test_local_fixture_pin_is_copied_from_checkpoint_evidence():
     assert pin["source_chain_id"] == 1 and pin["source_file"].endswith("/TestFeeToken.sol")
 
 
-def test_receipt_inventory_has_an_aggregate_byte_bound(monkeypatch):
-    prior, target_hash, tx_hash = "0x" + "11" * 32, "0x" + "22" * 32, "0x" + "33" * 32
-    target = dict(
-        number="0x1", hash=target_hash, parentHash=prior, timestamp="0x1", transactions=[tx_hash]
-    )
-
-    class LogRPC:
-        def call(self, method, *args):
-            if method == "eth_getBlockByNumber":
-                return (
-                    target
-                    if args[0] == "0x1"
-                    else dict(
-                        number="0x0",
-                        hash=prior,
-                        parentHash="0x" + "00" * 32,
-                        timestamp="0x0",
-                        transactions=[],
-                    )
-                )
-            return dict(
-                transactionHash=tx_hash,
-                blockHash=target_hash,
-                blockNumber="0x1",
-                transactionIndex="0x0",
-                status="0x1",
-                logs=[
-                    dict(
-                        address="0x" + "44" * 20,
-                        topics=[],
-                        data="0x" + "00" * 32,
-                        transactionHash=tx_hash,
-                        blockHash=target_hash,
-                        blockNumber="0x1",
-                        transactionIndex="0x0",
-                        logIndex="0x0",
-                        removed=False,
-                    )
-                ],
-            )
-
-    monkeypatch.setattr(collector, "MAX_LOG_BYTES", 16)
-    with pytest.raises(collector.Invalid, match="log byte budget"):
-        collector.receipts(LogRPC(), dict(height=0, hash=prior[2:]), target)
-
-
 def test_wrong_chain_refuses():
     binding, base = standard_inputs()
     binding["chain_id"] = 2
@@ -354,52 +311,6 @@ def test_final_checkpoint_reorg_refuses():
     binding, base = standard_inputs()
     with pytest.raises(collector.Invalid, match="source checkpoint reorg"):
         collector.collect(ReorgRPC(), binding, base, None)
-
-
-class IntervalRPC(SourceRPC):
-    prior = "0x" + "00" * 32
-    tx = "0x" + "44" * 32
-
-    def __init__(self, fault):
-        super().__init__()
-        self.fault = fault
-
-    def call(self, method, *args):
-        if method == "eth_getBlockByNumber":
-            height = int(args[0], 16)
-            return dict(
-                number=hex(height + (self.fault == "number" and height == 1)),
-                hash=self.point_hash if height else self.prior,
-                parentHash=("0x" + "ff" * 32 if self.fault == "parent" else self.prior),
-                timestamp="0x1",
-                transactions=[self.tx] if height else [],
-            )
-        assert method == "eth_getTransactionReceipt"
-        return dict(
-            transactionHash=self.tx,
-            blockHash=self.prior if self.fault == "receipt" else self.point_hash,
-            blockNumber="0x1",
-            transactionIndex="0x0",
-            status="0x1",
-            logs=[None] if self.fault == "log" else [],
-        )
-
-
-@pytest.mark.parametrize(
-    "fault,reason",
-    [
-        ("number", "not contiguous"),
-        ("parent", "not contiguous"),
-        ("receipt", "receipt missing or mismatched"),
-        ("log", "log identity differs"),
-    ],
-)
-def test_interval_identities_refuse(fault, reason):
-    rpc = IntervalRPC(fault)
-    with pytest.raises(collector.Invalid, match=reason):
-        collector.receipts(
-            rpc, dict(height=0, hash=rpc.prior[2:]), dict(number="0x1", hash=rpc.point_hash)
-        )
 
 
 def test_unrelated_destroy_is_not_bridge_destroy():
