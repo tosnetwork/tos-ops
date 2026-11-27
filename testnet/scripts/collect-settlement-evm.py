@@ -147,7 +147,8 @@ class RPC:
         require(len(data) <= MAX_RESPONSE, "RPC response too large")
         answer = json.loads(data, object_pairs_hook=pairs)
         require(
-            answer.get("jsonrpc") == "2.0"
+            isinstance(answer, dict)
+            and answer.get("jsonrpc") == "2.0"
             and type(answer.get("id")) is int
             and answer["id"] == self.counter
             and "error" not in answer
@@ -430,6 +431,21 @@ def collect(rpc, binding, base, previous):
     return result
 
 
+def stale_report(path):
+    # Publish before RPC: a timeout or terminated collector must not leave a
+    # formerly healthy report usable. The checker publishes health only after
+    # it validates the completed observation under the same monitor lock.
+    monitor.atomic(
+        path,
+        dict(
+            schema="tos-settlement-report/1",
+            checkpoint=dict(height=0, hash="0" * 64, utime=0),
+            provider_pause_assets=[],
+            status="STALE",
+        ),
+    )
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rpc", required=True)
@@ -455,6 +471,7 @@ def main(argv=None):
     ):
         print("source collector input/output paths overlap")
         return 2
+    stale_report(args.report)
     try:
         require(
             args.previous is not None or args.initialize_baseline,
@@ -470,15 +487,7 @@ def main(argv=None):
         return 0
     except (OSError, ValueError, KeyError, TypeError):
         # Never leave a previously healthy report usable after an RPC failure.
-        monitor.atomic(
-            args.report,
-            dict(
-                schema="tos-settlement-report/1",
-                checkpoint=dict(height=0, hash="0" * 64, utime=0),
-                provider_pause_assets=[],
-                status="STALE",
-            ),
-        )
+        stale_report(args.report)
         monitor.atomic(args.out, dict(schema="tos-settlement-observation/1", complete=False))
         print("source collection refused; monitor report stale")
         return 2

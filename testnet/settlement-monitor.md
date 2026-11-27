@@ -273,7 +273,8 @@ approved first observation. Never reset a missing interval as a new baseline.
 Run frequently enough to cover every finalized source block. The adapter is
 bounded to 64 source blocks, 4,096 transactions, 16,384 logs,
 256 redemption receivers per asset, 4 MiB per RPC
-response and 45 seconds per collection. A longer/missing interval refuses; it
+response, a 45-second RPC-start budget and a 10-second per-I/O timeout.
+The checker imposes the outer 60-second process deadline. A longer/missing interval refuses; it
 needs read-only reconciliation, not an automatic baseline reset.
 
 Binding schema `tos-settlement-source/1` contains `network` (the approved TOS
@@ -313,7 +314,12 @@ Amounts stay in integer atomic units. Issuer identity is SHA-256 over the domain
 code SHA-256; the constituent fields are retained as `issuer_identity`. Pin this
 identity after source/code review, never by silently accepting its next value.
 
-On failure, the adapter atomically makes `report.json` stale (`utime = 0`) and
+Before its first RPC, the adapter atomically makes `report.json` stale
+(`utime = 0`), so even an interrupted/hung collector cannot leave old health
+usable. Paid execution temporarily waits while collection runs; the existing
+guard-retry path keeps funded work pending. Only the checker, after validating
+the completed observation under its lock, publishes a fresh healthy report.
+On failure the adapter keeps that stale report and
 publishes an incomplete observation, then exits 2. This immediately triggers
 existing provider stale-monitor refusal; it does not wait for the former healthy
 report's age limit. Existing incident latches remain in the checker's state and

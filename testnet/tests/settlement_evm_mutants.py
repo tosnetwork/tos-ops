@@ -22,6 +22,14 @@ UNIT = "testnet/tests/test_settlement_evm.py"
 ANVIL = "testnet/tests/anvil_settlement_observer.py"
 CASES = (
     (
+        "pre-rpc-stale",
+        "    stale_report(args.report)\n    try:",
+        "    try:",
+        UNIT,
+        "test_report_is_stale_before_any_rpc_can_block",
+        "healthy report survived until blocking RPC",
+    ),
+    (
         "readonly",
         "method in READ_METHODS",
         "True",

@@ -206,3 +206,67 @@ def test_invalid_output_alias_never_overwrites_inputs(tmp_path):
         ]
     )
     assert result == 2 and source.read_bytes() == before
+
+
+def test_report_is_stale_before_any_rpc_can_block(tmp_path, monkeypatch):
+    report, output = tmp_path / "report.json", tmp_path / "out.json"
+    binding, tos = tmp_path / "binding.json", tmp_path / "tos.json"
+    collector.monitor.atomic(report, dict(checkpoint=dict(utime=2_000_000_000)))
+    collector.monitor.atomic(
+        binding, dict(schema="tos-settlement-source/1", network="a" * 64, chain_id=1)
+    )
+    collector.monitor.atomic(tos, dict(network="a" * 64, complete=True))
+
+    class BlockingRPC:
+        def call(self, *args):
+            assert json.loads(report.read_text())["checkpoint"]["utime"] == 0, (
+                "healthy report survived until blocking RPC"
+            )
+            raise OSError("network unavailable")
+
+    monkeypatch.setattr(collector, "RPC", lambda url: BlockingRPC())
+    assert (
+        collector.main(
+            [
+                "--rpc",
+                "http://127.0.0.1:1",
+                "--binding",
+                str(binding),
+                "--tos-snapshot",
+                str(tos),
+                "--initialize-baseline",
+                "--out",
+                str(output),
+                "--report",
+                str(report),
+            ]
+        )
+        == 2
+    )
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        b"[]",
+        b"true",
+        b"{}",
+        b'{"jsonrpc":"2.0","id":true,"result":"0x1"}',
+        b'{"jsonrpc":"2.0","id":1,"error":null,"result":"0x1"}',
+        b'{"jsonrpc":"2.0","id":1,"id":1,"result":"0x1"}',
+    ],
+)
+def test_malformed_rpc_answers_refuse_without_healthy_defaults(monkeypatch, reply):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def read(self, size):
+            return reply
+
+    monkeypatch.setattr(collector.urllib.request, "urlopen", lambda *args, **kwargs: Response())
+    with pytest.raises(collector.Invalid):
+        collector.RPC("http://127.0.0.1:1").call("eth_chainId")
