@@ -128,6 +128,7 @@ class FakeRelease:
         # record's lines of tosctl's recipe.
         self.tosctl_commit_line = f"COMMIT_ID: {commit}"
         self.rust_lines = list(RUST_LINES)
+        self.gsl_package: str | None = "libgsl-dev 2.7.1+dfsg-6ubuntu2"
         # The build record's slhdsa_sha256 line per architecture; None: a
         # release built before the record carried it.
         self.slhdsa: dict[str, str | None] = dict(SLHDSA)
@@ -166,6 +167,7 @@ class FakeRelease:
             *(self.rust_lines if self.tosctl else []),
             "jemalloc /usr/lib/libjemalloc.so",
             "jemalloc_package libjemalloc-dev 5.3.0-2build1",
+            *([f"gsl_package {self.gsl_package}"] if self.gsl_package is not None else []),
             "build_os Ubuntu 24.04.3 LTS",
         ]
         for n in self.shipped():
@@ -358,6 +360,7 @@ def test_a_verified_release_is_written_in_the_layout_check_release_accepts(
     assert f"node_build_info_sha256 {build}" in info
     assert "node_build compiler Ubuntu clang version 21.1.0" in info
     assert "node_build jemalloc_package libjemalloc-dev 5.3.0-2build1" in info
+    assert "node_build gsl_package libgsl-dev 2.7.1+dfsg-6ubuntu2" in info
     assert f"node_build slhdsa_sha256 {SLHDSA['arm64']}" in info
     assert any(
         line.startswith("node_build flags ") and "TOS_USE_JEMALLOC=ON" in line for line in info
@@ -1246,6 +1249,17 @@ def test_a_result_check_release_refuses_is_not_moved_into_place(served, tmp_path
     with pytest.raises(module.Refused, match="check-release.sh refused the result"):
         module.fetch(tag=TAG, rev=PIN, role="dht", arch="x86_64", out=out, base_url=url)
     assert not out.exists()
+
+
+def test_a_record_without_a_gsl_package_line_is_still_accepted(served, tmp_path):
+    release, url = served
+    # A release from before static GSL has no gsl_package line.
+    release.gsl_package = None
+    release.publish()
+    out = tmp_path / "out"
+    assert run(release, url, out).returncode == 0
+    info = (out / "BUILD-INFO").read_text().splitlines()
+    assert not any(line.startswith("node_build gsl_package") for line in info)
 
 
 def test_the_host_build_links_gsl_statically_when_the_source_supports_it():

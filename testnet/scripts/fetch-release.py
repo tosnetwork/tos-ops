@@ -248,6 +248,9 @@ RECIPE_KEYS = (
     SLHDSA_KEY,
     "jemalloc",
     "jemalloc_package",
+    # Static-GSL releases record the libgsl-dev version linked into the node
+    # binaries; an older record has no such line and none is required.
+    "gsl_package",
     "build_os",
 )
 # The lines of tosctl's recipe, which a build record that lists tosctl carries.
