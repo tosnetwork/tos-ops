@@ -802,7 +802,9 @@ def verify(args, state, chain, bridge):
     expect_state = getattr(args, "expect_state", None)
     if expect_state == "funding_returned":
         require(
-            any(r["state"] == expect_state for r in document.get("funding_refusals", [])),
+            any(
+                r["state"] == expect_state for r in document.get("funding_refusals", [])
+            ),
             "funding outcome not proven",
         )
     elif expect_state:
@@ -1535,7 +1537,9 @@ def main():
     p.add_argument("--destination")
     p.add_argument("--sender-wallet", choices=("owner", "buyer"), default="owner")
     p.add_argument("--funding-atomic", type=int)
-    p.add_argument("--resolver-rpc", help="three loopback resolver routes, comma-separated")
+    p.add_argument(
+        "--resolver-rpc", help="three loopback resolver routes, comma-separated"
+    )
     p.add_argument(
         "--expect-state",
         choices=("funding_returned", "pending", "responded", "refunded", "swept"),
@@ -1545,8 +1549,14 @@ def main():
         args.funding_atomic is None or args.step == "call",
         "--funding-atomic belongs to call",
     )
-    require(args.expect_state is None or args.step == "verify", "--expect-state belongs to verify")
-    require(args.resolver_rpc is None or args.step == "verify", "--resolver-rpc belongs to verify")
+    require(
+        args.expect_state is None or args.step == "verify",
+        "--expect-state belongs to verify",
+    )
+    require(
+        args.resolver_rpc is None or args.step == "verify",
+        "--resolver-rpc belongs to verify",
+    )
     args.operation_args = extra
     if args.step == "send" and args.destination:
         # This flag also belongs to the funding helper. Forward it explicitly

@@ -22,7 +22,8 @@ m = load(
     "stablecoin_acceptance",
     Path(
         os.environ.get(
-            "TOS_STABLECOIN_DRIVER", ROOT / "local/scripts/local-pq-stablecoin-acceptance.py"
+            "TOS_STABLECOIN_DRIVER",
+            ROOT / "local/scripts/local-pq-stablecoin-acceptance.py",
         )
     ),
 )
@@ -38,11 +39,20 @@ BUYER = "0:" + "55" * 32
 
 def run_state(token, minter, wallet, tvm_bridge="-1:" + "66" * 32):
     return {
-        "evm": {"bridge": BRIDGE, "token": token, "deployer": "0x" + "77" * 20, "locker": LOCKER,
-                "oracles": []},
+        "evm": {
+            "bridge": BRIDGE,
+            "token": token,
+            "deployer": "0x" + "77" * 20,
+            "locker": LOCKER,
+            "oracles": [],
+        },
         "namespace": {"token": token},
         "tvm": {"bridge": tvm_bridge},
-        "mint": {"minter": minter, "buyer_token_wallet": wallet, "wrapped_token_data": [1, 2, 6]},
+        "mint": {
+            "minter": minter,
+            "buyer_token_wallet": wallet,
+            "wrapped_token_data": [1, 2, 6],
+        },
         "wallets": {"buyer": BUYER},
     }
 
@@ -57,7 +67,9 @@ def test_assets_bind_each_run_and_refuse_a_shared_identity():
     with pytest.raises(Refused, match="share a token"):
         m.assets(usdc, run_state(USDC, "0:" + "a2" * 32, "0:" + "b2" * 32))
     with pytest.raises(Refused, match="different TOS bridges"):
-        m.assets(usdc, run_state(USDT, "0:" + "a2" * 32, "0:" + "b2" * 32, "-1:" + "99" * 32))
+        m.assets(
+            usdc, run_state(USDT, "0:" + "a2" * 32, "0:" + "b2" * 32, "-1:" + "99" * 32)
+        )
 
 
 @pytest.mark.parametrize(
@@ -85,22 +97,46 @@ def burn_transaction(account, topic=m.LOG_BURN, body_bits=704, length=256):
     B = u.Builder
     destination = int("aa" * 20, 16)
     body = (
-        B().uint(destination, 160).uint(7_000_000, 128).uint(int(USDT[2:], 16), 160)
+        B()
+        .uint(destination, 160)
+        .uint(7_000_000, 128)
+        .raw(bytes.fromhex(USDT[2:]))
         .uint(int("55" * 32, 16), 256)
     )
     if body_bits != 704:
         body = B().uint(0, body_bits)
     external = (
-        B().uint(0b11, 2).uint(0b10, 2).uint(0, 1).uint(255, 8).raw(bytes.fromhex(account))
-        .uint(0b01, 2).uint(length, 9).uint(topic, length).uint(0, 64).uint(0, 32)
-        .uint(0, 1).uint(1, 1).ref(body.end()).end()
+        B()
+        .uint(0b11, 2)
+        .uint(0b10, 2)
+        .uint(0, 1)
+        .uint(255, 8)
+        .raw(bytes.fromhex(account))
+        .uint(0b01, 2)
+        .uint(length, 9)
+        .uint(topic, length)
+        .uint(0, 64)
+        .uint(0, 32)
+        .uint(0, 1)
+        .uint(1, 1)
+        .ref(body.end())
+        .end()
     )
     # One-entry HashmapE 15: a leaf with a full 15-bit label.
     label = B().uint(0b10, 2).uint(0b1111, 4).uint(0, 15).ref(external).end()
     messages = B().uint(0, 1).uint(1, 1).ref(label).end()
     return (
-        B().uint(0b0111, 4).raw(bytes.fromhex(account)).uint(12345, 64)
-        .raw(bytes(32)).uint(0, 64).uint(0, 32).uint(0, 15).uint(0, 4).ref(messages).end()
+        B()
+        .uint(0b0111, 4)
+        .raw(bytes.fromhex(account))
+        .uint(12345, 64)
+        .raw(bytes(32))
+        .uint(0, 64)
+        .uint(0, 32)
+        .uint(0, 15)
+        .uint(0, 4)
+        .ref(messages)
+        .end()
     )
 
 
@@ -132,7 +168,12 @@ class Chain:
         self.key = None
 
     def account(self, address):
-        data = u.Builder().uint(self.seqno_value, 32).uint(u.PAYER_SUBWALLET, 32).raw(self.key)
+        data = (
+            u.Builder()
+            .uint(self.seqno_value, 32)
+            .uint(u.PAYER_SUBWALLET, 32)
+            .raw(self.key)
+        )
         return {"state": "active", "data": u.boc64(data.end())}
 
     def send(self, message):
@@ -174,7 +215,9 @@ def test_wallet_v3_signs_the_network_id_subwallet_expiry_and_seqno():
     record = journal.intent("fund")
     assert record["state"] == "signed" and record["seqno"] == 7
     message = u.from64(record["boc"])
-    body = lib.Slice(message.refs[0] if message.refs and len(message.refs) > 1 else message)
+    body = lib.Slice(
+        message.refs[0] if message.refs and len(message.refs) > 1 else message
+    )
     sent = chain.sent[0]
     assert sent.hash() == message.hash()
     # The signed part: external header, then signature(512) and the v3 fields.
@@ -223,10 +266,16 @@ class State(Journal):
         self.values = {
             "evm": {"bridge": BRIDGE, "locker": LOCKER, "deployer": "0x" + "77" * 20},
             "assets": {
-                "usdt": {"token": USDT, "minter": "0:" + "a2" * 32,
-                         "buyer_token_wallet": "0:" + "b2" * 32},
-                "usdc": {"token": USDC, "minter": "0:" + "a1" * 32,
-                         "buyer_token_wallet": "0:" + "b1" * 32},
+                "usdt": {
+                    "token": USDT,
+                    "minter": "0:" + "a2" * 32,
+                    "buyer_token_wallet": "0:" + "b2" * 32,
+                },
+                "usdc": {
+                    "token": USDC,
+                    "minter": "0:" + "a1" * 32,
+                    "buyer_token_wallet": "0:" + "b1" * 32,
+                },
             },
             "buyer": BUYER,
             "tvm": {"bridge": "-1:" + "66" * 32},
@@ -248,7 +297,12 @@ class State(Journal):
 
 def probe_args(**extra):
     return SimpleNamespace(
-        label="probe", asset="usdt", amount=101, expect="per-lock", execute=True, **extra
+        label="probe",
+        asset="usdt",
+        amount=101,
+        expect="per-lock",
+        execute=True,
+        **extra,
     )
 
 
@@ -256,27 +310,42 @@ def probe_args(**extra):
 def probe_world(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(m, "values", lambda *a, **k: ["1000"])
-    monkeypatch.setattr(m, "pinned_block", lambda evm: {"number": 9, "hash": "0x09", "timestamp": 1})
+    monkeypatch.setattr(
+        m, "pinned_block", lambda evm: {"number": 9, "hash": "0x09", "timestamp": 1}
+    )
     monkeypatch.setattr(m, "source_facts", lambda *a, **k: {"cap": {}})
-    monkeypatch.setattr(m, "approve_exact", lambda *a: calls.append("approve") or {"approved": 101})
-    monkeypatch.setattr(m, "clear_approval", lambda *a: calls.append("reset") or "0xreset")
+    monkeypatch.setattr(
+        m, "approve_exact", lambda *a: calls.append("approve") or {"approved": 101}
+    )
+    monkeypatch.setattr(
+        m, "clear_approval", lambda *a: calls.append("reset") or "0xreset"
+    )
     return State(tmp_path), calls
 
 
-def test_probe_requires_the_named_refusal_and_always_resets_the_allowance(monkeypatch, probe_world):
+def test_probe_requires_the_named_refusal_and_always_resets_the_allowance(
+    monkeypatch, probe_world
+):
     state, calls = probe_world
     monkeypatch.setattr(
-        m, "simulate_lock", lambda *a: (False, "execution reverted: lock: over the per-lock cap")
+        m,
+        "simulate_lock",
+        lambda *a: (False, "execution reverted: lock: over the per-lock cap"),
     )
     result = m.step_probe(probe_args(), state, None)
-    assert result["expected_reason"] == m.REASONS["per-lock"] and calls == ["approve", "reset"]
+    assert result["expected_reason"] == m.REASONS["per-lock"] and calls == [
+        "approve",
+        "reset",
+    ]
     assert result["block"]["number"] == 9
 
 
 def test_probe_refuses_another_reason(monkeypatch, probe_world):
     state, calls = probe_world
     monkeypatch.setattr(
-        m, "simulate_lock", lambda *a: (False, "execution reverted: lock: over the daily cap")
+        m,
+        "simulate_lock",
+        lambda *a: (False, "execution reverted: lock: over the daily cap"),
     )
     with pytest.raises(Refused, match="another reason"):
         m.step_probe(probe_args(), state, None)
@@ -327,8 +396,9 @@ def test_approval_is_cleared_before_an_exact_one(monkeypatch, tmp_path):
 def test_zero_allowance_is_approved_exactly_without_a_clear(monkeypatch, tmp_path):
     sent = []
     monkeypatch.setattr(
-        m.u, "evm_send_once", lambda e, s, intent, *a, **k: sent.append(intent) or {"status": 1,
-                                                                                   "tx": "0x1"}
+        m.u,
+        "evm_send_once",
+        lambda e, s, intent, *a, **k: sent.append(intent) or {"status": 1, "tx": "0x1"},
     )
     answers = iter([["0"], ["100"]])
     monkeypatch.setattr(m, "values", lambda *a, **k: next(answers))
@@ -349,13 +419,20 @@ def lock_world(monkeypatch, tmp_path, simulate=(True, ""), received=100, supply=
     sent = []
     chain = SimpleNamespace(
         get=chain_get,
-        wait=lambda what, predicate, timeout=0: predicate() or (_ for _ in ()).throw(
-            Refused("timed out waiting for " + what)
+        wait=lambda what, predicate, timeout=0: (
+            predicate()
+            or (_ for _ in ()).throw(Refused("timed out waiting for " + what))
         ),
     )
-    monkeypatch.setattr(m.u, "wallets", lambda chain, keys: {"buyer": SimpleNamespace(address=BUYER)})
-    monkeypatch.setattr(m, "live_wallet_balance", lambda chain, wallet: 10 + (received if sent else 0))
-    monkeypatch.setattr(m, "pinned_block", lambda evm: {"number": 9, "hash": "0x09", "timestamp": 1})
+    monkeypatch.setattr(
+        m.u, "wallets", lambda chain, keys: {"buyer": SimpleNamespace(address=BUYER)}
+    )
+    monkeypatch.setattr(
+        m, "live_wallet_balance", lambda chain, wallet: 10 + (received if sent else 0)
+    )
+    monkeypatch.setattr(
+        m, "pinned_block", lambda evm: {"number": 9, "hash": "0x09", "timestamp": 1}
+    )
     monkeypatch.setattr(m, "simulate_lock", lambda *a: simulate)
     monkeypatch.setattr(m, "approve_exact", lambda *a: {"approved": 100})
 
@@ -379,16 +456,28 @@ def lock_world(monkeypatch, tmp_path, simulate=(True, ""), received=100, supply=
     monkeypatch.setattr(
         m,
         "lock_event",
-        lambda evm, tx, bridge, n: {"value": received, "decimals": 6, "generation": 1,
-                                     "to_addr_hash": target, "n": n, "new_bridge_balance": 0},
+        lambda evm, tx, bridge, n: {
+            "value": received,
+            "decimals": 6,
+            "generation": 1,
+            "to_addr_hash": target,
+            "n": n,
+            "new_bridge_balance": 0,
+        },
     )
-    monkeypatch.setattr(m.u, "pay_and_vote", lambda *a: sent.append("mint") or {"pay_swap": 1})
+    monkeypatch.setattr(
+        m.u, "pay_and_vote", lambda *a: sent.append("mint") or {"pay_swap": 1}
+    )
     view = SimpleNamespace(urls=["r4", "r5", "r6"], point={"seqno": 1})
     monkeypatch.setattr(m.t, "View", lambda chain, directory: view)
-    monkeypatch.setattr(m, "supply_at", lambda view, minter: 25 + received if supply is None else supply)
+    monkeypatch.setattr(
+        m, "supply_at", lambda view, minter: 25 + received if supply is None else supply
+    )
     monkeypatch.setattr(m, "wallet_balance_at", lambda view, wallet: 10 + received)
     monkeypatch.setattr(m, "source_facts", lambda *a, **k: {"cap": {}})
-    args = SimpleNamespace(label="canary-a", asset="usdt", amount=100, execute=True, keys=Path("/k"))
+    args = SimpleNamespace(
+        label="canary-a", asset="usdt", amount=100, execute=True, keys=Path("/k")
+    )
     return state, chain, args, sent
 
 
@@ -411,7 +500,7 @@ def test_lock_refused_in_simulation_sends_nothing(monkeypatch, tmp_path):
 
 
 def test_lock_supply_that_does_not_match_refuses(monkeypatch, tmp_path):
-    state, chain, args, sent = lock_world(monkeypatch, tmp_path, supply=124)
+    state, chain, args, _sent = lock_world(monkeypatch, tmp_path, supply=124)
     chain.get = chain_get
     with pytest.raises(Refused, match="finalized supply"):
         m.step_lock(args, state, None, chain)
@@ -419,8 +508,18 @@ def test_lock_supply_that_does_not_match_refuses(monkeypatch, tmp_path):
 
 def test_lock_label_cannot_be_reused_for_another_amount(monkeypatch, tmp_path):
     state, chain, args, sent = lock_world(monkeypatch, tmp_path)
-    state.set("locks", {"canary-a": {"asset": "usdt", "amount": 50, "n": 4, "supply_before": 25,
-                                     "wallet_before": 10}})
+    state.set(
+        "locks",
+        {
+            "canary-a": {
+                "asset": "usdt",
+                "amount": 50,
+                "n": 4,
+                "supply_before": 25,
+                "wallet_before": 10,
+            }
+        },
+    )
     with pytest.raises(Refused, match="another asset or amount"):
         m.step_lock(args, state, None, chain)
     assert sent == []
@@ -439,7 +538,9 @@ def unlock_world(monkeypatch, tmp_path, fee_bps=10, received_delta=None, preview
                     "receiver": "0x" + "aa" * 20,
                     "log_burn": {"amount": amount, "from_address_hash": "55" * 32},
                     "bridge_transaction": {"hash": "66" * 32, "lt": 9},
-                    "preview": {"received_atomic": str(preview if preview else amount - fee)},
+                    "preview": {
+                        "received_atomic": str(preview if preview else amount - fee)
+                    },
                 }
             }
         },
@@ -452,26 +553,38 @@ def unlock_world(monkeypatch, tmp_path, fee_bps=10, received_delta=None, preview
 
     monkeypatch.setattr(m, "values", values)
     monkeypatch.setattr(
-        m, "source_facts",
+        m,
+        "source_facts",
         lambda *a, **k: {"fee_basis_points": fee_bps, "maximum_fee": 49 * 10**6},
     )
 
     def vote(evm, state_, keys, intent, *a):
         paid.append(intent)
         balances["bridge"] -= amount
-        balances["receiver"] += amount - fee if received_delta is None else received_delta
+        balances["receiver"] += (
+            amount - fee if received_delta is None else received_delta
+        )
         return {"status": 1, "tx": "0xunlock", "block": 4}
 
     monkeypatch.setattr(m.u, "evm_vote", vote)
-    args = SimpleNamespace(label="unlock-a", burn="burn-a", receiver="0x" + "AA" * 20,
-                           execute=True, keys=Path("/k"))
+    args = SimpleNamespace(
+        label="unlock-a",
+        burn="burn-a",
+        receiver="0x" + "AA" * 20,
+        execute=True,
+        keys=Path("/k"),
+    )
     return state, args, paid
 
 
 def test_unlock_pays_the_amount_less_the_issuer_fee(monkeypatch, tmp_path):
     state, args, paid = unlock_world(monkeypatch, tmp_path)
     result = m.step_unlock(args, state, None)
-    assert paid == ["unlock-a"] and result["issuer_fee"] == 1000 and result["received"] == 999_000
+    assert (
+        paid == ["unlock-a"]
+        and result["issuer_fee"] == 1000
+        and result["received"] == 999_000
+    )
     assert "(0x" + "55" * 32 + ",0x" + "66" * 32 + ",9))" in result["swap"]
 
 
@@ -512,7 +625,11 @@ def monitor_dir(tmp_path, alarms=(), incidents=None, age=0):
     )
     (tmp_path / "snapshot.json").write_text(
         json.dumps(
-            {"checkpoint": checkpoint, "source_checkpoint": {"height": 2}, "assets": [{"id": "usdt"}]}
+            {
+                "checkpoint": checkpoint,
+                "source_checkpoint": {"height": 2},
+                "assets": [{"id": "usdt"}],
+            }
         )
     )
     (tmp_path / "incidents.json").write_text(json.dumps(incidents or {}))
@@ -534,7 +651,9 @@ def test_clean_observation_refuses_alarms_latches_and_staleness(
     (tmp_path / "monitor").mkdir()
     root = monitor_dir(tmp_path / "monitor", alarms, incidents, age)
     state = State(tmp_path / "state")
-    args = SimpleNamespace(label="observe", monitor_state=root, expect_clean=True, expect_alarm=None)
+    args = SimpleNamespace(
+        label="observe", monitor_state=root, expect_clean=True, expect_alarm=None
+    )
     with pytest.raises(Refused, match=message):
         m.step_observe(args, state)
 
@@ -543,10 +662,14 @@ def test_clean_observation_is_retained(tmp_path):
     (tmp_path / "monitor").mkdir()
     root = monitor_dir(tmp_path / "monitor")
     state = State(tmp_path / "state")
-    args = SimpleNamespace(label="observe-1", monitor_state=root, expect_clean=True, expect_alarm=None)
+    args = SimpleNamespace(
+        label="observe-1", monitor_state=root, expect_clean=True, expect_alarm=None
+    )
     result = m.step_observe(args, state)
     assert result["report"]["alarms"] == [] and "observe-1" in state.evidenced
-    retained = json.loads((tmp_path / "state/archive/monitor/retained-verifiers.json").read_text())
+    retained = json.loads(
+        (tmp_path / "state/archive/monitor/retained-verifiers.json").read_text()
+    )
     assert len(retained) == 1
 
 
@@ -557,15 +680,21 @@ def test_reconcile_refuses_unbacked_supply(monkeypatch, tmp_path):
     monkeypatch.setattr(m, "finalized_source", lambda evm: {"number": 5, "hash": "0x5"})
     monkeypatch.setattr(m, "supply_at", lambda view, minter: 100)
     monkeypatch.setattr(
-        m, "source_facts",
-        lambda evm, state, name, block=None: {"bridge_balance": 100 if name == "usdc" else 99},
+        m,
+        "source_facts",
+        lambda evm, state, name, block=None: {
+            "bridge_balance": 100 if name == "usdc" else 99
+        },
     )
     args = SimpleNamespace(label="reconcile", expect_reconciled=True)
     with pytest.raises(Refused, match="usdt supply 100 != backing 99"):
         m.step_reconcile(args, state, None, None)
     args.expect_reconciled = False
     result = m.step_reconcile(args, state, None, None)
-    assert result["assets"]["usdc"]["reconciled"] and not result["assets"]["usdt"]["reconciled"]
+    assert (
+        result["assets"]["usdc"]["reconciled"]
+        and not result["assets"]["usdt"]["reconciled"]
+    )
 
 
 @pytest.mark.parametrize("bps, maximum", [(20, 10), (5, 50), (-1, 1)])
@@ -576,10 +705,18 @@ def test_issuer_fee_outside_the_fixture_bounds_refuses_before_sending(
     monkeypatch.setattr(m, "source_facts", lambda *a, **k: {})
     sent = []
     monkeypatch.setattr(
-        m.u, "evm_send_once", lambda *a, **k: sent.append(a) or {"status": 0, "tx": "0x", "block": 1}
+        m.u,
+        "evm_send_once",
+        lambda *a, **k: sent.append(a) or {"status": 0, "tx": "0x", "block": 1},
     )
-    args = SimpleNamespace(label="fee", asset="usdt", op="set-fee", basis_points=bps,
-                           max_fee=maximum, execute=True)
+    args = SimpleNamespace(
+        label="fee",
+        asset="usdt",
+        op="set-fee",
+        basis_points=bps,
+        max_fee=maximum,
+        execute=True,
+    )
     with pytest.raises(Refused, match="fee bounds"):
         m.step_issuer(args, State(tmp_path), None)
     assert sent == []
@@ -592,17 +729,39 @@ def test_issuer_controls_exist_only_for_the_usdt_fixture(tmp_path):
 
 
 def test_cap_state_parses_the_annotated_tuple():
-    tools = Tools(["(1000000000 [1e9], 100000000 [1e8], 200000000 [2e8], 500000000 [5e8])\n"
-                   "100000000 [1e8]\n0\n100000000 [1e8]\n"])
+    tools = Tools(
+        [
+            (
+                "(1000000000 [1e9], 100000000 [1e8], 200000000 [2e8], 500000000 [5e8])\n"
+                "100000000 [1e8]\n0\n100000000 [1e8]\n"
+            )
+        ]
+    )
     caps = m.cap_state(SimpleNamespace(tools=tools), BRIDGE, USDC, block=7)
-    assert caps == {"total": 10**9, "per_lock": 10**8, "hourly": 2 * 10**8, "daily": 5 * 10**8,
-                    "hour_used": 10**8, "day_used": 0, "available": 10**8}
+    assert caps == {
+        "total": 10**9,
+        "per_lock": 10**8,
+        "hourly": 2 * 10**8,
+        "daily": 5 * 10**8,
+        "hour_used": 10**8,
+        "day_used": 0,
+        "available": 10**8,
+    }
     assert tools.calls[0][:3] == ("call", "--block", "7")
 
 
 def test_source_endpoint_must_be_loopback(capsys):
-    code = m.main(["status", "--state", "/nonexistent", "--tos-root", "/x",
-                   "--evm-rpc", "http://10.0.0.1:8545"])
+    code = m.main(
+        [
+            "status",
+            "--state",
+            "/nonexistent",
+            "--tos-root",
+            "/x",
+            "--evm-rpc",
+            "http://10.0.0.1:8545",
+        ]
+    )
     assert code == 2 and "local source endpoint required" in capsys.readouterr().out
 
 
@@ -610,27 +769,44 @@ def test_a_latch_on_disk_is_not_clean_even_if_the_report_omits_it(tmp_path):
     (tmp_path / "monitor").mkdir()
     root = monitor_dir(tmp_path / "monitor")
     (root / "incidents.json").write_text(json.dumps({"usdt:bridge_frozen": {}}))
-    args = SimpleNamespace(label="observe", monitor_state=root, expect_clean=True, expect_alarm=None)
+    args = SimpleNamespace(
+        label="observe", monitor_state=root, expect_clean=True, expect_alarm=None
+    )
     with pytest.raises(Refused, match="not clean"):
         m.step_observe(args, State(tmp_path / "state"))
 
 
-def resolution_world(monkeypatch, tmp_path, blacklisted=False, disabled=False, alarms=(),
-                     incidents=None, publish=True):
+def resolution_world(
+    monkeypatch,
+    tmp_path,
+    blacklisted=False,
+    disabled=False,
+    alarms=(),
+    incidents=None,
+    publish=True,
+):
     import time
 
     (tmp_path / "monitor").mkdir()
     root = monitor_dir(tmp_path / "monitor", alarms)
-    latched = incidents if incidents is not None else {"usdt:bridge_frozen": {"x": 1},
-                                                       "usdc:token_paused": {"y": 2}}
+    latched = (
+        incidents
+        if incidents is not None
+        else {"usdt:bridge_frozen": {"x": 1}, "usdc:token_paused": {"y": 2}}
+    )
     (root / "incidents.json").write_text(json.dumps(latched))
     for name in ("previous", "policy", "binding"):
         (root / f"{name}.json").write_text("{}")
     monkeypatch.setattr(m, "finalized_source", lambda evm: {"number": 9, "hash": "0x9"})
     monkeypatch.setattr(
-        m, "source_facts",
-        lambda *a, **k: {"bridge_blacklisted": blacklisted, "paused": False, "disabled": disabled,
-                         "allow_lock": True},
+        m,
+        "source_facts",
+        lambda *a, **k: {
+            "bridge_blacklisted": blacklisted,
+            "paused": False,
+            "disabled": disabled,
+            "allow_lock": True,
+        },
     )
     sleeps = []
 
@@ -639,23 +815,38 @@ def resolution_world(monkeypatch, tmp_path, blacklisted=False, disabled=False, a
         if publish:
             report = json.loads((root / "report.json").read_text())
             report["checkpoint"]["utime"] = int(time.time()) + 1
-            report["latched_incidents"] = sorted(json.loads((root / "incidents.json").read_text()))
+            report["latched_incidents"] = sorted(
+                json.loads((root / "incidents.json").read_text())
+            )
             (root / "report.json").write_text(json.dumps(report))
 
     monkeypatch.setattr(m.time, "sleep", tick)
     state = State(tmp_path / "state")
     state.root.mkdir()
-    args = SimpleNamespace(label="resolve", incident="usdt:bridge_frozen", monitor_state=root,
-                           authorization="coordinator approved the drill", execute=True)
+    args = SimpleNamespace(
+        label="resolve",
+        incident="usdt:bridge_frozen",
+        monitor_state=root,
+        authorization="coordinator approved the drill",
+        execute=True,
+    )
     return state, args, root
 
 
-def test_resolution_removes_only_the_named_latch_and_keeps_copies(monkeypatch, tmp_path):
+def test_resolution_removes_only_the_named_latch_and_keeps_copies(
+    monkeypatch, tmp_path
+):
     state, args, root = resolution_world(monkeypatch, tmp_path)
     result = m.step_resolve_incident(args, state, None)
-    assert json.loads((root / "incidents.json").read_text()) == {"usdc:token_paused": {"y": 2}}
-    before = json.loads((state.root / "incident-resolution/resolve/before-incidents.json").read_text())
-    assert "usdt:bridge_frozen" in before and result["other_incidents_kept"] == ["usdc:token_paused"]
+    assert json.loads((root / "incidents.json").read_text()) == {
+        "usdc:token_paused": {"y": 2}
+    }
+    before = json.loads(
+        (state.root / "incident-resolution/resolve/before-incidents.json").read_text()
+    )
+    assert "usdt:bridge_frozen" in before and result["other_incidents_kept"] == [
+        "usdc:token_paused"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -667,7 +858,9 @@ def test_resolution_removes_only_the_named_latch_and_keeps_copies(monkeypatch, t
         ({"incidents": {}}, "is not latched"),
     ],
 )
-def test_resolution_refuses_while_its_condition_holds(monkeypatch, tmp_path, kwargs, message):
+def test_resolution_refuses_while_its_condition_holds(
+    monkeypatch, tmp_path, kwargs, message
+):
     state, args, root = resolution_world(monkeypatch, tmp_path, **kwargs)
     before = (root / "incidents.json").read_bytes()
     with pytest.raises(Refused, match=message):
@@ -688,7 +881,7 @@ def test_resolution_refuses_while_the_checker_holds_its_lock(monkeypatch, tmp_pa
 
 
 def test_resolution_requires_a_fresh_report_afterwards(monkeypatch, tmp_path):
-    state, args, root = resolution_world(monkeypatch, tmp_path, publish=False)
+    state, args, _root = resolution_world(monkeypatch, tmp_path, publish=False)
     clock = iter(range(0, 10**6, 1000))
     monkeypatch.setattr(m.time, "monotonic", lambda: next(clock))
     with pytest.raises(Refused, match="no fresh report"):
@@ -702,6 +895,10 @@ def test_observation_waits_for_the_published_report(monkeypatch, tmp_path):
     stale = json.loads(published)
     stale["checkpoint"] = dict(stale["checkpoint"], utime=0)
     (root / "report.json").write_text(json.dumps(stale))
-    monkeypatch.setattr(m.time, "sleep", lambda seconds: (root / "report.json").write_text(published))
-    args = SimpleNamespace(label="observe", monitor_state=root, expect_clean=True, expect_alarm=None)
+    monkeypatch.setattr(
+        m.time, "sleep", lambda seconds: (root / "report.json").write_text(published)
+    )
+    args = SimpleNamespace(
+        label="observe", monitor_state=root, expect_clean=True, expect_alarm=None
+    )
     assert m.step_observe(args, State(tmp_path / "state"))["report"]["alarms"] == []

@@ -40,7 +40,6 @@ Run as root from the tos-ops root, with the running tos checkout's environment.
 from __future__ import annotations
 
 import argparse
-import base64
 import fcntl
 import hashlib
 import importlib.util
@@ -87,7 +86,9 @@ ISSUER_OPS = {
     "set-fee": "setParams(uint256,uint256)",
 }
 CAP_ID = "getNewLockCapId(address,uint256,uint256,uint256,uint256,uint256)(bytes32)"
-CAP_VOTE = "voteForLockCap(address,uint256,uint256,uint256,uint256,uint256,(address,bytes)[])"
+CAP_VOTE = (
+    "voteForLockCap(address,uint256,uint256,uint256,uint256,uint256,(address,bytes)[])"
+)
 DISABLE_ID = "getNewDisableToken(bool,address,uint256)(bytes32)"
 DISABLE_VOTE = "voteForDisableToken(bool,address,uint256,(address,bytes)[])"
 SWITCH_ID = "getNewLockStatusId(bool,uint256)(bytes32)"
@@ -120,7 +121,9 @@ def require(condition, message):
 
 
 def positive(value, name):
-    require(type(value) is int and 0 < value <= MAX_AMOUNT, f"{name} must be in 1..2^120-1")
+    require(
+        type(value) is int and 0 < value <= MAX_AMOUNT, f"{name} must be in 1..2^120-1"
+    )
     return value
 
 
@@ -148,8 +151,12 @@ def assets(usdc_state: dict, usdt_state: dict) -> dict:
             "buyer_token_wallet": record["mint"]["buyer_token_wallet"],
             "wrapped_token_data": record["mint"]["wrapped_token_data"],
         }
-    require(out["usdc"]["token"] != out["usdt"]["token"], "the two assets share a token")
-    require(out["usdc"]["minter"] != out["usdt"]["minter"], "the two assets share a minter")
+    require(
+        out["usdc"]["token"] != out["usdt"]["token"], "the two assets share a token"
+    )
+    require(
+        out["usdc"]["minter"] != out["usdt"]["minter"], "the two assets share a minter"
+    )
     return out
 
 
@@ -207,7 +214,11 @@ def cap_state(evm, bridge, token, block=None) -> dict:
         argv[1:1] = ["--block", str(block)]
     text = evm.tools.cast_run(*argv).stdout
     # cast prints the tuple on one line and annotates numbers ("1000 [1e3]").
-    raw = [re.sub(r" \[[^\]]*\]", "", line).strip() for line in text.splitlines() if line.strip()]
+    raw = [
+        re.sub(r" \[[^\]]*\]", "", line).strip()
+        for line in text.splitlines()
+        if line.strip()
+    ]
     require(len(raw) == 4, f"unexpected getLockCapState output: {text!r}")
     caps = [c.strip() for c in raw[0].strip("()").split(",")]
     require(len(caps) == 4, f"unexpected cap tuple: {raw[0]!r}")
@@ -229,20 +240,26 @@ def source_facts(evm, state, asset, block=None) -> dict:
         "bridge_balance": int(
             values(evm, token, "balanceOf(address)(uint256)", bridge, block=block)[0]
         ),
-        "disabled": values(evm, bridge, "disabledTokens(address)(bool)", token, block=block)[0]
+        "disabled": values(
+            evm, bridge, "disabledTokens(address)(bool)", token, block=block
+        )[0]
         == "true",
-        "allow_lock": values(evm, bridge, "allowLock()(bool)", block=block)[0] == "true",
+        "allow_lock": values(evm, bridge, "allowLock()(bool)", block=block)[0]
+        == "true",
         "lock_nonce": int(values(evm, bridge, "lockNonce()(uint64)", block=block)[0]),
     }
     if asset == "usdt":
         facts["bridge_blacklisted"] = (
-            values(evm, token, "isBlackListed(address)(bool)", bridge, block=block)[0] == "true"
+            values(evm, token, "isBlackListed(address)(bool)", bridge, block=block)[0]
+            == "true"
         )
         facts["paused"] = values(evm, token, "paused()(bool)", block=block)[0] == "true"
         facts["fee_basis_points"] = int(
             values(evm, token, "basisPointsRate()(uint256)", block=block)[0]
         )
-        facts["maximum_fee"] = int(values(evm, token, "maximumFee()(uint256)", block=block)[0])
+        facts["maximum_fee"] = int(
+            values(evm, token, "maximumFee()(uint256)", block=block)[0]
+        )
     return facts
 
 
@@ -255,7 +272,9 @@ def finalized_source(evm) -> dict:
 
 
 def supply_at(view, minter) -> int:
-    answers = view.read("runGetMethod", address=minter, method="get_supply_state", stack=[])
+    answers = view.read(
+        "runGetMethod", address=minter, method="get_supply_state", stack=[]
+    )
     require(all(a["exit_code"] == 0 for a in answers), "supply getter refused")
     supplies = [u.num(a["stack"][0]) for a in answers]
     require(len(set(supplies)) == 1, "references disagree on the supply")
@@ -266,7 +285,9 @@ def wallet_balance_at(view, wallet) -> int:
     account = view.account(wallet)
     if account.get("state") != "active":
         return 0
-    answers = view.read("runGetMethod", address=wallet, method="get_wallet_data", stack=[])
+    answers = view.read(
+        "runGetMethod", address=wallet, method="get_wallet_data", stack=[]
+    )
     require(all(a["exit_code"] == 0 for a in answers), "wallet getter refused")
     balances = [u.num(a["stack"][0]) for a in answers]
     require(len(set(balances)) == 1, "references disagree on the wallet balance")
@@ -303,12 +324,15 @@ class WalletV3(u.Wallet):
         require(data.bytes(32) == bytes(self.key.verify_key), "the payer key differs")
         return seqno
 
-    def send_once(self, state, intent, build, mode: int = 3, deploy: bool = False) -> dict:
+    def send_once(
+        self, state, intent, build, mode: int = 3, deploy: bool = False
+    ) -> dict:
         record = state.intent(intent)
         if record is None:
             for other, pending in state.intents().items():
                 require(
-                    pending.get("wallet") != self.address or pending.get("state") == "done",
+                    pending.get("wallet") != self.address
+                    or pending.get("state") == "done",
                     f"{self.address} has an unfinished send ({other}); run that step again first",
                 )
             seqno = self.seqno()
@@ -324,7 +348,12 @@ class WalletV3(u.Wallet):
                 .ref(outgoing)
                 .end()
             )
-            body = u.Builder().raw(self.key.sign(signed.hash()).signature).append(signed).end()
+            body = (
+                u.Builder()
+                .raw(self.key.sign(signed.hash()).signature)
+                .append(signed)
+                .end()
+            )
             message = u.external(self.address, body)
             record = {
                 "kind": "tos",
@@ -349,9 +378,16 @@ class WalletV3(u.Wallet):
                 f"{intent}: the signed message expired unsent; inspect it, nothing is re-signed",
             )
             self.chain.send(u.from64(record["boc"]))
-            self.chain.wait(f"{self.address} seqno {seqno + 1}", lambda: self.seqno() > seqno)
-        require(self.seqno() > seqno, f"{intent}: the payer's seqno is behind the recorded one")
-        tx = self.chain.executed_external(self.address, record["hash"], record["created_at"] - 60)
+            self.chain.wait(
+                f"{self.address} seqno {seqno + 1}", lambda: self.seqno() > seqno
+            )
+        require(
+            self.seqno() > seqno,
+            f"{intent}: the payer's seqno is behind the recorded one",
+        )
+        tx = self.chain.executed_external(
+            self.address, record["hash"], record["created_at"] - 60
+        )
         require(
             tx is not None,
             f"{intent}: seqno {seqno} of {self.address} was used, but not by the journaled "
@@ -372,7 +408,9 @@ def payer_wallet(chain, keys: Path) -> WalletV3:
     address = lib.Slice(lib.Cell(raw, 288, []))
     account = address.bytes(32).hex()
     wc = int.from_bytes(address.bytes(4), "big", signed=True)
-    return WalletV3(chain, u.key_file(keys / "payer.pk"), f"{wc}:{account}", u.PAYER_SUBWALLET)
+    return WalletV3(
+        chain, u.key_file(keys / "payer.pk"), f"{wc}:{account}", u.PAYER_SUBWALLET
+    )
 
 
 # ---------------------------------------------------------------- steps
@@ -403,7 +441,13 @@ def step_fund_locker(args, state, evm):
     amount = positive(args.amount, "--amount")
     holder, locker = state["evm"]["deployer"], state["evm"]["locker"]
     held = int(values(evm, asset["token"], "balanceOf(address)(uint256)", locker)[0])
-    plan = {"asset": args.asset, "holder": holder, "locker": locker, "held": held, "amount": amount}
+    plan = {
+        "asset": args.asset,
+        "holder": holder,
+        "locker": locker,
+        "held": held,
+        "amount": amount,
+    }
     if not args.execute:
         return {"dry_run": True, **plan}
     record = u.evm_send_once(
@@ -429,7 +473,9 @@ def check_caps(total, per_lock, hourly, daily):
     for value, name in ((total, "total"), (per_lock, "per-lock"), (hourly, "hourly")):
         positive(value, name)
     positive(daily, "daily")
-    require(per_lock <= hourly <= daily, "caps must satisfy per-lock <= hourly <= daily")
+    require(
+        per_lock <= hourly <= daily, "caps must satisfy per-lock <= hourly <= daily"
+    )
 
 
 def step_caps(args, state, evm):
@@ -448,17 +494,29 @@ def step_caps(args, state, evm):
             f"{args.label} was journaled with other caps; use a new label",
         )
         nonce = int(record["args"][5])
-    plan = {"asset": args.asset, "token": token, "caps": caps, "nonce": nonce, "before": before}
+    plan = {
+        "asset": args.asset,
+        "token": token,
+        "caps": caps,
+        "nonce": nonce,
+        "before": before,
+    }
     if not args.execute:
         return {"dry_run": True, **plan}
     vote_args = [token, *(str(c) for c in caps), str(nonce)]
-    vote = u.evm_vote(evm, state, args.keys, args.label, CAP_ID, vote_args, CAP_VOTE, vote_args)
+    vote = u.evm_vote(
+        evm, state, args.keys, args.label, CAP_ID, vote_args, CAP_VOTE, vote_args
+    )
     after = cap_state(evm, bridge, token)
     require(
         [after["total"], after["per_lock"], after["hourly"], after["daily"]] == caps,
         "the bridge's caps are not the voted ones",
     )
-    result = {**plan, "vote": {k: vote.get(k) for k in ("tx", "block", "status")}, "after": after}
+    result = {
+        **plan,
+        "vote": {k: vote.get(k) for k in ("tx", "block", "status")},
+        "after": after,
+    }
     state.evidence(args.label, result)
     return result
 
@@ -498,16 +556,30 @@ def approve_exact(evm, state, label, asset, amount):
         allowance and state.intent(label + "-approve") is None
     ):
         cleared = u.evm_send_once(
-            evm, state, label + "-approve-clear", locker, token,
-            "approve(address,uint256)", bridge, "0",
+            evm,
+            state,
+            label + "-approve-clear",
+            locker,
+            token,
+            "approve(address,uint256)",
+            bridge,
+            "0",
         )
         require(cleared["status"] == 1, "clearing the allowance failed")
     approved = u.evm_send_once(
-        evm, state, label + "-approve", locker, token, "approve(address,uint256)", bridge,
+        evm,
+        state,
+        label + "-approve",
+        locker,
+        token,
+        "approve(address,uint256)",
+        bridge,
         str(amount),
     )
     require(approved["status"] == 1, "the exact approval failed")
-    now = int(values(evm, token, "allowance(address,address)(uint256)", locker, bridge)[0])
+    now = int(
+        values(evm, token, "allowance(address,address)(uint256)", locker, bridge)[0]
+    )
     return {"before": allowance, "approved": amount, "after": now, "tx": approved["tx"]}
 
 
@@ -518,11 +590,19 @@ def clear_approval(evm, state, label, asset):
         state["evm"]["locker"],
     )
     record = u.evm_send_once(
-        evm, state, label + "-approve-reset", locker, token, "approve(address,uint256)",
-        bridge, "0",
+        evm,
+        state,
+        label + "-approve-reset",
+        locker,
+        token,
+        "approve(address,uint256)",
+        bridge,
+        "0",
     )
     require(record["status"] == 1, "resetting the allowance failed")
-    now = int(values(evm, token, "allowance(address,address)(uint256)", locker, bridge)[0])
+    now = int(
+        values(evm, token, "allowance(address,address)(uint256)", locker, bridge)[0]
+    )
     require(now == 0, "the allowance did not return to zero")
     return record["tx"]
 
@@ -538,15 +618,24 @@ def step_probe(args, state, evm):
     token = state["assets"][args.asset]["token"]
     held = int(values(evm, token, "balanceOf(address)(uint256)", locker)[0])
     if not args.execute:
-        return {"dry_run": True, "asset": args.asset, "amount": amount, "expect": reason}
+        return {
+            "dry_run": True,
+            "asset": args.asset,
+            "amount": amount,
+            "expect": reason,
+        }
     require(held >= amount, "the locker holds less than the probe; fund it first")
     approval = approve_exact(evm, state, args.label, args.asset, amount)
     block = pinned_block(evm)
     ok, output = simulate_lock(evm, state, args.asset, amount, block["number"])
     facts = source_facts(evm, state, args.asset, block["number"])
     reset = clear_approval(evm, state, args.label, args.asset)
-    require(not ok, f"a lock of {amount} was admitted at block {block['number']}: {facts}")
-    require(reason in output, f"the lock was refused for another reason: {output[-400:]}")
+    require(
+        not ok, f"a lock of {amount} was admitted at block {block['number']}: {facts}"
+    )
+    require(
+        reason in output, f"the lock was refused for another reason: {output[-400:]}"
+    )
     result = {
         "asset": args.asset,
         "amount": amount,
@@ -567,13 +656,18 @@ def lock_event(evm, receipt_tx, bridge, n):
     topic = evm.tools.cast_run("keccak", LOCK_EVENT).stdout.strip().lower()
     found = []
     for log in receipt["logs"]:
-        if log["address"].lower() != bridge.lower() or log["topics"][0].lower() != topic:
+        if (
+            log["address"].lower() != bridge.lower()
+            or log["topics"][0].lower() != topic
+        ):
             continue
         data = bytes.fromhex(log["data"][2:])
         require(len(data) == 32 * 5, "a Lock event of another layout")
         # Indexed: from, token, to_addr_hash. Data: value, new_bridge_balance,
         # decimals, nonce, generation.
-        words = [int.from_bytes(data[i : i + 32], "big") for i in range(0, len(data), 32)]
+        words = [
+            int.from_bytes(data[i : i + 32], "big") for i in range(0, len(data), 32)
+        ]
         if words[3] == n:
             found.append(
                 {
@@ -593,7 +687,11 @@ def step_lock(args, state, evm, chain):
     asset_name = args.asset
     asset = state["assets"][asset_name]
     amount = positive(args.amount, "--amount")
-    bridge, locker, token = state["evm"]["bridge"], state["evm"]["locker"], asset["token"]
+    bridge, locker, token = (
+        state["evm"]["bridge"],
+        state["evm"]["locker"],
+        asset["token"],
+    )
     buyer = u.wallets(chain, args.keys)["buyer"]
     require(buyer.address == state["buyer"], "the buyer key names another wallet")
     target = "0x" + u.split(buyer.address)[1].hex()
@@ -632,7 +730,15 @@ def step_lock(args, state, evm, chain):
         require(ok, f"the lock would be refused; nothing is sent: {output[-400:]}")
     n = progress["n"]
     locked = u.evm_send_once(
-        evm, state, lock_intent, locker, bridge, u.LOCK, token, str(amount), target,
+        evm,
+        state,
+        lock_intent,
+        locker,
+        bridge,
+        u.LOCK,
+        token,
+        str(amount),
+        target,
         meta={"n": n},
     )
     require(locked["status"] == 1, f"the lock failed: {locked}")
@@ -646,15 +752,23 @@ def step_lock(args, state, evm, chain):
     )
     received = int(entry[2])
     event = lock_event(evm, locked["tx"], bridge, n)
-    require(event["value"] == received, "the Lock event's amount differs from the record")
+    require(
+        event["value"] == received, "the Lock event's amount differs from the record"
+    )
     require(event["decimals"] == u.TOKEN_DECIMALS, "the Lock event's decimals differ")
     require(
-        event["generation"] == u.GENERATION and event["to_addr_hash"].lower() == target.lower(),
+        event["generation"] == u.GENERATION
+        and event["to_addr_hash"].lower() == target.lower(),
         "the Lock event names another generation or recipient",
     )
     require(0 < received <= amount, "the bridge received more than was sent")
     receipts = u.pay_and_vote(
-        AssetState(state, token), chain, args.keys, buyer, state["tvm"], {"n": n, "amount": received}
+        AssetState(state, token),
+        chain,
+        args.keys,
+        buyer,
+        state["tvm"],
+        {"n": n, "amount": received},
     )
     wallet = asset["buyer_token_wallet"]
     expected_wallet = progress["wallet_before"] + received
@@ -705,7 +819,12 @@ def step_disable(args, state, evm):
     disable = args.mode == "disable"
     record = state.intent(args.label)
     if record is None:
-        nonce = int(values(evm, bridge, "lastDisableTokenNonce(address)(uint256)", token)[0]) + 1
+        nonce = (
+            int(
+                values(evm, bridge, "lastDisableTokenNonce(address)(uint256)", token)[0]
+            )
+            + 1
+        )
     else:
         require(
             record["args"][:2] == [str(disable).lower(), token],
@@ -715,12 +834,26 @@ def step_disable(args, state, evm):
     vote_args = [str(disable).lower(), token, str(nonce)]
     before = source_facts(evm, state, args.asset)
     if not args.execute:
-        return {"dry_run": True, "asset": args.asset, "disable": disable, "nonce": nonce}
+        return {
+            "dry_run": True,
+            "asset": args.asset,
+            "disable": disable,
+            "nonce": nonce,
+        }
     vote = u.evm_vote(
-        evm, state, args.keys, args.label, DISABLE_ID, vote_args, DISABLE_VOTE, vote_args
+        evm,
+        state,
+        args.keys,
+        args.label,
+        DISABLE_ID,
+        vote_args,
+        DISABLE_VOTE,
+        vote_args,
     )
     after = source_facts(evm, state, args.asset)
-    require(after["disabled"] is disable, "the token's disabled flag is not the voted one")
+    require(
+        after["disabled"] is disable, "the token's disabled flag is not the voted one"
+    )
     result = {
         "asset": args.asset,
         "disable": disable,
@@ -748,7 +881,9 @@ def step_switch_lock(args, state, evm):
     vote_args = [str(allow).lower(), str(nonce)]
     if not args.execute:
         return {"dry_run": True, "allow": allow, "nonce": nonce}
-    vote = u.evm_vote(evm, state, args.keys, args.label, SWITCH_ID, vote_args, SWITCH_VOTE, vote_args)
+    vote = u.evm_vote(
+        evm, state, args.keys, args.label, SWITCH_ID, vote_args, SWITCH_VOTE, vote_args
+    )
     now = values(evm, bridge, "allowLock()(bool)")[0] == "true"
     require(now is allow, "allowLock is not the voted value")
     result = {
@@ -783,7 +918,9 @@ def step_issuer(args, state, evm):
     before = source_facts(evm, state, "usdt")
     if not args.execute:
         return {"dry_run": True, "op": args.op, "owner": owner, "before": before}
-    record = u.evm_send_once(evm, state, args.label, owner, token, signature, *call_args)
+    record = u.evm_send_once(
+        evm, state, args.label, owner, token, signature, *call_args
+    )
     require(record["status"] == 1, f"{args.op} failed")
     after = source_facts(evm, state, "usdt")
     expected = {
@@ -831,7 +968,10 @@ def burn_logs(boc: bytes) -> dict:
             ms = lib.Slice(message)
             if ms.bits(2) != 0b11:  # not ext_out_msg_info
                 continue
-            require(ms.bits(2) == 0b10 and ms.bits(1) == 0, "an external from a non-std source")
+            require(
+                ms.bits(2) == 0b10 and ms.bits(1) == 0,
+                "an external from a non-std source",
+            )
             ms.bits(8 + 256)
             require(ms.bits(2) == 0b01, "an external to a non-extern destination")
             length = ms.bits(9)
@@ -843,7 +983,9 @@ def burn_logs(boc: bytes) -> dict:
             require(ms.bits(1) == 1, "LOG_BURN body is not in a reference")
             body = ms.take_ref()
             bits = u.cell_bits(body)
-            require(len(bits) == 704 and not body.refs, "LOG_BURN body has another layout")
+            require(
+                len(bits) == 704 and not body.refs, "LOG_BURN body has another layout"
+            )
             logs.append(
                 {
                     "destination": "0x" + format(int(bits[0:160], 2), "040x"),
@@ -862,7 +1004,10 @@ def issuer_binding(state, asset, monitor_binding: Path) -> dict:
     token = state["assets"][asset]["token"]
     pins = json.loads(monitor_binding.read_text())
     pinned = [a for a in pins["assets"] if a["token"].lower() == token]
-    require(len(pinned) == 1 and pinned[0]["profile"] == "legacy_usdt", "no reviewed issuer pin")
+    require(
+        len(pinned) == 1 and pinned[0]["profile"] == "legacy_usdt",
+        "no reviewed issuer pin",
+    )
     return {
         "schema": "tos-settlement-issuer/1",
         "chain_id": u.EVM_CHAIN_ID,
@@ -876,7 +1021,10 @@ def issuer_binding(state, asset, monitor_binding: Path) -> dict:
 
 
 def redemption_module():
-    return _load("prepare_token_redemption", HERE.parent.parent / "testnet/scripts/prepare-token-redemption.py")
+    return _load(
+        "prepare_token_redemption",
+        HERE.parent.parent / "testnet/scripts/prepare-token-redemption.py",
+    )
 
 
 def step_burn(args, state, evm, chain):
@@ -892,9 +1040,15 @@ def step_burn(args, state, evm, chain):
     if prepared is None:
         redemption = redemption_module()
         binding = issuer_binding(state, args.asset, args.monitor_state / "binding.json")
-        query_id = int.from_bytes(hashlib.sha256(args.label.encode()).digest()[:8], "big")
+        query_id = int.from_bytes(
+            hashlib.sha256(args.label.encode()).digest()[:8], "big"
+        )
         prepared = redemption.prepare(
-            redemption.issuer.source.RPC(args.evm_rpc), binding, receiver, amount, query_id
+            redemption.issuer.source.RPC(args.evm_rpc),
+            binding,
+            receiver,
+            amount,
+            query_id,
         )
         if not args.execute:
             return {"dry_run": True, "prepared": prepared}
@@ -909,36 +1063,55 @@ def step_burn(args, state, evm, chain):
                 "amount": amount,
                 "receiver": receiver,
                 "prepared": prepared,
-                "supply_before": u.num(chain.get(asset["minter"], "get_supply_state")[0]),
-                "wallet_before": live_wallet_balance(chain, asset["buyer_token_wallet"]),
+                "supply_before": u.num(
+                    chain.get(asset["minter"], "get_supply_state")[0]
+                ),
+                "wallet_before": live_wallet_balance(
+                    chain, asset["buyer_token_wallet"]
+                ),
             },
         }
         state.set("burns", burns)
     entry = state["burns"][args.label]
     require(
-        entry["asset"] == args.asset and entry["amount"] == amount and entry["receiver"] == receiver,
+        entry["asset"] == args.asset
+        and entry["amount"] == amount
+        and entry["receiver"] == receiver,
         f"{args.label} was journaled for another burn; use a new label",
     )
     body = u.from64(prepared["body_boc"])
     require(body.hash().hex() == prepared["body_hash"], "the prepared body changed")
-    require(prepared["destination"] == asset["buyer_token_wallet"], "the burn names another wallet")
+    require(
+        prepared["destination"] == asset["buyer_token_wallet"],
+        "the burn names another wallet",
+    )
     buyer = u.wallets(chain, args.keys)["buyer"]
     intent = args.label + "-burn"
-    record = buyer.transfer(state, intent, asset["buyer_token_wallet"], u.BURN_FEE, body)
+    record = buyer.transfer(
+        state, intent, asset["buyer_token_wallet"], u.BURN_FEE, body
+    )
     # The burn's graph (wallet, minter, bridge) was archived on nodes 4-6 when the
     # send finished; the bridge's own transaction carries LOG_BURN.
     manifest = archive.StepJournal(state.root / "archive/sends").validate(
-        intent, json.loads((state.root / "archive/sends/steps.json").read_text())["completed"][intent]
+        intent,
+        json.loads((state.root / "archive/sends/steps.json").read_text())["completed"][
+            intent
+        ],
     )
     bridge_account = u.split(state["tvm"]["bridge"])[1].hex()
     found = []
     for item in manifest["files"]:
         if not item["file"].startswith("transactions/"):
             continue
-        decoded = burn_logs((state.root / "archive/sends" / intent / item["file"]).read_bytes())
+        decoded = burn_logs(
+            (state.root / "archive/sends" / intent / item["file"]).read_bytes()
+        )
         if decoded["account"] == bridge_account and decoded["logs"]:
             found.append(decoded)
-    require(len(found) == 1 and len(found[0]["logs"]) == 1, "the burn has no single LOG_BURN")
+    require(
+        len(found) == 1 and len(found[0]["logs"]) == 1,
+        "the burn has no single LOG_BURN",
+    )
     log = found[0]["logs"][0]
     require(
         log["destination"] == receiver
@@ -950,18 +1123,37 @@ def step_burn(args, state, evm, chain):
     view = t.View(chain, state.root / "references" / args.label)
     supply = supply_at(view, asset["minter"])
     balance = wallet_balance_at(view, asset["buyer_token_wallet"])
-    require(supply == entry["supply_before"] - amount, "the finalized supply did not fall by the burn")
-    require(balance == entry["wallet_before"] - amount, "the buyer's balance did not fall by the burn")
+    require(
+        supply == entry["supply_before"] - amount,
+        "the finalized supply did not fall by the burn",
+    )
+    require(
+        balance == entry["wallet_before"] - amount,
+        "the buyer's balance did not fall by the burn",
+    )
     result = {
         "asset": args.asset,
         "amount": amount,
         "receiver": receiver,
-        "preview": {k: prepared[k] for k in ("amount_atomic", "received_atomic", "issuer_fee_atomic", "warning", "issuer")},
+        "preview": {
+            k: prepared[k]
+            for k in (
+                "amount_atomic",
+                "received_atomic",
+                "issuer_fee_atomic",
+                "warning",
+                "issuer",
+            )
+        },
         "burn_send": {"seqno": record["seqno"], "tx": record["tx"]},
         "bridge_transaction": {k: found[0][k] for k in ("account", "lt", "hash")},
         "log_burn": log,
-        "second_resolver": {"endpoints": view.urls, "checkpoint": view.point, "supply": supply,
-                            "buyer_wallet_balance": balance},
+        "second_resolver": {
+            "endpoints": view.urls,
+            "checkpoint": view.point,
+            "supply": supply,
+            "buyer_wallet_balance": balance,
+        },
     }
     state.set("burns", {**state["burns"], args.label: {**entry, "result": result}})
     state.evidence(args.label, result)
@@ -975,7 +1167,9 @@ def step_unlock(args, state, evm):
     burn = state.get("burns", {}).get(args.burn, {}).get("result")
     require(burn is not None, f"no recorded burn {args.burn}")
     receiver = args.receiver.lower()
-    require(burn["receiver"] == receiver, "the unlock names another receiver than the burn")
+    require(
+        burn["receiver"] == receiver, "the unlock names another receiver than the burn"
+    )
     token, bridge = state["assets"][burn["asset"]]["token"], state["evm"]["bridge"]
     log, tx = burn["log_burn"], burn["bridge_transaction"]
     swap = (
@@ -993,8 +1187,12 @@ def step_unlock(args, state, evm):
     if progress is None:
         progress = {"burn": args.burn, "before": before}
         state.set("unlocks", {**state.get("unlocks", {}), args.label: progress})
-    require(progress["burn"] == args.burn, f"{args.label} was journaled for another burn")
-    vote = u.evm_vote(evm, state, args.keys, args.label, SWAP_ID, [swap], UNLOCK, [swap])
+    require(
+        progress["burn"] == args.burn, f"{args.label} was journaled for another burn"
+    )
+    vote = u.evm_vote(
+        evm, state, args.keys, args.label, SWAP_ID, [swap], UNLOCK, [swap]
+    )
     before = progress["before"]
     after = {
         "receiver": int(values(evm, token, "balanceOf(address)(uint256)", receiver)[0]),
@@ -1003,8 +1201,13 @@ def step_unlock(args, state, evm):
     facts = before["facts"]
     fee = 0
     if burn["asset"] == "usdt":
-        fee = min(log["amount"] * facts["fee_basis_points"] // 10000, facts["maximum_fee"])
-    require(before["bridge"] - after["bridge"] == log["amount"], "the bridge did not pay the amount")
+        fee = min(
+            log["amount"] * facts["fee_basis_points"] // 10000, facts["maximum_fee"]
+        )
+    require(
+        before["bridge"] - after["bridge"] == log["amount"],
+        "the bridge did not pay the amount",
+    )
     require(
         after["receiver"] - before["receiver"] == log["amount"] - fee,
         "the receiver did not get the amount less the issuer fee",
@@ -1093,7 +1296,9 @@ def step_observe(args, state):
                 f"{args.expect_alarm} is not latched for that asset alone: "
                 f"{report['provider_pause_assets']} {report['latched_incidents']}",
             )
-    archive.StepJournal(state.root / "archive" / "monitor").retain_verifier(args.label, result)
+    archive.StepJournal(state.root / "archive" / "monitor").retain_verifier(
+        args.label, result
+    )
     state.evidence(args.label, result)
     return result
 
@@ -1117,15 +1322,25 @@ def step_resolve_incident(args, state, evm):
     baseline, the outbox or the policy, and never resolves a latch whose
     condition still holds."""
     asset, code = args.incident.split(":", 1)
-    require(asset in ASSETS and code in CLEARED, f"no resolution rule for {args.incident}")
+    require(
+        asset in ASSETS and code in CLEARED, f"no resolution rule for {args.incident}"
+    )
     require(asset == "usdt", "only the LocalUSDT fixture's latches are resolved here")
-    require(len(args.authorization or "") >= 16, "--authorization must name who approved it")
+    require(
+        len(args.authorization or "") >= 16, "--authorization must name who approved it"
+    )
     root = args.monitor_state
     out = state.root / "incident-resolution" / args.label
     point = finalized_source(evm)
     facts = source_facts(evm, state, asset, point["number"])
-    require(CLEARED[code](facts), f"{args.incident} still holds at source block {point['number']}")
-    require(not facts["disabled"] and facts["allow_lock"], "re-enable the token before resolving")
+    require(
+        CLEARED[code](facts),
+        f"{args.incident} still holds at source block {point['number']}",
+    )
+    require(
+        not facts["disabled"] and facts["allow_lock"],
+        "re-enable the token before resolving",
+    )
     incidents = json.loads((root / "incidents.json").read_text())
     require(args.incident in incidents, f"{args.incident} is not latched")
     report = json.loads((root / "report.json").read_text())
@@ -1151,17 +1366,22 @@ def step_resolve_incident(args, state, evm):
     with (root / "monitor.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         original = (root / "incidents.json").read_bytes()
-        require(json.loads(original) == incidents, "the latches changed while resolving")
+        require(
+            json.loads(original) == incidents, "the latches changed while resolving"
+        )
         for name in ("incidents", "previous", "report", "policy", "binding"):
-            archive.sync_write(out / f"before-{name}.json", (root / f"{name}.json").read_bytes())
+            archive.sync_write(
+                out / f"before-{name}.json", (root / f"{name}.json").read_bytes()
+            )
         remaining = {k: v for k, v in incidents.items() if k != args.incident}
         archive.document(root / "incidents.json", remaining)
     deadline = time.monotonic() + 120
     while True:
         after = json.loads((root / "report.json").read_text())
-        if after["checkpoint"]["utime"] > report["checkpoint"]["utime"] and after["checkpoint"][
-            "utime"
-        ] > 0:
+        if (
+            after["checkpoint"]["utime"] > report["checkpoint"]["utime"]
+            and after["checkpoint"]["utime"] > 0
+        ):
             break
         require(time.monotonic() < deadline, "no fresh report after the resolution")
         time.sleep(3)
@@ -1193,8 +1413,11 @@ def step_reconcile(args, state, evm, chain):
         }
     if args.expect_reconciled:
         for name, item in out["assets"].items():
-            require(item["reconciled"], f"{name} supply {item['wrapped_supply']} != backing "
-                    f"{item['bridge_balance']}")
+            require(
+                item["reconciled"],
+                f"{name} supply {item['wrapped_supply']} != backing "
+                f"{item['bridge_balance']}",
+            )
     state.evidence(args.label, out)
     return out
 
@@ -1203,8 +1426,12 @@ def step_status(args, state, evm, chain):
     return {
         name: {
             **source_facts(evm, state, name),
-            "wrapped_supply": u.num(chain.get(state["assets"][name]["minter"], "get_supply_state")[0]),
-            "buyer_wallet": live_wallet_balance(chain, state["assets"][name]["buyer_token_wallet"]),
+            "wrapped_supply": u.num(
+                chain.get(state["assets"][name]["minter"], "get_supply_state")[0]
+            ),
+            "buyer_wallet": live_wallet_balance(
+                chain, state["assets"][name]["buyer_token_wallet"]
+            ),
         }
         for name in ASSETS
     } | {"buyer_tos": chain.balance(state["buyer"])}
@@ -1219,7 +1446,9 @@ def label(text):
 
 
 def parser():
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawTextHelpFormatter
+    )
     p.add_argument(
         "step",
         choices=(
@@ -1293,13 +1522,24 @@ NEEDS = {
 def main(argv=None):
     args = parser().parse_args(argv)
     try:
-        require(args.evm_rpc.startswith("http://127.0.0.1:"), "local source endpoint required")
+        require(
+            args.evm_rpc.startswith("http://127.0.0.1:"),
+            "local source endpoint required",
+        )
         for field in NEEDS.get(args.step, ()):
-            require(getattr(args, field) is not None, f"{args.step} needs --{field.replace('_', '-')}")
+            require(
+                getattr(args, field) is not None,
+                f"{args.step} needs --{field.replace('_', '-')}",
+            )
         if args.step == "disable":
-            require(args.mode in ("disable", "enable"), "disable takes --mode disable|enable")
+            require(
+                args.mode in ("disable", "enable"),
+                "disable takes --mode disable|enable",
+            )
         if args.step == "switch-lock":
-            require(args.mode in ("allow", "stop"), "switch-lock takes --mode allow|stop")
+            require(
+                args.mode in ("allow", "stop"), "switch-lock takes --mode allow|stop"
+            )
         u.CAST[0] = args.cast
         root = u.private_dir(args.state)
         with (root / "driver.lock").open("a") as lock:
@@ -1309,10 +1549,14 @@ def main(argv=None):
             chain = u.Chain(args.data)
             args.evm_artifacts = ""
             evm = u.Evm(u.Tools(args))
-            require(evm.chain_id() == u.EVM_CHAIN_ID, "not the approved local source chain")
+            require(
+                evm.chain_id() == u.EVM_CHAIN_ID, "not the approved local source chain"
+            )
             state = t.EvidenceState(root, evm)
             state.chain = chain
-            t.View(chain, root / "references" / "startup")  # approved genesis on nodes 4-6
+            t.View(
+                chain, root / "references" / "startup"
+            )  # approved genesis on nodes 4-6
             fixed = assets(usdc_state, usdt_state)
             base = {
                 "bridge": usdc_state["evm"]["bridge"].lower(),
@@ -1328,7 +1572,10 @@ def main(argv=None):
             ):
                 if state.get(key) is None:
                     state.set(key, value)
-                require(state[key] == value, f"the recorded {key} differs from the source runs")
+                require(
+                    state[key] == value,
+                    f"the recorded {key} differs from the source runs",
+                )
             state.recover_source()
             if args.step == "status":
                 result = step_status(args, state, evm, chain)
