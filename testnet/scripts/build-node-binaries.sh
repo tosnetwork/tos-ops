@@ -91,7 +91,15 @@ export SOURCE_DATE_EPOCH
 command -v clang++-21 >/dev/null || bash "$SRC/scripts/install-llvm-toolchain.sh" 21
 
 BUILD=$WORK/build-$REV
-cmake -S "$SRC" -B "$BUILD" -G Ninja \
+# Link GSL statically, as the release does, when the source has the option;
+# the binaries then need no GSL package on any supported Ubuntu.
+STATIC_GSL=()
+STATIC_GSL_FLAG=""
+if grep -q 'TOS_STATIC_GSL' "$SRC/CMakeLists.txt"; then
+  STATIC_GSL=(-DTOS_STATIC_GSL=ON)
+  STATIC_GSL_FLAG=" TOS_STATIC_GSL=ON"
+fi
+cmake -S "$SRC" -B "$BUILD" -G Ninja "${STATIC_GSL[@]}" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_C_COMPILER=clang-21 -DCMAKE_CXX_COMPILER=clang++-21 \
   -DTOS_ARCH=x86-64-v2 -DPORTABLE=x86-64-v2 \
@@ -122,7 +130,7 @@ done
   echo "host $(hostname)"
   echo "cpu $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ //')"
   echo "compiler $(clang++-21 --version | head -1)"
-  echo "flags TOS_ARCH=x86-64-v2 PORTABLE=x86-64-v2 TOS_PRODUCTION_BUILD=ON TOS_USE_JEMALLOC=ON Release"
+  echo "flags TOS_ARCH=x86-64-v2 PORTABLE=x86-64-v2 TOS_PRODUCTION_BUILD=ON TOS_USE_JEMALLOC=ON Release$STATIC_GSL_FLAG"
   echo "built $(date -u +%FT%TZ)"
 } > "$OUT.tmp/BUILD-INFO"
 rm -rf "$OUT"

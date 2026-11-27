@@ -1248,6 +1248,17 @@ def test_a_result_check_release_refuses_is_not_moved_into_place(served, tmp_path
     assert not out.exists()
 
 
+def test_the_host_build_links_gsl_statically_when_the_source_supports_it():
+    build = (SCRIPTS / "build-node-binaries.sh").read_text()
+    # The option is passed only when the source defines it, and the build
+    # record says so, so the flags line never claims a static link it lacks.
+    assert "if grep -q 'TOS_STATIC_GSL' \"$SRC/CMakeLists.txt\"; then" in build
+    assert "STATIC_GSL=(-DTOS_STATIC_GSL=ON)" in build
+    assert 'STATIC_GSL_FLAG=" TOS_STATIC_GSL=ON"' in build
+    assert 'cmake -S "$SRC" -B "$BUILD" -G Ninja "${STATIC_GSL[@]}"' in build
+    assert 'TOS_USE_JEMALLOC=ON Release$STATIC_GSL_FLAG"' in build
+
+
 def test_the_role_binaries_are_the_ones_the_host_build_builds():
     module = load_module()
     build = (SCRIPTS / "build-node-binaries.sh").read_text()
