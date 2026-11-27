@@ -3,10 +3,21 @@
 
 Operator-only. Under the monitor lock it removes exactly the named incident from
 incidents.json, and only when the checker's current report is fresh, consistent
-with incidents.json and shows that incident's condition clear. It writes a
-resolution record with the sha256 of incidents.json before and after. It never
-sends, signs, votes or changes a baseline. See settlement-monitor.md.
-Exit 0: resolved, 2: refused (nothing changed).
+with incidents.json and has no alarm of that incident's asset and code. It first
+creates the resolution record (exclusively, fsynced) with the sha256 of
+incidents.json before and after, then replaces incidents.json. It never sends,
+signs, votes or changes a baseline. See settlement-monitor.md.
+
+An absent alarm is only as strong as the code it tests. For a level code (a
+frozen bridge, a token that is paused, deprecated or upgraded now, a backing
+shortfall) it shows that the condition no longer holds. For an edge-triggered
+code (destroyed_funds, unexplained_decrease, and token_paused raised by
+pause_events) it shows only that no new event occurred in the last checked
+interval, not that the cause is resolved; for those the human review is the
+real guard.
+
+Exit 0: resolved. 2: refused, nothing changed. 3: partial, a failure after the
+record was written left a change; the JSON names exactly what happened.
 """
 
 from __future__ import annotations
@@ -32,6 +43,14 @@ RECORD_SCHEMA = "tos-settlement-incident-resolution/1"
 MAX_REASON = 2000
 
 
+class Partial(Exception):
+    """A failure after the record was written; carries what changed."""
+
+    def __init__(self, **facts):
+        super().__init__(facts["what"])
+        self.facts = facts
+
+
 def require(condition, message):
     if not condition:
         raise monitor.Invalid(message)
@@ -39,6 +58,60 @@ def require(condition, message):
 
 def sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def encode(value):
+    """The checker's exact state encoding (monitor.atomic)."""
+    return (json.dumps(value, sort_keys=True) + "\n").encode()
+
+
+def write_all(fd, data):
+    view = memoryview(data)
+    while view:
+        view = view[os.write(fd, view) :]
+
+
+def fsync_directory(path):
+    directory = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def create_record(path, data):
+    """Create a new record or refuse; never replaces an existing file.
+
+    On a failure the partial file this call created is removed, so a refusal
+    leaves nothing behind; if that removal fails, the failure is partial.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+    fd = os.open(path, flags, 0o600)  # FileExistsError if it appeared meanwhile
+    try:
+        write_all(fd, data)
+        os.fsync(fd)
+        os.close(fd)
+        fd = None
+        fsync_directory(path.parent)
+    except OSError as error:
+        if fd is not None:
+            os.close(fd)
+        try:
+            os.unlink(path)
+        except OSError:
+            raise Partial(
+                what="record write failed and its partial file was left; incidents unchanged",
+                error=str(error),
+                record=str(path),
+            ) from error
+        raise
+
+
+def current_hash(path):
+    try:
+        return sha256(path)
+    except OSError:
+        return None
 
 
 def reason_text(value):
@@ -82,9 +155,7 @@ def resolve(state_dir, incident, reason, record_path, max_age, now):
 
     before = sha256(incidents_path)
     remaining = {k: v for k, v in incidents.items() if k != incident}
-    monitor.atomic(incidents_path, remaining)
-    after = sha256(incidents_path)
-    require(monitor.read_json(incidents_path) == remaining, "incidents.json did not read back")
+    after = hashlib.sha256(encode(remaining)).hexdigest()
     record = dict(
         schema=RECORD_SCHEMA,
         incident=incident,
@@ -97,7 +168,39 @@ def resolve(state_dir, incident, reason, record_path, max_age, now):
         reason=reason,
         time_unix=int(now),
     )
-    monitor.atomic(record_path, record)
+    # The record exists, durably, before the incident is removed.
+    create_record(record_path, encode(record))
+    try:
+        monitor.atomic(incidents_path, remaining)
+    except (OSError, ValueError) as error:
+        current = current_hash(incidents_path)
+        if current == before:
+            try:
+                os.unlink(record_path)
+                fsync_directory(record_path.parent)
+            except OSError:
+                raise Partial(
+                    what="incidents.json was not replaced, but the record could not be withdrawn",
+                    error=str(error),
+                    record=str(record_path),
+                    incidents_sha256_current=current,
+                ) from error
+            raise
+        raise Partial(
+            what="incidents.json was replaced, but the replace did not complete durably",
+            error=str(error),
+            record=str(record_path),
+            incidents_sha256_current=current,
+            incidents_sha256_after=after,
+        ) from error
+    current = current_hash(incidents_path)
+    if current != after:
+        raise Partial(
+            what="incidents.json was replaced, but it does not read back as the record states",
+            record=str(record_path),
+            incidents_sha256_current=current,
+            incidents_sha256_after=after,
+        )
     return record
 
 
@@ -136,6 +239,9 @@ def main(argv=None):
             result = resolve(a.state_dir, a.incident, reason, record, max_age, time.time())
         print(json.dumps(result, sort_keys=True))
         return 0
+    except Partial as partial:
+        print(json.dumps(dict(result="partial", **partial.facts), sort_keys=True))
+        return 3
     except (OSError, ValueError, KeyError, TypeError) as error:
         print(json.dumps(dict(result="refused", reason=str(error))))
         return 2

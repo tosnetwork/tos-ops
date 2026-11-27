@@ -239,7 +239,15 @@ holdings reconcile); it is not a way to resume an asset that is still affected.
 
 1. Review the cause and the evidence, and agree the one-line reason with the
    reviewer. Confirm that the checker has published a report **after** the
-   condition ended, with no alarm of that incident's asset and code.
+   condition ended, with no alarm of that incident's asset and code. What an
+   absent alarm proves depends on the code. For a level code (`bridge_frozen`,
+   `token_paused` from the `paused` flag, `token_deprecated`, `token_upgrade`,
+   `backing_shortfall`) it shows the condition no longer holds. For an
+   edge-triggered code (`destroyed_funds`, `unexplained_decrease`, and
+   `token_paused` raised by `pause_events`) it shows only that no new event
+   occurred in the last checked interval, not that the cause is resolved or the
+   loss reconciled. For those codes the human review is the real guard: the
+   command cannot tell a resolved cause from a quiet interval.
 2. Run, with operator-selected paths:
 
    ```sh
@@ -253,16 +261,30 @@ holdings reconcile); it is not a way to resume an asset that is still affected.
    (exit 2, nothing changed) unless all of the following hold: the state
    directory is private and owned; the reason is one non-empty printable line
    of at most 2,000 characters; the record path is new, writable and outside the
-   state directory; the incident is latched, its key is its alarm's `ASSET:CODE`
-   and the code is an emergency; and `report.json` is a checked (not baseline,
-   not STALE) report whose `latched_incidents` equal the current incidents, whose
-   checkpoint is newer than the incident's and no older than the policy's
+   state directory; the incident is latched in an `incidents.json` object, its
+   key is its alarm's `ASSET:CODE` and the code is an emergency; and
+   `report.json` exists and is a checked `tos-settlement-report/1` (not
+   baseline, not STALE) whose `latched_incidents` equal the current incidents,
+   whose checkpoint is newer than the incident's and no older than the policy's
    `max_age_seconds`, and which has no alarm with that asset and code.
-3. It then removes only that incident (atomic replace with fsync) and writes the
-   record `tos-settlement-incident-resolution/1`: the incident id and removed
-   entry, the remaining incident ids, the sha256 of `incidents.json` before and
-   after, the report checkpoint and sha256, the reason and the time. Retain the
-   record with the incident evidence; the after hash must match the state file.
+3. It first creates the record `tos-settlement-incident-resolution/1`
+   exclusively (`O_CREAT|O_EXCL`, never replacing a file that appeared after the
+   check), fsyncs it and its directory, and only then replaces `incidents.json`
+   without that incident (atomic replace with fsync). The record holds the
+   incident id and removed entry, the remaining incident ids, the sha256 of
+   `incidents.json` before and, computed in advance from the checker's exact
+   encoding, after; the report checkpoint and sha256, the reason and the time.
+   A failed record write removes its own partial file. A replace that fails
+   without changing `incidents.json` withdraws the record. Both exit 2. Retain
+   the record with the incident evidence; the after hash must match the state
+   file.
+
+   **Exit 3** (`"result": "partial"`) means a failure after the record was
+   written left a change, and the JSON names it: `incidents.json` was replaced
+   but not durably confirmed, or does not read back as the record states, or
+   was not replaced but the record could not be withdrawn, or a partial record
+   file could not be removed. Stop the schedule, keep every file and compare
+   `incidents_sha256_current` with the record before doing anything else.
 4. The next checker run publishes `provider_pause_assets` without that asset if
    no other incident of it is latched. A condition that returns latches again.
    One run resolves one incident; repeat per incident, each with its own record.
@@ -284,7 +306,10 @@ both assets, plus malformed/incomplete observations and unknown dispatch. The
 mutation controls remove the guards in an isolated temporary source and require
 the tests to fail. The incident controls remove each of the resolution
 command's refusal guards in turn and require that refusal's own test to fail
-with its assertion (15/15). No test contacts a node, sends value or builds node code.
+with its assertion, and the ordering and failure-path controls (record
+after replace, partial record kept, record not withdrawn, partial reported as
+refused, read-back unchecked) fail their fault-injection tests (26/26).
+No test contacts a node, sends value or builds node code.
 The checker is TOS-specific operational tooling; no inherited consensus or
 bridge algorithm is changed.
 

@@ -1,6 +1,7 @@
 """The operator incident resolution: one latched incident, archived only when the
 checker's current report is fresh, consistent and clear, with a hashed record."""
 
+import errno
 import fcntl
 import hashlib
 import importlib.util
@@ -62,6 +63,12 @@ class Monitor:
         self.snapshot["assets"][1]["paused"] = False
         self.snapshot["assets"][0]["destroy_events"] = 0
         assert self.sample() == 1  # still latched
+
+    def race(self):
+        # A competing writer creates the record once the checks have passed.
+        if not self.record.exists():
+            self.record.write_text("{}")
+        return NOW
 
     def incidents(self):
         return monitor.read_json(self.state / "incidents.json")
@@ -149,8 +156,35 @@ REFUSALS = {
     "record-exists": (lambda m, mp: m.record.write_text("{}"), {}, "record exists"),
     "record-in-state": (
         lambda m, mp: None,
-        dict(record="STATE/resolution.json"),
+        lambda m: dict(record=m.state / "resolution.json"),
         "outside the monitor state",
+    ),
+    "record-dir-missing": (
+        lambda m, mp: None,
+        lambda m: dict(record=m.record.parent / "missing" / "resolution.json"),
+        "missing or not writable",
+    ),
+    "record-dir-unwritable": (
+        lambda m, mp: m.record.parent.chmod(0o500),
+        {},
+        "missing or not writable",
+    ),
+    # The record appears after the existence check, before the exclusive create.
+    "record-race": (lambda m, mp: mp.setattr(resolver.time, "time", m.race), {}, "File exists"),
+    "incidents-not-object": (
+        lambda m, mp: (m.state / "incidents.json").write_text("[]\n"),
+        {},
+        "not an object",
+    ),
+    "report-missing": (
+        lambda m, mp: (m.state / "report.json").rename(m.tmp / "report.moved"),
+        {},
+        "no current report",
+    ),
+    "report-schema": (
+        lambda m, mp: m.edit("report.json", lambda v: v.update(schema="tos-settlement-report/2")),
+        {},
+        "schema differs",
     ),
     "lock-held": (hold_lock, {}, "Resource temporarily unavailable"),
     "absent": (lambda m, mp: None, dict(incident="usdt:bridge_frozen"), "not latched"),
@@ -214,17 +248,115 @@ def test_each_refusal_changes_nothing(tmp_path, monkeypatch, capsys, label):
     m = Monitor(tmp_path, monkeypatch)
     m.clear()
     setup(m, monkeypatch)
-    if overrides.get("record") == "STATE/resolution.json":
-        overrides = dict(record=m.state / "resolution.json")
+    if callable(overrides):
+        overrides = overrides(m)
     incidents = (m.state / "incidents.json").read_bytes()
-    report = (m.state / "report.json").read_bytes()
+    report = m.state / "report.json"
+    report_bytes = report.read_bytes() if report.exists() else None
     capsys.readouterr()
     code = m.resolve(**overrides)
     out = json.loads(capsys.readouterr().out)
     assert code == 2 and out["result"] == "refused", "refusal did not refuse: " + label
     assert message in out["reason"], "wrong refusal: " + out["reason"]
     assert (m.state / "incidents.json").read_bytes() == incidents
-    assert (m.state / "report.json").read_bytes() == report
+    assert (report.read_bytes() if report.exists() else None) == report_bytes
     assert not (m.state / "resolution.json").exists()
-    if label != "record-exists":
+    if label in ("record-exists", "record-race"):
+        assert m.record.read_text() == "{}", "an existing record was overwritten"
+    else:
         assert not m.record.exists()
+    assert list(m.record.parent.iterdir()) == ([m.record] if m.record.exists() else [])
+
+
+def enospc(*_args, **_kwargs):
+    raise OSError(errno.ENOSPC, "No space left on device")
+
+
+def half_then_enospc(fd, data):
+    os.write(fd, data[: len(data) // 2])
+    enospc()
+
+
+def test_a_failed_record_write_changes_nothing(tmp_path, monkeypatch, capsys):
+    m = Monitor(tmp_path, monkeypatch)
+    m.clear()
+    incidents = (m.state / "incidents.json").read_bytes()
+    monkeypatch.setattr(resolver, "write_all", half_then_enospc)
+    capsys.readouterr()
+    assert m.resolve() == 2
+    out = json.loads(capsys.readouterr().out)
+    assert out["result"] == "refused" and "No space left" in out["reason"]
+    assert (m.state / "incidents.json").read_bytes() == incidents, "incident removed first"
+    assert not m.record.exists(), "partial record left behind"
+
+
+def test_a_record_that_cannot_be_cleaned_up_is_partial(tmp_path, monkeypatch, capsys):
+    m = Monitor(tmp_path, monkeypatch)
+    m.clear()
+    incidents = (m.state / "incidents.json").read_bytes()
+    unlink = os.unlink
+
+    def refuse_record(path, *args, **kwargs):
+        if Path(path) == m.record:
+            enospc()
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(resolver, "write_all", half_then_enospc)
+    monkeypatch.setattr(resolver.os, "unlink", refuse_record)
+    capsys.readouterr()
+    assert m.resolve() == 3
+    out = json.loads(capsys.readouterr().out)
+    assert out["result"] == "partial" and "partial file was left" in out["what"]
+    assert out["record"] == str(m.record)
+    assert (m.state / "incidents.json").read_bytes() == incidents
+
+
+def test_a_replace_that_fails_before_replacing_withdraws_the_record(tmp_path, monkeypatch, capsys):
+    m = Monitor(tmp_path, monkeypatch)
+    m.clear()
+    incidents = (m.state / "incidents.json").read_bytes()
+    monkeypatch.setattr(resolver.monitor, "atomic", enospc)
+    capsys.readouterr()
+    assert m.resolve() == 2
+    out = json.loads(capsys.readouterr().out)
+    assert out["result"] == "refused" and "No space left" in out["reason"]
+    assert (m.state / "incidents.json").read_bytes() == incidents
+    assert not m.record.exists(), "record of an unapplied resolution was kept"
+
+
+def test_a_failure_after_the_replace_is_partial_not_refused(tmp_path, monkeypatch, capsys):
+    m = Monitor(tmp_path, monkeypatch)
+    m.clear()
+    atomic = resolver.monitor.atomic
+
+    def replace_then_fail(path, value):
+        atomic(path, value)
+        raise OSError(errno.EIO, "directory fsync failed")
+
+    monkeypatch.setattr(resolver.monitor, "atomic", replace_then_fail)
+    capsys.readouterr()
+    code = m.resolve()
+    out = json.loads(capsys.readouterr().out)
+    assert code == 3 and out["result"] == "partial", "a change was reported as refused"
+    assert "was replaced" in out["what"] and "directory fsync failed" in out["error"]
+    record = monitor.read_json(m.record)
+    current = sha256(m.state / "incidents.json")
+    assert out["incidents_sha256_current"] == current == record["incidents_sha256_after"]
+    assert sorted(m.incidents()) == [DESTROYED]
+
+
+def test_a_replace_that_does_not_read_back_is_partial(tmp_path, monkeypatch, capsys):
+    m = Monitor(tmp_path, monkeypatch)
+    m.clear()
+    atomic = resolver.monitor.atomic
+
+    def replace_with_other(path, value):
+        atomic(path, dict(value, other={}))
+
+    monkeypatch.setattr(resolver.monitor, "atomic", replace_with_other)
+    capsys.readouterr()
+    assert m.resolve() == 3
+    out = json.loads(capsys.readouterr().out)
+    assert out["result"] == "partial" and "does not read back" in out["what"]
+    assert out["incidents_sha256_after"] == monitor.read_json(m.record)["incidents_sha256_after"]
+    assert out["incidents_sha256_current"] != out["incidents_sha256_after"]
