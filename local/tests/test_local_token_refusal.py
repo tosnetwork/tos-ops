@@ -207,6 +207,7 @@ def test_recognition_adds_test_entry_without_replacing_existing(
         assert built["assets"][0] == original
         assert len(built["assets"]) == 2
         assert built["assets"][1]["origin"]["source_token"] == module.SOURCE_TOKEN
+        assert built["assets"][1]["origin"]["source_chain_id"] == 56
         assert built["assets"][1]["wallet_code_hash"] == "55" * 32
         assert calls == [84]
 
