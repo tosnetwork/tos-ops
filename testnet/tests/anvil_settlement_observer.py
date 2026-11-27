@@ -77,7 +77,18 @@ def source_net(tmp_path_factory):
     root = tmp_path_factory.mktemp("source-anvil")
     with (root / "node.log").open("w") as log:
         process = subprocess.Popen(
-            [anvil, "--host", "127.0.0.1", "--port", str(port), "--chain-id", "1", "--silent"],
+            [
+                anvil,
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(port),
+                "--chain-id",
+                "1",
+                "--slots-in-an-epoch",
+                "1",
+                "--silent",
+            ],
             stdout=log,
             stderr=subprocess.STDOUT,
         )
