@@ -40,6 +40,11 @@ def source_net(tmp_path_factory):
         "LocalUSDT.sol": {
             "content": (ROOT / "local/contracts/test-usdt/LocalUSDT.sol").read_text()
         },
+        "StandardIssuerFixture.sol": {
+            "content": (
+                ROOT / "testnet/tests/fixtures/settlement-source/StandardIssuerFixture.sol"
+            ).read_text()
+        },
         "BridgeFixture.sol": {
             "content": (
                 ROOT / "testnet/tests/fixtures/settlement-source/BridgeFixture.sol"
@@ -78,6 +83,7 @@ def source_net(tmp_path_factory):
             ("LocalUSDT", "LocalUSDT.sol"),
             ("BridgeFixture", "BridgeFixture.sol"),
             ("StandardObserverFixture", "StandardObserverFixture.sol"),
+            ("StandardIssuerFixture", "StandardIssuerFixture.sol"),
         )
     }
     with socket.socket() as sock:
