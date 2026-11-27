@@ -1,0 +1,25 @@
+{
+  "balances_atomic": {
+    "actor": 1000000,
+    "actor_owner": 1000000,
+    "bridge_buyer": 21000000,
+    "work_buyer": 2000000
+  },
+  "block": {
+    "@type": "tos.blockIdExt",
+    "file_hash": "fwqYobkOksFS7fYntRrKS5OedNU6qvOZ9ZHs0a+2osk=",
+    "root_hash": "XT8u7ze5ZsruRYBLM7kNOG3WaCbH+Q4mSpevV4wFcSQ=",
+    "seqno": 364710,
+    "shard": "-9223372036854775808",
+    "workchain": -1
+  },
+  "checkpoint": 364710,
+  "rpc_count": 3,
+  "supply_atomic": 25000000,
+  "wallets": {
+    "actor": "0:6a454865a858b152f1678fed49e899e2a8ed1fbafb23d136a539c3aceb52c28d",
+    "actor_owner": "0:b8193deb9b1a5b89f4ca849ea96bab892adcfe6b3a2df97c57ba7fb6271d61ca",
+    "bridge_buyer": "0:41bc48ffc215b95b4e0120f2aedc9c3e1e32f7a90741066057f8080b7211750b",
+    "work_buyer": "0:d83f4849e9b8c64ecbe06f68f38f09f41d63e1f50f3b444de70871c45534ab24"
+  }
+}
