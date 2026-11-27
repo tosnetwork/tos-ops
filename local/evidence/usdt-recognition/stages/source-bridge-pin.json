@@ -1,0 +1,7 @@
+{
+  "artifact_sha256": "9ed8ef9bdda022f8f4723076506a8b467d8f2ba03fc50f3a5997f38b121b2723",
+  "genesis": "65735247a371030abe811aeac0afe357301ce90e161450d26f88b4beb5b4c366",
+  "source_bridge": "0xe7f1725e7734ce288f8367e1bb143e90bb3f0512",
+  "source_bridge_runtime_sha256": "0b11f0f3ae60d55bcb078f1ec02e9bd33c8bf1653070d9f3386eb2a4703a40ed",
+  "tos_commit": "b9a5a0406193d3577022b5c856bab9f77836f58b"
+}

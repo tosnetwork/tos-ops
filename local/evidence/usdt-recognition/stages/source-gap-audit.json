@@ -1,0 +1,79 @@
+{
+  "alarms": [],
+  "balance_event_counts": {
+    "usdc": 0,
+    "usdt": 0
+  },
+  "baseline_reset": false,
+  "chunks": [
+    {
+      "end": {
+        "hash": "05e68154747f01150821cb5743a45299979da18413f093716602cc56e701817a",
+        "height": 687,
+        "utime": 1795770210
+      },
+      "sha256": "66f806773f22576297d2b90303642ad993e1dcb3ff6f64acd95b170b01958911",
+      "start": {
+        "hash": "b426e84051d38b5aaba6a4b3e7c7d8d3e2ad8b470e2fad17c7c5821f6303d2d9",
+        "height": 623,
+        "utime": 1795770146
+      }
+    },
+    {
+      "end": {
+        "hash": "c429b2c49481629582685f1951b188d23a0785885ef4a221991ea01e31481ce7",
+        "height": 751,
+        "utime": 1795770274
+      },
+      "sha256": "58d26576b7eb1e9933365b95b09247a2dfb9bd8f986f2961e57d70a8c885bae1",
+      "start": {
+        "hash": "05e68154747f01150821cb5743a45299979da18413f093716602cc56e701817a",
+        "height": 687,
+        "utime": 1795770210
+      }
+    },
+    {
+      "end": {
+        "hash": "13d9608674ec0d3bab3d795f57e5b5d7971d781107c842c412f415258763e500",
+        "height": 815,
+        "utime": 1795770338
+      },
+      "sha256": "7aaa47ff362af0b9eda9134f963b70234bc5031b6d0bc16914f64dc6160a370b",
+      "start": {
+        "hash": "c429b2c49481629582685f1951b188d23a0785885ef4a221991ea01e31481ce7",
+        "height": 751,
+        "utime": 1795770274
+      }
+    },
+    {
+      "end": {
+        "hash": "dca0ae0c3738d7074e3727b8208ada91fdfb0c74e982d5be11ea46fad147bfc5",
+        "height": 862,
+        "utime": 1795770385
+      },
+      "sha256": "3887b963ced5ada27bc66703c16a373bad4196dfc8fdc2edee453cfe85eb146e",
+      "start": {
+        "hash": "13d9608674ec0d3bab3d795f57e5b5d7971d781107c842c412f415258763e500",
+        "height": 815,
+        "utime": 1795770338
+      }
+    }
+  ],
+  "destroy_events": {
+    "usdc": 0,
+    "usdt": 0
+  },
+  "pause_events": {
+    "usdc": 0,
+    "usdt": 0
+  },
+  "range": [
+    624,
+    862
+  ],
+  "tos_checkpoint": {
+    "hash": "7bf55b1b3b2a1134ad4862a92ab27cd91657abef9e8922a0a184d1c4a18d1d96",
+    "height": 337244,
+    "utime": 1795770444
+  }
+}
