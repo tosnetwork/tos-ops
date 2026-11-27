@@ -530,11 +530,10 @@ def monitor_dir(tmp_path, alarms=(), incidents=None, age=0):
 def test_clean_observation_refuses_alarms_latches_and_staleness(
     tmp_path, alarms, incidents, age, message
 ):
-    root = monitor_dir(tmp_path / "monitor", alarms, incidents, age) if False else None
     (tmp_path / "monitor").mkdir()
     root = monitor_dir(tmp_path / "monitor", alarms, incidents, age)
     state = State(tmp_path / "state")
-    args = SimpleNamespace(label="observe", monitor_state=root, expect_clean=True)
+    args = SimpleNamespace(label="observe", monitor_state=root, expect_clean=True, expect_alarm=None)
     with pytest.raises(Refused, match=message):
         m.step_observe(args, state)
 
@@ -543,7 +542,7 @@ def test_clean_observation_is_retained(tmp_path):
     (tmp_path / "monitor").mkdir()
     root = monitor_dir(tmp_path / "monitor")
     state = State(tmp_path / "state")
-    args = SimpleNamespace(label="observe-1", monitor_state=root, expect_clean=True)
+    args = SimpleNamespace(label="observe-1", monitor_state=root, expect_clean=True, expect_alarm=None)
     result = m.step_observe(args, state)
     assert result["report"]["alarms"] == [] and "observe-1" in state.evidenced
     retained = json.loads((tmp_path / "state/archive/monitor/retained-verifiers.json").read_text())

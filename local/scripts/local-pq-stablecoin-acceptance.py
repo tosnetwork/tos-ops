@@ -99,10 +99,18 @@ LOCKS = "locks(uint64)(address,address,uint256,uint32,uint8)"
 LOCK_EVENT = "Lock(address,address,bytes32,uint256,uint256,uint8,uint64,uint32)"
 LOG_BURN = 0xC0470CCF
 OP_BURN = 0x595F07BC
-# The burn value: ConfigParam 79's burn fee plus the forwarding allowance the
-# wallet needs for its legs; the excess comes back to the burner.
-BURN_VALUE = u.BURN_FEE + NANO
 WALLET_V3_TTL = 600
+# The checker's emergency codes (testnet/scripts/check-settlement.py): each latches
+# an incident and names its asset alone in provider_pause_assets.
+EMERGENCIES = {
+    "bridge_frozen",
+    "token_paused",
+    "destroyed_funds",
+    "token_deprecated",
+    "token_upgrade",
+    "unexplained_decrease",
+    "backing_shortfall",
+}
 MAX_AMOUNT = 2**120 - 1
 
 
@@ -1064,6 +1072,19 @@ def step_observe(args, state):
             and not incidents,
             f"the monitor is not clean: {report['alarms']} {report['latched_incidents']}",
         )
+    if args.expect_alarm:
+        asset, code = args.expect_alarm.split(":", 1)
+        require(
+            any(a["asset"] == asset and a["code"] == code for a in report["alarms"]),
+            f"the monitor did not raise {args.expect_alarm}: {report['alarms']}",
+        )
+        if code in EMERGENCIES:
+            require(
+                report["provider_pause_assets"] == [asset]
+                and args.expect_alarm in report["latched_incidents"],
+                f"{args.expect_alarm} is not latched for that asset alone: "
+                f"{report['provider_pause_assets']} {report['latched_incidents']}",
+            )
     archive.StepJournal(state.root / "archive" / "monitor").retain_verifier(args.label, result)
     state.evidence(args.label, result)
     return result
@@ -1160,6 +1181,7 @@ def parser():
     p.add_argument("--receiver")
     p.add_argument("--burn", type=label)
     p.add_argument("--expect-clean", action="store_true")
+    p.add_argument("--expect-alarm", help="asset:code the monitor must report")
     p.add_argument("--expect-reconciled", action="store_true")
     p.add_argument("--execute", action="store_true")
     return p

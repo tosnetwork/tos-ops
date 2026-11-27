@@ -573,12 +573,25 @@ def cli_document(args, state, chain, label, kind, *extra, sender=None):
     return doc
 
 
+FIXED_CASES = ("responded", "refunded", "swept", "funding-refused", "surplus")
+
+
 def call_case(args, state, chain, bridge):
     label = args.case
+    # An explicit funding amount builds the shared SDK funding with the actor's
+    # real terms: the exact-amount rule then admits only the actor's price, and
+    # refuses and returns any other amount. It needs its own case name.
+    custom = getattr(args, "funding_atomic", None) is not None
+    require(label in FIXED_CASES or custom, "unsupported case")
     require(
-        label in ("responded", "refunded", "swept", "funding-refused", "surplus"),
-        "unsupported case",
+        not custom or label not in FIXED_CASES,
+        "an explicit funding amount needs its own case name",
     )
+    if custom:
+        require(
+            type(args.funding_atomic) is int and 0 < args.funding_atomic < 2**120,
+            "the funding amount must be a positive atomic amount",
+        )
     buyer = usdc.wallets(chain, args.bridge_state / "keys")["buyer"]
     request_hash = hashlib.sha256(("local-token-t10-" + label).encode()).hexdigest()
     terms = format(
@@ -597,11 +610,11 @@ def call_case(args, state, chain, bridge):
         sender=buyer.address,
     )
     body = usdc.from64(doc["body_boc"])
-    if label in ("funding-refused", "surplus"):
+    if label in ("funding-refused", "surplus") or custom:
         details = doc["details"]
         inputs = {
             "query_id": 0,
-            "amount_atomic": "1000000",
+            "amount_atomic": str(args.funding_atomic) if custom else "1000000",
             "forward_nanotos": "100000000"
             if label == "surplus"
             else details["forward_tos_amount"],
@@ -776,6 +789,14 @@ def verify(args, state, chain, bridge):
         "swept": "swept",
         "returned": "returned",
     }.get(args.case)
+    expect_state = getattr(args, "expect_state", None)
+    if expect_state == "funding_returned":
+        require(
+            any(r["state"] == expect_state for r in document.get("funding_refusals", [])),
+            "funding outcome not proven",
+        )
+    elif expect_state:
+        expected = expect_state
     if expected:
         require(
             len(document.get("requests", [])) == 1
@@ -1502,7 +1523,17 @@ def main():
     p.add_argument("--case", type=case_name)
     p.add_argument("--destination")
     p.add_argument("--sender-wallet", choices=("owner", "buyer"), default="owner")
+    p.add_argument("--funding-atomic", type=int)
+    p.add_argument(
+        "--expect-state",
+        choices=("funding_returned", "pending", "responded", "refunded", "swept"),
+    )
     args, extra = p.parse_known_args()
+    require(
+        args.funding_atomic is None or args.step == "call",
+        "--funding-atomic belongs to call",
+    )
+    require(args.expect_state is None or args.step == "verify", "--expect-state belongs to verify")
     args.operation_args = extra
     if args.step == "send" and args.destination:
         # This flag also belongs to the funding helper. Forward it explicitly
