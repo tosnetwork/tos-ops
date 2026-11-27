@@ -22,7 +22,7 @@ CASES = [
     (
         "unsigned-recovery-excludes-prior-signatures",
         "local/scripts/local-pq-service-token.py",
-        'and all(record.get("state") == "done" for record in state.intents().values())',
+        'and all(\n                record.get("state") == "done" for record in state.intents().values()\n            )',
         "and True",
         "local/tests/test_local_pq_service_token.py",
         "test_recover_without_finished_action_keeps_uncertain_steps_fenced",
