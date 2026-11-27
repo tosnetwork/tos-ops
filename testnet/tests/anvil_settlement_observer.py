@@ -40,6 +40,11 @@ def source_net(tmp_path_factory):
         "LocalUSDT.sol": {
             "content": (ROOT / "local/contracts/test-usdt/LocalUSDT.sol").read_text()
         },
+        "StandardIssuerFixture.sol": {
+            "content": (
+                ROOT / "testnet/tests/fixtures/settlement-source/StandardIssuerFixture.sol"
+            ).read_text()
+        },
         "BridgeFixture.sol": {
             "content": (
                 ROOT / "testnet/tests/fixtures/settlement-source/BridgeFixture.sol"
@@ -69,7 +74,11 @@ def source_net(tmp_path_factory):
     )
     codes = {
         name: compiled["contracts"][file][name]["evm"]["bytecode"]["object"]
-        for name, file in (("LocalUSDT", "LocalUSDT.sol"), ("BridgeFixture", "BridgeFixture.sol"))
+        for name, file in (
+            ("LocalUSDT", "LocalUSDT.sol"),
+            ("BridgeFixture", "BridgeFixture.sol"),
+            ("StandardIssuerFixture", "StandardIssuerFixture.sol"),
+        )
     }
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
