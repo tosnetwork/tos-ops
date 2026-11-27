@@ -1,7 +1,8 @@
 # Local second-asset recognition: review gate
 
-Status: **Analysis approved. Local deployment is in progress; recognition is not yet adopted.**
-See [the local execution record](T15-local-20261127.md) for observed stages and holds.
+Status: **Analysis approved; local recognition adopted.**
+See [the local execution record](T15-local-20261127.md) for adoption and the
+[refund/returned continuation](T18-refund-completion-20261127.md) for later lifecycle evidence.
 This document is the behavioural review input, not a production release pin or
 an assertion that the live acceptance cases have passed. A non-author must review
 this analysis before the second record is proposed. There is no external-audit

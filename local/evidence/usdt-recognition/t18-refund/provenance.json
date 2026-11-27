@@ -1,0 +1,34 @@
+{
+  "schema": "local-retained-history-provenance/1",
+  "sending_routes": [
+    {
+      "url": "http://127.0.0.1:19011/jsonRPC",
+      "live_upstream": "http://127.0.0.1:8011/jsonRPC"
+    },
+    {
+      "url": "http://127.0.0.1:19012/jsonRPC",
+      "live_upstream": "http://127.0.0.1:8012/jsonRPC"
+    },
+    {
+      "url": "http://127.0.0.1:19013/jsonRPC",
+      "live_upstream": "http://127.0.0.1:8013/jsonRPC"
+    }
+  ],
+  "reference_routes": [
+    {
+      "url": "http://127.0.0.1:19014/jsonRPC",
+      "live_upstream": "http://127.0.0.1:8014/jsonRPC"
+    },
+    {
+      "url": "http://127.0.0.1:19015/jsonRPC",
+      "live_upstream": "http://127.0.0.1:8015/jsonRPC"
+    },
+    {
+      "url": "http://127.0.0.1:19016/jsonRPC",
+      "live_upstream": "http://127.0.0.1:8016/jsonRPC"
+    }
+  ],
+  "trust": "Distinct live nodes authenticate the current checkpoint and account heads; retained content-addressed BOCs supply only pruned history. The resolver checks the complete hash-linked ancestry to that live head. Same code in a separate process, not an independent implementation. Endpoints share one operator.",
+  "supersedes": "Any direct-node provenance emitted automatically by the older wrapper; verifier reads.endpoints is authoritative.",
+  "mutations": "No state override, truncated history, synthesized transaction, recognition bypass or validator restart."
+}

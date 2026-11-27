@@ -1,0 +1,391 @@
+{
+  "schema": "local-second-asset-refund-evidence/1",
+  "files": [
+    {
+      "file": "resume/transactions/417256000001-bdaa04e3b16460cd18c9ea56c8a4c1cec6d2a0776b88b877da3b2d484bcb2029.boc",
+      "original_sha256": "bb83f099c6b83d9ab7a16514e4d74d1cf0fdef8e34cfdb842f7c6bf08826fc44",
+      "sha256": "bb83f099c6b83d9ab7a16514e4d74d1cf0fdef8e34cfdb842f7c6bf08826fc44",
+      "removed_fields": []
+    },
+    {
+      "file": "resume/transactions/417256000003-55bd8c7c2c9f610d0dad7c3643e4a7328a0e8c2aa4e311fe77772186358cef64.boc",
+      "original_sha256": "42895f93f65c7c732ba3f74dce14131e8e82fa3907f5a3f003c55f0ac3ff31df",
+      "sha256": "42895f93f65c7c732ba3f74dce14131e8e82fa3907f5a3f003c55f0ac3ff31df",
+      "removed_fields": []
+    },
+    {
+      "file": "resume/verifiers/archival-verification-5240b1f9827d82b8bb82f7731b86eb014e2d053f74bfc742e5210030ce73d6ca.json",
+      "original_sha256": "5240b1f9827d82b8bb82f7731b86eb014e2d053f74bfc742e5210030ce73d6ca",
+      "sha256": "5240b1f9827d82b8bb82f7731b86eb014e2d053f74bfc742e5210030ce73d6ca",
+      "removed_fields": []
+    },
+    {
+      "file": "resume/block-headers.json",
+      "original_sha256": "6ad5d99d16370b5282e868235a4d317a3f51a9c1253d2d02a876426bc0c0c431",
+      "sha256": "6ad5d99d16370b5282e868235a4d317a3f51a9c1253d2d02a876426bc0c0c431",
+      "removed_fields": []
+    },
+    {
+      "file": "resume/checkpoint-selection.json",
+      "original_sha256": "1794f0f64add4fb30e892cf5e7e67aa5b48ab4cee92662ed73907a04916a265c",
+      "sha256": "1794f0f64add4fb30e892cf5e7e67aa5b48ab4cee92662ed73907a04916a265c",
+      "removed_fields": []
+    },
+    {
+      "file": "resume/manifest.json",
+      "original_sha256": "8a5ce24c382a01f43c9742ff64adda0cc629ea3e2da65961daf1922308e022e8",
+      "sha256": "8a5ce24c382a01f43c9742ff64adda0cc629ea3e2da65961daf1922308e022e8",
+      "removed_fields": []
+    },
+    {
+      "file": "fund/root-0/transactions/417470000010-be9ba9408b5c7cba85352e4b46b33bf8bb7745bc7a6da5447c958e09873aca94.boc",
+      "original_sha256": "6de322f47f4dea645f61780082576ec827d6a59178dba54bb37ad5a1abaf8b3c",
+      "sha256": "6de322f47f4dea645f61780082576ec827d6a59178dba54bb37ad5a1abaf8b3c",
+      "removed_fields": []
+    },
+    {
+      "file": "fund/root-0/verifiers/archival-verification-62699d189ec7a62b25d77c5c36b6e6068a01a6703ebfe3fb3776f41d88cb7941.json",
+      "original_sha256": "62699d189ec7a62b25d77c5c36b6e6068a01a6703ebfe3fb3776f41d88cb7941",
+      "sha256": "62699d189ec7a62b25d77c5c36b6e6068a01a6703ebfe3fb3776f41d88cb7941",
+      "removed_fields": []
+    },
+    {
+      "file": "fund/root-0/block-headers.json",
+      "original_sha256": "247b00335cc47a8454db40cd554e4543e8729c2f688f099c9099bfd77f1227d9",
+      "sha256": "247b00335cc47a8454db40cd554e4543e8729c2f688f099c9099bfd77f1227d9",
+      "removed_fields": []
+    },
+    {
+      "file": "fund/root-0/checkpoint-selection.json",
+      "original_sha256": "5f56679db1f0f818600ff8f3283a7f7c45701fb3cb50ca4cde4575f3c17cd42b",
+      "sha256": "5f56679db1f0f818600ff8f3283a7f7c45701fb3cb50ca4cde4575f3c17cd42b",
+      "removed_fields": []
+    },
+    {
+      "file": "fund/root-0/capture.json",
+      "original_sha256": "f109ce705984a79525c737de75225c020a130a476bb50e7bba7e548668e91944",
+      "sha256": "f109ce705984a79525c737de75225c020a130a476bb50e7bba7e548668e91944",
+      "removed_fields": []
+    },
+    {
+      "file": "fund/root-1/transactions/417470000008-e58f1951f127ad8148f6e51e5ccc57e4f6deb8847dba5ec26fd0a9e3b8866b9b.boc",
+      "original_sha256": "938e2514c80b04f6878655585e8605b09105d30ebbbb9a629e9a30fa85774f39",
+      "sha256": "938e2514c80b04f6878655585e8605b09105d30ebbbb9a629e9a30fa85774f39",
+      "removed_fields": []
+    },
+    {
+      "file": "fund/root-1/verifiers/archival-verification-a06efc26d9d3acd8d1c008920e3193790b9bed0276d41cd83c930869eb78fea8.json",
+      "original_sha256": "a06efc26d9d3acd8d1c008920e3193790b9bed0276d41cd83c930869eb78fea8",
+      "sha256": "a06efc26d9d3acd8d1c008920e3193790b9bed0276d41cd83c930869eb78fea8",
+      "removed_fields": []
+    },
+    {
+      "file": "fund/root-1/block-headers.json",
+      "original_sha256": "247b00335cc47a8454db40cd554e4543e8729c2f688f099c9099bfd77f1227d9",
+      "sha256": "247b00335cc47a8454db40cd554e4543e8729c2f688f099c9099bfd77f1227d9",
+      "removed_fields": []
+    },
+    {
+      "file": "fund/root-1/checkpoint-selection.json",
+      "original_sha256": "1578a80271c6c06e06cd1bb54e8477f74ffde3ca1f5c575669f0c03189c50fc4",
+      "sha256": "1578a80271c6c06e06cd1bb54e8477f74ffde3ca1f5c575669f0c03189c50fc4",
+      "removed_fields": []
+    },
+    {
+      "file": "fund/root-1/capture.json",
+      "original_sha256": "ae9bff7425f948e098a24f674533b787ccfe5b2faa3266b5272b9a01be06be7c",
+      "sha256": "ae9bff7425f948e098a24f674533b787ccfe5b2faa3266b5272b9a01be06be7c",
+      "removed_fields": []
+    },
+    {
+      "file": "fund/root-2/transactions/417470000001-a1118c55f3ab838b3f851913bb8323246939a3adf35371d0c98190581d683c52.boc",
+      "original_sha256": "c8db129bde54c94d970d086ca659b041f0a59ee9f372a7e34cb51420d775a679",
+      "sha256": "c8db129bde54c94d970d086ca659b041f0a59ee9f372a7e34cb51420d775a679",
+      "removed_fields": []
+    },
+    {
+      "file": "fund/root-2/transactions/417470000003-e50c37201fe0eb31c58f489e9ca55e55a44dc74209c9c0756f89a26e8b6619d7.boc",
+      "original_sha256": "1fa253f3a7098578c5d8bbdd41b7b49b45515ff37f7368829883beeace7ff807",
+      "sha256": "1fa253f3a7098578c5d8bbdd41b7b49b45515ff37f7368829883beeace7ff807",
+      "removed_fields": []
+    },
+    {
+      "file": "fund/root-2/transactions/417470000005-a31aa9483bb4bf6764c8fc898b75e97907a1fa1403888f5ec91965b9655d185b.boc",
+      "original_sha256": "98fc9e0035c083f66bd3f0982e9afbfbc10c6997e9a7b5b46710d7f922ba99c8",
+      "sha256": "98fc9e0035c083f66bd3f0982e9afbfbc10c6997e9a7b5b46710d7f922ba99c8",
+      "removed_fields": []
+    },
+    {
+      "file": "fund/root-2/transactions/417470000007-20301205c80fc63223f8e8474745d2b3a7e23dac67c7e5a623284eb91440fc26.boc",
+      "original_sha256": "0cc698b985b97ec9bbb307ef43300c7f828e17b1f70c1fff69b2264aa75aa29b",
+      "sha256": "0cc698b985b97ec9bbb307ef43300c7f828e17b1f70c1fff69b2264aa75aa29b",
+      "removed_fields": []
+    },
+    {
+      "file": "fund/root-2/transactions/417470000008-e58f1951f127ad8148f6e51e5ccc57e4f6deb8847dba5ec26fd0a9e3b8866b9b.boc",
+      "original_sha256": "938e2514c80b04f6878655585e8605b09105d30ebbbb9a629e9a30fa85774f39",
+      "sha256": "938e2514c80b04f6878655585e8605b09105d30ebbbb9a629e9a30fa85774f39",
+      "removed_fields": []
+    },
+    {
+      "file": "fund/root-2/transactions/417470000010-be9ba9408b5c7cba85352e4b46b33bf8bb7745bc7a6da5447c958e09873aca94.boc",
+      "original_sha256": "6de322f47f4dea645f61780082576ec827d6a59178dba54bb37ad5a1abaf8b3c",
+      "sha256": "6de322f47f4dea645f61780082576ec827d6a59178dba54bb37ad5a1abaf8b3c",
+      "removed_fields": []
+    },
+    {
+      "file": "fund/root-2/verifiers/archival-verification-51c427d2c0f586edaf1291def9388da7cdf3f455b9abbac68ed66ca07ae46da9.json",
+      "original_sha256": "51c427d2c0f586edaf1291def9388da7cdf3f455b9abbac68ed66ca07ae46da9",
+      "sha256": "51c427d2c0f586edaf1291def9388da7cdf3f455b9abbac68ed66ca07ae46da9",
+      "removed_fields": []
+    },
+    {
+      "file": "fund/root-2/block-headers.json",
+      "original_sha256": "a023ecfc551e4468fac1753a8dcb4b624e8c637d00cd00a14383c342f4222e8f",
+      "sha256": "a023ecfc551e4468fac1753a8dcb4b624e8c637d00cd00a14383c342f4222e8f",
+      "removed_fields": []
+    },
+    {
+      "file": "fund/root-2/checkpoint-selection.json",
+      "original_sha256": "a5089126ccf9bc45c48c2247990fcad19a6f2e28275272d377eed66d56247516",
+      "sha256": "a5089126ccf9bc45c48c2247990fcad19a6f2e28275272d377eed66d56247516",
+      "removed_fields": []
+    },
+    {
+      "file": "fund/root-2/capture.json",
+      "original_sha256": "b153cc49a329e6f6cf8f155171c1a2eb45507ba580a9cd3f5500d55c268d38b8",
+      "sha256": "b153cc49a329e6f6cf8f155171c1a2eb45507ba580a9cd3f5500d55c268d38b8",
+      "removed_fields": []
+    },
+    {
+      "file": "fund/manifest.json",
+      "original_sha256": "2aca8f86fecd6835e946dde3289811c6739d6f8c143effae6e4cb19ff60e2729",
+      "sha256": "2aca8f86fecd6835e946dde3289811c6739d6f8c143effae6e4cb19ff60e2729",
+      "removed_fields": []
+    },
+    {
+      "file": "expire/transactions/420000000001-922f298107c8f24b82f0bd3f6661d2d0302dfc4841db4f4d53288cca263e39ea.boc",
+      "original_sha256": "bf53f411542e023467fc0d9cd7558094034da9a98629ae4893da7123bb46f54a",
+      "sha256": "bf53f411542e023467fc0d9cd7558094034da9a98629ae4893da7123bb46f54a",
+      "removed_fields": []
+    },
+    {
+      "file": "expire/transactions/420000000003-5f4cf848ecfaf06b276af8ec4ae7666c46d5520f2437c005abb93ec4ee0eaef6.boc",
+      "original_sha256": "1469e59c1a3f7259146219f2c24542f724bd3c9d3c8e8b55312264b2b8d02aad",
+      "sha256": "1469e59c1a3f7259146219f2c24542f724bd3c9d3c8e8b55312264b2b8d02aad",
+      "removed_fields": []
+    },
+    {
+      "file": "expire/verifiers/archival-verification-10909d57f430b73a0001ece2dea2863cea95494c80995b13e5c7a5a47070096e.json",
+      "original_sha256": "10909d57f430b73a0001ece2dea2863cea95494c80995b13e5c7a5a47070096e",
+      "sha256": "10909d57f430b73a0001ece2dea2863cea95494c80995b13e5c7a5a47070096e",
+      "removed_fields": []
+    },
+    {
+      "file": "expire/block-headers.json",
+      "original_sha256": "6fdc7c4450a0412348ae033e6a9fe11e8126f520c7bae7f0b7be7bf8b05e4444",
+      "sha256": "6fdc7c4450a0412348ae033e6a9fe11e8126f520c7bae7f0b7be7bf8b05e4444",
+      "removed_fields": []
+    },
+    {
+      "file": "expire/checkpoint-selection.json",
+      "original_sha256": "29e3636040662ad9eac56cd5e39d2e4b931401eb712b44a60d37f17a1d89fe1e",
+      "sha256": "29e3636040662ad9eac56cd5e39d2e4b931401eb712b44a60d37f17a1d89fe1e",
+      "removed_fields": []
+    },
+    {
+      "file": "expire/manifest.json",
+      "original_sha256": "e5f469cc786ab1cbb64fa53413b55f974e094e0863cd85318f51b89f7098807d",
+      "sha256": "e5f469cc786ab1cbb64fa53413b55f974e094e0863cd85318f51b89f7098807d",
+      "removed_fields": []
+    },
+    {
+      "file": "claim-refund/root-0/transactions/420099000012-2cfe2a117a2cf04811a73848b02429bc31059cc40e11308d3fc27821e892b72f.boc",
+      "original_sha256": "d6d685643b6dfe226dbeb755874f7a214f5b4809355828f1cc864de2a5eb097a",
+      "sha256": "d6d685643b6dfe226dbeb755874f7a214f5b4809355828f1cc864de2a5eb097a",
+      "removed_fields": []
+    },
+    {
+      "file": "claim-refund/root-0/verifiers/archival-verification-976e76310fb4fa156779b0b0c0f808aa865e30722955494e6c212b68b3475b1c.json",
+      "original_sha256": "976e76310fb4fa156779b0b0c0f808aa865e30722955494e6c212b68b3475b1c",
+      "sha256": "976e76310fb4fa156779b0b0c0f808aa865e30722955494e6c212b68b3475b1c",
+      "removed_fields": []
+    },
+    {
+      "file": "claim-refund/root-0/block-headers.json",
+      "original_sha256": "b49810185c7f9d84c1783a1498f31d6b657e56e4ce486f4b850e65f83419675d",
+      "sha256": "b49810185c7f9d84c1783a1498f31d6b657e56e4ce486f4b850e65f83419675d",
+      "removed_fields": []
+    },
+    {
+      "file": "claim-refund/root-0/checkpoint-selection.json",
+      "original_sha256": "31b8d1f74d52c02aaa34467b4da029dd94251979b09731cb06c6334e64eac010",
+      "sha256": "31b8d1f74d52c02aaa34467b4da029dd94251979b09731cb06c6334e64eac010",
+      "removed_fields": []
+    },
+    {
+      "file": "claim-refund/root-0/capture.json",
+      "original_sha256": "af636f460215241a78c99b7179ed5f2da29951e653aafc2f78cab36eb967fca6",
+      "sha256": "af636f460215241a78c99b7179ed5f2da29951e653aafc2f78cab36eb967fca6",
+      "removed_fields": []
+    },
+    {
+      "file": "claim-refund/root-1/transactions/420099000010-f2557278e8a06f966a9439365430046297caa5879e4657507c6ba7c63af06b56.boc",
+      "original_sha256": "b7f1ef271f56ccb7d844548b9bc7f4898bfd49e635b53e1adc9494ead04ee4d0",
+      "sha256": "b7f1ef271f56ccb7d844548b9bc7f4898bfd49e635b53e1adc9494ead04ee4d0",
+      "removed_fields": []
+    },
+    {
+      "file": "claim-refund/root-1/verifiers/archival-verification-0a9529206283df2241465f0c533e0911a6e542f0ea0b252feae41eee01803229.json",
+      "original_sha256": "0a9529206283df2241465f0c533e0911a6e542f0ea0b252feae41eee01803229",
+      "sha256": "0a9529206283df2241465f0c533e0911a6e542f0ea0b252feae41eee01803229",
+      "removed_fields": []
+    },
+    {
+      "file": "claim-refund/root-1/block-headers.json",
+      "original_sha256": "7fa4a837eca2077f9215d901277a67c8f52ac2bcdd0023a219cc1f3339441a96",
+      "sha256": "7fa4a837eca2077f9215d901277a67c8f52ac2bcdd0023a219cc1f3339441a96",
+      "removed_fields": []
+    },
+    {
+      "file": "claim-refund/root-1/checkpoint-selection.json",
+      "original_sha256": "60696cde697ed2df54c9a953de3bb77d3d4f9294312afcb510aae0cad532c584",
+      "sha256": "60696cde697ed2df54c9a953de3bb77d3d4f9294312afcb510aae0cad532c584",
+      "removed_fields": []
+    },
+    {
+      "file": "claim-refund/root-1/capture.json",
+      "original_sha256": "f9665ef8906df1e8aa6526dddec02c3377d45162ab2b40a66e26eed7fa1fd85d",
+      "sha256": "f9665ef8906df1e8aa6526dddec02c3377d45162ab2b40a66e26eed7fa1fd85d",
+      "removed_fields": []
+    },
+    {
+      "file": "claim-refund/root-2/transactions/420099000001-0c75f3e15884a26c0f6fb170150c6c381a5369b60ac1a2113762c4b68dd47751.boc",
+      "original_sha256": "8404fa2da98591fc675a3d5962a5e7f4581866c58d139207ad9d8b26c21ba6a8",
+      "sha256": "8404fa2da98591fc675a3d5962a5e7f4581866c58d139207ad9d8b26c21ba6a8",
+      "removed_fields": []
+    },
+    {
+      "file": "claim-refund/root-2/transactions/420099000003-3e73e8aaf13e55a5f1994aa0fb15e53854e09a99b06afe8ded7b0663e544fca2.boc",
+      "original_sha256": "074afad631fbd5d9460e20f13a51a4e67b9c81e21060978af9d12a8128f9d738",
+      "sha256": "074afad631fbd5d9460e20f13a51a4e67b9c81e21060978af9d12a8128f9d738",
+      "removed_fields": []
+    },
+    {
+      "file": "claim-refund/root-2/transactions/420099000005-23a2de7da01f0ffe3d219279215f0440f776b684693f4fbd240c71741d151769.boc",
+      "original_sha256": "a4c1eae3d6696cd221faf903fa103883d79a54be77fc5e434b7569ad57e62961",
+      "sha256": "a4c1eae3d6696cd221faf903fa103883d79a54be77fc5e434b7569ad57e62961",
+      "removed_fields": []
+    },
+    {
+      "file": "claim-refund/root-2/transactions/420099000007-ef2af2b2c6bb0f30a23660c8ee904476ca7da63eb9a575762b984b05c3f14da7.boc",
+      "original_sha256": "e80ece97a4acdda52b2c3dc3fedcdff1f680d7b0242729f24c6c00ce5ee00a4b",
+      "sha256": "e80ece97a4acdda52b2c3dc3fedcdff1f680d7b0242729f24c6c00ce5ee00a4b",
+      "removed_fields": []
+    },
+    {
+      "file": "claim-refund/root-2/transactions/420099000009-829d035c4a61ec13a51f28bd6ce5de1c68d412fd4c3982a54dbb92b2d2981230.boc",
+      "original_sha256": "d7a27d40685f50b12181a7a98ec3cd19575a867b6347e9ed1ffba47d8d208351",
+      "sha256": "d7a27d40685f50b12181a7a98ec3cd19575a867b6347e9ed1ffba47d8d208351",
+      "removed_fields": []
+    },
+    {
+      "file": "claim-refund/root-2/transactions/420099000010-f2557278e8a06f966a9439365430046297caa5879e4657507c6ba7c63af06b56.boc",
+      "original_sha256": "b7f1ef271f56ccb7d844548b9bc7f4898bfd49e635b53e1adc9494ead04ee4d0",
+      "sha256": "b7f1ef271f56ccb7d844548b9bc7f4898bfd49e635b53e1adc9494ead04ee4d0",
+      "removed_fields": []
+    },
+    {
+      "file": "claim-refund/root-2/transactions/420099000012-2cfe2a117a2cf04811a73848b02429bc31059cc40e11308d3fc27821e892b72f.boc",
+      "original_sha256": "d6d685643b6dfe226dbeb755874f7a214f5b4809355828f1cc864de2a5eb097a",
+      "sha256": "d6d685643b6dfe226dbeb755874f7a214f5b4809355828f1cc864de2a5eb097a",
+      "removed_fields": []
+    },
+    {
+      "file": "claim-refund/root-2/verifiers/archival-verification-19f5b3d4b25096920d8e223c993bd8979dacbb30b849b58794e56ca36e450dfe.json",
+      "original_sha256": "19f5b3d4b25096920d8e223c993bd8979dacbb30b849b58794e56ca36e450dfe",
+      "sha256": "19f5b3d4b25096920d8e223c993bd8979dacbb30b849b58794e56ca36e450dfe",
+      "removed_fields": []
+    },
+    {
+      "file": "claim-refund/root-2/block-headers.json",
+      "original_sha256": "f67d3c00a33073f4ce3e98d522b7fe834d40b65147ab35c6c5ec7dcdb5ef2d0d",
+      "sha256": "f67d3c00a33073f4ce3e98d522b7fe834d40b65147ab35c6c5ec7dcdb5ef2d0d",
+      "removed_fields": []
+    },
+    {
+      "file": "claim-refund/root-2/checkpoint-selection.json",
+      "original_sha256": "4d1bd35fc4b6d2eee9619976c796ab303b326479998e4ac74710ef0022240f8c",
+      "sha256": "4d1bd35fc4b6d2eee9619976c796ab303b326479998e4ac74710ef0022240f8c",
+      "removed_fields": []
+    },
+    {
+      "file": "claim-refund/root-2/capture.json",
+      "original_sha256": "d85ac275114b1c8d19ccecb80126a477d19554c993474a6419cd140c47bccf09",
+      "sha256": "d85ac275114b1c8d19ccecb80126a477d19554c993474a6419cd140c47bccf09",
+      "removed_fields": []
+    },
+    {
+      "file": "claim-refund/manifest.json",
+      "original_sha256": "9a80c27c80825d341cbc5c722c1af295afdcd921cc35165bc06290709737e72e",
+      "sha256": "9a80c27c80825d341cbc5c722c1af295afdcd921cc35165bc06290709737e72e",
+      "removed_fields": []
+    },
+    {
+      "file": "verdicts/verify-refunded.json",
+      "original_sha256": "98d66e2f8cc404ce82f0cddb928254007cae102f516702139f3b1dddb5b2c9d0",
+      "sha256": "98d66e2f8cc404ce82f0cddb928254007cae102f516702139f3b1dddb5b2c9d0",
+      "removed_fields": []
+    },
+    {
+      "file": "verdicts/refund-final.json",
+      "original_sha256": "0ee28be6e8c0c7a97098c295102de73a115083739e058c39163327406779eb71",
+      "sha256": "0ee28be6e8c0c7a97098c295102de73a115083739e058c39163327406779eb71",
+      "removed_fields": []
+    },
+    {
+      "file": "verdicts/token-supply.json",
+      "original_sha256": "0f70ac9602f79fd3b5a50dcaba7f7b39bb389973bf300b02b28d412013c0e67a",
+      "sha256": "0f70ac9602f79fd3b5a50dcaba7f7b39bb389973bf300b02b28d412013c0e67a",
+      "removed_fields": []
+    },
+    {
+      "file": "verifiers/verify-refunded-raw-b8a99fa65026dbda7eb8992b516fd746f4e769992cb2557ff42ec594d8b91eca.json",
+      "original_sha256": "b8a99fa65026dbda7eb8992b516fd746f4e769992cb2557ff42ec594d8b91eca",
+      "sha256": "b8a99fa65026dbda7eb8992b516fd746f4e769992cb2557ff42ec594d8b91eca",
+      "removed_fields": []
+    },
+    {
+      "file": "verifiers/verify-refunded-98d66e2f8cc404ce82f0cddb928254007cae102f516702139f3b1dddb5b2c9d0.json",
+      "original_sha256": "98d66e2f8cc404ce82f0cddb928254007cae102f516702139f3b1dddb5b2c9d0",
+      "sha256": "98d66e2f8cc404ce82f0cddb928254007cae102f516702139f3b1dddb5b2c9d0",
+      "removed_fields": []
+    },
+    {
+      "file": "incident-resolution/resolved.json",
+      "original_sha256": "e28398ebb8efb034b666708e112b4d789307458c7bd4fa7d8a711b55ec4cf50b",
+      "sha256": "e28398ebb8efb034b666708e112b4d789307458c7bd4fa7d8a711b55ec4cf50b",
+      "removed_fields": []
+    },
+    {
+      "file": "incident-resolution/after-report.json",
+      "original_sha256": "244ac5f150f237a73076deaf03331123c882cde27cf8f32d5e410a9901bf84b1",
+      "sha256": "244ac5f150f237a73076deaf03331123c882cde27cf8f32d5e410a9901bf84b1",
+      "removed_fields": []
+    },
+    {
+      "file": "verdicts/actor-active.json",
+      "original_sha256": "779651366106a9ff467ffb45250fcd8b65841afdcb87cfe9cbc9de23ca36cf73",
+      "sha256": "779651366106a9ff467ffb45250fcd8b65841afdcb87cfe9cbc9de23ca36cf73",
+      "removed_fields": []
+    },
+    {
+      "file": "provenance.json",
+      "original_sha256": "a48c703c0677d7f5702dc1f19ee14f795e12cfd6039362c6539fc4629eec1539",
+      "sha256": "a48c703c0677d7f5702dc1f19ee14f795e12cfd6039362c6539fc4629eec1539",
+      "removed_fields": []
+    }
+  ],
+  "archive_order": "Resume archived before funding; funding archived before expiry; expiry archived before claim; claim archived before SDK reconciliation/independent business verification. Historical checkpoint acquisition retained the original canonical ancestry checks.",
+  "status": "successful-refund"
+}

@@ -18,6 +18,8 @@ GOVERNANCE = "testnet/scripts/testnet-governance.py"
 COLLECTOR = "testnet/scripts/collect-settlement-evm.py"
 UNIT = "local/tests/test_local_pq_usdt.py"
 ANVIL = "testnet/tests/anvil_settlement_observer.py"
+ARCHIVE = "local/tests/test_retained_transactions_rpc.py"
+RETAINED = "local/tests/helpers/retained_transactions_rpc.py"
 CASES = [
     (
         "refund-sweep-wiring",
@@ -289,6 +291,78 @@ CASES = [
         "test_blacklist_without_an_event_is_still_detected",
         "silent blacklist not detected",
     ),
+    (
+        "archive-pruning-only",
+        "local/tests/helpers/retained_transactions_rpc.py",
+        'and "lt not in db" in error.get("message", "")',
+        "and True",
+        "local/tests/test_retained_transactions_rpc.py",
+        "test_non_pruning_error_never_uses_the_cache",
+        "At index 0 diff",
+    ),
+    (
+        "archive-auth-refusal",
+        "local/tests/helpers/retained_transactions_rpc.py",
+        "and status in (200, 500)",
+        "and True",
+        "local/tests/test_retained_transactions_rpc.py",
+        "test_http_auth_refusal_is_not_an_archive_lookup",
+        "At index 0 diff",
+    ),
+    (
+        "archive-reference-readonly",
+        "local/tests/helpers/retained_transactions_rpc.py",
+        "method in READS or submit and method in SUBMISSIONS",
+        "method in READS or method in SUBMISSIONS",
+        "local/tests/test_retained_transactions_rpc.py",
+        "test_reference_route_and_unknown_methods_cannot_submit",
+        "refused RPC forwarded",
+    ),
+    (
+        "archive-entry-bound",
+        "local/tests/helpers/retained_transactions_rpc.py",
+        "len(self.rows) < MAX_ENTRIES",
+        "True",
+        "local/tests/test_retained_transactions_rpc.py",
+        "test_archive_entry_and_byte_bounds",
+        "DID NOT RAISE",
+    ),
+    (
+        "archive-byte-bound",
+        "local/tests/helpers/retained_transactions_rpc.py",
+        "self.bytes + len(raw) <= MAX_BYTES",
+        "True",
+        "local/tests/test_retained_transactions_rpc.py",
+        "test_archive_entry_and_byte_bounds",
+        "DID NOT RAISE",
+    ),
+    (
+        "archive-local-network",
+        "local/tests/helpers/retained_transactions_rpc.py",
+        "ops.lib.Slice(cell).bits(32) == 3",
+        "True",
+        "local/tests/test_retained_transactions_rpc.py",
+        "test_genesis_and_on_chain_global_id_are_required",
+        "DID NOT RAISE",
+    ),
+    (
+        "archive-genesis-root",
+        "local/tests/helpers/retained_transactions_rpc.py",
+        'ops.b64hash(info["init"]["root_hash"]).hex() == root',
+        "True",
+        "local/tests/test_retained_transactions_rpc.py",
+        "test_genesis_and_on_chain_global_id_are_required",
+        "DID NOT RAISE",
+    ),
+    (
+        "archive-genesis-file",
+        "local/tests/helpers/retained_transactions_rpc.py",
+        'ops.b64hash(info["init"]["file_hash"]).hex() == file',
+        "True",
+        "local/tests/test_retained_transactions_rpc.py",
+        "test_genesis_and_on_chain_global_id_are_required",
+        "DID NOT RAISE",
+    ),
 ]
 
 
@@ -297,6 +371,7 @@ def run(root, selection, log):
     env = {
         **os.environ,
         "TOS_USDT_DRIVER": str(root / DRIVER),
+        "TOS_RETAINED_TRANSACTION_HELPER": str(root / RETAINED),
         "TOS_USDT_FIXTURE": str(root / FIXTURE),
         "TOS_SETTLEMENT_COLLECTOR": str(root / COLLECTOR),
         "TOS_SERVICE_TOKEN_DRIVER": str(
@@ -331,7 +406,7 @@ def main():
     args.log_dir.mkdir(parents=True, exist_ok=True)
     code, report = run(
         ROOT,
-        [UNIT, ANVIL, "local/tests/test_local_pq_service_token.py"],
+        [UNIT, ANVIL, ARCHIVE, "local/tests/test_local_pq_service_token.py"],
         args.log_dir / "baseline.log",
     )
     if code or not list(report.iter("testcase")):
@@ -341,6 +416,7 @@ def main():
             root = Path(temp)
             for folder in (
                 "local/scripts",
+                "local/tests/helpers",
                 "testnet/scripts",
                 "local/contracts/test-usdt",
             ):
