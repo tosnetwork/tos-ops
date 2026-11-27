@@ -77,6 +77,8 @@ from __future__ import annotations
 
 import argparse
 import base64
+import fcntl
+import hashlib
 import importlib.util
 import json
 import subprocess
@@ -89,6 +91,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import testnet_lib as lib  # noqa: E402
 import testnet_ops as ops  # noqa: E402
+import transaction_archive as archive  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location(
     "testnet_elections_for_governance", HERE / "testnet-elections.py"
@@ -370,6 +373,37 @@ def settlement_assets_change(current: dict[str, dict], new: dict[str, dict]) -> 
         "before": current.get(master),
         "after": new.get(master),
     }
+
+
+def settlement_record_cells(value: lib.Cell) -> dict[str, bytes]:
+    """Exact record value cells, excluding dictionary labels changed by insertion."""
+    decode_settlement_assets(value)
+    cursor = lib.Slice(value)
+    cursor.bits(8)
+    if not cursor.bits(1):
+        return {}
+    entries = strict_hashmap_items(cursor.take_ref(), 256)
+    result = {}
+    for key, entry in entries.items():
+        cell = entry.cell
+        bits = format(int.from_bytes(cell.data, "big"), f"0{len(cell.data) * 8}b")[: cell.bits]
+        result[f"{key:064x}"] = lib.serialize_boc(
+            lib.cell_from_bits(bits[entry.pos :], cell.refs[entry.ref :])
+        )
+    return result
+
+
+def preserve_settlement_records(current, value, change):
+    old = settlement_record_cells(current) if current is not None else {}
+    new = settlement_record_cells(value)
+    preserved = {}
+    for master, payload in old.items():
+        if master == change["master"]:
+            continue
+        if new.get(master) != payload:
+            raise lib.TestnetError("an untouched settlement record's value cells changed")
+        preserved[master] = hashlib.sha256(payload).hexdigest()
+    return preserved
 
 
 def bridge_address_of(cell: lib.Cell | None) -> str | None:
@@ -708,14 +742,104 @@ def send(
         if balance < value + ops.FEE_ALLOWANCE_NANOTOS:
             raise lib.TestnetError(f"the payer holds {balance / 1e9:.9f} TOS")
 
-    return operations.run(
-        op_id,
-        params,
-        payer_signer(args, global_id, value, body),
-        lambda decoded: None,
-        prerequisites,
-        expect,
+    def action():
+        return operations.run(
+            op_id,
+            params,
+            payer_signer(args, global_id, value, body),
+            lambda decoded: None,
+            prerequisites,
+            expect,
+        )
+
+    if getattr(args, "evidence_dir", None) is None:
+        return action()
+    journal, urls, genesis = governance_archive_context(args)
+    with (journal.directory / "operation.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        recover_governance_archive_locked(journal, urls, genesis, operations)
+        record = action()
+        archive_governance_record(journal, urls, genesis, record)
+        return record
+
+
+def governance_archive_context(args):
+    urls = getattr(args, "archive_rpc", None) or []
+    if len(urls) != 3 or len(set(urls)) != 3:
+        raise lib.TestnetError("governance archival requires three distinct reference endpoints")
+    genesis = json.loads((Path(args.ceremony) / "genesis.json").read_text())["zero_state"]
+    genesis = {
+        "root": ops.b64hash(genesis["root_hash"]).hex(),
+        "file": ops.b64hash(genesis["file_hash"]).hex(),
+    }
+    journal = archive.StepJournal(Path(args.evidence_dir))
+    # Reject unavailable or wrong-network reference endpoints before signing.
+    archive.TransactionArchive(journal.directory / "preflight", urls, genesis).checkpoint()
+    return journal, urls, genesis
+
+
+def governance_record_digest(record):
+    return hashlib.sha256(json.dumps(record, sort_keys=True).encode()).hexdigest()
+
+
+def archive_governance_record(journal, urls, genesis, record):
+    if record.get("state") != "settled":
+        raise lib.TestnetError("governance operation is not settled; reconcile before another send")
+    evidence = record["evidence"]
+    root = {
+        "account": record["wallet"],
+        "lt": int(evidence["wallet_tx_lt"]),
+        "hash": evidence["wallet_tx"],
+    }
+    identity = governance_record_digest(record)
+    label = "op-" + hashlib.sha256(record["id"].encode()).hexdigest()
+    journal.run(
+        label,
+        identity,
+        lambda: None,
+        lambda folder: archive.TransactionArchive(folder, urls, genesis).capture_wait([root]),
     )
+
+
+def recover_governance_archive_locked(journal, urls, genesis, operations):
+    with operations.journal.lock():
+        records = [
+            r
+            for r in operations.journal.all()
+            if r.get("state") == "settled" and r.get("kind") in ("config-propose", "config-vote")
+        ]
+    legacy_path = journal.directory / "legacy-before-archive.json"
+    if not legacy_path.exists():
+        if journal.path.exists():
+            raise lib.TestnetError("governance archive enrollment is missing")
+        # Freeze only transactions settled before the first archived action.
+        # Existing historical cells may already be pruned. Never enroll a new
+        # action after this durable boundary or exempt a pending operation.
+        archive.document(legacy_path, {r["id"]: governance_record_digest(r) for r in records})
+    legacy = json.loads(legacy_path.read_text())
+    pending = journal.read()["pending"]
+    records.sort(
+        key=lambda r: (
+            pending is not None
+            and "op-" + hashlib.sha256(r["id"].encode()).hexdigest() != pending["label"],
+            r["id"],
+        )
+    )
+    for record in records:
+        if legacy.get(record["id"]) == governance_record_digest(record):
+            continue
+        archive_governance_record(journal, urls, genesis, record)
+    if journal.read()["pending"] is not None:
+        raise lib.TestnetError("a pending governance archive has no settled journal record")
+
+
+def recover_governance_archive(args, operations):
+    if getattr(args, "evidence_dir", None) is None:
+        return
+    journal, urls, genesis = governance_archive_context(args)
+    with (journal.directory / "operation.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        recover_governance_archive_locked(journal, urls, genesis, operations)
 
 
 def network_global_id(args) -> int:
@@ -778,6 +902,7 @@ def check_rules(
         new = decode_settlement_assets(value)
         old = decode_settlement_assets(current) if current is not None else {}
         change = settlement_assets_change(old, new)
+        preserved = preserve_settlement_records(current, value, change)
         others = [h for h, p in pending.items() if p["param"] == SETTLEMENT_ASSETS_PARAM]
         if others:
             raise lib.TestnetError(
@@ -795,7 +920,12 @@ def check_rules(
                 f"a bridge address change is pending ({', '.join(replacing)}); "
                 "ConfigParam 84 waits until it is adopted or expires"
             )
-        return {"entries": len(new), "validation_cells": validation_visits(value), "change": change}
+        return {
+            "entries": len(new),
+            "validation_cells": validation_visits(value),
+            "change": change,
+            "preserved_record_cells": preserved,
+        }
     if param in TOKEN_BRIDGE_PARAMS and bridge_change(param, current, value):
         recognized = config_cell(args.rpc, SETTLEMENT_ASSETS_PARAM)
         assets = decode_settlement_assets(recognized) if recognized is not None else {}
@@ -856,11 +986,12 @@ def cmd_propose(args) -> int:
     if args.dry_run:
         print("dry run: nothing signed or sent")
         return 0
+    global_id = network_global_id(args)
+    operations = elections.operations_for(args, global_id)
+    recover_governance_archive(args, operations)
     if status(args.rpc, phash) is not None:
         print(f"proposal {phash} is already registered")
         return 0
-    global_id = network_global_id(args)
-    operations = elections.operations_for(args, global_id)
 
     def expect(_ops, record, delivery, evidence):
         if status(args.rpc, phash) is None:
@@ -1049,6 +1180,7 @@ def cmd_vote(args) -> int:
         raise lib.TestnetError("the votes were signed under another validator set")
     global_id = network_global_id(args)
     operations = elections.operations_for(args, global_id)
+    recover_governance_archive(args, operations)
     before = status(args.rpc, proposal)
     if before is None:
         raise lib.TestnetError(f"proposal {proposal} is not registered (or was already adopted)")
@@ -1134,6 +1266,10 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--payer-key", required=True)
         p.add_argument("--payer-addr", required=True)
         p.add_argument("--payer-subwallet", type=int, required=True)
+        p.add_argument("--evidence-dir", help="archive each settled send before the next one")
+        p.add_argument(
+            "--archive-rpc", action="append", help="three independent archival references"
+        )
 
     p = sub.add_parser("propose")
     payer(p)

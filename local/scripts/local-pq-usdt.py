@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Local USDT deployment, mint and prospective CP84 preparation; never vote.
+"""Journaled local USDT setup and append-only asset recognition.
 
-The local source clock uses one-second blocks, letting real finalized checkpoints
-advance without state overrides. Namespace and mint default to a dry run. It journals a single source deployment when
---execute is given. Preparation always uses that receipt's real address, not a
-CREATE prediction, and refuses governance readiness until the minter exists.
+The local source clock uses one-second blocks and real finalized checkpoints.
+Namespace, mint and adoption default to dry runs. Preparation uses the real
+receipt's address. Adoption rechecks a fresh monitor, bridge-derived identity,
+record preservation and the chain's current critical-vote rules.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import json
 import shutil
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 HERE = Path(__file__).resolve().parent
 SPEC = importlib.util.spec_from_file_location("local_usdc", HERE / "local-pq-usdc.py")
@@ -202,6 +203,10 @@ class View:
             ),
             "read escaped the canonical checkpoint",
         )
+        if method == "runGetMethod":
+            # The RPC enumerates the VM stack top first. Callers use the
+            # getter's declared tuple order, as the existing chain reader does.
+            values = [dict(v, stack=list(reversed(v["stack"]))) for v in values]
         return values
 
     def config(self, param):
@@ -291,19 +296,7 @@ def derive_master(bridge, token, minter_code, wallet_code):
 
 def record_cells(value):
     """Record value cells, excluding dictionary labels that change on append."""
-    gov = u.governance_module()
-    gov.decode_settlement_assets(value)
-    cursor = u.lib.Slice(value)
-    cursor.bits(8)
-    if cursor.bits(1) == 0:
-        return {}
-    leaves = gov.strict_hashmap_items(cursor.take_ref(), 256)
-    return {
-        f"{key:064x}": u.lib.serialize_boc(
-            u.lib.cell_from_bits(u.cell_bits(s.cell)[s.pos :], s.cell.refs[s.ref :])
-        )
-        for key, s in leaves.items()
-    }
+    return u.governance_module().settlement_record_cells(value)
 
 
 def check_preserved(old, new):
@@ -564,6 +557,13 @@ def mint(args, state, evm, source, chain, artifact):
     )
     tools = u.Tools(args)
     u.step_mint(args, state, chain, tools, args.keys)
+    return qualify(state, source, chain)
+
+
+def qualify(state, source, chain):
+    amount = state["lock"]["amount"]
+    token = state["namespace"]["token"]
+    record = state.intent("usdt-lock")
     view = View(chain, state.root / "mint-references")
     minter = state["mint"]["minter"]
     supply = view.read(
@@ -678,18 +678,203 @@ def prepare(args, state, evm, source, artifact, view, codes):
         source_finalized=ns["source_finalized"],
         master_deployed=deployed,
         governance_ready=False,
-        holds=[
-            "Collector and mint/asset verification must pass before a vote; this tool never votes."
-        ],
+        holds=["Use adopt after the collector and finalized mint qualification pass."],
     )
     archive.sync_write(state.root / "baseline-config84.boc", u.lib.serialize_boc(old))
     archive.document(state.root / "preflight.json", report)
     return report
 
 
+def monitor_gate(policy, report, expected, point, now=None):
+    now = time.time() if now is None else now
+    require(
+        policy["network"] == GENESIS["root"]
+        and report["schema"] == "tos-settlement-report/1",
+        "monitor network or schema differs",
+    )
+    actual = {a["id"]: (a["master"], a["source_token"]) for a in policy["assets"]}
+    require(
+        actual == expected and len(actual) == len(policy["assets"]),
+        "monitor assets differ from the proposed namespace",
+    )
+    stamp = report["checkpoint"]["utime"]
+    height = report["checkpoint"]["height"]
+    require(
+        type(stamp) is int
+        and type(height) is int
+        and 0 <= height <= point["seqno"]
+        and -5 <= now - stamp <= 120,
+        "monitor checkpoint is stale or future",
+    )
+    require(
+        not report["provider_pause_assets"] and not report["alarms"],
+        "monitor is alarmed",
+    )
+
+
+def adopt(args, state, source, chain, view):
+    candidate = state.root / "config84.boc"
+    baseline = u.lib.parse_boc((state.root / "baseline-config84.boc").read_bytes())
+    value = u.lib.parse_boc(candidate.read_bytes())
+    checks = check_append(baseline, value)
+    require(
+        state.get("mint") and state["namespace"]["source_finalized"],
+        "finalized mint required before governance",
+    )
+    bridge, minter, wallet = bridge_codes(view, source)
+    master = derive_master(bridge, state["namespace"]["token"], minter, wallet)
+    require(
+        master
+        == state["mint"]["minter"]
+        == view.minter(bridge, state["namespace"]["token"]),
+        "proposal minter identity differs",
+    )
+    entry = checks["change"]["after"]
+    require(
+        checks["change"]["master"] == master.split(":")[1]
+        and entry["minter_code_hash"] == minter.hash().hex()
+        and entry["wallet_code_hash"] == wallet.hash().hex()
+        and entry["origin"]["source_token"] == state["namespace"]["token"][2:]
+        and entry["origin"]["source_chain_id"] == 1
+        and entry["origin"]["bridge_address"] == bridge.split(":")[1]
+        and entry["decimals"] == 6
+        and entry["status"] == "active"
+        and checks["entries"] == 3
+        and entry["max_liability_per_actor"] == str(MAX_LIABILITY),
+        "proposed asset differs from bridge-anchored derivation",
+    )
+    report = json.loads((args.monitor_state / "report.json").read_text())
+    policy = json.loads((args.monitor_state / "policy.json").read_text())
+    monitor_gate(
+        policy,
+        report,
+        {
+            "usdc": (source["mint"]["minter"], source["evm"]["token"]),
+            "usdt": (master, state["namespace"]["token"]),
+        },
+        view.point,
+    )
+    current = view.config(84)
+    require(
+        current.hash() in (baseline.hash(), value.hash()),
+        "recognition changed since preparation",
+    )
+    tools = u.Tools(args)
+    evidence = u.node_release_evidence(state, chain, args.data)
+    payer = u.payer_files(args, state, tools, args.keys)
+    args.ceremony = args.source_state.parent / "ceremony"
+    archive_args = SimpleNamespace(
+        ceremony=args.ceremony,
+        evidence_dir=state.root / "archive/governance",
+        archive_rpc=chain.urls[3:6],
+        rpc=chain.validator_urls[0],
+        confirm_rpc=chain.validator_urls[1],
+    )
+    common = [
+        "--ceremony",
+        str(args.ceremony),
+        "--tos-root",
+        str(tools.tos),
+        "--fift",
+        str(tools.fift),
+        "--rpc",
+        chain.validator_urls[0],
+        "--confirm-rpc",
+        chain.validator_urls[1],
+        "--payer-key",
+        payer["key"],
+        "--payer-addr",
+        payer["addr"],
+        "--payer-subwallet",
+        str(u.PAYER_SUBWALLET),
+    ]
+    original = u.governance
+
+    def archived_governance(arguments, *argv, check=True):
+        extra = []
+        if argv[0] in ("propose", "vote"):
+            extra = [
+                "--evidence-dir",
+                str(archive_args.evidence_dir),
+                *[
+                    arg
+                    for url in archive_args.archive_rpc
+                    for arg in ("--archive-rpc", url)
+                ],
+            ]
+        return original(arguments, *argv, *extra, check=check)
+
+    u.governance = archived_governance
+    try:
+        if not args.execute:
+            if current.hash() == value.hash():
+                return {"already_adopted": True, "value_hash": value.hash().hex()}
+            quote = u.governance(
+                args,
+                "propose",
+                *common,
+                "--param",
+                "84",
+                "--value-boc",
+                str(candidate),
+                "--node-release-evidence",
+                str(evidence),
+                "--dry-run",
+            )
+            return {
+                "dry_run": True,
+                "value_hash": value.hash().hex(),
+                "quote": quote.stdout,
+            }
+        gov = u.governance_module()
+        operations = gov.elections.operations_for(archive_args, 3)
+        gov.recover_governance_archive(archive_args, operations)
+        result = u.adopt(
+            args,
+            state,
+            chain,
+            tools,
+            84,
+            candidate,
+            ["--node-release-evidence", str(evidence)],
+        )
+        gov.recover_governance_archive(archive_args, operations)
+        state.evidence("adopted-config84", result)
+        final_view = View(chain, state.root / "adoption-references")
+        require(
+            final_view.config(84).hash() == value.hash(),
+            "finalized recognition differs",
+        )
+        for i, url in enumerate(final_view.urls, 4):
+            response = chain.call(
+                "getConfigParam",
+                url=url,
+                seqno=final_view.point["seqno"],
+                param=84,
+                with_proof=True,
+            )
+            archive.document(
+                state.root / "evidence" / f"config84-node-{i}.json", response
+            )
+        archive.document(
+            state.root / "evidence/adoption-checkpoint.json", final_view.point
+        )
+        return {
+            "adopted": True,
+            "value_hash": value.hash().hex(),
+            "checkpoint": final_view.point,
+            "entries": 3,
+            "archive": "archive/governance",
+        }
+    finally:
+        u.governance = original
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("step", choices=("clock", "namespace", "mint", "prepare"))
+    parser.add_argument(
+        "step", choices=("clock", "namespace", "mint", "qualify", "prepare", "adopt")
+    )
     parser.add_argument("--data", type=Path, default=Path("/data"))
     parser.add_argument("--source-state", type=Path, required=True)
     parser.add_argument("--state", type=Path, required=True)
@@ -699,6 +884,10 @@ def main(argv=None):
     parser.add_argument("--tosctl", required=True)
     parser.add_argument("--cast", default=shutil.which("cast") or "cast")
     parser.add_argument("--evm-rpc", default="http://127.0.0.1:18545")
+    parser.add_argument(
+        "--monitor-state", type=Path, default=Path("/data/usdt-t15-monitor")
+    )
+    parser.add_argument("--governance-timeout", type=int, default=3600)
     parser.add_argument("--keys", type=Path, default=Path("/data/usdc/keys"))
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args(argv)
@@ -737,8 +926,16 @@ def main(argv=None):
                     state.set("source_clock", clock)
                 print(json.dumps({"source_clock": clock, "dry_run": not args.execute}))
                 return 0
-            if args.step == "mint":
-                report = mint(args, state, evm, source, chain, artifact)
+            if args.step == "adopt":
+                report = adopt(args, state, source, chain, view)
+                print(json.dumps(report, sort_keys=True))
+                return 0
+            if args.step in ("mint", "qualify"):
+                report = (
+                    mint(args, state, evm, source, chain, artifact)
+                    if args.step == "mint"
+                    else qualify(state, source, chain)
+                )
                 print(json.dumps(report, sort_keys=True))
                 return 0
             report = (

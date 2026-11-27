@@ -14,10 +14,92 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DRIVER = "local/scripts/local-pq-usdt.py"
 FIXTURE = "local/contracts/test-usdt/LocalUSDT.sol"
+GOVERNANCE = "testnet/scripts/testnet-governance.py"
 COLLECTOR = "testnet/scripts/collect-settlement-evm.py"
 UNIT = "local/tests/test_local_pq_usdt.py"
 ANVIL = "testnet/tests/anvil_settlement_observer.py"
 CASES = [
+    (
+        "monitor-namespace",
+        DRIVER,
+        'actual == expected and len(actual) == len(policy["assets"])',
+        "True",
+        UNIT,
+        "test_monitor_gate_requires_this_namespace_not_just_freshness",
+        "DID NOT RAISE",
+    ),
+    (
+        "monitor-age",
+        DRIVER,
+        "-5 <= now - stamp <= 120",
+        "True",
+        UNIT,
+        "test_governance_monitor_holds",
+        "DID NOT RAISE",
+    ),
+    (
+        "monitor-height",
+        DRIVER,
+        '0 <= height <= point["seqno"]',
+        "True",
+        UNIT,
+        "test_governance_monitor_holds",
+        "DID NOT RAISE",
+    ),
+    (
+        "monitor-alarm",
+        DRIVER,
+        'not report["provider_pause_assets"] and not report["alarms"]',
+        "True",
+        UNIT,
+        "test_governance_monitor_holds",
+        "DID NOT RAISE",
+    ),
+    (
+        "monitor-network",
+        DRIVER,
+        'policy["network"] == GENESIS["root"]',
+        "True",
+        UNIT,
+        "test_governance_monitor_holds",
+        "DID NOT RAISE",
+    ),
+    (
+        "stack-order",
+        DRIVER,
+        'stack=list(reversed(v["stack"]))',
+        'stack=v["stack"]',
+        UNIT,
+        "test_raw_rpc_stack_is_normalized_once_for_all_getters",
+        "raw stack was not normalized",
+    ),
+    (
+        "gov-per-send",
+        GOVERNANCE,
+        "        archive_governance_record(journal, urls, genesis, record)\n        return record",
+        "        return record",
+        UNIT,
+        "test_each_governance_send_archives_before_return",
+        "governance send returned before archival",
+    ),
+    (
+        "gov-crash-recovery",
+        GOVERNANCE,
+        "    for record in records:\n        if legacy.get",
+        "    for record in []:\n        if legacy.get",
+        UNIT,
+        "test_governance_archive_recovers_settled_record_before_next_action",
+        "settled operation was skipped before next action",
+    ),
+    (
+        "gov-raw-record",
+        GOVERNANCE,
+        "new.get(master) != payload",
+        "False",
+        UNIT,
+        "test_governance_raw_preservation_refuses_a_changed_unselected_value",
+        "DID NOT RAISE",
+    ),
     (
         "reverted-source",
         DRIVER,
@@ -75,8 +157,8 @@ CASES = [
     (
         "dry-run",
         DRIVER,
-        "if not args.execute:",
-        "if False:",
+        'if not args.execute:\n        return {\n            "dry_run": True,\n            "sender": sender,',
+        'if False:\n        return {\n            "dry_run": True,\n            "sender": sender,',
         UNIT,
         "test_namespace_dry_run_has_no_broadcast_or_record",
         "dry-run broadcast",
