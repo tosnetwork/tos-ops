@@ -351,17 +351,24 @@ Production takes its node binaries from the tos repository's GitHub release for
 the approved tag, not from a build on each host (the testnet keeps its host
 builds). [fetch-release.py](../testnet/scripts/fetch-release.py) is that path.
 
-The release binaries are dynamically linked and need Ubuntu 24.04 (glibc 2.39
-or newer) with these runtime packages. Install them before fetching; the fetch
-tool installs nothing:
+The release binaries are dynamically linked and need Ubuntu 24.04 or later
+(glibc 2.39 or newer) with these runtime packages. Install them before
+fetching; the fetch tool installs nothing:
 
 | Architecture | Packages |
 | --- | --- |
-| x86_64 | `libjemalloc2 libgsl27 libblas3 libreadline8t64` |
-| arm64 | `libjemalloc2 libgsl27 libblas3 libreadline8t64 libatomic1` |
+| x86_64 | `libjemalloc2 libblas3 libreadline8t64` |
+| arm64 | `libjemalloc2 libblas3 libreadline8t64 libatomic1` |
+
+Releases built with `TOS_STATIC_GSL=ON` (the build record's `flags` line ends
+with it) carry GSL inside the node binaries and need no GSL package, so the
+same release runs on Ubuntu 24.04 and 26.04. An older release's node binaries
+link `libgsl.so.27`: on Ubuntu 24.04 also install `libgsl27`; Ubuntu 26.04
+ships only `libgsl28`, so such a release cannot run there, and
+`fetch-release.py` refuses it, naming the missing library.
 
 `libjemalloc.so.2` is linked into `validator-engine` and `dht-server`,
-`libgsl.so.27` and `libblas.so.3` into `validator-engine`, `libreadline.so.8`
+`libblas.so.3` into `validator-engine`, `libreadline.so.8`
 into `validator-engine-console` and `lite-client`, and `libatomic.so.1` on
 arm64. The `needed` lines of the release's build record are the authority for
 this list. The fetch also uses `ldd` (glibc) and `readelf` (binutils). tosctl
@@ -369,7 +376,7 @@ is fetched separately and needs only `libssl3t64`
 ([section 10.2](#102-tosctl)).
 
 ```bash
-sudo apt-get install libjemalloc2 libgsl27 libblas3 libreadline8t64   # arm64: also libatomic1
+sudo apt-get install libjemalloc2 libblas3 libreadline8t64   # arm64: also libatomic1; an older release: also libgsl27
 sudo python3 /opt/tos-testnet/scripts/fetch-release.py --tag v<VERSION> \
   --rev <FULL_40_CHARACTER_COMMIT> --role validator --arch x86_64 \
   --out /var/lib/tos-build/release-<FULL_40_CHARACTER_COMMIT>
@@ -460,7 +467,7 @@ from the same release, with the same checks, by its own role. No node role
 fetches it, and the host needs no Rust toolchain:
 
 ```bash
-sudo apt-get install libssl3t64   # part of a standard Ubuntu 24.04 installation
+sudo apt-get install libssl3t64   # part of a standard Ubuntu 24.04 or later installation
 sudo python3 /opt/tos-testnet/scripts/fetch-release.py --tag v<VERSION> \
   --rev <FULL_40_CHARACTER_COMMIT> --role tosctl --arch x86_64 \
   --out /var/lib/tos-build/tosctl-<FULL_40_CHARACTER_COMMIT>
@@ -477,7 +484,7 @@ provenance, `SHA256SUMS`, byte identity with the `tosctl` member of
 keeps. On this host `ldd` must find every library and `tosctl --version` must
 print the exact line `COMMIT_ID: <rev>` (tosctl has no `-V` that reports the
 commit). tosctl links `libssl.so.3` and `libcrypto.so.3`, both in the Ubuntu
-24.04 package `libssl3t64`, which a refusal names when either is missing; it
+24.04 and later package `libssl3t64`, which a refusal names when either is missing; it
 uses none of the node binaries' libraries. The validator's CPU and backend
 checks do not apply to this role.
 

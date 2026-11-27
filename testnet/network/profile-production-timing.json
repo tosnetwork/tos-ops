@@ -95,7 +95,7 @@
   "dht": {"k": 6, "a": 3, "network_id": -1},
   "host_requirements": {
     "note": "Testnet floors checked by scripts/preflight.py before a host is prepared. Measured on 12 GB / 6-core VMs: a running validator holds about 6 GB RSS, and build-node-binaries.sh peaked at 8.4 GB with 4 jobs (3.2 GB for a DHT build with 2). A 12 GB VM reports about 11.6 GiB MemTotal. Full nodes with a 1 GiB cache cap hold about 2.5-3 GB RSS (3.0 GB peak under load); an 8 GB VM reports about 7.7 GiB MemTotal and uses a 7 GiB floor. Production requirements are production/Hardware-and-Hosting.md, not these. The validator disk floor is 160 GiB free, on a recommended 250 GB SSD or NVMe (200 GB at least), estimated for a full 21-validator set at its worst point (retention note): consensus data and states 30 h x 2.8 GB/h = 84 GB; archive 54 h x 0.45 GB/h = 24 GB plus 8 GB for two 4 h load windows at 1 GB/h more; base database, logs and binaries 12 GB; 128 GB in all, 147 GB (137 GiB) with 15 % headroom for the estimate, and the 20 GiB at which the load guard and operators stop: 157 GiB, rounded to 160. The free space is measured before the node is built: remove the build tree under /var/lib/tos-build once the coordinator has compared the release checksums. The epoch-6 hosts' 60 GiB floor held four validators (about 28 GB at that point). The coordinator measures each host's consensus/, archive/ and state growth in the first 48 h with the elected set and adjusts the floor (CEREMONY.md section 8).",
-    "os": {"id": "ubuntu", "version_id": "24.04"},
+    "os": {"id": "ubuntu", "min_version_id": "24.04"},
     "architectures": ["x86_64", "aarch64"],
     "roles": {
       "validator": {"min_cpus": 4, "min_memory_gib": 11, "min_disk_free_gib": 160},

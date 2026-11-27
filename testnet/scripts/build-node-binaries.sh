@@ -91,7 +91,14 @@ export SOURCE_DATE_EPOCH
 command -v clang++-21 >/dev/null || bash "$SRC/scripts/install-llvm-toolchain.sh" 21
 
 BUILD=$WORK/build-$REV
-cmake -S "$SRC" -B "$BUILD" -G Ninja \
+# Link GSL statically, as the release does, when the source defines the
+# option; the binaries then need no GSL package on any supported Ubuntu. The
+# build record claims it only after the build proves it (below).
+STATIC_GSL=()
+if grep -q '^option(TOS_STATIC_GSL ' "$SRC/CMakeLists.txt"; then
+  STATIC_GSL=(-DTOS_STATIC_GSL=ON)
+fi
+cmake -S "$SRC" -B "$BUILD" -G Ninja "${STATIC_GSL[@]}" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_C_COMPILER=clang-21 -DCMAKE_CXX_COMPILER=clang++-21 \
   -DTOS_ARCH=x86-64-v2 -DPORTABLE=x86-64-v2 \
@@ -99,6 +106,15 @@ cmake -S "$SRC" -B "$BUILD" -G Ninja \
 echo "building ${TARGETS[*]} with $JOBS jobs"
 cmake --build "$BUILD" --parallel "$JOBS" --target "${TARGETS[@]}" >"$WORK/build-$REV.log" 2>&1 \
   || die "build failed; see $WORK/build-$REV.log"
+
+STATIC_GSL_FLAG=""
+if [ "${#STATIC_GSL[@]}" -gt 0 ]; then
+  # An unused -D is cached as UNINITIALIZED, not BOOL, so this proves the
+  # source honoured the option.
+  grep -qx 'TOS_STATIC_GSL:BOOL=ON' "$BUILD/CMakeCache.txt" \
+    || die "TOS_STATIC_GSL was requested but the build did not take it"
+  STATIC_GSL_FLAG=" TOS_STATIC_GSL=ON"
+fi
 
 declare -A PATHS=(
   [validator-engine]=validator-engine/validator-engine
@@ -115,6 +131,12 @@ rm -rf "$OUT.tmp"
 install -d -m 0755 "$OUT.tmp"
 for t in $(printf '%s\n' "${TARGETS[@]}" | sort -u); do
   install -m 0755 "$BUILD/${PATHS[$t]}" "$OUT.tmp/$t"
+  if [ -n "$STATIC_GSL_FLAG" ]; then
+    needed=$(readelf -d "$OUT.tmp/$t") || die "readelf cannot read $t"
+    if grep -q 'NEEDED.*libgsl' <<<"$needed"; then
+      die "$t links GSL dynamically although the build is static-GSL"
+    fi
+  fi
 done
 (cd "$OUT.tmp" && sha256sum $(ls | grep -v -E '^(SHA256SUMS|BUILD-INFO)$') > SHA256SUMS)
 {
@@ -122,7 +144,8 @@ done
   echo "host $(hostname)"
   echo "cpu $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ //')"
   echo "compiler $(clang++-21 --version | head -1)"
-  echo "flags TOS_ARCH=x86-64-v2 PORTABLE=x86-64-v2 TOS_PRODUCTION_BUILD=ON TOS_USE_JEMALLOC=ON Release"
+  echo "build_os $(. /etc/os-release && echo "$PRETTY_NAME")"
+  echo "flags TOS_ARCH=x86-64-v2 PORTABLE=x86-64-v2 TOS_PRODUCTION_BUILD=ON TOS_USE_JEMALLOC=ON Release$STATIC_GSL_FLAG"
   echo "built $(date -u +%FT%TZ)"
 } > "$OUT.tmp/BUILD-INFO"
 rm -rf "$OUT"

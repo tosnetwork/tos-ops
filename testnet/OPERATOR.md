@@ -3,7 +3,7 @@
 [2026-12-05 public testnet genesis and validator invitation](ANNOUNCEMENT-20261205.md)
 
 Use this guide to run your own validator in a coordinated public testnet
-ceremony. You need a dedicated Ubuntu 24.04 host you administer and a registered
+ceremony. You need a dedicated host you administer, running Ubuntu 24.04 LTS (recommended) or a later LTS release such as 26.04 after confirming it with the coordinator, and a registered
 seat: on December 5, 2026 the genesis validator set is the team's two
 validators, and an external validator registers its public record and pool
 before genesis (registration closes on November 30), is written to the
@@ -101,7 +101,7 @@ it is not a no-signing check and requires signing permission.
 **Operator prerequisites:** dedicated host, static public IPv4 or verified UDP
 forwarding/hairpin NAT, provider console access, root administration and enough
 NVMe endurance. The current validator preflight floors are **4 CPUs, 11 GiB
-MemTotal, 160 GiB free** on Ubuntu 24.04, on a recommended **250 GB SSD or
+MemTotal, 160 GiB free** on Ubuntu 24.04 LTS or a later LTS release, on a recommended **250 GB SSD or
 NVMe** (200 GB at least): a full 21-validator set is estimated to hold up to
 about 128 GB on disk at once, about 116 GB of it consensus, state and archive data (consensus and states
 about 30 h, the archive about 54 h; CEREMONY.md section 8 has the
@@ -199,7 +199,7 @@ production capacity guarantee. See [profile](network/profile.json) and
      --role validator --public-ip <PUBLIC_IPV4> --out /tmp/preflight-<NODE_NAME>.json
    ```
 
-   It checks Ubuntu 24.04, the architecture and x86-64-v2 instructions, CPUs,
+   It checks for Ubuntu 24.04 LTS or a later LTS release, the architecture and x86-64-v2 instructions, CPUs,
    memory and free disk against the validator floors, whether the public address
    is on an interface (a WARN behind NAT), NTP (ntpsec's ntpd with a selected
    server, within 100 ms of NTP time; this check cannot be waived), ufw rules
@@ -266,8 +266,10 @@ sudo /opt/tos-testnet/scripts/install-node.sh prepare --role validator \
 ```
 
 `--rev` is refused unless the release's `BUILD-INFO` names that commit. The
-build is reproducible for one commit and toolchain: compare the release's
-`SHA256SUMS` with another host's built from the same commit.
+build is reproducible for one commit, toolchain and Ubuntu release: compare
+the release's `SHA256SUMS` with another host's built from the same commit on
+the same Ubuntu release (the `build_os` line of `BUILD-INFO`). Hosts on
+different Ubuntu releases build different bytes; that is expected, not a fault.
 
 Build outputs: `/var/lib/tos-build/release-<COMMIT>/{SHA256SUMS,BUILD-INFO}`,
 `/etc/tos/TOSCTL-BUILD-INFO`, and build logs in `/var/lib/tos-build`.
