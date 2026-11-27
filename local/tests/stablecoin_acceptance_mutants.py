@@ -282,6 +282,24 @@ CASES = [
         "test_resolution_requires_a_fresh_report_afterwards",
         "DID NOT RAISE",
     ),
+    (
+        "resolver-loopback",
+        SERVICE,
+        'all(e.startswith("http://127.0.0.1:") for e in endpoints),',
+        "True,",
+        SERVICE_UNIT,
+        "test_resolver_routes_are_loopback_distinct_and_not_senders",
+        "DID NOT RAISE",
+    ),
+    (
+        "resolver-override",
+        SERVICE,
+        '        endpoints = override.split(",")\n',
+        "        pass\n",
+        SERVICE_UNIT,
+        "test_resolver_routes_replace_the_direct_references",
+        "FAILED",
+    ),
 ]
 
 
