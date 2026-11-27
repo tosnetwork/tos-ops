@@ -3,8 +3,8 @@
 
 Enrich an already authenticated TOS observation; never invent its actor state.
 RPC answers are trusted endpoint observations, not cross-domain proofs. All
-source reads use one block hash; every receipt in the bounded interval is read,
-so truncated log-query pages cannot silently hide an issuer event. No keys or
+source reads use one block hash; address-filtered logs are read per block.
+Completeness is a trusted endpoint claim, not a receipt-trie proof. No keys or
 signing RPC methods are accepted. See settlement-monitor.md.
 """
 
@@ -16,7 +16,9 @@ import hashlib
 import http.client
 import importlib.util
 import json
+import os
 import re
+import stat
 import time
 import urllib.request
 from pathlib import Path
@@ -29,7 +31,10 @@ monitor = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(monitor)
 Invalid = monitor.Invalid
 MAX_BLOCKS = 64
-MAX_TRANSACTIONS = 4096
+MAX_BLOCK_LOGS = 4096
+MAX_BLOCK_LOG_BYTES = 1 << 20
+MAX_GAP_BATCHES = 1024
+GAP_BATCH_BLOCKS = 32
 MAX_LOGS = 16384
 MAX_LOG_BYTES = 16 << 20
 MAX_RESPONSE = 4 << 20
@@ -61,7 +66,7 @@ READ_METHODS = frozenset(
     {
         "eth_chainId",
         "eth_getBlockByNumber",
-        "eth_getTransactionReceipt",
+        "eth_getLogs",
         "eth_call",
         "eth_getCode",
         "eth_getStorageAt",
@@ -188,17 +193,18 @@ def code_hash(rpc, token, checkpoint):
     return hashlib.sha256(raw(rpc.call("eth_getCode", address(token), checkpoint))).hexdigest()
 
 
-def receipts(rpc, previous, target):
+def block_logs(rpc, previous, target, addresses):
     start, stop = previous["height"], quantity(target["number"])
     require(
         type(start) is int and 0 <= start <= stop and stop - start <= MAX_BLOCKS,
         "source interval exceeds block bound",
     )
+    addresses = sorted({address(value) for value in addresses})
+    require(0 < len(addresses) <= 17, "source log address bound")
     prior = block(rpc, hex(start))
+    require(quantity(prior["number"]) == start, "source baseline number differs")
     require(prior["hash"][2:] == previous["hash"], "source baseline reorg")
-    all_logs, count, parent = [], 0, prior["hash"]
-    seen = set()
-    aggregate_log_bytes = 0
+    all_logs, parent, total_bytes = [], prior["hash"], 0
     for height in range(start + 1, stop + 1):
         current = block(rpc, hex(height))
         require(
@@ -206,61 +212,124 @@ def receipts(rpc, previous, target):
             "source interval not contiguous",
         )
         parent = current["hash"]
-        count += len(current["transactions"])
-        require(count <= MAX_TRANSACTIONS, "source transaction bound")
-        next_log_index = 0
-        for index, tx in enumerate(current["transactions"]):
-            raw(tx, 32)
-            receipt = rpc.call("eth_getTransactionReceipt", tx)
+        logs = rpc.call("eth_getLogs", dict(blockHash=parent, address=addresses))
+        require(isinstance(logs, list), "source logs missing")
+        require(len(logs) <= MAX_BLOCK_LOGS, "source per-block log bound")
+        previous_index, previous_tx, block_bytes = -1, -1, 0
+        for log in logs:
             require(
-                isinstance(receipt, dict)
-                and receipt["transactionHash"] == tx
-                and receipt["blockHash"] == parent
-                and quantity(receipt["blockNumber"]) == height
-                and quantity(receipt["transactionIndex"]) == index,
-                "source receipt missing or mismatched",
+                isinstance(log, dict)
+                and log["blockHash"] == parent
+                and quantity(log["blockNumber"]) == height
+                and log.get("removed") is False,
+                "source log identity differs",
             )
-            status = quantity(receipt["status"])
+            tx_index = quantity(log["transactionIndex"])
+            require(tx_index < len(current["transactions"]), "source log transaction index")
+            raw(log["transactionHash"], 32)
             require(
-                status in (0, 1)
-                and isinstance(receipt["logs"], list)
-                and (status == 1 or not receipt["logs"]),
-                "invalid receipt status/logs",
+                log["transactionHash"] == current["transactions"][tx_index],
+                "source log transaction differs",
             )
-            for log in receipt["logs"]:
-                require(
-                    isinstance(log, dict)
-                    and log["transactionHash"] == tx
-                    and log["blockHash"] == parent
-                    and quantity(log["blockNumber"]) == height
-                    and quantity(log["transactionIndex"]) == index
-                    and log.get("removed", False) is False,
-                    "source log identity differs",
-                )
-                require(
-                    quantity(log["logIndex"]) == next_log_index,
-                    "source receipt log inventory has a gap",
-                )
-                next_log_index += 1
-                key = (parent, quantity(log["logIndex"]))
-                require(key not in seen, "duplicate source log")
-                seen.add(key)
-                require(len(seen) <= MAX_LOGS and len(log["topics"]) <= 4, "source log bound")
-                address(log["address"])
-                for topic in log["topics"]:
-                    raw(topic, 32)
-                raw(log["data"])
-                aggregate_log_bytes += len(log["data"]) // 2 + len(log["topics"]) * 32 + 160
-                require(aggregate_log_bytes <= MAX_LOG_BYTES, "source log byte budget")
-                # Drop unrelated endpoint extensions before retaining a log.
-                all_logs.append(
-                    {
-                        key: log[key]
-                        for key in ("address", "topics", "data", "blockHash", "logIndex")
-                    }
-                )
+            index = quantity(log["logIndex"])
+            # logIndex is block-global: unrelated addresses legitimately leave gaps.
+            # Filtered replies prove ordering/uniqueness, not omission-freedom.
+            require(
+                index > previous_index and tx_index >= previous_tx, "source log order or duplicate"
+            )
+            previous_index, previous_tx = index, tx_index
+            require(address(log["address"]) in addresses, "source log outside address filter")
+            require(
+                isinstance(log["topics"], list) and len(log["topics"]) <= 4,
+                "source log topic bound",
+            )
+            for topic in log["topics"]:
+                raw(topic, 32)
+            payload = raw(log["data"])
+            block_bytes += len(payload) + len(log["topics"]) * 32 + 160
+            require(block_bytes <= MAX_BLOCK_LOG_BYTES, "source per-block log byte bound")
+            all_logs.append(
+                {key: log[key] for key in ("address", "topics", "data", "blockHash", "logIndex")}
+            )
+        total_bytes += block_bytes
+        require(
+            len(all_logs) <= MAX_LOGS and total_bytes <= MAX_LOG_BYTES, "source log aggregate bound"
+        )
     require(parent == target["hash"], "source target changed")
     return all_logs
+
+
+def retained_log_bytes(logs):
+    size = 0
+    for log in logs:
+        require(
+            isinstance(log, dict)
+            and set(log) == {"address", "topics", "data", "blockHash", "logIndex"},
+            "invalid archived log",
+        )
+        address(log["address"])
+        raw(log["blockHash"], 32)
+        quantity(log["logIndex"])
+        require(isinstance(log["topics"], list) and len(log["topics"]) <= 4, "archived topic bound")
+        for topic in log["topics"]:
+            raw(topic, 32)
+        size += len(raw(log["data"])) + 32 * len(log["topics"]) + 160
+        require(size <= MAX_LOG_BYTES, "source retained log byte bound")
+    return size
+
+
+def binding_hash(binding):
+    return hashlib.sha256(
+        json.dumps(binding, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def gap_history(directory, binding, origin):
+    """Read the explicit operator archive; never change the approved baseline."""
+    if directory is None:
+        return origin, [], "0" * 64, 0
+    info = directory.lstat()
+    require(
+        stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid() and not info.st_mode & 0o077,
+        "gap archive is not private and owned",
+    )
+    paths = sorted(directory.iterdir())
+    require(len(paths) <= MAX_GAP_BATCHES, "gap archive batch bound")
+    cursor, logs, prior_hash, log_bytes = origin, [], "0" * 64, 0
+    for index, path in enumerate(paths):
+        require(
+            path.name == f"{index:06d}.json" and not path.is_symlink(),
+            "gap archive inventory differs",
+        )
+        with path.open("rb") as stream:
+            data = stream.read(monitor.MAX_BYTES + 1)
+        require(len(data) <= monitor.MAX_BYTES, "gap archive file bound")
+        batch = json.loads(data, object_pairs_hook=pairs)
+        require(
+            set(batch) == {"schema", "binding", "origin", "from", "to", "logs", "previous_sha256"}
+            and batch["schema"] == "tos-source-gap/1"
+            and batch["binding"] == binding_hash(binding)
+            and batch["origin"] == origin
+            and batch["from"] == cursor
+            and batch["previous_sha256"] == prior_hash,
+            "gap archive binding or continuity differs",
+        )
+        end = batch["to"]
+        require(
+            set(end) == {"height", "hash"}
+            and type(end["height"]) is int
+            and 0 < end["height"] - cursor["height"] <= GAP_BATCH_BLOCKS,
+            "gap archive height bound",
+        )
+        monitor.digest(end["hash"])
+        require(isinstance(batch["logs"], list), "gap archive logs missing")
+        log_bytes += retained_log_bytes(batch["logs"])
+        require(log_bytes <= MAX_LOG_BYTES, "source retained log byte bound")
+        logs.extend(batch["logs"])
+        require(len(logs) <= MAX_LOGS, "gap archive log bound")
+        prior_hash = hashlib.sha256(data).hexdigest()
+        cursor = end
+    return cursor, logs, prior_hash, len(paths)
 
 
 def asset_events(logs, token, bridge):
@@ -305,7 +374,7 @@ def asset_events(logs, token, bridge):
     return events, pauses, destroys
 
 
-def collect(rpc, binding, base, previous):
+def collect(rpc, binding, base, previous, gap_dir=None):
     require(
         binding["schema"] == "tos-settlement-source/1"
         and base["complete"] is True
@@ -325,8 +394,16 @@ def collect(rpc, binding, base, previous):
         previous_point = dict(height=quantity(target["number"]), hash=target["hash"][2:])
     else:
         require(previous["network"] == base["network"], "baseline network differs")
-        previous_point = previous["source_checkpoint"]
-    logs = receipts(rpc, previous_point, target)
+        prior = previous["source_checkpoint"]
+        previous_point = dict(height=prior["height"], hash=prior["hash"])
+    require(
+        gap_dir is None or previous is not None,
+        "gap archive requires the approved previous observation",
+    )
+    cursor, logs, _, _ = gap_history(gap_dir, binding, previous_point)
+    logs += block_logs(rpc, cursor, target, [bridge] + [cfg["token"] for cfg in binding["assets"]])
+    require(len(logs) <= MAX_LOGS, "source log aggregate bound")
+    retained_log_bytes(logs)
     require(code_hash(rpc, bridge, point) == binding["bridge_code_sha256"], "bridge code differs")
     configs = {a["id"]: a for a in binding["assets"]}
     require(
@@ -440,7 +517,7 @@ def collect(rpc, binding, base, previous):
         utime=quantity(target["timestamp"]),
     )
     result["source_binding"] = dict(
-        bridge=bridge, chain_id=binding["chain_id"], transactions_checked=True
+        bridge=bridge, chain_id=binding["chain_id"], block_logs_checked=True
     )
     return result
 
@@ -467,6 +544,9 @@ def main(argv=None):
     parser.add_argument("--tos-snapshot", type=Path, required=True)
     parser.add_argument("--previous", type=Path)
     parser.add_argument("--initialize-baseline", action="store_true")
+    parser.add_argument(
+        "--gap-dir", type=Path, help="reviewed operator gap archive; never a new baseline"
+    )
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument(
         "--report",
@@ -496,6 +576,7 @@ def main(argv=None):
             monitor.read_json(args.binding),
             monitor.read_json(args.tos_snapshot),
             monitor.read_json(args.previous) if args.previous else None,
+            args.gap_dir,
         )
         monitor.atomic(args.out, value)
         return 0

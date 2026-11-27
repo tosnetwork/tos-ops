@@ -72,4 +72,6 @@ The tests include a non-divisible 100,000,001 atomic-unit amount at 19 bps,
 explicit fees just below/at/above the cap, and a fake clock that becomes stale
 only after RPC reads. Integer division floors before applying the cap; ceiling
 rounding and either one-unit cap error are red-controlled. A truncated HTTP
-answer exits as a fixed refusal without a body or echoed partial reply.
+answer exits as a fixed refusal without a body or echoed partial reply. The test
+requires the exact refusal line and also reads a real truncated chunked HTTP
+response from a loopback server; a detail-echo mutation must fail both paths.
