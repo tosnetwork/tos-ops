@@ -28,6 +28,7 @@ EMERGENCIES = {
     "bridge_frozen",
     "token_paused",
     "destroyed_funds",
+    "token_deprecated",
     "unexplained_decrease",
     "backing_shortfall",
 }
@@ -351,6 +352,8 @@ def evaluate(policy, observation, previous=None, now=None):
                 asset["maximum_fee"], "maximum_fee"
             ):
                 alarm(rows, aid, None, "transfer_fee")
+            if flag(asset, "deprecated"):
+                alarm(rows, aid, None, "token_deprecated")
             if flag(asset, "deprecated") or asset["implementation"] != pin["implementation"]:
                 alarm(rows, aid, None, "token_upgrade")
         if not flag(asset, "events_complete"):

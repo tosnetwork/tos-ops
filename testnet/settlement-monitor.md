@@ -202,7 +202,7 @@ headroom, fixed hourly/daily usage, swap/channel occupancy, recognition overflow
 (more than 16), and an active old-bridge recognition record. USDT adds fee and
 upgrade alarms; freeze, pause, destroy and receiver-blacklist checks are explicit.
 
-On **freeze, pause or destroy** (also unexplained backing decrease or shortfall):
+On **freeze, pause, bridge-fund destruction or legacy deprecation** (also unexplained backing decrease or shortfall):
 
 1. Page the operator/oracles immediately, with asset identity and checkpoints.
    Oracles vote `voteForDisableToken` for that token or `voteForSwitchLock` at
@@ -216,7 +216,7 @@ On **freeze, pause or destroy** (also unexplained backing decrease or shortfall)
    critical governance ceremony. It is a slow admission stop, not immediate
    redemption recovery. Existing TOS payouts/refunds still settle in the same
    token; never misrepresent them as redeemable backing.
-4. Retain observations, source logs and receipts. Freeze/pause/destroy/backing
+4. Retain observations, source logs and receipts. Freeze/pause/bridge-destroy/deprecation/backing
    incidents latch durably in `incidents.json`; later healthy samples do not
    clear the provider pause hook. Only an explicit reviewed incident resolution
    may archive those latches. No automatic unpause, cap increase or compensation.
@@ -315,7 +315,11 @@ cross-domain backing proofs.
 
 The adapter collects actual `balanceOf`, all seven `getLockCapState` words,
 bridge Lock/Unlock/LockRefunded events, Pause/Paused events (including pause then
-unpause), and DestroyedBlackFunds even though it emits no Transfer event.
+unpause), and DestroyedBlackFunds even though it emits no Transfer event. Only a destruction
+whose decoded address is the bridge counts as `destroyed_funds`; unrelated issuer
+destructions do not pause this asset. Legacy `deprecated = true` produces the
+`token_deprecated` emergency and pauses that asset until re-review, because the
+legacy interface no longer observes the forwarded implementation reliably.
 Amounts stay in integer atomic units. Issuer identity is SHA-256 over the domain
 `source-issuer-v1\0`, runtime-code SHA-256, 20-byte forwarding address and target
 code SHA-256; the constituent fields are retained as `issuer_identity`. Pin this
@@ -379,3 +383,13 @@ finality delay (within the existing 3,600-second bound), not an assumption that
 its finalized block is near the tip. The provider's report-age guard still
 uses the fresh TOS checkpoint. An idle source with an old finalized timestamp
 remains stale until it advances; this adapter does not rewrite chain times.
+
+## Pre-production collector scale gate
+
+Before production, replace the per-transaction receipt inventory with per-block
+`eth_getLogs` using blockHash and the bridge/token address filter, retaining the
+parent-hash chain. A reviewed gap-reconciliation procedure must cover outages
+beyond the observation window. This is pending; no automatic baseline reset is
+permitted. Standard issuer interface coverage on the local EVM chain and an
+explicit implementation-change alarm or corrected identity-pinning policy are
+also pending production gates. These do not gate the local recognition rehearsal.

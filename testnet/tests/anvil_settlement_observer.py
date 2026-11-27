@@ -272,6 +272,7 @@ def test_fee_and_legacy_upgrade_are_observed(world):
     assert value["assets"][1]["deprecated"] is True, "deprecation flag lost"
     assert value["assets"][1]["issuer_identity"]["target"] == w["tokens"][0]
     assert "token_upgrade" in codes(report, "usdt"), "legacy upgrade alarm missing"
+    assert report["provider_pause_assets"] == ["usdt"], "deprecated asset not paused"
 
 
 def test_complete_receipts_reconcile_lock_unlock_and_refund(world):

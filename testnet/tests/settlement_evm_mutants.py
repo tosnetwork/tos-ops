@@ -22,6 +22,46 @@ UNIT = "testnet/tests/test_settlement_evm.py"
 ANVIL = "testnet/tests/anvil_settlement_observer.py"
 CASES = (
     (
+        "chain-id",
+        'quantity(rpc.call("eth_chainId")) == binding["chain_id"]',
+        "True",
+        UNIT,
+        "test_wrong_chain_refuses",
+        "DID NOT RAISE",
+    ),
+    (
+        "final-reorg",
+        'block(rpc, target["number"])["hash"] == target["hash"]',
+        "True",
+        UNIT,
+        "test_final_checkpoint_reorg_refuses",
+        "DID NOT RAISE",
+    ),
+    (
+        "contiguity",
+        'quantity(current["number"]) == height and current["parentHash"] == parent',
+        "True",
+        UNIT,
+        "test_interval_identities_refuse",
+        "DID NOT RAISE",
+    ),
+    (
+        "receipt-block",
+        'and receipt["blockHash"] == parent',
+        "and True",
+        UNIT,
+        "test_interval_identities_refuse",
+        "DID NOT RAISE",
+    ),
+    (
+        "destroy-scope",
+        "destroyed == int(bridge, 16)",
+        "True",
+        UNIT,
+        "test_unrelated_destroy_is_not_bridge_destroy",
+        "unrelated destroy paused bridge",
+    ),
+    (
         "hex-letter-case",
         'topics = [topic.lower() for topic in log["topics"]]',
         'topics = log["topics"]',
