@@ -338,6 +338,12 @@
       "removed_fields": []
     },
     {
+      "file": "verdicts/verify-refunded-committed.json",
+      "original_sha256": "34882677e67ac7fd5c4b2a6065021328faccb490a8fd0ebf77355c22004ab045",
+      "sha256": "34882677e67ac7fd5c4b2a6065021328faccb490a8fd0ebf77355c22004ab045",
+      "removed_fields": []
+    },
+    {
       "file": "verdicts/refund-final.json",
       "original_sha256": "0ee28be6e8c0c7a97098c295102de73a115083739e058c39163327406779eb71",
       "sha256": "0ee28be6e8c0c7a97098c295102de73a115083739e058c39163327406779eb71",
@@ -362,6 +368,12 @@
       "removed_fields": []
     },
     {
+      "file": "verifiers/verify-refunded-committed-34882677e67ac7fd5c4b2a6065021328faccb490a8fd0ebf77355c22004ab045.json",
+      "original_sha256": "34882677e67ac7fd5c4b2a6065021328faccb490a8fd0ebf77355c22004ab045",
+      "sha256": "34882677e67ac7fd5c4b2a6065021328faccb490a8fd0ebf77355c22004ab045",
+      "removed_fields": []
+    },
+    {
       "file": "incident-resolution/resolved.json",
       "original_sha256": "e28398ebb8efb034b666708e112b4d789307458c7bd4fa7d8a711b55ec4cf50b",
       "sha256": "e28398ebb8efb034b666708e112b4d789307458c7bd4fa7d8a711b55ec4cf50b",
@@ -377,6 +389,18 @@
       "file": "verdicts/actor-active.json",
       "original_sha256": "779651366106a9ff467ffb45250fcd8b65841afdcb87cfe9cbc9de23ca36cf73",
       "sha256": "779651366106a9ff467ffb45250fcd8b65841afdcb87cfe9cbc9de23ca36cf73",
+      "removed_fields": []
+    },
+    {
+      "file": "sandbox-verification.json",
+      "original_sha256": "3ef834b5da2b9d0d0aa260bbd51989ce40c267d6bbbe515c876edf0ebb10565c",
+      "sha256": "3ef834b5da2b9d0d0aa260bbd51989ce40c267d6bbbe515c876edf0ebb10565c",
+      "removed_fields": []
+    },
+    {
+      "file": "transport-committed.json",
+      "original_sha256": "fcc3e49d51414fbf01debd239a72c17ed3019584731478adbbf5432256ce1805",
+      "sha256": "fcc3e49d51414fbf01debd239a72c17ed3019584731478adbbf5432256ce1805",
       "removed_fields": []
     },
     {

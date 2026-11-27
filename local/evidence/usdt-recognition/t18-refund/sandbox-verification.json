@@ -1,0 +1,40 @@
+{
+  "schema": "local-usdt-returned-sandbox-verification/1",
+  "source_commit": "aa5a879d41cf7af0fed5ee4b42a4a2e5b1ba0c70",
+  "test": "payouts::usdt_returned_and_claim_match_the_usdc_path",
+  "test_result": "PASS",
+  "actor_suite": {
+    "passed": 99,
+    "failed": 0
+  },
+  "bridge_suite": {
+    "passed": 106,
+    "failed": 0
+  },
+  "source_guards": {
+    "passed": 67,
+    "failed": 0
+  },
+  "cpp_replay": {
+    "transactions": 134,
+    "differences": 0,
+    "emulator_sha256": "c9b5ae54b374ecfc92295bb11207414ef599b2a71d3e2d713c8ab6df7aa9f672"
+  },
+  "returned_entry_deletion_control": {
+    "exit": 101,
+    "failed_assertion": "the refused payout has a returned entry",
+    "usdc_control_unchanged": true
+  },
+  "func_sha256": "6469c2813702b47c610d30c86cdfca4697ad228e5d0de6644d236baaa0c738b0",
+  "fift_sha256": "a6a382c33d1f2a2a58c2a2990f3d427a3f64ade9408350067a7ffc5d6be0e69d",
+  "compiler_build_commit": "b9a5a0406193d3577022b5c856bab9f77836f58b",
+  "log_sha256": {
+    "sandbox-usdt-full.log": "daa68b5a269dbec359b66542a685d1a6c509e81e1914819eb676b91aee3f74d5",
+    "sandbox-bridge-full.log": "4e8d1041afe48f02893bed1f43df9692bebcce3f956eb5c5a157a36efba25b1f",
+    "sandbox-source-guards.log": "e48a7c482d2a1e657f21458fd458f77066923b146a2aa28d90cf2d00a70e7764",
+    "sandbox-usdt-returned-red.log": "ecb8cb379f7229f52991fae759a6cd5c2293e52d18d0d00c20cf165c00e0cecd",
+    "sandbox-usdt-cpp-replay.log": "ed08fe8d5e5f52502c07b53e13c0efafc956cceab8b12664b960c35643cccc59",
+    "sandbox-lint-final.log": "fdcc11504311163bb6ffc43a78d44c7a75e5a9b1d34fc4dad85dc84ae91d71da",
+    "sandbox-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

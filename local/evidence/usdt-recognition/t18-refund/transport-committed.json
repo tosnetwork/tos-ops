@@ -1,0 +1,16 @@
+{
+  "archive_transport_source_commit": "e12227484a7c49dc51c73ef39158c24846ade5c7",
+  "source_sha256": "d17a255da985e07555069bb8c503fe56dc269d89e8adb9750fc6f6e8d7ca7253",
+  "reference_endpoints": [
+    "http://127.0.0.1:19014/jsonRPC",
+    "http://127.0.0.1:19015/jsonRPC",
+    "http://127.0.0.1:19016/jsonRPC"
+  ],
+  "upstreams": [
+    "http://127.0.0.1:8014/jsonRPC",
+    "http://127.0.0.1:8015/jsonRPC",
+    "http://127.0.0.1:8016/jsonRPC"
+  ],
+  "chain_global_id": 3,
+  "no_validator_service_changed": true
+}

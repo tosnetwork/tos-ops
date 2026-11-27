@@ -19,9 +19,11 @@ The production provider action then resumed the actor: owner source LT
 actor LT `417256000003`, hash
 `55bd8c7c2c9f610d0dad7c3643e4a7328a0e8c2aa4e311fe77772186358cef64`.
 The entire graph was archived before the next funding. The actor is active with
-policy version 3. The provider, buyer and verifier used ai source
+policy version 3. The provider and buyer used ai source
 `73b5893f9a1cb5f3d37f75f139dccdfb90fb2cb3`, whose state-read fix was subsequently
-merged. The native-rail follow-up is a separate work item.
+merged. The first independent verifier used the original T18 binary; the
+committed-build repeat below used the state-read binary as well. The native-rail
+follow-up is a separate work item.
 
 ## Successful buyer-driven refund
 
@@ -49,6 +51,14 @@ file `915404028bdeedbc20e8b605129fa358be5e43aa2d0654077f43473c9d759990`.
 It used independent nodes 4–6 through the retained-history transport described
 below. This is the same resolver code in a separate process, not an independent
 implementation or independently operated node quorum.
+
+A second read-only reconstruction with the committed transport and state-read
+verifier also passed at block **388751**, root
+`468ba54a664bf9fe617079a7b6f00452e50751baeab05347b4febb47c351ec7f`,
+file `994c13f160d392b86323214903b1b93975711d6f94cdc0de613ef13ad485c4b9`.
+The monitor was fresh with no alarms, incidents or pause hook at checkpoint
+388788; the provider work service and buyer app were active again. The issuer
+remained unpaused. This repeat sent no value.
 
 At same-block supply checkpoint 385757, balances sum to **25,000,000** atomic:
 actor 1,000,000; actor owner 1,000,000; original bridge buyer 21,000,000;
@@ -122,15 +132,36 @@ use the same standard bridge wallet code. An additional refusal-test USDT entry
 would exercise identical actor logic while requiring a fourth governed asset;
 none was created. **This is not a claim of a new live USDT-specific refusal.**
 
-The additional sandbox test `usdt_returned_and_claim_match_the_usdc_path` uses
+The [test-only sandbox change](https://github.com/tosnetwork/tos/pull/530),
+source `aa5a879d41cf7af0fed5ee4b42a4a2e5b1ba0c70`, adds
+`usdt_returned_and_claim_match_the_usdc_path`. It uses
 two distinct bridge-derived six-decimal masters under the same bridge codes,
 including a USDT-configured actor. For each, a real wallet refusal at R creates
 a returned entry for the original buyer; claim to a distinct destination then
 delivers exactly the amount. Backing/supply assertions run after each step.
 Deleting only the USDT actor's returned-entry update makes this test assertion-red.
-The existing 99-test actor suite and bridge fixture regression suite exercise
-the unchanged defaults as well. Production contract source and release artifacts
+The 99-test actor suite and 106-test bridge fixture regression suite pass and exercise
+the unchanged defaults as well. All **134** transaction records of the new test were also replayed in the C++
+emulator built from the same source: **zero differences**.
+[The verification summary](t18-refund/sandbox-verification.json) binds the tools
+and local logs by SHA-256. Production contract source and release artifacts
 are untouched by that sandbox change.
+
+## Verification of this continuation
+
+- Operations regression suite: **4,163 passed, 72 skipped, 34 subtests passed**;
+  one failure, `testnet/tests/test_supply.py::test_the_epoch6_profile_schedule_reaches_the_zero_state`.
+  The same failure reproduced on unchanged main
+  `a8145d095bab681350e305ff1af89b7aca3e2789` with the same running-build
+  `TOS_ROOT`. No golden zerostate was changed.
+- Focused driver/observer/lifecycle/archive baseline: **128 passed**.
+- Re-runnable `local/tests/usdt_driver_mutants.py`: **38/38 assertion-red**,
+  with setup/collection failures excluded; eight new archive controls cover
+  pruning-only lookup, HTTP refusal, source/reference separation, byte/entry
+  caps and on-chain network/genesis binding.
+- The 24 retained-transport tests, Ruff check/format, changed document links and
+  all original/public evidence hashes pass.
+- The existing local network health check is healthy, with no errors or warnings.
 
 ## Scope and remaining dated gaps
 
