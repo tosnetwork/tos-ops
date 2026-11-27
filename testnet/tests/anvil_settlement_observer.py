@@ -117,6 +117,15 @@ def source_net(tmp_path_factory):
                     command, text=True, capture_output=True, timeout=30, check=False
                 )
                 assert result.returncode == 0, result.stderr
+                # Only the isolated test driver mines; the collector cannot.
+                # Move this receipt behind this fixture's two-slot finality lag.
+                subprocess.run(
+                    [cast, "rpc", "--rpc-url", url, "anvil_mine", "0x2"],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=10,
+                )
                 return json.loads(result.stdout)
 
             def deploy(kind):

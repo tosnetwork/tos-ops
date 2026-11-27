@@ -270,3 +270,19 @@ def test_malformed_rpc_answers_refuse_without_healthy_defaults(monkeypatch, repl
     monkeypatch.setattr(collector.urllib.request, "urlopen", lambda *args, **kwargs: Response())
     with pytest.raises(collector.Invalid):
         collector.RPC("http://127.0.0.1:1").call("eth_chainId")
+
+
+def test_local_fixture_pin_is_copied_from_checkpoint_evidence():
+    import hashlib
+
+    pin = json.loads(
+        (Path(__file__).parent / "data/settlement-source/local-usdc-code.json").read_text()
+    )
+    assert pin["scope"] == "local-development-only"
+    assert pin["tos_zero_state_root"] == collector.LOCAL_GENESIS
+    assert (
+        hashlib.sha256(bytes.fromhex(pin["runtime_code"][2:])).hexdigest()
+        == collector.LOCAL_TEST_CODE
+        == pin["runtime_sha256"]
+    )
+    assert pin["source_chain_id"] == 1 and pin["source_file"].endswith("/TestFeeToken.sol")
