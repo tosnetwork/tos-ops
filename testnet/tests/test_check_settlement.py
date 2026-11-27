@@ -253,7 +253,10 @@ def test_second_asset_risks(key, value, code):
     p, s = fixture()
     assert not codes(p, s)
     s["assets"][1][key] = value
-    assert [(r["asset"], r["code"]) for r in codes(p, s)] == [("usdt", code)]
+    expected = [("usdt", code)]
+    if key == "deprecated":
+        expected.insert(0, ("usdt", "token_deprecated"))
+    assert [(r["asset"], r["code"]) for r in codes(p, s)] == expected
 
 
 def test_recognition_limit_and_bridge_migration():
@@ -914,3 +917,11 @@ def test_a_malformed_dispatch_cursor_refuses_dispatch(tmp_path, monkeypatch, cap
     assert out["alarms"] == [dict(code="observation_invalid")]
     assert calls == []
     assert {e["state"] for e in cli.outbox().values()} == {"prepared"}
+
+
+def test_deprecated_legacy_asset_is_an_asset_local_emergency():
+    policy, snapshot = fixture()
+    snapshot["assets"][1]["deprecated"] = True
+    report = monitor.evaluate(policy, snapshot, None, NOW)
+    assert report["provider_pause_assets"] == ["usdt"], "deprecated asset not paused locally"
+    assert any(a["code"] == "token_deprecated" for a in report["alarms"])

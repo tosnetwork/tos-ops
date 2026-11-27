@@ -202,7 +202,7 @@ headroom, fixed hourly/daily usage, swap/channel occupancy, recognition overflow
 (more than 16), and an active old-bridge recognition record. USDT adds fee and
 upgrade alarms; freeze, pause, destroy and receiver-blacklist checks are explicit.
 
-On **freeze, pause or destroy** (also unexplained backing decrease or shortfall):
+On **freeze, pause, bridge-fund destruction or legacy deprecation** (also unexplained backing decrease or shortfall):
 
 1. Page the operator/oracles immediately, with asset identity and checkpoints.
    Oracles vote `voteForDisableToken` for that token or `voteForSwitchLock` at
@@ -216,7 +216,7 @@ On **freeze, pause or destroy** (also unexplained backing decrease or shortfall)
    critical governance ceremony. It is a slow admission stop, not immediate
    redemption recovery. Existing TOS payouts/refunds still settle in the same
    token; never misrepresent them as redeemable backing.
-4. Retain observations, source logs and receipts. Freeze/pause/destroy/backing
+4. Retain observations, source logs and receipts. Freeze/pause/bridge-destroy/deprecation/backing
    incidents latch durably in `incidents.json`; later healthy samples do not
    clear the provider pause hook. Only an explicit reviewed incident resolution
    may archive those latches. No automatic unpause, cap increase or compensation.
@@ -251,3 +251,145 @@ actor getter and accounting layout at `12cf5522801a30806eeb7cda9ee85fbd051ecbca`
 The upstream default branch at `99143587e6babb2e577eadea0fc741cb1b413fab`
 has neither this actor nor this operational checker; there is no corresponding
 upstream repair to port.
+
+## Read-only EVM observation adapter
+
+`collect-settlement-evm.py` supplies the source half of an observation. Its
+`--tos-snapshot` must already contain the authenticated, complete TOS actor,
+wallet, supply, recognition and shared-window reads at one finalized checkpoint;
+this adapter does not invent them or turn JSON into a proof. Configure it through
+`check-settlement.py --collect` so the checker holds its existing monitor lock.
+Do not run overlapping collectors and checkers against the same files.
+
+```sh
+python3 testnet/scripts/collect-settlement-evm.py \
+  --rpc http://127.0.0.1:18545 --binding source-binding.json \
+  --tos-snapshot tos-observation.json --previous monitor-state/previous.json \
+  --out observation.json --report monitor-state/report.json
+```
+
+For periodic use, put that exact reviewed command in an executable wrapper and
+pass only its filename to the checker, for example
+`--collect /path/to/collect-source`. This avoids treating the adapter's own
+`--rpc`/`--binding` options as checker options. The wrapper's `--out` must equal
+the checker's `--snapshot`, and `--report` must be that state directory's
+`report.json`. Do not select these paths from buyer/model input.
+
+Use `--initialize-baseline` instead of `--previous` only for the explicitly
+approved first observation. Never reset a missing interval as a new baseline.
+Run frequently enough to cover every finalized source block. The adapter is
+bounded to 64 source blocks, 4,096 transactions, 16,384 logs (16 MiB aggregate retained log bytes),
+256 redemption receivers per asset, 4 MiB per RPC
+response, a 45-second RPC-start budget and a 10-second per-I/O timeout.
+The checker imposes the outer 60-second process deadline. A longer/missing interval refuses; it
+needs read-only reconciliation, not an automatic baseline reset.
+
+Binding schema `tos-settlement-source/1` contains `network` (the approved TOS
+zero-state root), integer `chain_id`, EVM `bridge`, `bridge_code_sha256`, and
+unique `assets` (at most 16). Every asset contains `id`, `token`,
+`code_sha256`, `profile`, and `redemptions` (`id`, pinned EVM `receiver` for each
+redemption already listed by the TOS observation). Every TOS asset must have
+exactly one source binding. There are no keys or implicit production addresses.
+
+- `legacy_usdt` reads `isBlackListed(address)`, `paused`, `basisPointsRate`,
+  `maximumFee`, `deprecated` and `upgradedAddress`. Blacklisting is sender-only:
+  the bridge can still receive locks while it cannot send unlocks/refunds. No
+  balance shortfall is required for a `bridge_frozen` alarm.
+- `standard` reads `isBlacklisted(address)` and `paused`. Pin that issuer's exact
+  32-byte `implementation_slot`; the adapter reads the forwarding address and
+  target code at the same checkpoint. A getter failure is never a false flag.
+- `local_test` is limited to the approved existing local genesis, a loopback
+  endpoint and the exact original test-USDC runtime hash. That fixture has no
+  blacklist, pause or upgrade mechanism; those observations are fixed false,
+  and a nonzero `feeBasisPoints` refuses collection. It is not a fallback for
+  unknown issuer interfaces and cannot be enabled on another network or code.
+
+All calls/code/storage reads use the finalized block's hash and
+`requireCanonical`; the block is checked again before publication. The complete
+transaction list and every receipt in the interval are read, with receipt/log
+identity and duplicate checks. No paged `getLogs` query can silently truncate
+this inventory. A missing receipt, reorg, changed code, wrong chain, malformed
+return, bound, timeout or RPC failure invalidates the entire sample. These are
+**trusted endpoint** observations, not receipt-trie proofs or atomic
+cross-domain backing proofs.
+
+The adapter collects actual `balanceOf`, all seven `getLockCapState` words,
+bridge Lock/Unlock/LockRefunded events, Pause/Paused events (including pause then
+unpause), and DestroyedBlackFunds even though it emits no Transfer event. Only a destruction
+whose decoded address is the bridge counts as `destroyed_funds`; unrelated issuer
+destructions do not pause this asset. Legacy `deprecated = true` produces the
+`token_deprecated` emergency and pauses that asset until re-review, because the
+legacy interface no longer observes the forwarded implementation reliably.
+Amounts stay in integer atomic units. Issuer identity is SHA-256 over the domain
+`source-issuer-v1\0`, runtime-code SHA-256, 20-byte forwarding address and target
+code SHA-256; the constituent fields are retained as `issuer_identity`. Pin this
+identity after source/code review, never by silently accepting its next value.
+
+Before its first RPC, the adapter atomically makes `report.json` stale
+(`utime = 0`), so even an interrupted/hung collector cannot leave old health
+usable. Paid execution temporarily waits while collection runs; the existing
+guard-retry path keeps funded work pending. Only the checker, after validating
+the completed observation under its lock, publishes a fresh healthy report.
+On failure the adapter keeps that stale report and
+publishes an incomplete observation, then exits 2. This immediately triggers
+existing provider stale-monitor refusal; it does not wait for the former healthy
+report's age limit. Existing incident latches remain in the checker's state and
+are reapplied on the next successful sample. A filesystem that cannot persist
+that stale marker is also a failed collection: supervise the nonzero exit and
+retain the normal freshness watchdog. No adapter can promise durable output on
+a full or failed disk.
+
+The adapter never votes, signs, builds a burn or changes an actor. Its RPC method
+allowlist rejects signing and state-override methods before transport. Immediate
+oracle disable/lock-stop remains an operator/oracle action. Redemption-build
+prechecks and received-amount previews are separate tooling work; monitoring an
+unsafe receiver is not a substitute for those guards.
+
+### Adapter verification
+
+The explicit source-only acceptance suite starts a separate ephemeral loopback
+Anvil instance. It never resets or writes the existing TOS/EVM network. It uses
+local behavioural fixtures; it does not certify a production issuer release.
+Run under the shared thermal guard, with `anvil`, `cast`, Node and the pinned
+Solidity compiler module available:
+
+```sh
+export TOS_EVM_SOLC_MODULE="$TOS_ROOT/crosschain/token-bridge/evm/node_modules/solc"
+"$TOS_ROOT/.venv/bin/python" -m pytest -q \
+  testnet/tests/test_settlement_evm.py testnet/tests/test_settlement_evm_topic_case.py \
+  testnet/tests/anvil_settlement_observer.py
+"$TOS_ROOT/.venv/bin/python" testnet/tests/settlement_evm_mutants.py \
+  --log-dir /path/to/evidence/source-mutants
+```
+
+Dependencies are mandatory, with no skipped missing-compiler tests. Mutation
+controls operate in isolated temporary copies; syntax/build/setup errors,
+timeouts and survivors fail the run rather than count as kills. Source
+collection is TOS-specific operations code, absent in the upstream core at
+`99143587e6babb2e577eadea0fc741cb1b413fab`.
+
+The original local source-code exception is backed by
+[checkpoint evidence](tests/data/settlement-source/local-usdc-code.json). That
+identity capture is explicitly **not** a finalized monitor observation: at
+capture, the idle local source tip was block 16 and its finalized tag was block
+0. The collector must refuse until the bridge/token exist at a fresh finalized
+source checkpoint; it must not silently substitute `latest`. Only a separate
+local test driver may advance empty source blocks. The acceptance fixture uses
+its own short-epoch source node and mines empty confirmations after sends; the
+collector's read-only allowlist still forbids mining methods.
+
+Set the approved checker's freshness budget from the source chain's actual
+finality delay (within the existing 3,600-second bound), not an assumption that
+its finalized block is near the tip. The provider's report-age guard still
+uses the fresh TOS checkpoint. An idle source with an old finalized timestamp
+remains stale until it advances; this adapter does not rewrite chain times.
+
+## Pre-production collector scale gate
+
+Before production, replace the per-transaction receipt inventory with per-block
+`eth_getLogs` using blockHash and the bridge/token address filter, retaining the
+parent-hash chain. A reviewed gap-reconciliation procedure must cover outages
+beyond the observation window. This is pending; no automatic baseline reset is
+permitted. Standard issuer interface coverage on the local EVM chain and an
+explicit implementation-change alarm or corrected identity-pinning policy are
+also pending production gates. These do not gate the local recognition rehearsal.
