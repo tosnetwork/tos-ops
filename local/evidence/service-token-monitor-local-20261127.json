@@ -964,6 +964,218 @@
       "source": "0:f4e1d7eea4e37c69705a44a5a90cdbf524a2a07f2f6e61280304230f60ac70de"
     }
   },
+  "master_supply_crosscheck": {
+    "observation": {
+      "master": "0:f366cb324cfb8161ffa0c55e00fa89458bdc18b03f73f18b4f6f9ca5228efb06",
+      "observed_at": 1795741972,
+      "references": [
+        "http://127.0.0.1:8014/jsonRPC",
+        "http://127.0.0.1:8015/jsonRPC",
+        "http://127.0.0.1:8016/jsonRPC"
+      ],
+      "result": "pass",
+      "steps": [
+        {
+          "checkpoint": {
+            "@type": "tos.blockIdExt",
+            "file_hash": "6PIgnQJQfswuKqhBMN5F3XpyVz1IP8acoyQjf32lhsU=",
+            "root_hash": "ZOzXRZAnwmuRWkNSKHkPsw6DqL9JrYfAd0JJf/F776M=",
+            "seqno": 276788,
+            "shard": "-9223372036854775808",
+            "workchain": -1
+          },
+          "master_supply_atomic": 25000000,
+          "step": "buyer-funding",
+          "sum_wallets_atomic": 25000000
+        },
+        {
+          "checkpoint": {
+            "@type": "tos.blockIdExt",
+            "file_hash": "vR7FcxYYe0ld0uHO/4J0PTOThBPazXQvwb8wsK7CUlo=",
+            "root_hash": "bllE6XmF9eVWH8t2xHVwuRGn2/u3Sb97cW8C4K/RO9Q=",
+            "seqno": 275579,
+            "shard": "-9223372036854775808",
+            "workchain": -1
+          },
+          "master_supply_atomic": 25000000,
+          "step": "provider-init",
+          "sum_wallets_atomic": 25000000
+        },
+        {
+          "checkpoint": {
+            "@type": "tos.blockIdExt",
+            "file_hash": "woMuzshyTvY/enF636OuUhocHbkQTVJY9y2nKWOe5s8=",
+            "root_hash": "YA1PSIP2Etgo41qwgwPKdTr+DChI0Ia2xU6DJZeS/SI=",
+            "seqno": 277223,
+            "shard": "-9223372036854775808",
+            "workchain": -1
+          },
+          "master_supply_atomic": 25000000,
+          "step": "provider-response",
+          "sum_wallets_atomic": 25000000
+        },
+        {
+          "checkpoint": {
+            "@type": "tos.blockIdExt",
+            "file_hash": "LrsH3BW/T+/qE+lm/At+xTkQ957d7jil9k08DvFPTM4=",
+            "root_hash": "NRpXoYNTpSpJB2DfpO63zfo+AMB9H+bGIB8ayOFtVbg=",
+            "seqno": 275662,
+            "shard": "-9223372036854775808",
+            "workchain": -1
+          },
+          "master_supply_atomic": 25000000,
+          "step": "publish-default",
+          "sum_wallets_atomic": 25000000
+        },
+        {
+          "checkpoint": {
+            "@type": "tos.blockIdExt",
+            "file_hash": "R9lBlvkaM5Dn6ih2mCHUgygZhx3taqaChioZmIKbpms=",
+            "root_hash": "yi2jX9xInQkR6XpMhKqf2tyB0BrcI2nn3DiAKnkb/cQ=",
+            "seqno": 275492,
+            "shard": "-9223372036854775808",
+            "workchain": -1
+          },
+          "master_supply_atomic": 25000000,
+          "step": "actor-wallet-fee",
+          "sum_wallets_atomic": 25000000
+        },
+        {
+          "checkpoint": {
+            "@type": "tos.blockIdExt",
+            "file_hash": "9J+GX2v6iUHg/AkCkmEOrg+p28nOgdVdgKqglZvkCgk=",
+            "root_hash": "31aEYR/IeLrrBkw4Y2DOdOuckhJqkJeFG1XFrodlIMU=",
+            "seqno": 275298,
+            "shard": "-9223372036854775808",
+            "workchain": -1
+          },
+          "master_supply_atomic": 25000000,
+          "step": "deploy-actor",
+          "sum_wallets_atomic": 25000000
+        },
+        {
+          "checkpoint": {
+            "@type": "tos.blockIdExt",
+            "file_hash": "5ha1r890PAdD/iBL20kaAolaPVXhi6Y/5t+GTFpAjHY=",
+            "root_hash": "lnncqpSAx9OfsPJErVGtCjbvjDbh047M2qDSJeUl5CU=",
+            "seqno": 275645,
+            "shard": "-9223372036854775808",
+            "workchain": -1
+          },
+          "master_supply_atomic": 25000000,
+          "step": "publication-attestor",
+          "sum_wallets_atomic": 25000000
+        },
+        {
+          "checkpoint": {
+            "@type": "tos.blockIdExt",
+            "file_hash": "QbRyPE+7NRU1UCLGBr3Q5LRXV3Bshji8ZN61oKW6o6U=",
+            "root_hash": "i6KyQX8pkZ+0SxQYN3BTBSUJYFSWqDiDlR1Y2c7hmfM=",
+            "seqno": 275656,
+            "shard": "-9223372036854775808",
+            "workchain": -1
+          },
+          "master_supply_atomic": 25000000,
+          "step": "publication-policy",
+          "sum_wallets_atomic": 25000000
+        },
+        {
+          "checkpoint": {
+            "@type": "tos.blockIdExt",
+            "file_hash": "a3UwhFDBRwN31Nikhis7ggOx089tG2Ifhc80RRNeMTI=",
+            "root_hash": "sCWCC8KEVNuyyzPS8zMEgcBNIrXN5sIqZXxmfz1xAKw=",
+            "seqno": 275638,
+            "shard": "-9223372036854775808",
+            "workchain": -1
+          },
+          "master_supply_atomic": 25000000,
+          "step": "publication-register-capability",
+          "sum_wallets_atomic": 25000000
+        },
+        {
+          "checkpoint": {
+            "@type": "tos.blockIdExt",
+            "file_hash": "uPQquN3FGDwrxBoRe9RHNdAxn2EyCZymv6OjhKJhIHk=",
+            "root_hash": "dDBiiTJlnar+Xp97eKIteLqzu2c7xUTBtYPhtoXJhDU=",
+            "seqno": 275850,
+            "shard": "-9223372036854775808",
+            "workchain": -1
+          },
+          "master_supply_atomic": 25000000,
+          "step": "refresh-bridge",
+          "sum_wallets_atomic": 25000000
+        },
+        {
+          "checkpoint": {
+            "@type": "tos.blockIdExt",
+            "file_hash": "fD42AfLH2kmfehXnimsUmvyd9NXBEtdVT8CGE8RZeL8=",
+            "root_hash": "/Lcz0Wy/VIwE2FgWiasf6P3V9E73apf6RpfuxTmF3Kc=",
+            "seqno": 276454,
+            "shard": "-9223372036854775808",
+            "workchain": -1
+          },
+          "master_supply_atomic": 25000000,
+          "step": "refresh-buyer-token-wallet",
+          "sum_wallets_atomic": 25000000
+        },
+        {
+          "checkpoint": {
+            "@type": "tos.blockIdExt",
+            "file_hash": "7O7n7vgFmqEqyNilrK8YZLF85zB1o8Le1bQR5Msp9QQ=",
+            "root_hash": "3lXuD3zYCkwb8/HYchM2+nQRamXboytPHVqsZw44/5g=",
+            "seqno": 275860,
+            "shard": "-9223372036854775808",
+            "workchain": -1
+          },
+          "master_supply_atomic": 25000000,
+          "step": "refresh-minter",
+          "sum_wallets_atomic": 25000000
+        },
+        {
+          "checkpoint": {
+            "@type": "tos.blockIdExt",
+            "file_hash": "vZMCcssdr2z9vEHAXDlemcAKypiwBslknr17t9CTNos=",
+            "root_hash": "5RRJJwfSzPBNNuJ37YzhDy1dp8o8/nZolaX9LxYhFkM=",
+            "seqno": 275380,
+            "shard": "-9223372036854775808",
+            "workchain": -1
+          },
+          "master_supply_atomic": 25000000,
+          "step": "seed-actor-wallet",
+          "sum_wallets_atomic": 25000000
+        },
+        {
+          "checkpoint": {
+            "@type": "tos.blockIdExt",
+            "file_hash": "C1m8Nv8rvIJhCOHjnrOSbJ3ajR1VF3Qoj+bNyubY3aw=",
+            "root_hash": "3U8Zs01rvUKhLc+rVBnbM5k/EBfA5gJi8x2V0vWB04U=",
+            "seqno": 275270,
+            "shard": "-9223372036854775808",
+            "workchain": -1
+          },
+          "master_supply_atomic": 25000000,
+          "step": "source-fee-owner",
+          "sum_wallets_atomic": 25000000
+        },
+        {
+          "checkpoint": {
+            "@type": "tos.blockIdExt",
+            "file_hash": "dTmx7fVJd3q+cw1x5Oe77BqC5SOEFq17B9Okrpy47ck=",
+            "root_hash": "m4MJLBJesxpLf4qKbii/18JCWhMJ0PXVfBWuqMIpBrA=",
+            "seqno": 275799,
+            "shard": "-9223372036854775808",
+            "workchain": -1
+          },
+          "master_supply_atomic": 25000000,
+          "step": "work-buyer-fee",
+          "sum_wallets_atomic": 25000000
+        }
+      ]
+    },
+    "original_sha256": "4845ce7801c3d4d4d39157680288a7a06c37ce175bb6e388b572dba41cd77f39",
+    "removed_json_pointers": [],
+    "serialization": "UTF-8 JSON, sorted keys, two-space indentation and trailing newline"
+  },
   "network": {
     "genesis_file": "c3860fe196a2a1b5e4e74a9cf9448624a353ce68a8c4c5f6413347586d688769",
     "genesis_root": "65735247a371030abe811aeac0afe357301ce90e161450d26f88b4beb5b4c366",

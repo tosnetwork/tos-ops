@@ -932,6 +932,17 @@ def test_fresh_monitor_evidence_is_complete_and_recheckable():
     assert index["complete"] is True
     assert len(record["archive_steps"]) == index["steps"] == 15
     assert len(record["transactions"]) == index["transaction_bocs"] == 35
+    crosscheck = record["master_supply_crosscheck"]
+    original = (
+        json.dumps(crosscheck["observation"], indent=2, sort_keys=True) + "\n"
+    ).encode()
+    assert hashlib.sha256(original).hexdigest() == crosscheck["original_sha256"]
+    assert crosscheck["removed_json_pointers"] == []
+    assert len(crosscheck["observation"]["steps"]) == 15
+    assert all(
+        step["master_supply_atomic"] == step["sum_wallets_atomic"] == 25000000
+        for step in crosscheck["observation"]["steps"]
+    )
     assert record["provider_final"]["state"] == "acked"
     assert [v["slot_state"] for v in record["injections"]] == ["admitted", "admitted"]
     assert "asset alarm refuses" in record["injections"][0]["refusal_text"]
