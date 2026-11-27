@@ -803,6 +803,220 @@ def step_issuer(args, state, evm):
     return result
 
 
+def burn_logs(boc: bytes) -> dict:
+    """A transaction's account, lt and hash, and every LOG_BURN external message it
+    sent, decoded from its own cells. The token bridge's body is exactly 704 bits:
+    destination(160), amount(128), token(160), from_address_hash(256)."""
+    root = lib.parse_boc(boc)
+    s = lib.Slice(root)
+    require(s.bits(4) == 0b0111, "not a transaction")
+    account, lt = s.bytes(32).hex(), s.bits(64)
+    m = lib.Slice(root.refs[0])
+    if m.bits(1):
+        m.take_ref()
+    logs = []
+    if m.bits(1):
+        entries = lib.hashmap_items(m.take_ref(), 15)
+        for key in sorted(entries):
+            message = entries[key].take_ref()
+            ms = lib.Slice(message)
+            if ms.bits(2) != 0b11:  # not ext_out_msg_info
+                continue
+            require(ms.bits(2) == 0b10 and ms.bits(1) == 0, "an external from a non-std source")
+            ms.bits(8 + 256)
+            require(ms.bits(2) == 0b01, "an external to a non-extern destination")
+            length = ms.bits(9)
+            topic = ms.bits(length)
+            ms.bits(64 + 32)
+            require(ms.bits(1) == 0, "an external with a StateInit")
+            if length != 256 or topic != LOG_BURN:
+                continue
+            require(ms.bits(1) == 1, "LOG_BURN body is not in a reference")
+            body = ms.take_ref()
+            bits = u.cell_bits(body)
+            require(len(bits) == 704 and not body.refs, "LOG_BURN body has another layout")
+            logs.append(
+                {
+                    "destination": "0x" + format(int(bits[0:160], 2), "040x"),
+                    "amount": int(bits[160:288], 2),
+                    "token": "0x" + format(int(bits[288:448], 2), "040x"),
+                    "from_address_hash": format(int(bits[448:704], 2), "064x"),
+                }
+            )
+    return {"account": account, "lt": lt, "hash": root.hash().hex(), "logs": logs}
+
+
+def issuer_binding(state, asset, monitor_binding: Path) -> dict:
+    """The T19 issuer binding of the LocalUSDT fixture, with its runtime code pinned
+    by the monitor's reviewed source binding (read-only)."""
+    require(asset == "usdt", "only the legacy-USDT fixture has a T19 issuer profile")
+    token = state["assets"][asset]["token"]
+    pins = json.loads(monitor_binding.read_text())
+    pinned = [a for a in pins["assets"] if a["token"].lower() == token]
+    require(len(pinned) == 1 and pinned[0]["profile"] == "legacy_usdt", "no reviewed issuer pin")
+    return {
+        "schema": "tos-settlement-issuer/1",
+        "chain_id": u.EVM_CHAIN_ID,
+        "token": token,
+        "code_sha256": pinned[0]["code_sha256"],
+        "profile": "legacy_usdt",
+        "bridge": state["evm"]["bridge"],
+        "master": state["assets"][asset]["minter"],
+        "wallet": state["assets"][asset]["buyer_token_wallet"],
+    }
+
+
+def redemption_module():
+    return _load("prepare_token_redemption", HERE.parent.parent / "testnet/scripts/prepare-token-redemption.py")
+
+
+def step_burn(args, state, evm, chain):
+    """Burn wrapped tokens to an EVM receiver. The body is the T19 tool's: it reads
+    the issuer's blacklist, pause, deprecation and fee at a finalized source block
+    first and refuses before building anything. The prepared document, with its
+    received-amount preview, is journaled before the burn is signed."""
+    asset = state["assets"][args.asset]
+    amount = positive(args.amount, "--amount")
+    receiver = args.receiver.lower()
+    burns = state.get("burns", {})
+    prepared = burns.get(args.label, {}).get("prepared")
+    if prepared is None:
+        redemption = redemption_module()
+        binding = issuer_binding(state, args.asset, args.monitor_state / "binding.json")
+        query_id = int.from_bytes(hashlib.sha256(args.label.encode()).digest()[:8], "big")
+        prepared = redemption.prepare(
+            redemption.issuer.source.RPC(args.evm_rpc), binding, receiver, amount, query_id
+        )
+        if not args.execute:
+            return {"dry_run": True, "prepared": prepared}
+        require(
+            live_wallet_balance(chain, asset["buyer_token_wallet"]) >= amount,
+            "the buyer holds less than the burn",
+        )
+        burns = {
+            **burns,
+            args.label: {
+                "asset": args.asset,
+                "amount": amount,
+                "receiver": receiver,
+                "prepared": prepared,
+                "supply_before": u.num(chain.get(asset["minter"], "get_supply_state")[0]),
+                "wallet_before": live_wallet_balance(chain, asset["buyer_token_wallet"]),
+            },
+        }
+        state.set("burns", burns)
+    entry = state["burns"][args.label]
+    require(
+        entry["asset"] == args.asset and entry["amount"] == amount and entry["receiver"] == receiver,
+        f"{args.label} was journaled for another burn; use a new label",
+    )
+    body = u.from64(prepared["body_boc"])
+    require(body.hash().hex() == prepared["body_hash"], "the prepared body changed")
+    require(prepared["destination"] == asset["buyer_token_wallet"], "the burn names another wallet")
+    buyer = u.wallets(chain, args.keys)["buyer"]
+    intent = args.label + "-burn"
+    record = buyer.transfer(state, intent, asset["buyer_token_wallet"], u.BURN_FEE, body)
+    # The burn's graph (wallet, minter, bridge) was archived on nodes 4-6 when the
+    # send finished; the bridge's own transaction carries LOG_BURN.
+    manifest = archive.StepJournal(state.root / "archive/sends").validate(
+        intent, json.loads((state.root / "archive/sends/steps.json").read_text())["completed"][intent]
+    )
+    bridge_account = u.split(state["tvm"]["bridge"])[1].hex()
+    found = []
+    for item in manifest["files"]:
+        if not item["file"].startswith("transactions/"):
+            continue
+        decoded = burn_logs((state.root / "archive/sends" / intent / item["file"]).read_bytes())
+        if decoded["account"] == bridge_account and decoded["logs"]:
+            found.append(decoded)
+    require(len(found) == 1 and len(found[0]["logs"]) == 1, "the burn has no single LOG_BURN")
+    log = found[0]["logs"][0]
+    require(
+        log["destination"] == receiver
+        and log["amount"] == amount
+        and log["token"] == asset["token"]
+        and log["from_address_hash"] == u.split(buyer.address)[1].hex(),
+        f"LOG_BURN differs from the burn: {log}",
+    )
+    view = t.View(chain, state.root / "references" / args.label)
+    supply = supply_at(view, asset["minter"])
+    balance = wallet_balance_at(view, asset["buyer_token_wallet"])
+    require(supply == entry["supply_before"] - amount, "the finalized supply did not fall by the burn")
+    require(balance == entry["wallet_before"] - amount, "the buyer's balance did not fall by the burn")
+    result = {
+        "asset": args.asset,
+        "amount": amount,
+        "receiver": receiver,
+        "preview": {k: prepared[k] for k in ("amount_atomic", "received_atomic", "issuer_fee_atomic", "warning", "issuer")},
+        "burn_send": {"seqno": record["seqno"], "tx": record["tx"]},
+        "bridge_transaction": {k: found[0][k] for k in ("account", "lt", "hash")},
+        "log_burn": log,
+        "second_resolver": {"endpoints": view.urls, "checkpoint": view.point, "supply": supply,
+                            "buyer_wallet_balance": balance},
+    }
+    state.set("burns", {**state["burns"], args.label: {**entry, "result": result}})
+    state.evidence(args.label, result)
+    return result
+
+
+def step_unlock(args, state, evm):
+    """Oracle-sign a recorded burn and submit Bridge.unlock (SafeERC20 safeTransfer:
+    LocalUSDT's transfer returns no bool). The receiver gets the amount less the
+    issuer fee; the bridge's balance falls by the full amount."""
+    burn = state.get("burns", {}).get(args.burn, {}).get("result")
+    require(burn is not None, f"no recorded burn {args.burn}")
+    receiver = args.receiver.lower()
+    require(burn["receiver"] == receiver, "the unlock names another receiver than the burn")
+    token, bridge = state["assets"][burn["asset"]]["token"], state["evm"]["bridge"]
+    log, tx = burn["log_burn"], burn["bridge_transaction"]
+    swap = (
+        f"({receiver},{token},{log['amount']},"
+        f"(0x{log['from_address_hash']},0x{tx['hash']},{tx['lt']}))"
+    )
+    before = {
+        "receiver": int(values(evm, token, "balanceOf(address)(uint256)", receiver)[0]),
+        "bridge": int(values(evm, token, "balanceOf(address)(uint256)", bridge)[0]),
+        "facts": source_facts(evm, state, burn["asset"]),
+    }
+    if not args.execute:
+        return {"dry_run": True, "swap": swap, "before": before}
+    progress = state.get("unlocks", {}).get(args.label)
+    if progress is None:
+        progress = {"burn": args.burn, "before": before}
+        state.set("unlocks", {**state.get("unlocks", {}), args.label: progress})
+    require(progress["burn"] == args.burn, f"{args.label} was journaled for another burn")
+    vote = u.evm_vote(evm, state, args.keys, args.label, SWAP_ID, [swap], UNLOCK, [swap])
+    before = progress["before"]
+    after = {
+        "receiver": int(values(evm, token, "balanceOf(address)(uint256)", receiver)[0]),
+        "bridge": int(values(evm, token, "balanceOf(address)(uint256)", bridge)[0]),
+    }
+    facts = before["facts"]
+    fee = 0
+    if burn["asset"] == "usdt":
+        fee = min(log["amount"] * facts["fee_basis_points"] // 10000, facts["maximum_fee"])
+    require(before["bridge"] - after["bridge"] == log["amount"], "the bridge did not pay the amount")
+    require(
+        after["receiver"] - before["receiver"] == log["amount"] - fee,
+        "the receiver did not get the amount less the issuer fee",
+    )
+    require(
+        int(burn["preview"]["received_atomic"]) == log["amount"] - fee,
+        "the T19 preview differs from what the receiver got",
+    )
+    result = {
+        "burn": args.burn,
+        "swap": swap,
+        "vote": {k: vote.get(k) for k in ("tx", "block", "status")},
+        "before": before,
+        "after": after,
+        "issuer_fee": fee,
+        "received": log["amount"] - fee,
+    }
+    state.evidence(args.label, result)
+    return result
+
+
 def step_observe(args, state):
     """Retain the running monitor's published report, snapshot digest and incident
     latches. Read-only: the monitor's lock is not taken and nothing is written to
@@ -1025,6 +1239,10 @@ def main(argv=None):
                 result = step_switch_lock(args, state, evm)
             elif args.step == "issuer":
                 result = step_issuer(args, state, evm)
+            elif args.step == "burn":
+                result = step_burn(args, state, evm, chain)
+            elif args.step == "unlock":
+                result = step_unlock(args, state, evm)
             elif args.step == "observe":
                 result = step_observe(args, state)
             elif args.step == "reconcile":
