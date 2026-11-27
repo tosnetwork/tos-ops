@@ -14,6 +14,22 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "testnet/scripts"
 CASES = (
     (
+        "fee-math",
+        "settlement_issuer.py",
+        'fee = min(amount * observation["fee_basis_points"] // 10000, int(observation["maximum_fee"]))',
+        "fee = 0",
+        "test_fee_preview_matches_actual_received_delta_and_cap",
+        "issuer fee preview mismatch",
+    ),
+    (
+        "fee-cap",
+        "settlement_issuer.py",
+        'fee = min(amount * observation["fee_basis_points"] // 10000, int(observation["maximum_fee"]))',
+        'fee = amount * observation["fee_basis_points"] // 10000',
+        "test_fee_preview_matches_actual_received_delta_and_cap",
+        "issuer fee cap ignored",
+    ),
+    (
         "bridge-blacklist",
         "settlement_issuer.py",
         'not bridge_blocked, "redemption source bridge is blacklisted"',
@@ -80,7 +96,8 @@ CASES = (
 
 
 def main():
-    for name, filename, old, new, test in CASES:
+    for name, filename, old, new, test, *markers in CASES:
+        expected = markers[0] if markers else "DID NOT RAISE"
         original = (SCRIPTS / filename).read_text()
         if original.count(old) != 1:
             raise RuntimeError("non-unique mutation: " + name)
@@ -121,7 +138,7 @@ def main():
                 result.returncode != 1
                 or not failures
                 or list(tree.iter("error"))
-                or "DID NOT RAISE" not in result.stdout
+                or expected not in result.stdout
             ):
                 raise RuntimeError(
                     "survivor or invalid control: " + name + "\n" + result.stdout + result.stderr

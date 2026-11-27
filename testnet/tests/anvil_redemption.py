@@ -109,16 +109,24 @@ def test_fee_preview_matches_actual_received_delta_and_cap(redemption_world):
     assert build(redemption_world)["issuer_fee_atomic"] == "0"
     send(token, "setParams(uint256,uint256)", 19, 1)
     document = build(redemption_world)
-    assert document["received_atomic"] == "99810000"
+    assert document["received_atomic"] == "99810000", "issuer fee preview mismatch"
     assert document["issuer_fee_atomic"] == "190000"
-    before = issuer.source.read_uint(
-        issuer.source.RPC(url), token, "balance", "latest", accounts[1]
-    )
-    send(token, "transfer(address,uint256)", accounts[1], 100_000_000)
-    after = issuer.source.read_uint(issuer.source.RPC(url), token, "balance", "latest", accounts[1])
-    assert after - before == int(document["received_atomic"])
+    bridge = binding["bridge"]
+    send(token, "approve(address,uint256)", bridge, 100_000_000)
+    before = issuer.source.read_uint(issuer.source.RPC(url), token, "balance", "latest", bridge)
+    receipt = send(bridge, "deposit(address,uint256)", token, 100_000_000)
+    after = issuer.source.read_uint(issuer.source.RPC(url), token, "balance", "latest", bridge)
+    assert after - before == int(document["received_atomic"]), "lock received delta differs"
+    locks = [
+        log for log in receipt["logs"] if log["topics"][0].lower() == issuer.source.TOPICS["Lock"]
+    ]
+    assert len(locks) == 1 and issuer.source.words(locks[0]["data"], 5)[0] == int(
+        document["received_atomic"]
+    ), "Lock event does not carry the received delta"
     observation = issuer.read_issuer(issuer.source.RPC(url), binding, accounts[1])
-    assert issuer.received_amount(3_000_000_000, observation) == (2_999_000_000, 1_000_000)
+    assert issuer.received_amount(3_000_000_000, observation) == (2_999_000_000, 1_000_000), (
+        "issuer fee cap ignored"
+    )
     send(token, "setParams(uint256,uint256)", 0, 0)
     assert build(redemption_world)["issuer_fee_atomic"] == "0"
 
