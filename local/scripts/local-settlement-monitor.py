@@ -318,26 +318,58 @@ def main():
     root = u.private_dir(args.state)
     with (root / "scope.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        while True:
-            started = time.monotonic()
-            try:
-                code = tick(args)
-            except (
-                OSError,
-                ValueError,
-                KeyError,
-                TypeError,
-                u.Refused,
-                source.http.client.HTTPException,
-                RecursionError,
-                subprocess.TimeoutExpired,
-            ) as error:
-                source.stale_report(root / "report.json")
-                print(json.dumps({"status": "STALE", "reason": str(error)}), flush=True)
-                code = 2
-            if args.once:
-                return code
-            time.sleep(max(0, args.interval - (time.monotonic() - started)))
+        return run(args, root)
+
+
+# Every failure of one read or one tick is a STALE tick: the report is marked
+# stale (provider and buyer refuse paid work on it) and the loop keeps going.
+# A node's RPC refusal (rate limit, timeout, connection) arrives as a
+# testnet_lib.TestnetError subclass (RpcError, or testnet_ops.Unknown wrapping it).
+STALE_ERRORS = (
+    OSError,
+    ValueError,
+    KeyError,
+    TypeError,
+    u.Refused,
+    u.lib.TestnetError,
+    source.http.client.HTTPException,
+    RecursionError,
+    subprocess.TimeoutExpired,
+)
+MAX_BACKOFF_SECONDS = 60
+
+
+def stale_delay(interval, failures):
+    """The wait after `failures` consecutive stale ticks: the normal interval,
+    doubled per further failure, never above MAX_BACKOFF_SECONDS."""
+    if failures <= 1:
+        return interval
+    return min(MAX_BACKOFF_SECONDS, interval * 2 ** min(failures - 1, 6))
+
+
+def run(args, root, *, sleep=time.sleep, ticks=None):
+    failures = 0
+    done = 0
+    while True:
+        started = time.monotonic()
+        try:
+            code = tick(args)
+            failures = 0
+        except STALE_ERRORS as error:
+            source.stale_report(root / "report.json")
+            failures += 1
+            print(
+                json.dumps(
+                    {"status": "STALE", "reason": str(error), "consecutive": failures}
+                ),
+                flush=True,
+            )
+            code = 2
+        done += 1
+        if args.once or (ticks is not None and done >= ticks):
+            return code
+        wait = stale_delay(args.interval, failures) if failures else args.interval
+        sleep(max(0, wait - (time.monotonic() - started)))
 
 
 if __name__ == "__main__":
