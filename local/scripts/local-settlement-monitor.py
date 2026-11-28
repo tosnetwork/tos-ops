@@ -258,6 +258,7 @@ def tick(args):
         binding,
         tos,
         json.loads(previous.read_text()) if previous.exists() else None,
+        **({"gap_dir": args.gap_dir} if getattr(args, "gap_dir", None) else {}),
     )
     a.document(directory / "snapshot.json", value)
     result = subprocess.run(
@@ -310,7 +311,16 @@ def main():
     p.add_argument("--evm-rpc", default="http://127.0.0.1:18545")
     p.add_argument("--interval", type=int, default=15)
     p.add_argument("--once", action="store_true")
+    p.add_argument(
+        "--gap-dir",
+        type=Path,
+        help="a reconcile-settlement-gap.py archive for one --once tick (runbook step 4)",
+    )
     args = p.parse_args()
+    u.require(
+        args.gap_dir is None or args.once,
+        "--gap-dir is only for one explicit --once tick",
+    )
     u.require(
         args.evm_rpc.startswith("http://127.0.0.1:") and 1 <= args.interval <= 30,
         "local endpoint and bounded interval required",
