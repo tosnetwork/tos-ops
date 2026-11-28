@@ -1,0 +1,49 @@
+{
+  "after_report": {
+    "alarms": [],
+    "baseline": false,
+    "checkpoint": {
+      "hash": "b5f06f08d0c109e3fc37051f1d49ce62272a93d9989a8012d2a535a7aef77747",
+      "height": 467524,
+      "utime": 1795823267
+    },
+    "latched_incidents": [],
+    "provider_pause_assets": [],
+    "refusal_records": [],
+    "rereports": [],
+    "schema": "tos-settlement-report/1",
+    "unknown_rereports": []
+  },
+  "authorization": "stablecoin final acceptance (memo decision 32): resolve this drill's own bridge_frozen latch after unblacklist and re-enable",
+  "incident": "usdt:bridge_frozen",
+  "other_incidents_kept": [],
+  "report_checkpoint": {
+    "hash": "46035035eae2c5041a50fdacc7ff3894b3b78842fa0a647196090cb2b9f28866",
+    "height": 467487,
+    "utime": 1795823253
+  },
+  "result": "resolved",
+  "source_facts": {
+    "allow_lock": true,
+    "bridge_balance": 223000000,
+    "bridge_blacklisted": false,
+    "cap": {
+      "available": 100000000,
+      "daily": 500000000,
+      "day_used": 226000000,
+      "hour_used": 1000000,
+      "hourly": 200000000,
+      "per_lock": 100000000,
+      "total": 1000000000
+    },
+    "disabled": false,
+    "fee_basis_points": 0,
+    "lock_nonce": 8,
+    "maximum_fee": 0,
+    "paused": false
+  },
+  "source_finalized": {
+    "hash": "0x957390752fbd1a6887b80fb5192b7ce15bca7b61e282b393edabca201a65991c",
+    "number": 53630
+  }
+}

@@ -1,0 +1,67 @@
+{
+ "amount": 2000000,
+ "asset": "usdt",
+ "bridge_transaction": {
+  "account": "733b321a0a2556eff5637d40d7e05724a69f8fa51c8ed7dfd22987ba6fe6a5b1",
+  "hash": "d475fc19d9fd5d25e7aaf1682bd60906e2735b4eb1c9d448f8e85bfab28d57ab",
+  "lt": 497897000001
+ },
+ "burn_send": {
+  "seqno": 29,
+  "tx": {
+   "hash": "00501808b1fd78ae9f213ee9864df6026f135f34b90b0196aa8c187974a76ce7",
+   "lt": 497896000001,
+   "out": [
+    {
+     "body_hash": "fe0210c04a695aeb2d8668f5d5c300c7bcb97ebaa822b961f8b59ac54e84b0c5",
+     "destination": "0:41bc48ffc215b95b4e0120f2aedc9c3e1e32f7a90741066057f8080b7211750b",
+     "value": 3000000000
+    }
+   ],
+   "took_effect": true,
+   "utime": 1795821530
+  }
+ },
+ "log_burn": {
+  "amount": 2000000,
+  "destination": "0x90f79bf6eb2c4f870365e785982e1f101e93b906",
+  "from_address_hash": "14eda362e0cb32fc910daa87ffd1f7840ae8a152275fe36451a4d51422484979",
+  "token": "0x610178da211fef7d417bc0e6fed39f05609ad788"
+ },
+ "preview": {
+  "amount_atomic": "2000000",
+  "issuer": {
+   "block_hash": "0x2de23126da8f45cee26492c20fe9ea5375042ad70de5c4a6e3c098f1540ca47d",
+   "block_number": 51910,
+   "block_time": 1795821465,
+   "chain_id": 1,
+   "fee_basis_points": 10,
+   "maximum_fee": "49000000",
+   "profile": "legacy_usdt",
+   "receiver": "0x90f79bf6eb2c4f870365e785982e1f101e93b906",
+   "schema": "tos-settlement-issuer-read/1",
+   "token": "0x610178da211fef7d417bc0e6fed39f05609ad788"
+  },
+  "issuer_fee_atomic": "2000",
+  "received_atomic": "1998000",
+  "warning": "A recorded burn is final. Issuer restrictions and fees may differ from this finalized observation by submission or unlock; a failed unlock can leave the tokens unredeemable to this receiver."
+ },
+ "receiver": "0x90f79bf6eb2c4f870365e785982e1f101e93b906",
+ "second_resolver": {
+  "buyer_wallet_balance": 219000000,
+  "checkpoint": {
+   "@type": "tos.blockIdExt",
+   "file_hash": "H67K2rxwfpvdjyX7nsjCpdhKJMBcDtu84f5rxz+AOkI=",
+   "root_hash": "y216BgszHXX+B9KJgLzWxfjfIqbHPRBEMeG+SR1bqLI=",
+   "seqno": 463182,
+   "shard": "-9223372036854775808",
+   "workchain": -1
+  },
+  "endpoints": [
+   "http://127.0.0.1:8014",
+   "http://127.0.0.1:8015",
+   "http://127.0.0.1:8016"
+  ],
+  "supply": 224000000
+ }
+}

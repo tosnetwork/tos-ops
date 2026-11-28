@@ -1181,3 +1181,213 @@ def test_sweep_preflight_uses_refund_deadline_without_weakening_it(
             module.send_operation(args, state, None, {})
     assert calls.count("send") == sends
     assert calls[0] == "refund-read"
+
+
+def custom_call_world(monkeypatch, tmp_path, amount):
+    state = module.usdc.State(tmp_path)
+    state.set("deployment", {"address": "0:" + "ab" * 32})
+    built, sent = [], []
+    buyer = SimpleNamespace(
+        address="0:" + "cd" * 32,
+        transfer=lambda state, intent, destination, value, body: (
+            sent.append((intent, destination, value, body.hash().hex())) or {"seqno": 1}
+        ),
+    )
+    monkeypatch.setattr(module.usdc, "wallets", lambda chain, keys: {"buyer": buyer})
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(module, "snapshot", lambda *a: None)
+    body = module.usdc.boc64(module.usdc.Builder().uint(1, 8).end())
+    monkeypatch.setattr(
+        module,
+        "cli_document",
+        lambda *a, **k: {
+            "body_boc": body,
+            "destination": "0:" + "ef" * 32,
+            "value_nanotos": "300000000",
+            "details": {"forward_tos_amount": "200000000"},
+        },
+    )
+
+    def run(argv, data=None):
+        built.append(json.loads(data))
+        return json.dumps(
+            {"body_boc": module.usdc.boc64(module.usdc.Builder().uint(2, 8).end())}
+        )
+
+    monkeypatch.setattr(module, "run", run)
+    chain = SimpleNamespace(get=lambda *a: [["num", str(int("12" * 32, 16))]])
+    args = SimpleNamespace(
+        case="fee-nominal",
+        funding_atomic=amount,
+        bridge_state=tmp_path,
+        fixture=Path("/fixture"),
+    )
+    return state, chain, args, built, sent
+
+
+def test_explicit_funding_uses_the_real_terms_and_the_given_amount(
+    monkeypatch, tmp_path
+):
+    state, chain, args, built, sent = custom_call_world(
+        monkeypatch, tmp_path, 1_001_001
+    )
+    module.call_case(args, state, chain, {})
+    assert built == [
+        {
+            "query_id": 0,
+            "amount_atomic": "1001001",
+            "forward_nanotos": "200000000",
+            "actor": "0:" + "ab" * 32,
+            "response": "0:" + "cd" * 32,
+            "request_hash": built[0]["request_hash"],
+            "terms_hash": "12" * 32,
+        }
+    ]
+    assert [s[0] for s in sent] == ["call-fee-nominal"]
+
+
+@pytest.mark.parametrize("case", ["funding-refused", "responded"])
+def test_explicit_funding_cannot_reuse_a_fixed_case(monkeypatch, tmp_path, case):
+    state, chain, args, built, sent = custom_call_world(
+        monkeypatch, tmp_path, 1_000_000
+    )
+    args.case = case
+    with pytest.raises(module.usdc.Refused, match="its own case name"):
+        module.call_case(args, state, chain, {})
+    assert sent == [] and built == []
+
+
+@pytest.mark.parametrize("amount", [0, -1, 2**120])
+def test_explicit_funding_amount_is_bounded(monkeypatch, tmp_path, amount):
+    state, chain, args, _built, sent = custom_call_world(monkeypatch, tmp_path, amount)
+    with pytest.raises(module.usdc.Refused, match="positive atomic amount"):
+        module.call_case(args, state, chain, {})
+    assert sent == []
+
+
+def test_unlisted_case_without_an_amount_is_still_refused(monkeypatch, tmp_path):
+    state, chain, args, _built, sent = custom_call_world(monkeypatch, tmp_path, None)
+    with pytest.raises(module.usdc.Refused, match="unsupported case"):
+        module.call_case(args, state, chain, {})
+    assert sent == []
+
+
+def verify_world(monkeypatch, tmp_path, document):
+    root = tmp_path / "state"
+    root.mkdir()
+    (root / "rail.json").write_text(
+        json.dumps(
+            {
+                "rpc_endpoints": ["http://127.0.0.1:8011/jsonRPC"],
+                "registry_code_boc_file": "r",
+                "registry_code_hash": "h",
+                "actor_code_hash": "a",
+            }
+        )
+    )
+    state = module.EvidenceState(root)
+    state.set("deployment", {"address": "0:" + "ab" * 32})
+    monkeypatch.setattr(module, "run", lambda argv: json.dumps(document))
+    chain = SimpleNamespace(urls=["u1", "u2", "u3", "r4", "r5", "r6"])
+    return state, chain
+
+
+@pytest.mark.parametrize(
+    "expect, document, ok",
+    [
+        (
+            "funding_returned",
+            {"result": "pass", "funding_refusals": [{"state": "funding_returned"}]},
+            True,
+        ),
+        (
+            "funding_returned",
+            {"result": "pass", "funding_refusals": [{"state": "surplus"}]},
+            False,
+        ),
+        ("pending", {"result": "pass", "requests": [{"state": "pending"}]}, True),
+        ("pending", {"result": "pass", "requests": [{"state": "refunded"}]}, False),
+    ],
+)
+def test_verify_requires_the_expected_state(
+    monkeypatch, tmp_path, expect, document, ok
+):
+    state, chain = verify_world(monkeypatch, tmp_path, document)
+    args = SimpleNamespace(
+        verifier=Path("/verifier"),
+        case="fee-minted",
+        operation_args=[],
+        expect_state=expect,
+    )
+    if ok:
+        module.verify(args, state, chain, {})
+    else:
+        with pytest.raises(module.usdc.Refused):
+            module.verify(args, state, chain, {})
+
+
+@pytest.mark.parametrize(
+    "routes, message",
+    [
+        (
+            "http://10.0.0.1:19014/jsonRPC,http://127.0.0.1:19015/jsonRPC,http://127.0.0.1:19016/jsonRPC",
+            "loopback",
+        ),
+        (
+            "http://127.0.0.1:19014/jsonRPC,http://127.0.0.1:19014/jsonRPC,http://127.0.0.1:19016/jsonRPC",
+            "three independent",
+        ),
+        (
+            "http://127.0.0.1:8011/jsonRPC,http://127.0.0.1:19015/jsonRPC,http://127.0.0.1:19016/jsonRPC",
+            "overlap",
+        ),
+    ],
+)
+def test_resolver_routes_are_loopback_distinct_and_not_senders(
+    monkeypatch, tmp_path, routes, message
+):
+    state, chain = verify_world(monkeypatch, tmp_path, {"result": "pass"})
+    args = SimpleNamespace(
+        verifier=Path("/verifier"),
+        case="x",
+        operation_args=[],
+        expect_state=None,
+        resolver_rpc=routes,
+    )
+    with pytest.raises(module.usdc.Refused, match=message):
+        module.verify(args, state, chain, {})
+
+
+def test_resolver_routes_replace_the_direct_references(monkeypatch, tmp_path):
+    seen = []
+    state, chain = verify_world(monkeypatch, tmp_path, {"result": "pass"})
+    monkeypatch.setattr(
+        module, "run", lambda argv: seen.append(argv) or json.dumps({"result": "pass"})
+    )
+    routes = "http://127.0.0.1:19014/jsonRPC,http://127.0.0.1:19015/jsonRPC,http://127.0.0.1:19016/jsonRPC"
+    args = SimpleNamespace(
+        verifier=Path("/verifier"),
+        case="x",
+        operation_args=[],
+        expect_state=None,
+        resolver_rpc=routes,
+    )
+    module.verify(args, state, chain, {})
+    assert seen[0][seen[0].index("--rpc") + 1] == routes
+
+
+def test_resolver_route_userinfo_bypass_is_refused(monkeypatch, tmp_path):
+    state, chain = verify_world(monkeypatch, tmp_path, {"result": "pass"})
+    routes = (
+        "http://127.0.0.1:19014@review.invalid:8545/jsonRPC,"
+        "http://127.0.0.1:19015/jsonRPC,http://127.0.0.1:19016/jsonRPC"
+    )
+    args = SimpleNamespace(
+        verifier=Path("/verifier"),
+        case="x",
+        operation_args=[],
+        expect_state=None,
+        resolver_rpc=routes,
+    )
+    with pytest.raises(module.usdc.Refused, match="loopback"):
+        module.verify(args, state, chain, {})

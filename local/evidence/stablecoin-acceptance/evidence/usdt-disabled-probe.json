@@ -1,0 +1,37 @@
+{
+  "amount": 1000000,
+  "approval": {
+    "after": 1000000,
+    "approved": 1000000,
+    "before": 0,
+    "tx": "0x631f0a8bd21c32221a6e817c566761adcb899deda94bf114905abfdae4639872"
+  },
+  "approval_reset_tx": "0xa03339ac342122c52e9fe84a1c51f04b83060cdab986dcb7165bc9b2b86a7ad1",
+  "asset": "usdt",
+  "block": {
+    "hash": "0x24445b3fcb4035222eb05297b130e454a087b0f69ee5df193ccad5d81198b163",
+    "number": 53186,
+    "timestamp": 1795822744
+  },
+  "expected_reason": "lock: disabled token",
+  "facts_at_block": {
+    "allow_lock": true,
+    "bridge_balance": 223000000,
+    "bridge_blacklisted": true,
+    "cap": {
+      "available": 100000000,
+      "daily": 500000000,
+      "day_used": 226000000,
+      "hour_used": 1000000,
+      "hourly": 200000000,
+      "per_lock": 100000000,
+      "total": 1000000000
+    },
+    "disabled": true,
+    "fee_basis_points": 0,
+    "lock_nonce": 7,
+    "maximum_fee": 0,
+    "paused": false
+  },
+  "revert": "Error: server returned an error response: error code 3: execution reverted: lock: disabled token, data: \"0x08c379a0000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000146c6f636b3a2064697361626c656420746f6b656e000000000000000000000000\""
+}

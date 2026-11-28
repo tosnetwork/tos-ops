@@ -1,0 +1,60 @@
+{
+  "checkpoint": {
+    "@type": "tos.blockIdExt",
+    "file_hash": "GlJEKaqn7BU7rOFCmvacinGagIPOI6PRf4A7IHNRBGY=",
+    "root_hash": "xxxpHs0O3d+vLXg17RlcX7RzGHlE9CQSg2L/liX6si8=",
+    "seqno": 464854,
+    "shard": "-9223372036854775808",
+    "workchain": -1
+  },
+  "complete": true,
+  "files": [
+    {
+      "account": "0:14eda362e0cb32fc910daa87ffd1f7840ae8a152275fe36451a4d51422484979",
+      "block": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "oCEDlI/hZUXz/jjUhnluBAWr7iXcKn8ypFI8s9zV+xM=",
+        "root_hash": "MtZvuwT025rf9p3AmhQvMwbA6BO+n5+2VNDWGarQGS0=",
+        "seqno": 497907,
+        "shard": "-9223372036854775808",
+        "workchain": 0
+      },
+      "file": "transactions/499553000001-4cc1f2eebac23fc9ab72ac34fbf74a79343052fb424cdf5787458e5e62bd61cd.boc",
+      "lt": 499553000001,
+      "sha256": "9b12b080897b1e56a28d2f700bf4adf2e5eb4f9398e027ddc600df59cceb8eed",
+      "transaction_hash": "4cc1f2eebac23fc9ab72ac34fbf74a79343052fb424cdf5787458e5e62bd61cd"
+    },
+    {
+      "account": "0:dab3c57e833459f6b2481148009a8c0817540da8cfc1e64248be612f1fe06df3",
+      "block": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "oCEDlI/hZUXz/jjUhnluBAWr7iXcKn8ypFI8s9zV+xM=",
+        "root_hash": "MtZvuwT025rf9p3AmhQvMwbA6BO+n5+2VNDWGarQGS0=",
+        "seqno": 497907,
+        "shard": "-9223372036854775808",
+        "workchain": 0
+      },
+      "file": "transactions/499553000003-4388e6427a36afea41cd3c0c8e1a4feffe8461d42c73e08fb8290f492cc7cbf8.boc",
+      "lt": 499553000003,
+      "sha256": "7622d71d82818f1109e371a67c2b95cc77a4b4339f100edc67e03230e10de53d",
+      "transaction_hash": "4388e6427a36afea41cd3c0c8e1a4feffe8461d42c73e08fb8290f492cc7cbf8"
+    },
+    {
+      "file": "verifiers/archival-verification-1945467597804f148fa100096867b60201e0b148f843b6c425b1506ca7c309c9.json",
+      "sha256": "1945467597804f148fa100096867b60201e0b148f843b6c425b1506ca7c309c9"
+    },
+    {
+      "file": "block-headers.json",
+      "sha256": "1d3bb35264adf4b010dd0a7fc494535545d54157df39801a5693dced89d93152"
+    }
+  ],
+  "identity": "6dcdeddff38e43acf292d87b90cbd01d2b982f42d7aeef90f1c2935a789cd1a6",
+  "label": "send-fee-minted-expire",
+  "roots": [
+    {
+      "account": "0:14eda362e0cb32fc910daa87ffd1f7840ae8a152275fe36451a4d51422484979",
+      "hash": "4cc1f2eebac23fc9ab72ac34fbf74a79343052fb424cdf5787458e5e62bd61cd",
+      "lt": 499553000001
+    }
+  ]
+}

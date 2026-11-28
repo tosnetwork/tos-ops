@@ -1,0 +1,60 @@
+{
+  "checkpoint": {
+    "@type": "tos.blockIdExt",
+    "file_hash": "QVt2mWUEJV+1UjvVxIm2rAHXWHJ/tHaDkCgBxcGUNPw=",
+    "root_hash": "8vuwLzz9KkLdPEJmdXgb/bl5gF3Py9RS+ZV2+jwRrJM=",
+    "seqno": 456703,
+    "shard": "-9223372036854775808",
+    "workchain": -1
+  },
+  "complete": true,
+  "files": [
+    {
+      "account": "0:14eda362e0cb32fc910daa87ffd1f7840ae8a152275fe36451a4d51422484979",
+      "block": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "gqdvcpsutdGB70ZXsRxS+EMXopYHlvsgqqxsBk77hi8=",
+        "root_hash": "xqt5AbKJP+agYYCM3Qasflql5RlLePT5N4Fmz665x6c=",
+        "seqno": 489780,
+        "shard": "-9223372036854775808",
+        "workchain": 0
+      },
+      "file": "transactions/491400000001-1cdd1535658e026959d63f496b787949b9444f5a93146fb3fc2ce1829330de90.boc",
+      "lt": 491400000001,
+      "sha256": "02a2d0c56607aaac53ebe8acb98d6b5309df52b6faae9d1e60f4ba86d29c0b20",
+      "transaction_hash": "1cdd1535658e026959d63f496b787949b9444f5a93146fb3fc2ce1829330de90"
+    },
+    {
+      "account": "-1:733b321a0a2556eff5637d40d7e05724a69f8fa51c8ed7dfd22987ba6fe6a5b1",
+      "block": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "mWLCnUwxoNRrs9U+cF1pvuRJawqrP4xCfdo3GA81jY4=",
+        "root_hash": "U1HN++ZqcggpKL8Td+Fnl7YyVRNfmgm7wygynK0yc0k=",
+        "seqno": 456700,
+        "shard": "-9223372036854775808",
+        "workchain": -1
+      },
+      "file": "transactions/491401000001-f64738cd99a593f9b524d2c8e0a9314a742d3cda8705f95d3dc2a0628981c9e7.boc",
+      "lt": 491401000001,
+      "sha256": "6b36ad063ec29ca3694a743247921da5f742a397aea06c9ddeb7de3e8038a5af",
+      "transaction_hash": "f64738cd99a593f9b524d2c8e0a9314a742d3cda8705f95d3dc2a0628981c9e7"
+    },
+    {
+      "file": "verifiers/archival-verification-b91436b48776ef36a85a001242e09fb962d31c67c81b274ee4ad15b80f056e18.json",
+      "sha256": "b91436b48776ef36a85a001242e09fb962d31c67c81b274ee4ad15b80f056e18"
+    },
+    {
+      "file": "block-headers.json",
+      "sha256": "323af566e0671f73b0fe7d9ee071743622087696dd4377fd76d7cf1031ef02c8"
+    }
+  ],
+  "identity": "1af4f029777ac6fb7f42c9a4e831203db1999c680c49f92a5fbfed7f9f1da297",
+  "label": "pay-swap-3",
+  "roots": [
+    {
+      "account": "0:14eda362e0cb32fc910daa87ffd1f7840ae8a152275fe36451a4d51422484979",
+      "hash": "1cdd1535658e026959d63f496b787949b9444f5a93146fb3fc2ce1829330de90",
+      "lt": 491400000001
+    }
+  ]
+}

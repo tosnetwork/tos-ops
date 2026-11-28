@@ -1,0 +1,41 @@
+{
+ "buyer_tos": 43728894802,
+ "usdc": {
+  "allow_lock": true,
+  "bridge_balance": 635000000,
+  "buyer_wallet": 628999999,
+  "cap": {
+   "available": 50000000,
+   "daily": 450000000,
+   "day_used": 400000000,
+   "hour_used": 0,
+   "hourly": 200000000,
+   "per_lock": 100000000,
+   "total": 1000000000
+  },
+  "disabled": false,
+  "lock_nonce": 17,
+  "wrapped_supply": 635000000
+ },
+ "usdt": {
+  "allow_lock": true,
+  "bridge_balance": 633000000,
+  "bridge_blacklisted": false,
+  "buyer_wallet": 629000000,
+  "cap": {
+   "available": 100000000,
+   "daily": 500000000,
+   "day_used": 400000000,
+   "hour_used": 0,
+   "hourly": 200000000,
+   "per_lock": 100000000,
+   "total": 1000000000
+  },
+  "disabled": false,
+  "fee_basis_points": 0,
+  "lock_nonce": 17,
+  "maximum_fee": 0,
+  "paused": false,
+  "wrapped_supply": 633000000
+ }
+}

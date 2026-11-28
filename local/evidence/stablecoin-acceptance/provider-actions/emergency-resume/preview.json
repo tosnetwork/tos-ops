@@ -1,0 +1,72 @@
+{
+  "anchor": {
+    "hash": "aee8ab5c7882c9e3dc77ed1b905cd698aca03fd816a8e9b3ebd7417e09631963",
+    "lt": 500365000003
+  },
+  "body_hash": "",
+  "input": {
+    "actor": "0:dab3c57e833459f6b2481148009a8c0817540da8cfc1e64248be612f1fe06df3",
+    "idempotency_key": "stablecoin-acceptance-emergency-resume",
+    "operation": "resume"
+  },
+  "input_hash": "97e36f4183f9aa7bbccda3d7ad4ebcfaa910e747c05b9606eea51b72a661060a",
+  "network": {
+    "genesis_file_hash": "sha256:c3860fe196a2a1b5e4e74a9cf9448624a353ce68a8c4c5f6413347586d688769",
+    "genesis_root_hash": "sha256:65735247a371030abe811aeac0afe357301ce90e161450d26f88b4beb5b4c366",
+    "network_id": "tos:global-id:3"
+  },
+  "preview": {
+    "actor": "0:dab3c57e833459f6b2481148009a8c0817540da8cfc1e64248be612f1fe06df3",
+    "actor_floor_met": true,
+    "asset_id": "usdt",
+    "checkpoint": 467646,
+    "decimals": 6,
+    "digest": "53c76469e6640b7614a8d6b4db3b515ca247feb9c6c51283f58d208f482b2096",
+    "master": "0:181e00fdfea5eeccb099b2ede160375e206de7d466a8bc6b4c79557781759591",
+    "message": {
+      "actor": "0:dab3c57e833459f6b2481148009a8c0817540da8cfc1e64248be612f1fe06df3",
+      "body_boc": "te6ccgEBAgEAjwABk1NUQwaX429Bg/mqezD0JAQL68IAQF9eEAAAACWAAAAljQAMNr+79Iqj6C0HfUD29kITuttBDwUYINgYGHwmtC2WaYAAABkOYloCAQCAxP8B5whbaD7ZUBxQ9YiHhnLs5iX1wmlWQPuP7IyzBy1C0pE/GtNccVl7YqUqFcn4b79KDxeWhazuECMJV8r7GQ==",
+      "body_hash": "c8b437d84892c2d9df6217ab8aa61ee29da0c9e2db7836997688f1836f92149d",
+      "bounce": true,
+      "code_profile": "test",
+      "destination": "0:dab3c57e833459f6b2481148009a8c0817540da8cfc1e64248be612f1fe06df3",
+      "details": {
+        "active": "true",
+        "authorized_caller": "",
+        "cleanup_bounty": "100000000",
+        "max_token_liability": "10000000",
+        "metadata_hash": "c4ff01e7085b683ed9501c50f588878672ece625f5c2695640fb8fec8cb3072d",
+        "open_access": "true",
+        "price_per_call": "1000000",
+        "proof_scheme_hash": "42d2913f1ad35c71597b62a52a15c9f86fbf4a0f179685acee10230957cafb19",
+        "query_id": "10944713846618172027",
+        "rate_limit_per_day": "100",
+        "refund_claim_window": "600",
+        "response_sla": "600",
+        "storage_fee": "200000000"
+      },
+      "operation": "update-policy",
+      "rail": "tos.service.service-actor-token.v1",
+      "read_at": {
+        "gen_utime": 1795823316,
+        "root_hash": "ac4fb2afa67e33d3eec0ed79007ea3e2614f25d541f2a0b84f1fa549fafcefaa",
+        "seqno": 467646
+      },
+      "sender": "0:30dafeefd22a8fa0b41df503dbd9084eeb6d043c146083606061f09ad0b659a6",
+      "value_nanotos": "10000000",
+      "version": "tosctl.service-actor-token.prepared-message.v1"
+    },
+    "network": {
+      "genesis_file_hash": "sha256:c3860fe196a2a1b5e4e74a9cf9448624a353ce68a8c4c5f6413347586d688769",
+      "genesis_root_hash": "sha256:65735247a371030abe811aeac0afe357301ce90e161450d26f88b4beb5b4c366",
+      "network_id": "tos:global-id:3"
+    },
+    "policy_version": 4,
+    "token_revenue_atomic": "1000000",
+    "tos_revenue_nanotos": "600000000",
+    "wallet_floor_met": true
+  },
+  "query_id": 0,
+  "schema": "tos.service.provider-token-action.v1",
+  "state": "preview"
+}

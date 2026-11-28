@@ -1,0 +1,10 @@
+{
+  "after": 2000000000,
+  "amount": 2000000000,
+  "asset": "usdt",
+  "block": 49724,
+  "held": 0,
+  "holder": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+  "locker": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+  "tx": "0x8a616cadabb5a8a89729ec364797410f1824d755028570d0ed23b2be5dd39560"
+}

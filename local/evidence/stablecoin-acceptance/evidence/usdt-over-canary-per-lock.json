@@ -1,0 +1,37 @@
+{
+  "amount": 150000000,
+  "approval": {
+    "after": 150000000,
+    "approved": 150000000,
+    "before": 0,
+    "tx": "0x27b68cb2066baed4f9a9101abe63b8cc2d42b24b84cd182dc4b43ec5792d2f85"
+  },
+  "approval_reset_tx": "0x7103aeb142588c606730a2016955a55f1df6c8db878955d043d6a8974decb28a",
+  "asset": "usdt",
+  "block": {
+    "hash": "0xefb69f7f761f9298381c8fa5c0299a3f883f4b9f73bd22455f0f6e65d6032c83",
+    "number": 88614,
+    "timestamp": 1795858343
+  },
+  "expected_reason": "lock: over the per-lock cap",
+  "facts_at_block": {
+    "allow_lock": true,
+    "bridge_balance": 633000000,
+    "bridge_blacklisted": false,
+    "cap": {
+      "available": 100000000,
+      "daily": 500000000,
+      "day_used": 400000000,
+      "hour_used": 0,
+      "hourly": 200000000,
+      "per_lock": 100000000,
+      "total": 1000000000
+    },
+    "disabled": false,
+    "fee_basis_points": 0,
+    "lock_nonce": 17,
+    "maximum_fee": 0,
+    "paused": false
+  },
+  "revert": "Error: server returned an error response: error code 3: execution reverted: lock: over the per-lock cap, data: \"0x08c379a00000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000001b6c6f636b3a206f76657220746865207065722d6c6f636b206361700000000000\""
+}

@@ -1,0 +1,93 @@
+{
+  "assets": {
+    "usdc": {
+      "balance_events": [],
+      "bridge_balance": 225000000,
+      "bridge_blacklisted": false,
+      "fee_basis_points": 0,
+      "lock_cap": {
+        "available": 100000000,
+        "daily": 500000000,
+        "day_used": 200000000,
+        "hour_used": 0,
+        "hourly": 200000000,
+        "per_lock": 100000000,
+        "total": 1000000000
+      },
+      "maximum_fee": 0,
+      "paused": false,
+      "wrapped_supply": 225000000
+    },
+    "usdt": {
+      "balance_events": [],
+      "bridge_balance": 223000000,
+      "bridge_blacklisted": true,
+      "fee_basis_points": 0,
+      "lock_cap": {
+        "available": 100000000,
+        "daily": 500000000,
+        "day_used": 226000000,
+        "hour_used": 1000000,
+        "hourly": 200000000,
+        "per_lock": 100000000,
+        "total": 1000000000
+      },
+      "maximum_fee": 0,
+      "paused": false,
+      "wrapped_supply": 223000000
+    }
+  },
+  "incidents": {
+    "usdt:bridge_frozen": {
+      "alarm": {
+        "actor": null,
+        "asset": "usdt",
+        "code": "bridge_frozen",
+        "facts": {}
+      },
+      "checkpoint": {
+        "hash": "2a4b1bfcdb296760f4c57d94a090f8a4c266666374cbc66e340dc6f46413cf2a",
+        "height": 465386,
+        "utime": 1795822412
+      }
+    }
+  },
+  "report": {
+    "alarms": [
+      {
+        "actor": null,
+        "asset": "usdt",
+        "code": "bridge_frozen",
+        "facts": {}
+      }
+    ],
+    "baseline": false,
+    "checkpoint": {
+      "hash": "029e0870b0c2a98a6a73a7b62f4fa89c233551f25d9a0d764353a5abbf479dbc",
+      "height": 465612,
+      "utime": 1795822502
+    },
+    "latched_incidents": [
+      "usdt:bridge_frozen"
+    ],
+    "provider_pause_assets": [
+      "usdt"
+    ],
+    "refusal_records": [],
+    "rereports": [],
+    "schema": "tos-settlement-report/1",
+    "unknown_rereports": []
+  },
+  "report_age_seconds": 2,
+  "snapshot_checkpoint": {
+    "hash": "029e0870b0c2a98a6a73a7b62f4fa89c233551f25d9a0d764353a5abbf479dbc",
+    "height": 465612,
+    "utime": 1795822502
+  },
+  "snapshot_sha256": "8953ca0ed836545795d2895185acd95a6ab7d4c8a54b56863d01848f2c62480b",
+  "source_checkpoint": {
+    "hash": "beddd190a88ceb9ff12b8dd7e83aa6b8f3c14d73c451bdba96c867fdeb5fab0c",
+    "height": 52881,
+    "utime": 1795822438
+  }
+}

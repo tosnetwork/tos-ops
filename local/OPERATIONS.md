@@ -181,6 +181,25 @@ The local test-USDT addition is gated by the
 This preparation does not authorize replacing an existing bridge or adopting a
 record before non-author review. Production release pins remain absent.
 
+## Stablecoin final acceptance
+
+`local-pq-stablecoin-acceptance.py` reuses the bridge run and the LocalUSDT
+namespace. It provides:
+
+- oracle-quorum cap, disable-token and lock-switch votes;
+- pinned-block lock probes;
+- locks with mint and second-resolver supply checks;
+- LocalUSDT issuer controls;
+- T19-checked burns and oracle-signed unlocks;
+- monitor observations, explicit incident resolution and reconciliation.
+
+Every value step is journaled before it is sent and archived before the next
+one. Value steps are dry runs unless `--execute` is given. The run and its
+commands are recorded in
+[evidence/stablecoin-acceptance](evidence/stablecoin-acceptance/README.md).
+Tests: `local/tests/test_local_pq_stablecoin_acceptance.py`. Controls:
+`local/tests/stablecoin_acceptance_mutants.py`.
+
 ## Local settlement monitor loop
 
 `local-settlement-monitor.py` treats an expected external failure as a STALE

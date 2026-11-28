@@ -1,0 +1,43 @@
+{
+  "allow": true,
+  "nonce": 3,
+  "usdc": {
+    "allow_lock": true,
+    "bridge_balance": 635000000,
+    "cap": {
+      "available": 100000000,
+      "daily": 500000000,
+      "day_used": 400000000,
+      "hour_used": 0,
+      "hourly": 200000000,
+      "per_lock": 100000000,
+      "total": 1000000000
+    },
+    "disabled": false,
+    "lock_nonce": 17
+  },
+  "usdt": {
+    "allow_lock": true,
+    "bridge_balance": 633000000,
+    "bridge_blacklisted": false,
+    "cap": {
+      "available": 100000000,
+      "daily": 500000000,
+      "day_used": 400000000,
+      "hour_used": 0,
+      "hourly": 200000000,
+      "per_lock": 100000000,
+      "total": 1000000000
+    },
+    "disabled": false,
+    "fee_basis_points": 0,
+    "lock_nonce": 17,
+    "maximum_fee": 0,
+    "paused": false
+  },
+  "vote": {
+    "block": 89117,
+    "status": 1,
+    "tx": "0x36e5490415d382f9481334a8cbedd0805c78d18ea8d749f96ee9fec96a0134f6"
+  }
+}

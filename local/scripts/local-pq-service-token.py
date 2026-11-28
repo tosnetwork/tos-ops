@@ -573,12 +573,25 @@ def cli_document(args, state, chain, label, kind, *extra, sender=None):
     return doc
 
 
+FIXED_CASES = ("responded", "refunded", "swept", "funding-refused", "surplus")
+
+
 def call_case(args, state, chain, bridge):
     label = args.case
+    # An explicit funding amount builds the shared SDK funding with the actor's
+    # real terms: the exact-amount rule then admits only the actor's price, and
+    # refuses and returns any other amount. It needs its own case name.
+    custom = getattr(args, "funding_atomic", None) is not None
+    require(label in FIXED_CASES or custom, "unsupported case")
     require(
-        label in ("responded", "refunded", "swept", "funding-refused", "surplus"),
-        "unsupported case",
+        not custom or label not in FIXED_CASES,
+        "an explicit funding amount needs its own case name",
     )
+    if custom:
+        require(
+            type(args.funding_atomic) is int and 0 < args.funding_atomic < 2**120,
+            "the funding amount must be a positive atomic amount",
+        )
     buyer = usdc.wallets(chain, args.bridge_state / "keys")["buyer"]
     request_hash = hashlib.sha256(("local-token-t10-" + label).encode()).hexdigest()
     terms = format(
@@ -597,11 +610,11 @@ def call_case(args, state, chain, bridge):
         sender=buyer.address,
     )
     body = usdc.from64(doc["body_boc"])
-    if label in ("funding-refused", "surplus"):
+    if label in ("funding-refused", "surplus") or custom:
         details = doc["details"]
         inputs = {
             "query_id": 0,
-            "amount_atomic": "1000000",
+            "amount_atomic": str(args.funding_atomic) if custom else "1000000",
             "forward_nanotos": "100000000"
             if label == "surplus"
             else details["forward_tos_amount"],
@@ -723,11 +736,43 @@ def send_operation(args, state, chain, bridge):
     snapshot(state, chain, "after-" + label)
 
 
+def loopback_url(url):
+    """An http URL whose real host is loopback (127.0.0.0/8, ::1 or localhost),
+    with an explicit port and no userinfo; a prefix test is not enough."""
+    import ipaddress
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return False
+    if parts.scheme != "http" or "@" in parts.netloc or port is None:
+        return False
+    host = parts.hostname or ""
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def verify(args, state, chain, bridge):
     require(args.verifier is not None, "--verifier is required")
     require(args.case, "verify requires --case")
     config = json.loads((state.root / "rail.json").read_text())
     endpoints = chain.urls[3:6]
+    # The retained-history transport (local/tests/helpers/retained_transactions_rpc.py)
+    # serves pruned actor history from archived cells; its reference routes map to
+    # nodes 4-6 and reject every submission. Only loopback routes are accepted.
+    override = getattr(args, "resolver_rpc", None)
+    if override:
+        endpoints = override.split(",")
+        require(
+            all(loopback_url(e) for e in endpoints),
+            "resolver routes must be loopback",
+        )
     require(
         len(endpoints) == 3 and len(set(endpoints)) == 3,
         "three independent resolver endpoints are required",
@@ -776,6 +821,16 @@ def verify(args, state, chain, bridge):
         "swept": "swept",
         "returned": "returned",
     }.get(args.case)
+    expect_state = getattr(args, "expect_state", None)
+    if expect_state == "funding_returned":
+        require(
+            any(
+                r["state"] == expect_state for r in document.get("funding_refusals", [])
+            ),
+            "funding outcome not proven",
+        )
+    elif expect_state:
+        expected = expect_state
     if expected:
         require(
             len(document.get("requests", [])) == 1
@@ -794,6 +849,7 @@ def verify(args, state, chain, bridge):
             "resolver_endpoints": endpoints,
             "sending_endpoints": config["rpc_endpoints"],
             "resolver": "independent process using the same production resolver code",
+            "retained_history_routes": bool(getattr(args, "resolver_rpc", None)),
         },
     )
 
@@ -1502,7 +1558,27 @@ def main():
     p.add_argument("--case", type=case_name)
     p.add_argument("--destination")
     p.add_argument("--sender-wallet", choices=("owner", "buyer"), default="owner")
+    p.add_argument("--funding-atomic", type=int)
+    p.add_argument(
+        "--resolver-rpc", help="three loopback resolver routes, comma-separated"
+    )
+    p.add_argument(
+        "--expect-state",
+        choices=("funding_returned", "pending", "responded", "refunded", "swept"),
+    )
     args, extra = p.parse_known_args()
+    require(
+        args.funding_atomic is None or args.step == "call",
+        "--funding-atomic belongs to call",
+    )
+    require(
+        args.expect_state is None or args.step == "verify",
+        "--expect-state belongs to verify",
+    )
+    require(
+        args.resolver_rpc is None or args.step == "verify",
+        "--resolver-rpc belongs to verify",
+    )
     args.operation_args = extra
     if args.step == "send" and args.destination:
         # This flag also belongs to the funding helper. Forward it explicitly

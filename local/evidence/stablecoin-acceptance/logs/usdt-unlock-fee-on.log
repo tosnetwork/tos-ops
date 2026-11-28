@@ -1,0 +1,38 @@
+{
+ "after": {
+  "bridge": 224000000,
+  "receiver": 1998000
+ },
+ "before": {
+  "bridge": 226000000,
+  "facts": {
+   "allow_lock": true,
+   "bridge_balance": 226000000,
+   "bridge_blacklisted": false,
+   "cap": {
+    "available": 100000000,
+    "daily": 500000000,
+    "day_used": 226000000,
+    "hour_used": 1000000,
+    "hourly": 200000000,
+    "per_lock": 100000000,
+    "total": 1000000000
+   },
+   "disabled": false,
+   "fee_basis_points": 10,
+   "lock_nonce": 7,
+   "maximum_fee": 49000000,
+   "paused": false
+  },
+  "receiver": 0
+ },
+ "burn": "usdt-burn-fee-on",
+ "issuer_fee": 2000,
+ "received": 1998000,
+ "swap": "(0x90f79bf6eb2c4f870365e785982e1f101e93b906,0x610178da211fef7d417bc0e6fed39f05609ad788,2000000,(0x14eda362e0cb32fc910daa87ffd1f7840ae8a152275fe36451a4d51422484979,0xd475fc19d9fd5d25e7aaf1682bd60906e2735b4eb1c9d448f8e85bfab28d57ab,497897000001))",
+ "vote": {
+  "block": 51988,
+  "status": 1,
+  "tx": "0x228c410f3e2d9e251f76b29074332efd3c1b8f7411abb3084835c640400386f5"
+ }
+}

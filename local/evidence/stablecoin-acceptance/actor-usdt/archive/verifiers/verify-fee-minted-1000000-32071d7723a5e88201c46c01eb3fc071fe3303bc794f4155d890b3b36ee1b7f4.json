@@ -1,0 +1,83 @@
+{
+  "checkpoint": {
+    "block_file_hash": "sha256:1d4365d6e66586f2f332fd6ab71b97298857ffdb65400cdb4ed83bbbad377c19",
+    "block_root_hash": "sha256:442686c9a7459c1e5fecb69cdca08d3d618e2c772328644471affabb843d6c33",
+    "chain_time": 1795821521,
+    "seqno": 463154
+  },
+  "checks": [
+    {
+      "detail": "complete actor history and typed pending, refund, payout and returned cells agree",
+      "id": "finalized-state",
+      "ok": true
+    }
+  ],
+  "funding_refusals": [],
+  "inputs": [
+    {
+      "bytes": 233,
+      "name": "network-domain",
+      "sha256": "sha256:e2054d9ab121384462030f96b7526416445d9ee177a9ef0af78c73a462167662"
+    },
+    {
+      "bytes": 808,
+      "name": "asset-pins",
+      "sha256": "sha256:590e096183d536248beea5995fef12d8a490ad0e3861bdc98bede3619b53cc64"
+    },
+    {
+      "bytes": 5597,
+      "name": "registry-code-boc",
+      "sha256": "sha256:ac3948e3685f4015ca2ce3c52e58150e7ef4ab0f75634f974124922b40fd07d9"
+    }
+  ],
+  "network": {
+    "genesis_file_hash": "sha256:c3860fe196a2a1b5e4e74a9cf9448624a353ce68a8c4c5f6413347586d688769",
+    "genesis_root_hash": "sha256:65735247a371030abe811aeac0afe357301ce90e161450d26f88b4beb5b4c366",
+    "network_id": "local-usdc-t10"
+  },
+  "not_claimed": [
+    "operator independence of the endpoints: agreeing endpoints run by one operator are one source",
+    "computation correctness: a Receipt is the provider's attested statement of the digests it binds",
+    "the identity or independence of the buyer, the provider or the verifier",
+    "anything after the checkpoint, or about a request the verification did not select",
+    "without an evidence bundle, only the caller wallet of each request is proven: not its Quote, its Capability binding or whose purchase it is; bind the reported caller to the buyer's declared wallet",
+    "without a token bundle, no asset-recognition or funding-chain claim is made"
+  ],
+  "reads": {
+    "endpoints": [
+      {
+        "genesis_ok": true,
+        "url": "http://127.0.0.1:19014/jsonRPC"
+      },
+      {
+        "genesis_ok": true,
+        "url": "http://127.0.0.1:19015/jsonRPC"
+      },
+      {
+        "genesis_ok": true,
+        "url": "http://127.0.0.1:19016/jsonRPC"
+      }
+    ],
+    "quorum": 3
+  },
+  "requests": [
+    {
+      "call": {
+        "hash": "01c100eb51e79674095e8c17b0b9a1dff2b9bd0727e76ddce65570483fe02410",
+        "lt": 497773000007
+      },
+      "caller": "0:14eda362e0cb32fc910daa87ffd1f7840ae8a152275fe36451a4d51422484979",
+      "price_atomic": "1000000",
+      "request_hash": "1c26ebc4ab96135513752b7ad807a619598eeedb583ed55b58fec9505d9d60f7",
+      "request_id": 4,
+      "state": "pending"
+    }
+  ],
+  "result": "pass",
+  "schema": "tos.service.purchase-verdict.token.v1",
+  "tool": {
+    "go_version": "go1.26.11",
+    "module": "github.com/tosnetwork/ai",
+    "name": "tos-service-verify"
+  }
+}
