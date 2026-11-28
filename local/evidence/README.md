@@ -57,3 +57,14 @@ it as a test asset. The wallet requires `GLOBALID == 3`; the driver also binds
 every endpoint to the approved local genesis. An arbitrary larger chain id
 would not fit ConfigParam 84 or the bridge's uint32 field and would fail its
 vote check. The retained returned-case evidence already used this valid id.
+
+## Stablecoin final acceptance
+
+The [local stablecoin acceptance](stablecoin-acceptance/README.md) covers:
+
+- the canary under the decided caps and the cap raise;
+- the LocalUSDT freeze drill, with incident resolution and resume;
+- the fee-on-transfer and no-`bool` cases;
+- the bridge lock-switch drill.
+
+It replaces the public-testnet stage (memo decision 32).
