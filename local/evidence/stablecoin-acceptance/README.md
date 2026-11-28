@@ -257,29 +257,55 @@ At 23:57:18 the running `tos-local-usdt-monitor` unit exited with status 1.
   fail-closed: the provider and buyer refuse paid work on a stale report.
 - **Coverage.** The hour-0/1 canary locks ran while no monitor was running, and
   this record does not claim monitor coverage for them.
-- **Not done.** The unit was not restarted. Restarting is a change to a running
-  service. More than 64 source blocks have also passed, so the collector needs
-  the runbook's explicit gap reconciliation (`reconcile-settlement-gap.py`
-  batches) before a fresh report, and it must never be baseline-reset.
+- **Exact exception.** The read raised `testnet_ops.Unknown` wrapping the
+  `RpcError`; both are `testnet_lib.TestnetError`.
 
-Follow-up for the monitor code: treat a rate-limited RPC as a STALE tick, not
-a crash.
+## Monitor recovery
+
+The coordinator authorized the recovery on 28 Nov. It is in
+`monitor-recovery/`.
+
+1. **Fix.** [tos-ops #122](https://github.com/tosnetwork/tos-ops/pull/122)
+   makes every `TestnetError` a STALE tick, with a back-off bounded at 60 s.
+   Red controls show the crash without the fix. It also adds a one-shot
+   `--gap-dir` to the local monitor (runbook step 4).
+2. **Before.** The digests of every monitor state file were retained
+   (`state-digests-before.txt`).
+3. **Gap batches.** `reconcile-settlement-gap.py` ran in 260 bounded batches of
+   32 blocks, from the original baseline at source block 54198 until
+   `caught_up` at 62491 (`batches.log`, `gap-batches/`). No baseline was reset
+   and no incident was cleared.
+4. **Gap tick.** One `--once --gap-dir` tick evaluated the whole interval: exit
+   0, no alarms. It advanced the baseline to source block 62501 (TOS mc 489742)
+   (`gap-tick.log`).
+5. **Restart.** `systemctl reset-failed`, then the same `systemd-run`
+   launcher and limits. The launcher was a copy of `monitor.sh` that differs
+   only in pointing to the fixed checkout. Every tick since has been fresh and
+   clean.
+6. **Execution admitted.** The provider's production `CheckTokenSafety`, run by
+   the signing-disabled helper, then reported the monitor `fresh` with no asset
+   alarm (`provider-admits-after-restart.json`).
+
+From then on, the run kept its RPC load low and made no bulk archive reads.
 
 ## Dated limitations
 
-- **Monitor coverage.** It ended at 23:57 (see above).
-- **Provider transaction cells.** The provider's pause and resume transactions
-  are identified by its journal records and by the finalized actor-policy reads
-  on nodes 4–6. Their cells are not in this archive. The archive's ancestry
-  walk from those already older transactions to a current checkpoint exceeded
-  its 1,024-header bound, and no bound was raised.
+- **Monitor coverage.** There was none from 23:57 on 27 Nov to 02:15 on 28 Nov.
+  The gap reconciliation evaluated that interval afterwards and found no
+  alarms.
+- **Provider transaction cells (known gap).** The provider's pause and resume
+  transactions are identified by its journal records and by the finalized
+  actor-policy reads on nodes 4–6, which stand in for the cells; the cells are
+  not in this archive. The bulk archive attempt walked block ancestry from those
+  older transactions to a current checkpoint. It caused the rate limit that
+  ended the monitor, and it was not repeated.
 - **Interrupted start.** One hour-0 lock start refused at its startup read,
   because node 4 rate-limited it during that archive attempt. Nothing was
   journaled or sent, and the same label was rerun.
 - **Buyer refusal.** It is shown through the buyer's T19 issuer read, the
   production preview API, rather than through the long-running buyer agent's
   socket.
-- **Funding sources.** Mint fees were paid from 90 TOS of local test value,
+- **Funding sources.** Mint fees were paid from 90 + 20 TOS of local test value,
   taken from the original governance payer's unused local allocation (T15).
   This avoided stopping the election service for the faucet. The canary USDT
   for the locker came from the LocalUSDT owner.
