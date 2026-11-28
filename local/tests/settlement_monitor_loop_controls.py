@@ -3,8 +3,9 @@
 
 Each control removes one guard and requires the named test to fail the stated
 way: without TestnetError in the caught set, a rate-limited read escapes the
-loop (the crash of 2026-11-27 23:57 UTC); without the back-off bound, the delay
-grows past MAX_BACKOFF_SECONDS. Never accesses a running network.
+loop (the crash of 2026-11-27 23:57 UTC); with TypeError caught, a programming
+error is swallowed as STALE; without the back-off bound, the delay grows past
+MAX_BACKOFF_SECONDS. Never accesses a running network.
 """
 
 import argparse
@@ -25,6 +26,13 @@ CASES = [
         "",
         "test_a_refused_read_is_a_stale_tick_not_a_crash",
         "RpcError",
+    ),
+    (
+        "type-error-swallowed",
+        "    u.lib.TestnetError,\n",
+        "    u.lib.TestnetError,\n    TypeError,\n",
+        "test_a_programming_error_ends_the_loop",
+        "DID NOT RAISE",
     ),
     (
         "unbounded-back-off",

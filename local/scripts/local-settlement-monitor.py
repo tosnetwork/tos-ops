@@ -331,19 +331,24 @@ def main():
         return run(args, root)
 
 
-# Every failure of one read or one tick is a STALE tick: the report is marked
-# stale (provider and buyer refuse paid work on it) and the loop keeps going.
-# A node's RPC refusal (rate limit, timeout, connection) arrives as a
-# testnet_lib.TestnetError subclass (RpcError, or testnet_ops.Unknown wrapping it).
+# Expected failures of external input make that tick STALE: the report is
+# marked stale (provider and buyer refuse paid work on it) and the loop keeps
+# going. They are the boundary errors of reads and of external data:
+# - OSError: file, socket, timeout and connection failures;
+# - ValueError: malformed JSON and other refused parses of external data;
+# - a node's RPC refusal (rate limit, RPC error), which arrives as a
+#   testnet_lib.TestnetError subclass (RpcError, or testnet_ops.Unknown wrapping it);
+# - the driver's and collector's own refusals, HTTP protocol errors and the
+#   checker's timeout.
+# Programming errors (TypeError, KeyError, RecursionError, ...) are not caught:
+# they end the process. tick() marks the report stale before any read, so a
+# crash still leaves it stale.
 STALE_ERRORS = (
     OSError,
     ValueError,
-    KeyError,
-    TypeError,
     u.Refused,
     u.lib.TestnetError,
     source.http.client.HTTPException,
-    RecursionError,
     subprocess.TimeoutExpired,
 )
 MAX_BACKOFF_SECONDS = 60

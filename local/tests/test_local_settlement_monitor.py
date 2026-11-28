@@ -220,3 +220,14 @@ def test_an_explicit_gap_archive_reaches_the_collector(tmp_path, monkeypatch, ga
     with pytest.raises(m.u.Refused, match="stop after collection"):
         m.tick(args)
     assert seen == ({"gap_dir": tmp_path / gap} if gap else {})
+
+
+@pytest.mark.parametrize(
+    "error", [TypeError("bug"), KeyError("bug"), RecursionError("bug")]
+)
+def test_a_programming_error_ends_the_loop(tmp_path, monkeypatch, error):
+    monkeypatch.setattr(m, "tick", raises(error))
+    waits = []
+    with pytest.raises(type(error)):
+        m.run(stale_args(), tmp_path, sleep=waits.append, ticks=3)
+    assert waits == []

@@ -183,9 +183,12 @@ record before non-author review. Production release pins remain absent.
 
 ## Local settlement monitor loop
 
-`local-settlement-monitor.py` treats any failed read or tick as a STALE tick.
-This covers a node RPC refusal such as `RATE_LIMITED`, a timeout or a
-connection error.
+`local-settlement-monitor.py` treats an expected external failure as a STALE
+tick. That means a node RPC refusal such as `RATE_LIMITED`, a timeout, a
+connection error, malformed external data, or a refusal by the driver or the
+collector. A programming error (`TypeError`, `KeyError` and the like) still
+ends the process. The report was already marked stale at the start of that
+tick, so it stays stale.
 
 - **What the loop does.** It republishes `report.json` as stale and keeps
   running. Provider and buyer execution still refuses on a stale report. While
