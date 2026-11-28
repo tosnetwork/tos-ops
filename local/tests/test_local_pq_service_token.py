@@ -1374,3 +1374,20 @@ def test_resolver_routes_replace_the_direct_references(monkeypatch, tmp_path):
     )
     module.verify(args, state, chain, {})
     assert seen[0][seen[0].index("--rpc") + 1] == routes
+
+
+def test_resolver_route_userinfo_bypass_is_refused(monkeypatch, tmp_path):
+    state, chain = verify_world(monkeypatch, tmp_path, {"result": "pass"})
+    routes = (
+        "http://127.0.0.1:19014@review.invalid:8545/jsonRPC,"
+        "http://127.0.0.1:19015/jsonRPC,http://127.0.0.1:19016/jsonRPC"
+    )
+    args = SimpleNamespace(
+        verifier=Path("/verifier"),
+        case="x",
+        operation_args=[],
+        expect_state=None,
+        resolver_rpc=routes,
+    )
+    with pytest.raises(module.usdc.Refused, match="loopback"):
+        module.verify(args, state, chain, {})

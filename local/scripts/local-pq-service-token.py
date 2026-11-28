@@ -736,6 +736,28 @@ def send_operation(args, state, chain, bridge):
     snapshot(state, chain, "after-" + label)
 
 
+def loopback_url(url):
+    """An http URL whose real host is loopback (127.0.0.0/8, ::1 or localhost),
+    with an explicit port and no userinfo; a prefix test is not enough."""
+    import ipaddress
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return False
+    if parts.scheme != "http" or "@" in parts.netloc or port is None:
+        return False
+    host = parts.hostname or ""
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def verify(args, state, chain, bridge):
     require(args.verifier is not None, "--verifier is required")
     require(args.case, "verify requires --case")
@@ -748,7 +770,7 @@ def verify(args, state, chain, bridge):
     if override:
         endpoints = override.split(",")
         require(
-            all(e.startswith("http://127.0.0.1:") for e in endpoints),
+            all(loopback_url(e) for e in endpoints),
             "resolver routes must be loopback",
         )
     require(

@@ -329,6 +329,13 @@ From then on, the run kept its RPC load low and made no bulk archive reads.
   This avoided stopping the election service for the faucet. The canary USDT
   for the locker came from the LocalUSDT owner.
 
+## Addresses in the evidence
+
+The evidence contains loopback endpoints (`127.0.0.1` with local ports) and
+local-chain account addresses. Loopback endpoints in local evidence are allowed
+(coordinator ruling, 28 Nov): the rule against IP addresses in the repository
+is about real host addresses, and none appears here.
+
 ## Files
 
 `INDEX.json` lists every committed file with its SHA-256. Every
@@ -355,13 +362,37 @@ signed messages) and all keys stay on the host.
 ## Verification
 
 - Full operations suite (`local/tests testnet/tests`, `TOS_ROOT` = the tos
-  main checkout): **4,267 passed, 65 skipped, 34 subtests passed**.
-- Driver and actor-driver tests: 127 passed.
-- `local/tests/stablecoin_acceptance_mutants.py`: **31/31 assertion-red**, with
-  a green baseline.
+  main checkout): **4,285 passed, 65 skipped, 34 subtests passed** after the
+  review fixes.
+- Driver and actor-driver tests: 145 passed. The T19 helper's Go test passes.
+- `local/tests/stablecoin_acceptance_mutants.py`: **37/37 assertion-red**, with
+  a green baseline. That includes one Go control on the T19 helper, run with
+  `TOS_AI_ROOT` set to an ai checkout.
 - Ruff check and format pass on every changed Python file.
-- The driver refuses a non-loopback source endpoint. Every TOS read checks the
-  approved genesis and global id 3 on nodes 4–6.
+- Every TOS read checks the approved genesis and global id 3 on nodes 4–6.
+
+### Review fixes (non-author review, 28 Nov)
+
+- **Loopback endpoints.** The driver's source endpoint, the actor verifier's
+  resolver routes and the T19 helper's issuer URL were accepted by a
+  `http://127.0.0.1:` prefix test. That test let
+  `http://127.0.0.1:18545@review.invalid:8545`, whose real host is remote,
+  through.
+  - All three now parse the URL. They require `http`, an explicit port, no
+    userinfo, and a host of 127.0.0.0/8, `::1` or `localhost`.
+  - The tests use that bypass string, and red controls restore the prefix test
+    in each place.
+  - Every endpoint this run used was a plain `http://127.0.0.1:<port>` URL, so
+    no run was affected.
+- **One publication.** `observe` compared only the report and snapshot `utime`,
+  so two checkpoints with the same timestamp could pass as one. It now requires
+  the same height, hash and utime. It also requires the report bytes to be
+  unchanged across the snapshot and latch reads.
+  - The resolution's "fresh report afterwards" now requires a higher
+    checkpoint, not only a later utime.
+  - Tests and red controls cover the reviewer's repro.
+  - The reviewer re-checked every committed observation record against the
+    full comparison and all pass, so the recorded evidence stands.
 
 Upstream comparison: these local operations drivers have no upstream
 counterpart at `99143587e6babb2e577eadea0fc741cb1b413fab`, and no inherited

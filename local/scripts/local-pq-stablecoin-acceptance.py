@@ -120,6 +120,29 @@ def require(condition, message):
     u.require(condition, message)
 
 
+def loopback_url(url):
+    """An http URL whose real host is loopback (127.0.0.0/8, ::1 or localhost),
+    with an explicit port and no userinfo. A prefix test is not enough:
+    `http://127.0.0.1:18545@remote:8545` names the host `remote`."""
+    import ipaddress
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return False
+    if parts.scheme != "http" or "@" in parts.netloc or port is None:
+        return False
+    host = parts.hostname or ""
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def positive(value, name):
     require(
         type(value) is int and 0 < value <= MAX_AMOUNT, f"{name} must be in 1..2^120-1"
@@ -1229,20 +1252,36 @@ def step_unlock(args, state, evm):
     return result
 
 
+def same_checkpoint(a, b):
+    """Two checkpoints are the same only if height, hash and utime all agree."""
+    keys = ("height", "hash", "utime")
+    return all(k in a and k in b for k in keys) and all(a[k] == b[k] for k in keys)
+
+
+def consistent_publication(first, again, report, observation):
+    return (
+        first == again
+        and report["checkpoint"]["utime"] > 0
+        and same_checkpoint(report["checkpoint"], observation["checkpoint"])
+    )
+
+
 def step_observe(args, state):
     """Retain the running monitor's published report, snapshot digest and incident
     latches. Read-only: the monitor's lock is not taken and nothing is written to
     its state directory."""
     root = args.monitor_state
     # The collector marks report.json stale (utime 0) at the start of every tick
-    # and the checker republishes it at the end: read only a published report
-    # that names the same checkpoint as the snapshot it was checked from.
+    # and the checker republishes it at the end. Read one consistent publication:
+    # the report is unchanged around the snapshot and latch reads, and names the
+    # same checkpoint (height, hash and utime) as the snapshot it was checked from.
     for _ in range(OBSERVE_ATTEMPTS):
-        report = json.loads((root / "report.json").read_text())
+        first = (root / "report.json").read_bytes()
         snapshot = (root / "snapshot.json").read_bytes()
         incidents = json.loads((root / "incidents.json").read_text())
-        observation = json.loads(snapshot)
-        if report["checkpoint"]["utime"] == observation["checkpoint"]["utime"] > 0:
+        again = (root / "report.json").read_bytes()
+        report, observation = json.loads(first), json.loads(snapshot)
+        if consistent_publication(first, again, report, observation):
             break
         time.sleep(3)
     sources = {
@@ -1272,7 +1311,7 @@ def step_observe(args, state):
     }
     if args.expect_clean:
         require(
-            report["checkpoint"]["utime"] == observation["checkpoint"]["utime"]
+            consistent_publication(first, again, report, observation)
             and result["report_age_seconds"] <= 120,
             "the monitor report is stale",
         )
@@ -1378,9 +1417,10 @@ def step_resolve_incident(args, state, evm):
     deadline = time.monotonic() + 120
     while True:
         after = json.loads((root / "report.json").read_text())
+        # A later publication: a higher checkpoint, not merely another utime.
         if (
-            after["checkpoint"]["utime"] > report["checkpoint"]["utime"]
-            and after["checkpoint"]["utime"] > 0
+            after["checkpoint"]["utime"] > 0
+            and after["checkpoint"]["height"] > report["checkpoint"]["height"]
         ):
             break
         require(time.monotonic() < deadline, "no fresh report after the resolution")
@@ -1523,7 +1563,7 @@ def main(argv=None):
     args = parser().parse_args(argv)
     try:
         require(
-            args.evm_rpc.startswith("http://127.0.0.1:"),
+            loopback_url(args.evm_rpc),
             "local source endpoint required",
         )
         for field in NEEDS.get(args.step, ()):

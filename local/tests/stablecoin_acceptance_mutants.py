@@ -195,7 +195,7 @@ CASES = [
     (
         "loopback",
         "local/scripts/local-pq-stablecoin-acceptance.py",
-        'args.evm_rpc.startswith("http://127.0.0.1:"),',
+        "loopback_url(args.evm_rpc),",
         "True,",
         "local/tests/test_local_pq_stablecoin_acceptance.py",
         "test_source_endpoint_must_be_loopback",
@@ -285,7 +285,7 @@ CASES = [
     (
         "resolver-loopback",
         "local/scripts/local-pq-service-token.py",
-        'all(e.startswith("http://127.0.0.1:") for e in endpoints),',
+        "all(loopback_url(e) for e in endpoints),",
         "True,",
         "local/tests/test_local_pq_service_token.py",
         "test_resolver_routes_are_loopback_distinct_and_not_senders",
@@ -299,6 +299,51 @@ CASES = [
         "local/tests/test_local_pq_service_token.py",
         "test_resolver_routes_replace_the_direct_references",
         "FAILED",
+    ),
+    (
+        "url-userinfo",
+        DRIVER,
+        'if parts.scheme != "http" or "@" in parts.netloc or port is None:\n        return False\n    host = parts.hostname or ""\n    if host == "localhost":\n        return True\n    try:\n        return ipaddress.ip_address(host).is_loopback\n    except ValueError:\n        return False\n\n\ndef positive',
+        'return url.startswith("http://127.0.0.1:")\n\n\ndef positive',
+        UNIT,
+        "test_the_userinfo_bypass_is_refused_before_any_read",
+        "local source endpoint required",
+    ),
+    (
+        "service-url-userinfo",
+        SERVICE,
+        'if parts.scheme != "http" or "@" in parts.netloc or port is None:\n        return False\n    host = parts.hostname or ""\n    if host == "localhost":\n        return True\n    try:\n        return ipaddress.ip_address(host).is_loopback\n    except ValueError:\n        return False\n\n\ndef verify',
+        'return url.startswith("http://127.0.0.1:")\n\n\ndef verify',
+        SERVICE_UNIT,
+        "test_resolver_route_userinfo_bypass_is_refused",
+        "DID NOT RAISE",
+    ),
+    (
+        "checkpoint-utime-only",
+        DRIVER,
+        'keys = ("height", "hash", "utime")',
+        'keys = ("utime",)',
+        UNIT,
+        "test_same_utime_with_another_checkpoint_is_not_one_publication",
+        "DID NOT RAISE",
+    ),
+    (
+        "publication-reread",
+        DRIVER,
+        "        first == again\n",
+        "        True\n",
+        UNIT,
+        "test_a_report_changing_between_reads_is_not_one_publication",
+        "DID NOT RAISE",
+    ),
+    (
+        "resolution-higher-checkpoint",
+        DRIVER,
+        'and after["checkpoint"]["height"] > report["checkpoint"]["height"]',
+        'and after["checkpoint"]["utime"] > report["checkpoint"]["utime"]',
+        UNIT,
+        "test_resolution_needs_a_higher_checkpoint_not_only_a_new_utime",
+        "DID NOT RAISE",
     ),
 ]
 
@@ -329,6 +374,48 @@ def run(root, selection, log):
             check=False,
         )
     return result.returncode, ET.parse(result_path).getroot()
+
+
+GO_HELPER = "local/tests/helpers/token_lock_preview.go"
+GO_TEST = "local/tests/helpers/token_lock_preview_test.go"
+GO_BEFORE = "\tu, err := url.Parse(raw)\n"
+GO_AFTER = (
+    '\treturn strings.HasPrefix(raw, "http://127.0.0.1:")\n\tu, err := url.Parse(raw)\n'
+)
+
+
+def go_control(log_dir):
+    """The T19 helper's URL guard, mutated back to a prefix test, must fail its
+    Go test. Needs an ai module checkout in TOS_AI_ROOT; refuses without one."""
+    ai = os.environ.get("TOS_AI_ROOT")
+    if not ai or not Path(ai, "go.mod").is_file():
+        raise RuntimeError("set TOS_AI_ROOT to an ai checkout for the Go control")
+    with tempfile.TemporaryDirectory(prefix="stablecoin-go-control-") as temp:
+        for name in (GO_HELPER, GO_TEST):
+            shutil.copy2(ROOT / name, Path(temp) / Path(name).name)
+        files = [str(Path(temp) / Path(n).name) for n in (GO_HELPER, GO_TEST)]
+        for label, mutate in (("go-baseline", False), ("go-url-prefix", True)):
+            if mutate:
+                path = Path(files[0])
+                text = path.read_text()
+                if text.count(GO_BEFORE) != 1:
+                    raise RuntimeError("ambiguous Go control")
+                path.write_text(text.replace(GO_BEFORE, GO_AFTER))
+            log = log_dir / (label + ".log")
+            with log.open("w") as stream:
+                code = subprocess.run(
+                    ["go", "test", *files],
+                    cwd=ai,
+                    stdout=stream,
+                    stderr=subprocess.STDOUT,
+                    timeout=600,
+                    check=False,
+                ).returncode
+            if mutate and (code == 0 or "accepted" not in log.read_text()):
+                raise RuntimeError("survived or invalid control: go-url-prefix")
+            if not mutate and code != 0:
+                raise RuntimeError("invalid Go baseline")
+    print("go-url-prefix: assertion-red", flush=True)
 
 
 def main():
@@ -374,7 +461,8 @@ def main():
             ):
                 raise RuntimeError("survived or invalid control: " + label)
         print(label + ": assertion-red", flush=True)
-    print(f"{len(CASES)}/{len(CASES)} assertion-red")
+    go_control(args.log_dir)
+    print(f"{len(CASES) + 1}/{len(CASES) + 1} assertion-red")
 
 
 if __name__ == "__main__":

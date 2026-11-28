@@ -10,6 +10,8 @@ import (
 	"flag"
 	"fmt"
 	"math/big"
+	"net"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -24,6 +26,22 @@ func amount(name, text string) (*big.Int, error) {
 		return nil, fmt.Errorf("%s must be a canonical positive atomic amount", name)
 	}
 	return value, nil
+}
+
+// loopbackURL accepts an http URL whose real host is loopback (127.0.0.0/8,
+// ::1 or localhost), with an explicit port and no userinfo. A prefix test is
+// not enough: "http://127.0.0.1:18545@remote:8545" names the host "remote".
+func loopbackURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "http" || u.User != nil || u.Port() == "" || u.Opaque != "" {
+		return false
+	}
+	host := u.Hostname()
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func run() error {
@@ -48,7 +66,7 @@ func run() error {
 	if err := decoder.Decode(&policy); err != nil {
 		return err
 	}
-	if !strings.HasPrefix(policy.RPCURL, "http://127.0.0.1:") || policy.ChainID != 1 {
+	if !loopbackURL(policy.RPCURL) || policy.ChainID != 1 {
 		return fmt.Errorf("the local loopback source chain 1 is required")
 	}
 	values := map[string]*big.Int{}

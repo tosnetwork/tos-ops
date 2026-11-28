@@ -815,6 +815,7 @@ def resolution_world(
         if publish:
             report = json.loads((root / "report.json").read_text())
             report["checkpoint"]["utime"] = int(time.time()) + 1
+            report["checkpoint"]["height"] += 1
             report["latched_incidents"] = sorted(
                 json.loads((root / "incidents.json").read_text())
             )
@@ -902,3 +903,95 @@ def test_observation_waits_for_the_published_report(monkeypatch, tmp_path):
         label="observe", monitor_state=root, expect_clean=True, expect_alarm=None
     )
     assert m.step_observe(args, State(tmp_path / "state"))["report"]["alarms"] == []
+
+
+BYPASS = "http://127.0.0.1:18545@review.invalid:8545"
+
+
+@pytest.mark.parametrize(
+    "url, ok",
+    [
+        ("http://127.0.0.1:18545", True),
+        ("http://127.0.0.2:18545", True),
+        ("http://[::1]:18545", True),
+        ("http://localhost:18545", True),
+        (BYPASS, False),
+        ("http://user@127.0.0.1:18545", False),
+        ("http://review.invalid:8545", False),
+        ("http://10.0.0.1:8545", False),
+        ("https://127.0.0.1:18545", False),
+        ("http://127.0.0.1", False),
+        ("http://127.0.0.1.review.invalid:8545", False),
+        ("http://127.0.0.1:notaport", False),
+    ],
+)
+def test_source_endpoint_host_is_parsed_not_prefix_matched(url, ok):
+    assert m.loopback_url(url) is ok
+
+
+def test_the_userinfo_bypass_is_refused_before_any_read(capsys):
+    code = m.main(
+        ["status", "--state", "/nonexistent", "--tos-root", "/x", "--evm-rpc", BYPASS]
+    )
+    assert code == 2 and "local source endpoint required" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("field", ["height", "hash"])
+def test_same_utime_with_another_checkpoint_is_not_one_publication(
+    monkeypatch, tmp_path, field
+):
+    monkeypatch.setattr(m.time, "sleep", lambda seconds: None)
+    (tmp_path / "monitor").mkdir()
+    root = monitor_dir(tmp_path / "monitor")
+    snapshot = json.loads((root / "snapshot.json").read_text())
+    snapshot["checkpoint"][field] = 2 if field == "height" else "bb"
+    (root / "snapshot.json").write_text(json.dumps(snapshot))
+    args = SimpleNamespace(
+        label="observe", monitor_state=root, expect_clean=True, expect_alarm=None
+    )
+    with pytest.raises(Refused, match="stale"):
+        m.step_observe(args, State(tmp_path / "state"))
+
+
+def test_a_report_changing_between_reads_is_not_one_publication(monkeypatch, tmp_path):
+    (tmp_path / "monitor").mkdir()
+    root = monitor_dir(tmp_path / "monitor")
+    reads = {"n": 0}
+    original = m.Path.read_bytes
+
+    def read_bytes(path):
+        data = original(path)
+        if path.name == "report.json":
+            reads["n"] += 1
+            if reads["n"] % 2 == 0:
+                return data.replace(b'"alarms": []', b'"alarms": [] ')
+        return data
+
+    monkeypatch.setattr(m.Path, "read_bytes", read_bytes)
+    monkeypatch.setattr(m.time, "sleep", lambda seconds: None)
+    args = SimpleNamespace(
+        label="observe", monitor_state=root, expect_clean=True, expect_alarm=None
+    )
+    with pytest.raises(Refused, match="stale"):
+        m.step_observe(args, State(tmp_path / "state"))
+
+
+def test_resolution_needs_a_higher_checkpoint_not_only_a_new_utime(
+    monkeypatch, tmp_path
+):
+    import time as clock
+
+    state, args, root = resolution_world(monkeypatch, tmp_path, publish=False)
+
+    def same_height(seconds):
+        report = json.loads((root / "report.json").read_text())
+        report["checkpoint"]["utime"] = int(clock.time()) + 5
+        (root / "report.json").write_text(json.dumps(report))
+
+    monkeypatch.setattr(m.time, "sleep", same_height)
+    # Each wait advances the clock 50 s, so a newer utime is published before the
+    # 120 s deadline, but never a higher checkpoint.
+    ticks = iter(range(0, 10**6, 50))
+    monkeypatch.setattr(m.time, "monotonic", lambda: next(ticks))
+    with pytest.raises(Refused, match="no fresh report"):
+        m.step_resolve_incident(args, state, None)
