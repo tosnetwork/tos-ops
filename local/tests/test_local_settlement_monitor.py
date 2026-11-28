@@ -104,3 +104,130 @@ def test_disagreeing_supply_is_not_merged_into_a_clean_snapshot(tmp_path, monkey
 
     with pytest.raises(m.u.Refused, match="supply references disagree"):
         replay(tmp_path, monkeypatch, change)
+
+
+def raises(error):
+    def tick(args):
+        raise error
+
+    return tick
+
+
+def stale_args():
+    from types import SimpleNamespace
+
+    return SimpleNamespace(once=False, interval=15)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        m.u.lib.RpcError(
+            "http://127.0.0.1:8014",
+            "getMasterchainInfo",
+            -32005,
+            "RATE_LIMITED",
+            "Rate limit exceeded (per-IP)",
+            True,
+        ),
+        m.asset.archive.ops.Unknown(
+            "http://127.0.0.1:8014: getMasterchainInfo: RATE_LIMITED -32005"
+        ),
+        TimeoutError("timed out"),
+        ConnectionRefusedError("refused"),
+    ],
+)
+def test_a_refused_read_is_a_stale_tick_not_a_crash(tmp_path, monkeypatch, error):
+    (tmp_path / "report.json").write_text(
+        json.dumps(
+            {
+                "schema": "tos-settlement-report/1",
+                "alarms": [],
+                "checkpoint": {"height": 9, "hash": "aa" * 32, "utime": 1795800000},
+                "provider_pause_assets": [],
+            }
+        )
+    )
+    monkeypatch.setattr(m, "tick", raises(error))
+    waits = []
+    code = m.run(stale_args(), tmp_path, sleep=waits.append, ticks=3)
+    report = json.loads((tmp_path / "report.json").read_text())
+    # Fail-closed: the formerly healthy report is replaced by a stale one.
+    assert (
+        code == 2 and report["status"] == "STALE" and report["checkpoint"]["utime"] == 0
+    )
+    assert len(waits) == 2 and waits[1] > waits[0] > 0
+
+
+def test_stale_back_off_is_bounded_and_resets_on_success(tmp_path, monkeypatch):
+    assert m.stale_delay(15, 1) == 15
+    assert m.stale_delay(15, 2) == 30
+    assert m.stale_delay(15, 3) == 60
+    assert all(m.stale_delay(15, n) == m.MAX_BACKOFF_SECONDS for n in range(4, 50))
+    outcomes = iter([m.u.lib.TestnetError("x"), m.u.lib.TestnetError("y"), 0, 0])
+
+    def tick(args):
+        value = next(outcomes)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    monkeypatch.setattr(m, "tick", tick)
+    monkeypatch.setattr(m.source, "stale_report", lambda path: None)
+    waits = []
+    assert m.run(stale_args(), tmp_path, sleep=waits.append, ticks=4) == 0
+    assert waits[0] > 0 and waits[1] > waits[0] and waits[2] <= 15
+
+
+@pytest.mark.parametrize("gap", [None, "gap"])
+def test_an_explicit_gap_archive_reaches_the_collector(tmp_path, monkeypatch, gap):
+    from types import SimpleNamespace
+
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    run_state = {"evm": {"bridge": "0x" + "11" * 20}}
+    (tmp_path / "s.json").write_text(json.dumps(run_state))
+    (tmp_path / "pin.json").write_text(
+        json.dumps(
+            {
+                "genesis": m.asset.GENESIS["root"],
+                "source_bridge": "0x" + "11" * 20,
+                "source_bridge_runtime_sha256": "00" * 32,
+            }
+        )
+    )
+    monkeypatch.setattr(m.asset, "artifact_at", lambda *a: {})
+    monkeypatch.setattr(m, "tos_observation", lambda *a: ({}, {}, {}))
+    monkeypatch.setattr(m.u, "Chain", lambda data: None)
+    seen = {}
+
+    def collect(rpc, binding, tos, previous, **kwargs):
+        seen.update(kwargs)
+        raise m.u.Refused("stop after collection")
+
+    monkeypatch.setattr(m.source, "collect", collect)
+    args = SimpleNamespace(
+        state=state,
+        source_state=tmp_path / "s.json",
+        asset_state=tmp_path / "s.json",
+        source_pin=tmp_path / "pin.json",
+        artifact=None,
+        build_log=None,
+        data=tmp_path,
+        evm_rpc="http://127.0.0.1:18545",
+        gap_dir=tmp_path / gap if gap else None,
+    )
+    with pytest.raises(m.u.Refused, match="stop after collection"):
+        m.tick(args)
+    assert seen == ({"gap_dir": tmp_path / gap} if gap else {})
+
+
+@pytest.mark.parametrize(
+    "error", [TypeError("bug"), KeyError("bug"), RecursionError("bug")]
+)
+def test_a_programming_error_ends_the_loop(tmp_path, monkeypatch, error):
+    monkeypatch.setattr(m, "tick", raises(error))
+    waits = []
+    with pytest.raises(type(error)):
+        m.run(stale_args(), tmp_path, sleep=waits.append, ticks=3)
+    assert waits == []

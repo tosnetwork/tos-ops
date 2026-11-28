@@ -258,6 +258,7 @@ def tick(args):
         binding,
         tos,
         json.loads(previous.read_text()) if previous.exists() else None,
+        **({"gap_dir": args.gap_dir} if getattr(args, "gap_dir", None) else {}),
     )
     a.document(directory / "snapshot.json", value)
     result = subprocess.run(
@@ -310,7 +311,16 @@ def main():
     p.add_argument("--evm-rpc", default="http://127.0.0.1:18545")
     p.add_argument("--interval", type=int, default=15)
     p.add_argument("--once", action="store_true")
+    p.add_argument(
+        "--gap-dir",
+        type=Path,
+        help="a reconcile-settlement-gap.py archive for one --once tick (runbook step 4)",
+    )
     args = p.parse_args()
+    u.require(
+        args.gap_dir is None or args.once,
+        "--gap-dir is only for one explicit --once tick",
+    )
     u.require(
         args.evm_rpc.startswith("http://127.0.0.1:") and 1 <= args.interval <= 30,
         "local endpoint and bounded interval required",
@@ -318,26 +328,63 @@ def main():
     root = u.private_dir(args.state)
     with (root / "scope.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        while True:
-            started = time.monotonic()
-            try:
-                code = tick(args)
-            except (
-                OSError,
-                ValueError,
-                KeyError,
-                TypeError,
-                u.Refused,
-                source.http.client.HTTPException,
-                RecursionError,
-                subprocess.TimeoutExpired,
-            ) as error:
-                source.stale_report(root / "report.json")
-                print(json.dumps({"status": "STALE", "reason": str(error)}), flush=True)
-                code = 2
-            if args.once:
-                return code
-            time.sleep(max(0, args.interval - (time.monotonic() - started)))
+        return run(args, root)
+
+
+# Expected failures of external input make that tick STALE: the report is
+# marked stale (provider and buyer refuse paid work on it) and the loop keeps
+# going. They are the boundary errors of reads and of external data:
+# - OSError: file, socket, timeout and connection failures;
+# - ValueError: malformed JSON and other refused parses of external data;
+# - a node's RPC refusal (rate limit, RPC error), which arrives as a
+#   testnet_lib.TestnetError subclass (RpcError, or testnet_ops.Unknown wrapping it);
+# - the driver's and collector's own refusals, HTTP protocol errors and the
+#   checker's timeout.
+# Programming errors (TypeError, KeyError, RecursionError, ...) are not caught:
+# they end the process. tick() marks the report stale before any read, so a
+# crash still leaves it stale.
+STALE_ERRORS = (
+    OSError,
+    ValueError,
+    u.Refused,
+    u.lib.TestnetError,
+    source.http.client.HTTPException,
+    subprocess.TimeoutExpired,
+)
+MAX_BACKOFF_SECONDS = 60
+
+
+def stale_delay(interval, failures):
+    """The wait after `failures` consecutive stale ticks: the normal interval,
+    doubled per further failure, never above MAX_BACKOFF_SECONDS."""
+    if failures <= 1:
+        return interval
+    return min(MAX_BACKOFF_SECONDS, interval * 2 ** min(failures - 1, 6))
+
+
+def run(args, root, *, sleep=time.sleep, ticks=None):
+    failures = 0
+    done = 0
+    while True:
+        started = time.monotonic()
+        try:
+            code = tick(args)
+            failures = 0
+        except STALE_ERRORS as error:
+            source.stale_report(root / "report.json")
+            failures += 1
+            print(
+                json.dumps(
+                    {"status": "STALE", "reason": str(error), "consecutive": failures}
+                ),
+                flush=True,
+            )
+            code = 2
+        done += 1
+        if args.once or (ticks is not None and done >= ticks):
+            return code
+        wait = stale_delay(args.interval, failures) if failures else args.interval
+        sleep(max(0, wait - (time.monotonic() - started)))
 
 
 if __name__ == "__main__":
