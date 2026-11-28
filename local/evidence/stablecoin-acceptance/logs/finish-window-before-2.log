@@ -1,0 +1,68 @@
+{
+ "assets": {
+  "usdc": {
+   "balance_events": [],
+   "bridge_balance": 635000000,
+   "bridge_blacklisted": false,
+   "fee_basis_points": 0,
+   "lock_cap": {
+    "available": 100000000,
+    "daily": 500000000,
+    "day_used": 400000000,
+    "hour_used": 0,
+    "hourly": 200000000,
+    "per_lock": 100000000,
+    "total": 1000000000
+   },
+   "maximum_fee": 0,
+   "paused": false,
+   "wrapped_supply": 635000000
+  },
+  "usdt": {
+   "balance_events": [],
+   "bridge_balance": 633000000,
+   "bridge_blacklisted": false,
+   "fee_basis_points": 0,
+   "lock_cap": {
+    "available": 100000000,
+    "daily": 500000000,
+    "day_used": 400000000,
+    "hour_used": 0,
+    "hourly": 200000000,
+    "per_lock": 100000000,
+    "total": 1000000000
+   },
+   "maximum_fee": 0,
+   "paused": false,
+   "wrapped_supply": 633000000
+  }
+ },
+ "incidents": {},
+ "report": {
+  "alarms": [],
+  "baseline": false,
+  "checkpoint": {
+   "hash": "be1b5f78a3980772acf66a4593c966f76f1941e367abd7f8cde5c298ab63436e",
+   "height": 550832,
+   "utime": 1795856768
+  },
+  "latched_incidents": [],
+  "provider_pause_assets": [],
+  "refusal_records": [],
+  "rereports": [],
+  "schema": "tos-settlement-report/1",
+  "unknown_rereports": []
+ },
+ "report_age_seconds": 5,
+ "snapshot_checkpoint": {
+  "hash": "be1b5f78a3980772acf66a4593c966f76f1941e367abd7f8cde5c298ab63436e",
+  "height": 550832,
+  "utime": 1795856768
+ },
+ "snapshot_sha256": "87a2e485be8b18694acec575fdffb275541e1162dadce10d05ed80d7c8d8e846",
+ "source_checkpoint": {
+  "hash": "9513e77573e6a6443e7c8853900da39179e768d7fc1e756879a6d1a53201c794",
+  "height": 86982,
+  "utime": 1795856704
+ }
+}

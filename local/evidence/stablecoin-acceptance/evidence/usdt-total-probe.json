@@ -1,0 +1,37 @@
+{
+  "amount": 100000000,
+  "approval": {
+    "after": 100000000,
+    "approved": 100000000,
+    "before": 0,
+    "tx": "0x98c867548e1773211da9558408e9f029557fff140cec303fbc2c55cd07bd2e1d"
+  },
+  "approval_reset_tx": "0x7f786f01ab7074d2e792bf5e46ad99f3742068d3181650790f0f2369577bcad5",
+  "asset": "usdt",
+  "block": {
+    "hash": "0xbc9b6090a2f58e0d33bf486a4806954dfa54a9ce7073ec871d1da17d1bfcade2",
+    "number": 88365,
+    "timestamp": 1795858093
+  },
+  "expected_reason": "lock: over the token cap",
+  "facts_at_block": {
+    "allow_lock": true,
+    "bridge_balance": 633000000,
+    "bridge_blacklisted": false,
+    "cap": {
+      "available": 50000000,
+      "daily": 500000000,
+      "day_used": 400000000,
+      "hour_used": 0,
+      "hourly": 200000000,
+      "per_lock": 100000000,
+      "total": 683000000
+    },
+    "disabled": false,
+    "fee_basis_points": 0,
+    "lock_nonce": 17,
+    "maximum_fee": 0,
+    "paused": false
+  },
+  "revert": "Error: server returned an error response: error code 3: execution reverted: lock: over the token cap, data: \"0x08c379a0000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000186c6f636b3a206f7665722074686520746f6b656e206361700000000000000000\""
+}

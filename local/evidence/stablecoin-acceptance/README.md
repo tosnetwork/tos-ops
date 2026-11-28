@@ -1,13 +1,11 @@
-# Local stablecoin final acceptance (partial)
+# Local stablecoin final acceptance
 
-**Status: stopped at 02:04 UTC on 28 Nov, before the hour-2 canary steps.**
-The running monitor unit failed (see [the stop](#the-stop)). The emergency
-drill, the fee-on-transfer case, the no-`bool` case, the canary's hourly and
-per-lock refusals and the hour-0/1 locks are complete. Not yet run:
-
-- the daily-cap and total-cap refusals;
-- the raise vote and the larger lock;
-- the lock-switch drill.
+**Status: complete on 28 Nov at 09:55 UTC.** The run stopped once, at 02:04,
+when the running monitor unit failed (see [the stop](#the-stop)). The monitor
+was then fixed, its gap reconciled and the unit restarted
+([monitor recovery](#monitor-recovery)). On the owner's instruction, the
+remaining cap steps were redesigned to run within one UTC hour
+([cap steps](#cap-steps-run-in-one-hour)) and completed at 09:05–09:55.
 
 This record covers the stablecoin final acceptance on the existing local PQ
 network. The owner decided (2026-11-28, memo decision 32) that it replaces the
@@ -29,7 +27,7 @@ chain (id 1), and all value is local test value. During the run:
 - no recognition record was changed;
 - no running unit's configuration, binary or path was modified.
 
-Times are UTC. The run started on 2026-11-27 and finished on 2026-11-28.
+Times are UTC. The run started on 2026-11-27 and finished on 2026-11-28 at 09:55.
 
 ## Identities
 
@@ -94,20 +92,37 @@ tUSDC and 10 tUSDT.
 | Probe 100.000001 → `lock: over the per-lock cap` | block 49600 | block 50371 |
 | Locks 100 + 100 (28 Nov, hour 0) | n=9, 10; supply 435 at mc 470891 | n=11, 12; supply 433 at mc 471725 |
 | Locks 100 + 100 (hour 1) | n=13, 14; supply 635 at mc 479341 | n=15, 16; supply 633 at mc 480210 |
-| Lock 100 (hour 2) → day at 500 | not run | not run |
-| Probe 1 → `lock: over the daily cap` | not run | not run |
-| Total lowered to balance + 50, probe 100 → `lock: over the token cap` | not run | not run |
-| Raise vote | not run | not run |
-| Lock 150 (over the old per-lock cap) admitted | not run | not run |
 
-**Planned total-cap probe (not run).** Under the decision-12 caps, the 1,000
-total cannot be reached quickly. The daily cap of 500 means at most 725 tokens
-of backing by the end of 28 Nov. The plan, in `commands/canary-1128-h2.sh`, is
-to show the total-cap refusal under a cap vote that sets the total to the
-current balance plus 50 (a lowering also takes effect at once), then to raise
-the caps at once. The decided caps' hourly and per-lock refusals were shown
-live under the decided values. The daily refusal needs a third lock in hour 2
-of the same UTC day.
+The daily-cap and total-cap refusals, the raise and the larger lock follow in
+[cap steps](#cap-steps-run-in-one-hour).
+
+### Cap steps, run in one hour
+
+The decided caps cannot hit their own daily or total limit quickly: with
+hourly 200 and per-lock 100, a 500 daily needs locks in three UTC hours, and a
+1,000 total needs about three UTC days. The bridge's cap accounting
+(`_consumeLockCap`) needs no hour-0 boundary for any check. It sums received
+amounts in fixed UTC hour and day buckets, compares the bridge balance with
+the total, and applies a cap vote at once while keeping what the current
+buckets have already used. So each refusal was shown under the decided
+structure with one cap temporarily lowered by an oracle `voteForLockCap`,
+starting from what was already locked today (400 of each). Each probe is a
+100-token simulation at a pinned source block; each vote is nonce-checked and
+archived.
+
+| Step | USDC | USDT |
+| --- | --- | --- |
+| Clean window before | `finish-window-before-1…3` (mc 550681 on) | same reports |
+| Daily lowered to 450 (today's 400 + 50), other caps as decided | vote nonce 3, `0x713a2548…` | nonce 3, `0xf4dfeaa9…` |
+| Probe 100 → `lock: over the daily cap` | block 87332 | block 88094 |
+| Total lowered to balance + 50 (685 / 683), daily back to 500 | nonce 4, `0xa1d153ee…` | nonce 4, `0x32a9f003…` |
+| Probe 100 → `lock: over the token cap` | block 87587 | block 88365 |
+| Caps back to the canary 1,000 / 100 / 200 / 500 | nonce 5, `0xd444822a…` | nonce 5, `0x5abceece…` |
+| Probe 150 under the canary → `lock: over the per-lock cap` | block 87829 | block 88614 |
+| Lock-switch drill | section 5 | section 5 |
+| Raise to 10,000 / 1,000 / 2,000 / 5,000 | nonce 6, `0xce30c582…` | nonce 6, `0x856a5bfb…` |
+| Lock 150 admitted (refused at 150 before the raise) | n=17, minted 150, supply 785 at mc 556798 | n=18, minted 150, supply 783 at mc 557452 |
+| Clean window after | `raised-window-1…3` (mc 557749–558124) | same reports |
 
 **Observation windows.** Each window was several consecutive monitor reports.
 Every report had a distinct checkpoint, was fresh (at most 120 s old), named
@@ -117,8 +132,10 @@ pause hook (`observe --expect-clean`).
 - **Hour 23 of 27 Nov:** `canary-window-1127h23-w2-1…5`, five clean reports.
 - **Emergency recovery:** `emergency-resolved-window-1…3`, three clean
   reports.
-- **Hour 2 and after the raise:** not run. The first hour-2 observation
-  refused because the monitor report was stale (see below).
+- **Before and after the cap steps:** `finish-window-before-1…3` and
+  `raised-window-1…3`, three clean reports each.
+- **Refused:** the first hour-2 observation of 28 Nov (`canary-window-1128h2-1`)
+  refused because the monitor report was stale (see the stop).
 
 While a rate bucket was full, the monitor correctly reported `hourly_headroom`
 and `lock_headroom` (`monitor-1127h22-cap-saturated`). Those alarms are not
@@ -217,29 +234,31 @@ above is a `safeTransferFrom` against it. Both unlocks are a `safeTransfer`.
 `Bridge.sol` has no pause of its own. Its stop is `voteForSwitchLock`, which
 stops every lock.
 
-Not run. Its script (`commands/canary-1128-h2.sh`) stopped at its first
-observation, before any value step.
+| Step | Evidence | Result |
+| --- | --- | --- |
+| `voteForSwitchLock(false)` | `bridge-lock-stop`, nonce 2, `0xbeb9ac29…` | `allowLock` false |
+| USDC lock refused | `usdc-bridge-stopped-probe`, block 88862 | `Lock is currently disabled` |
+| USDT lock refused | `usdt-bridge-stopped-probe`, block 89020 | `Lock is currently disabled` |
+| `voteForSwitchLock(true)` | `bridge-lock-allow`, nonce 3, `0x36e54904…` | `allowLock` true |
+| Resume | `usdc-raised-lock`, `usdt-raised-lock` | both assets lock and mint again |
 
 ## Final state
 
-Read at the stop (`stop-state-reconcile`, mc 488141, source block 61862, nodes
-4–6):
+`final-reconcile`, at mc 558207 and source block 89943, on nodes 4–6:
 
-| Asset | Wrapped supply | Bridge balance | Reconciled | Caps (total / per lock / hourly / daily) | Disabled | Locks open |
+| Asset | Wrapped supply | Bridge balance | Reconciled | Final caps (total / per lock / hourly / daily) | Disabled | Locks open |
 | --- | --- | --- | --- | --- | --- | --- |
-| USDC | 635,000,000 | 635,000,000 | yes | 1,000 / 100 / 200 / 500 tokens (the canary values) | no | yes |
-| USDT | 633,000,000 | 633,000,000 | yes | 1,000 / 100 / 200 / 500 tokens (the canary values) | no | yes |
+| USDC | 785,000,000 | 785,000,000 | yes | 10,000 / 1,000 / 2,000 / 5,000 tokens | no | yes |
+| USDT | 783,000,000 | 783,000,000 | yes | 10,000 / 1,000 / 2,000 / 5,000 tokens | no | yes |
 
-At the stop:
+- **Final caps.** The documented post-acceptance caps are the raised values
+  above, ten times the canary.
+- **Monitor.** Its reports are clean and its latch file is empty.
+- **Incidents.** The drill's only incident was resolved through the procedure.
+- **Actors.** Both are active (USDT v5, USDC v1).
 
-- the caps are the decision-12 canary values, the documented value for now;
-- the planned raise to 10,000 / 1,000 / 2,000 / 5,000 was not voted;
-- the monitor's latch file is empty;
-- the drill's only incident was resolved through the procedure;
-- both actors are active (USDT v5, USDC v1).
-
-The monitor's last published report predates the failure, so "clean reports at
-the end" is not claimed after 23:57.
+The intermediate state at the stop (`stop-state-reconcile`, mc 488141: USDC
+635 = 635, USDT 633 = 633) is kept.
 
 ## The stop
 
@@ -325,7 +344,12 @@ signed messages) and all keys stay on the host.
 - **`actor-usdt/`:** the actor driver's archived graphs and verifier outputs for
   the fee cases.
 - **`provider-actions/`:** the provider actions' inputs, previews and results.
-- **`commands/`:** the orchestration scripts that were run.
+- **`commands/`:** the orchestration scripts.
+  - `finish-now.sh` ran the cap steps and the lock-switch drill.
+  - `canary-1128-h2.sh` stopped at its first observation (the stale report).
+  - `canary-1129.sh` was stopped before its first step, when the owner asked
+    for the redesign.
+  - Neither of the last two sent anything.
 - **`logs/`:** each step's console output.
 
 ## Verification

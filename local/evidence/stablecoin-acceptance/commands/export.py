@@ -47,6 +47,16 @@ for path in sorted(Path("/data/stablecoin-acceptance/provider-actions").rglob("*
     out.parent.mkdir(parents=True, exist_ok=True); out.write_bytes(data)
     d = hashlib.sha256(data).hexdigest()
     files.append({"file": str(rel), "original_sha256": d, "sha256": d, "removed_fields": []})
+# The monitor's gap reconciliation after its 2026-11-27 23:57 failure: every
+# batch, the gap-including tick and the post-restart provider check.
+for base, prefix in ((Path("/data/usdt-t15-monitor-gap-20261128"), "monitor-recovery/gap-batches"),
+                     (Path("/tos/stablecoin-acceptance-logs/gap-reconciliation"), "monitor-recovery")):
+    for path in sorted(p for p in base.iterdir() if p.is_file()):
+        rel = Path(prefix) / path.name
+        data = path.read_bytes(); out = dst / rel
+        out.parent.mkdir(parents=True, exist_ok=True); out.write_bytes(data)
+        d = hashlib.sha256(data).hexdigest()
+        files.append({"file": str(rel), "original_sha256": d, "sha256": d, "removed_fields": []})
 index = {"schema": "local-stablecoin-acceptance-evidence/1", "files": files}
 (dst / "INDEX.json").write_text(json.dumps(index, indent=1, sort_keys=True) + "\n")
 print(len(files), "files")

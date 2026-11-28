@@ -1,0 +1,34 @@
+{
+ "after": {
+  "available": 50000000,
+  "daily": 450000000,
+  "day_used": 400000000,
+  "hour_used": 0,
+  "hourly": 200000000,
+  "per_lock": 100000000,
+  "total": 1000000000
+ },
+ "asset": "usdt",
+ "before": {
+  "available": 100000000,
+  "daily": 500000000,
+  "day_used": 400000000,
+  "hour_used": 0,
+  "hourly": 200000000,
+  "per_lock": 100000000,
+  "total": 1000000000
+ },
+ "caps": [
+  1000000000,
+  100000000,
+  200000000,
+  450000000
+ ],
+ "nonce": 3,
+ "token": "0x610178da211fef7d417bc0e6fed39f05609ad788",
+ "vote": {
+  "block": 87942,
+  "status": 1,
+  "tx": "0xf4dfeaa929faae3f1508a4111a114574b3d1c70470b612eb363518bf7f49c37e"
+ }
+}

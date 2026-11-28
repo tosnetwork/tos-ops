@@ -1,0 +1,60 @@
+{
+ "assets": {
+  "usdc": {
+   "bridge_balance": 785000000,
+   "reconciled": true,
+   "source": {
+    "allow_lock": true,
+    "bridge_balance": 785000000,
+    "cap": {
+     "available": 1000000000,
+     "daily": 5000000000,
+     "day_used": 550000000,
+     "hour_used": 150000000,
+     "hourly": 2000000000,
+     "per_lock": 1000000000,
+     "total": 10000000000
+    },
+    "disabled": false,
+    "lock_nonce": 19
+   },
+   "wrapped_supply": 785000000
+  },
+  "usdt": {
+   "bridge_balance": 783000000,
+   "reconciled": true,
+   "source": {
+    "allow_lock": true,
+    "bridge_balance": 783000000,
+    "bridge_blacklisted": false,
+    "cap": {
+     "available": 1000000000,
+     "daily": 5000000000,
+     "day_used": 550000000,
+     "hour_used": 150000000,
+     "hourly": 2000000000,
+     "per_lock": 1000000000,
+     "total": 10000000000
+    },
+    "disabled": false,
+    "fee_basis_points": 0,
+    "lock_nonce": 19,
+    "maximum_fee": 0,
+    "paused": false
+   },
+   "wrapped_supply": 783000000
+  }
+ },
+ "checkpoint": {
+  "@type": "tos.blockIdExt",
+  "file_hash": "Y8DLU1KoRRzo3+z59lR1vgh5reYa/PjHeFmyluyw6Zo=",
+  "root_hash": "r6SOz0Pqkdr4z7o2ItG+ooPohdGxtHK0UIf3YCiu+dA=",
+  "seqno": 558207,
+  "shard": "-9223372036854775808",
+  "workchain": -1
+ },
+ "source_finalized": {
+  "hash": "0x418ed7d6a6a60683d37045a2e9152eee95186aa38c4d3c9e1dd07e6bf3a9201c",
+  "number": 89943
+ }
+}

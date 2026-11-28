@@ -1,0 +1,21 @@
+{
+  "buyer_balance": 23728895494,
+  "from": "-1:30b6e856375c15a24a205f525912cc5e8496c8f9956ed6f770036ffada233513",
+  "nanotos": 20000000000,
+  "payer_balance": 22455638039,
+  "seqno": 30,
+  "to": "0:14eda362e0cb32fc910daa87ffd1f7840ae8a152275fe36451a4d51422484979",
+  "tx": {
+    "hash": "4c8bf2e62f69843515f96a875d2814447a1c06a6cfb0c35762a04416d71b752d",
+    "lt": 524811000001,
+    "out": [
+      {
+        "body_hash": "96a296d224f285c67bee93c30f8a309157f0daa35dc5b87e410b78630a09cfc7",
+        "destination": "0:14eda362e0cb32fc910daa87ffd1f7840ae8a152275fe36451a4d51422484979",
+        "value": 20000000000
+      }
+    ],
+    "took_effect": true,
+    "utime": 1795832269
+  }
+}

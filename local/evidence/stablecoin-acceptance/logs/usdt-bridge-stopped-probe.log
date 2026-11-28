@@ -1,0 +1,37 @@
+{
+ "amount": 1000000,
+ "approval": {
+  "after": 1000000,
+  "approved": 1000000,
+  "before": 0,
+  "tx": "0x78e3c4bf4793642595e5a86edd1bdf2c1ed75a85615ba9558cdf6fa3aa4d4f4a"
+ },
+ "approval_reset_tx": "0xfbb1b8190a5ac3e9281c03abb2e45b19005f602484ff6503a53c0a0497551be0",
+ "asset": "usdt",
+ "block": {
+  "hash": "0xaa4e610358b13a1e331defb68c648aea3cf3d153328b54c01057b03a489e352f",
+  "number": 89020,
+  "timestamp": 1795858751
+ },
+ "expected_reason": "Lock is currently disabled",
+ "facts_at_block": {
+  "allow_lock": false,
+  "bridge_balance": 633000000,
+  "bridge_blacklisted": false,
+  "cap": {
+   "available": 100000000,
+   "daily": 500000000,
+   "day_used": 400000000,
+   "hour_used": 0,
+   "hourly": 200000000,
+   "per_lock": 100000000,
+   "total": 1000000000
+  },
+  "disabled": false,
+  "fee_basis_points": 0,
+  "lock_nonce": 17,
+  "maximum_fee": 0,
+  "paused": false
+ },
+ "revert": "Error: server returned an error response: error code 3: execution reverted: Lock is currently disabled, data: \"0x08c379a00000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000001a4c6f636b2069732063757272656e746c792064697361626c6564000000000000\""
+}
