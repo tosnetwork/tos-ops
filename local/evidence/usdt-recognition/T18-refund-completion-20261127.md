@@ -12,6 +12,11 @@ the completed `usdt:token_paused` incident was explicitly acknowledged after fre
 source reads; no other incident was removed and the monitor baseline was retained.
 The next ordinary monitor tick had no alarms, incidents or pause hook, at finalized
 block 382549. This was a deliberate operator resolution, not an automatic reset.
+It predates `testnet/scripts/resolve-settlement-incident.py`: the latch was
+removed by editing the monitor's `incidents.json` by hand, and
+`t18-refund/incident-resolution/resolved.json` records no sha256 of that file
+before or after the edit. Later resolutions use the command, whose record
+carries both hashes ([runbook](../../../testnet/settlement-monitor.md#runbook-reviewed-incident-resolution)).
 
 The production provider action then resumed the actor: owner source LT
 `417256000001`, hash

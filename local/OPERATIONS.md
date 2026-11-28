@@ -199,3 +199,21 @@ commands are recorded in
 [evidence/stablecoin-acceptance](evidence/stablecoin-acceptance/README.md).
 Tests: `local/tests/test_local_pq_stablecoin_acceptance.py`. Controls:
 `local/tests/stablecoin_acceptance_mutants.py`.
+
+## Local settlement monitor loop
+
+`local-settlement-monitor.py` treats an expected external failure as a STALE
+tick. That means a node RPC refusal such as `RATE_LIMITED`, a timeout, a
+connection error, malformed external data, or a refusal by the driver or the
+collector. A programming error (`TypeError`, `KeyError` and the like) still
+ends the process. The report was already marked stale at the start of that
+tick, so it stays stale.
+
+- **What the loop does.** It republishes `report.json` as stale and keeps
+  running. Provider and buyer execution still refuses on a stale report. While
+  ticks keep failing, the wait doubles from the interval up to 60 seconds, and
+  it returns to the interval after the first good tick.
+- **Gaps.** A stale stretch longer than the collector's 64-block bound needs
+  the runbook's explicit gap reconciliation. Never reset the baseline.
+- **Tests.** `local/tests/test_local_settlement_monitor.py`; red controls in
+  `local/tests/settlement_monitor_loop_controls.py`.

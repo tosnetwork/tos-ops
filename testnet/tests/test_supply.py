@@ -7,13 +7,14 @@ Real bytes anchor every reader:
 * zerostate-v16-auth.boc is create-state output of the canonical template before
   the CFG-01 change (100,000 TOS bootstrap wallet, no ConfigParam 5): the
   account reader must find exactly that, and the genesis check must refuse it.
-* zerostate-epoch6-candidate.boc is create-state output of the merged CFG-01
-  template (tos 5d8b4d3ad, the merge of tos #365, which carries the bootstrap lines
-  itself: an 80,151 TOS wallet, ConfigParam 5 = blackhole -1:ff...ff burning 0/1, 5
-  critical), with global id 2, SOURCE_DATE_EPOCH 1793000000, the epoch-6 AUTH tag
-  rule, the epoch-6 ConfigParam 15 and the disposable test key 0x53 repeated, made
-  by create_state() below; test_the_epoch6_profile_schedule_reaches_the_zero_state
-  regenerates it and requires the same bytes.
+* zerostate-epoch6-candidate.boc is create-state output of the canonical template
+  since tos e40d28737 (tos #513, ConfigParam 84 critical) on top of the merged
+  CFG-01 template (tos #365, which carries the bootstrap lines itself: an 80,151 TOS
+  wallet, ConfigParam 5 = blackhole -1:ff...ff burning 0/1, 5 critical), with global
+  id 2, SOURCE_DATE_EPOCH 1793000000, the epoch-6 AUTH tag rule, the epoch-6
+  ConfigParam 15 and the disposable test key 0x53 repeated, made by create_state()
+  below; test_the_epoch6_profile_schedule_reaches_the_zero_state regenerates it and
+  requires the same bytes.
 * masterchain-block-seq12.boc is a real masterchain block (tos
   test/pq-native/x02-config34-fixtures/z01-seq12-block.boc; its sha256 is its
   recorded file hash).
@@ -368,6 +369,9 @@ def test_the_epoch6_profile_schedule_reaches_the_zero_state(tmp_path):
     assert found["bootstrap_wallet_nanotos"] == 80_151 * NANO
     # The committed candidate is exactly this output of the merged template.
     assert "TM$80151" in tos_template(), "TOS_ROOT predates the CFG-01 template (tos #365)"
+    assert " 84 ) config.critical_params!" in tos_template(), (
+        "TOS_ROOT predates ConfigParam 84 in the critical set (tos #513)"
+    )
     assert boc == CANDIDATE
 
 
