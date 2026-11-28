@@ -1,0 +1,208 @@
+{
+  "checkpoint": {
+    "block_file_hash": "sha256:e52f0921e7448e070e322509ff0f4514bac1f165b2c7563808777679d75d4158",
+    "block_root_hash": "sha256:b1e3c2a1926d134417cae6f43cd20d0ff24156530eef3a960613c1a59836179f",
+    "chain_time": 1795821466,
+    "seqno": 463016
+  },
+  "checks": [
+    {
+      "detail": "complete actor history and typed pending, refund, payout and returned cells agree",
+      "id": "finalized-state",
+      "ok": true
+    }
+  ],
+  "funding_refusals": [
+    {
+      "active_payout_id": 7,
+      "amount_atomic": "1001001",
+      "call": {
+        "body_boc": "te6ccgEBAgEAegABYnNi0JwAAAAAAAAAADD0YpgAKdtGxcGWZfkiG1UP/6PvCBXRQqROv8bIo0mqKESQkvMBAIhTVEMBsAVZHkwaEtVVcO4uT3lwjtM6Dc8oz/VD7DyF0OD59vbCl/R2PsY3X/1hjRsCu7j7ITpB9zOdmyOaIXgTNdKPWg==",
+        "bounced": false,
+        "exit_code": 0,
+        "hash": "f104280bccf2c29519be6738ab771e75ac0f5ed9f6c3a0580c8d25b40aace902",
+        "inbound_message_hash": "d86b4c47783f115c2d993bb35108e3897f9c60f0ee599bb9987efc7b6d5212ba",
+        "kind": "funding_refused",
+        "log_body_bocs": [
+          "te6ccgEBAQEAPQAAdVNBRjEAAAAAAAAAAIACnbRsXBlmX5IhtVD/+j7wgV0UKkTr/GyKNJqihEkJLyYejFIO3AAAAAAAAAAP"
+        ],
+        "logs": [
+          {
+            "Balance": null,
+            "Funding": {
+              "Amount": 1001001,
+              "From": {
+                "Address": "FO2jYuDLMvyRDaqH/9H3hArooVInX+NkUaTVFCJISXk=",
+                "AddressBits": 256,
+                "AnycastDepth": -1,
+                "AnycastPrefix": null,
+                "BitLen": 267,
+                "Bits": "gAKdtGxcGWZfkiG1UP/6PvCBXRQqROv8bIo0mqKESQkvIA==",
+                "Kind": 2,
+                "Workchain": 0
+              },
+              "PayoutID": 7,
+              "QueryID": 0,
+              "Reason": 1902
+            },
+            "Outcome": null,
+            "Snapshot": null,
+            "Tag": 1396786737
+          }
+        ],
+        "lt": 497537000007,
+        "notification": {
+          "amount_atomic": "1001001",
+          "forward_payload_boc": "te6ccgEBAgEASgABAcABAIhTVEMBsAVZHkwaEtVVcO4uT3lwjtM6Dc8oz/VD7DyF0OD59vbCl/R2PsY3X/1hjRsCu7j7ITpB9zOdmyOaIXgTNdKPWg==",
+          "from": "0:14eda362e0cb32fc910daa87ffd1f7840ae8a152275fe36451a4d51422484979",
+          "payload": {
+            "ExpectedTermsHash": [
+              194,
+              151,
+              244,
+              118,
+              62,
+              198,
+              55,
+              95,
+              253,
+              97,
+              141,
+              27,
+              2,
+              187,
+              184,
+              251,
+              33,
+              58,
+              65,
+              247,
+              51,
+              157,
+              155,
+              35,
+              154,
+              33,
+              120,
+              19,
+              53,
+              210,
+              143,
+              90
+            ],
+            "RequestHash": [
+              176,
+              5,
+              89,
+              30,
+              76,
+              26,
+              18,
+              213,
+              85,
+              112,
+              238,
+              46,
+              79,
+              121,
+              112,
+              142,
+              211,
+              58,
+              13,
+              207,
+              40,
+              207,
+              245,
+              67,
+              236,
+              60,
+              133,
+              208,
+              224,
+              249,
+              246,
+              246
+            ]
+          },
+          "query_id": 0
+        },
+        "now": 1795821387,
+        "opcode": 1935855772,
+        "outputs": [
+          {
+            "body_boc": "te6ccgEBAQEAWQAArVJUUjEAAAAAAAAABzD0YpgAKdtGxcGWZfkiG1UP/6PvCBXRQqROv8bIo0mqKESQkvMABTto2LgyzL8kQ2qh//R94QK6KFSJ1/jZFGk1RQiSEl5NrK8wEA==",
+            "bounce": true,
+            "bounced": false,
+            "destination": "0:6a454865a858b152f1678fed49e899e2a8ed1fbafb23d136a539c3aceb52c28d",
+            "has_state_init": false,
+            "hash": "974db5b26efb9e847d5ac60528b6359577f76e9730894b92b5c3008ba0396960",
+            "value_nanotos": "963823714"
+          }
+        ],
+        "sender": "0:6a454865a858b152f1678fed49e899e2a8ed1fbafb23d136a539c3aceb52c28d",
+        "took_effect": true,
+        "value_nanotos": "993756770"
+      },
+      "caller": "0:14eda362e0cb32fc910daa87ffd1f7840ae8a152275fe36451a4d51422484979",
+      "payout_id": 7,
+      "reason": 1902,
+      "state": "funding_returned"
+    }
+  ],
+  "inputs": [
+    {
+      "bytes": 233,
+      "name": "network-domain",
+      "sha256": "sha256:e2054d9ab121384462030f96b7526416445d9ee177a9ef0af78c73a462167662"
+    },
+    {
+      "bytes": 808,
+      "name": "asset-pins",
+      "sha256": "sha256:590e096183d536248beea5995fef12d8a490ad0e3861bdc98bede3619b53cc64"
+    },
+    {
+      "bytes": 5597,
+      "name": "registry-code-boc",
+      "sha256": "sha256:ac3948e3685f4015ca2ce3c52e58150e7ef4ab0f75634f974124922b40fd07d9"
+    }
+  ],
+  "network": {
+    "genesis_file_hash": "sha256:c3860fe196a2a1b5e4e74a9cf9448624a353ce68a8c4c5f6413347586d688769",
+    "genesis_root_hash": "sha256:65735247a371030abe811aeac0afe357301ce90e161450d26f88b4beb5b4c366",
+    "network_id": "local-usdc-t10"
+  },
+  "not_claimed": [
+    "operator independence of the endpoints: agreeing endpoints run by one operator are one source",
+    "computation correctness: a Receipt is the provider's attested statement of the digests it binds",
+    "the identity or independence of the buyer, the provider or the verifier",
+    "anything after the checkpoint, or about a request the verification did not select",
+    "without an evidence bundle, only the caller wallet of each request is proven: not its Quote, its Capability binding or whose purchase it is; bind the reported caller to the buyer's declared wallet",
+    "without a token bundle, no asset-recognition or funding-chain claim is made"
+  ],
+  "reads": {
+    "endpoints": [
+      {
+        "genesis_ok": true,
+        "url": "http://127.0.0.1:19014/jsonRPC"
+      },
+      {
+        "genesis_ok": true,
+        "url": "http://127.0.0.1:19015/jsonRPC"
+      },
+      {
+        "genesis_ok": true,
+        "url": "http://127.0.0.1:19016/jsonRPC"
+      }
+    ],
+    "quorum": 3
+  },
+  "requests": [],
+  "result": "pass",
+  "schema": "tos.service.purchase-verdict.token.v1",
+  "tool": {
+    "go_version": "go1.26.11",
+    "module": "github.com/tosnetwork/ai",
+    "name": "tos-service-verify"
+  }
+}

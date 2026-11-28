@@ -1,0 +1,35 @@
+{
+  "assets": [
+    {
+      "actors": [],
+      "id": "usdc",
+      "implementation": "sha256:5f203b406c10ca8abc88d57096824a0843edd60750f57f20b23cfe5a8b9663c7",
+      "master": "0:f366cb324cfb8161ffa0c55e00fa89458bdc18b03f73f18b4f6f9ca5228efb06",
+      "min_lock_headroom": 1000000,
+      "occupancy_percent": 90,
+      "source_token": "0x5fbdb2315678afecb367f032d93f642f64180aa3",
+      "symbol": "USDC"
+    },
+    {
+      "actors": [],
+      "id": "usdt",
+      "implementation": "sha256:d3083fb4bd2386e0048353225087ec0056293eba716ae6498780ac961fabc0a6",
+      "master": "0:181e00fdfea5eeccb099b2ede160375e206de7d466a8bc6b4c79557781759591",
+      "min_lock_headroom": 1000000,
+      "occupancy_percent": 90,
+      "source_token": "0x610178da211fef7d417bc0e6fed39f05609ad788",
+      "symbol": "USDT"
+    }
+  ],
+  "max_age_seconds": 120,
+  "network": "65735247a371030abe811aeac0afe357301ce90e161450d26f88b4beb5b4c366",
+  "schema": "tos-settlement-policy/1",
+  "thresholds": {
+    "payout_blocks": 30,
+    "refusals_count": 24,
+    "rereport_clear_blocks": 30,
+    "rereport_clear_seconds": 300,
+    "returned_count": 4,
+    "returned_seconds": 120
+  }
+}

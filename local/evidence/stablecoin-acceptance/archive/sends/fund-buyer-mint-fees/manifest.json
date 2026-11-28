@@ -1,0 +1,60 @@
+{
+  "checkpoint": {
+    "@type": "tos.blockIdExt",
+    "file_hash": "MXnZou/e7wuPjCdLVfR3cbp6r/fTPxnzNq1xi00MPpc=",
+    "root_hash": "zBfmlepzWlwl6TOraq/Eo9F7sYm7CBSGZ+7Gb42YWoc=",
+    "seqno": 455551,
+    "shard": "-9223372036854775808",
+    "workchain": -1
+  },
+  "complete": true,
+  "files": [
+    {
+      "account": "-1:30b6e856375c15a24a205f525912cc5e8496c8f9956ed6f770036ffada233513",
+      "block": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "hyEvOa6kaXlwMJTg6KMnFVn4Q2MuYL3RyXx/s9SRtjY=",
+        "root_hash": "8qynktOtI6nJu+tuX1G/A+GPcDQlxGv/O1p2BUFEx5E=",
+        "seqno": 455547,
+        "shard": "-9223372036854775808",
+        "workchain": -1
+      },
+      "file": "transactions/490245000001-a9358975d4631fed72129a63e50d7d0b859d91facce39cbf7497a9fabd7b711f.boc",
+      "lt": 490245000001,
+      "sha256": "0ead2a7c2f13d2fad585d81019399dca1f90bed93321e4eb92f8b440961c237f",
+      "transaction_hash": "a9358975d4631fed72129a63e50d7d0b859d91facce39cbf7497a9fabd7b711f"
+    },
+    {
+      "account": "0:14eda362e0cb32fc910daa87ffd1f7840ae8a152275fe36451a4d51422484979",
+      "block": {
+        "@type": "tos.blockIdExt",
+        "file_hash": "4ecoF1kkl9CsnBCOmupsoDUdPCEfw6FG16T0gNt/7rk=",
+        "root_hash": "S2o0/dqdYrJPmJJoNbeL8BAT6dCLKzUofZx+vViLkjY=",
+        "seqno": 488630,
+        "shard": "-9223372036854775808",
+        "workchain": 0
+      },
+      "file": "transactions/490247000001-7234c212191dbc377754e632744b61ec49acc3a3e306b74b7f6dffe02af61e63.boc",
+      "lt": 490247000001,
+      "sha256": "f36165e67342f38f045500450077a22b6c3343a5577e194d30bc6dbbe40c0596",
+      "transaction_hash": "7234c212191dbc377754e632744b61ec49acc3a3e306b74b7f6dffe02af61e63"
+    },
+    {
+      "file": "verifiers/archival-verification-7ff2a92cfea1ccd9d1a010effc6e0acf2da4cce8438c99b86536d3a0185d7fa2.json",
+      "sha256": "7ff2a92cfea1ccd9d1a010effc6e0acf2da4cce8438c99b86536d3a0185d7fa2"
+    },
+    {
+      "file": "block-headers.json",
+      "sha256": "b503eaa7eb37bcabe66daa187ce9b8621e94dd5e2d06d977cebedc5d5d145c89"
+    }
+  ],
+  "identity": "ab307e231cb55811dc7bd7082568fd41e7a58fbdebfe3bbe2b6f8704820e18ac",
+  "label": "fund-buyer-mint-fees",
+  "roots": [
+    {
+      "account": "-1:30b6e856375c15a24a205f525912cc5e8496c8f9956ed6f770036ffada233513",
+      "hash": "a9358975d4631fed72129a63e50d7d0b859d91facce39cbf7497a9fabd7b711f",
+      "lt": 490245000001
+    }
+  ]
+}

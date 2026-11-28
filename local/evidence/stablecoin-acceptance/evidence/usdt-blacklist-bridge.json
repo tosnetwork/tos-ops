@@ -1,0 +1,44 @@
+{
+  "after": {
+    "allow_lock": true,
+    "bridge_balance": 223000000,
+    "bridge_blacklisted": true,
+    "cap": {
+      "available": 100000000,
+      "daily": 500000000,
+      "day_used": 226000000,
+      "hour_used": 1000000,
+      "hourly": 200000000,
+      "per_lock": 100000000,
+      "total": 1000000000
+    },
+    "disabled": false,
+    "fee_basis_points": 0,
+    "lock_nonce": 7,
+    "maximum_fee": 0,
+    "paused": false
+  },
+  "before": {
+    "allow_lock": true,
+    "bridge_balance": 223000000,
+    "bridge_blacklisted": false,
+    "cap": {
+      "available": 100000000,
+      "daily": 500000000,
+      "day_used": 226000000,
+      "hour_used": 1000000,
+      "hourly": 200000000,
+      "per_lock": 100000000,
+      "total": 1000000000
+    },
+    "disabled": false,
+    "fee_basis_points": 0,
+    "lock_nonce": 7,
+    "maximum_fee": 0,
+    "paused": false
+  },
+  "block": 52781,
+  "op": "blacklist-bridge",
+  "owner": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+  "tx": "0xe6704114a81d4ed697b6e9777e6de3cdab4037a8cd9a5f9109862b186caa83ab"
+}

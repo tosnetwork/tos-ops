@@ -1,0 +1,3 @@
+tos-service-verify refused: token verdict: fail; checkpoint 462918; 0 requests
+FAILED history: quorum not reached: 0 value groups and 3 endpoint errors (first: TOS JSON-RPC error -32603: getTransactions: [Error : -400 : cannot compute block with specified transaction: cannot find block (0,dab3c57e833459f6) lt=420099000009: lt not in db])
+

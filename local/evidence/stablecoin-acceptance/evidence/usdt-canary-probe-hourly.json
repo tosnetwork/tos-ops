@@ -1,0 +1,37 @@
+{
+  "amount": 1,
+  "approval": {
+    "after": 1,
+    "approved": 1,
+    "before": 0,
+    "tx": "0xeabcab49f4904c27c18085909b0ffe9e5c074d3b62a7da108e4e0f91ad6f4ab0"
+  },
+  "approval_reset_tx": "0x80aa5c502751718f64ee08fec41ddda3a3045a458f921c7d9af18ac125ee355b",
+  "asset": "usdt",
+  "block": {
+    "hash": "0x1b5e404f7d983854b8a52140452fa806cd9f9888be6cb4c1a6836d4b34a859c3",
+    "number": 50227,
+    "timestamp": 1795819778
+  },
+  "expected_reason": "lock: over the hourly cap",
+  "facts_at_block": {
+    "allow_lock": true,
+    "bridge_balance": 225000000,
+    "bridge_blacklisted": false,
+    "cap": {
+      "available": 0,
+      "daily": 500000000,
+      "day_used": 225000000,
+      "hour_used": 200000000,
+      "hourly": 200000000,
+      "per_lock": 100000000,
+      "total": 1000000000
+    },
+    "disabled": false,
+    "fee_basis_points": 0,
+    "lock_nonce": 6,
+    "maximum_fee": 0,
+    "paused": false
+  },
+  "revert": "Error: server returned an error response: error code 3: execution reverted: lock: over the hourly cap, data: \"0x08c379a0000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000196c6f636b3a206f7665722074686520686f75726c792063617000000000000000\""
+}

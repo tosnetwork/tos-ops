@@ -1,0 +1,14 @@
+{
+  "resolver": "independent process using the same production resolver code",
+  "resolver_endpoints": [
+    "http://127.0.0.1:19014/jsonRPC",
+    "http://127.0.0.1:19015/jsonRPC",
+    "http://127.0.0.1:19016/jsonRPC"
+  ],
+  "retained_history_routes": true,
+  "sending_endpoints": [
+    "http://127.0.0.1:8011",
+    "http://127.0.0.1:8012",
+    "http://127.0.0.1:8013"
+  ]
+}

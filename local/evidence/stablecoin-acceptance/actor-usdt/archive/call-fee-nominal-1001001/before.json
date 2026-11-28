@@ -1,0 +1,19 @@
+{
+  "activate-owner": "0d3f11f95b3559668b2d8d23a7f6e23531a5cb479b419befcdd7a277017aea11",
+  "call-funding-refused": "73977fa17555a4c0091fe0bd8cedeb53600eb60d70b676f392145b458ebe4a6c",
+  "call-refunded": "dd0d45b3f3e95efc1d409c997f159d98609f08cc4f098c8b2aed89ba30d1f846",
+  "call-surplus": "f47d93ddfbb3c904a38da337e25d78b19ddcf4e768e88fbacf52bbffca4cda66",
+  "call-swept": "be172418b67981ea85af59a1b6e9439bf8a7878b27864a1e0f4780f206af6d77",
+  "deploy-actor": "d6fc047251628f51f6ec3b968f0b0febbf41a6f52d3bea4fbcbbc04300beb0e9",
+  "deployed-wallet-reserve": "8f46dd5aeea67f42f24fbaf878406156803429fe10a4fa149286e232a7ca97ef",
+  "fund-owner": "93e297281f29590f963db73b8be5a5f88d92cf03611444a7cf2b2c591bd66522",
+  "fund-work-buyer": "ef394aff0d3c7dd3633131b92482025b7db8d8b09a2ea6d73338e7171b12d990",
+  "lapsed-original-refund": "eb14a4c1149fa56b259887c8af32c60a99f792d0c9291f31987a2426cd041b44",
+  "publication-attestor": "91808e1c1fe05d311276676726e2d9f366f71622772bff01d7486c1da2813ef5",
+  "publication-policy": "91adc4592f9556f78bfa71813a2928b69a7c9142b631ab2fc7bfcedc9e507ccd",
+  "publication-register-capability": "61f6c59b5198c9ec9bbb40d776e82a4b69e832f4067a6734706f305229b1aab8",
+  "refunded-expire": "a79458d49acc644009add048dcf086e58e471677548e39cdf6e79d8bc4fd759e",
+  "swept-after-expire": "7739e84b203d5968e1deb0f25ba6f1b92470559865bc11a8a746a92f13e8e2df",
+  "swept-expire": "0f0aadec7f0520c5db8f8f1652d557ab8921c167a33f1304bd6d358738f8dfc2",
+  "tokens-work-buyer": "13ddf55b9090e744dcb9891347e30f9ac08c999a1730c5bf6495b30a2f40ca7c"
+}

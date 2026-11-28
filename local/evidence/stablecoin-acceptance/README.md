@@ -1,4 +1,13 @@
-# Local stablecoin final acceptance
+# Local stablecoin final acceptance (partial)
+
+**Status: stopped at 02:04 UTC on 28 Nov, before the hour-2 canary steps.**
+The running monitor unit failed (see [the stop](#the-stop)). The emergency
+drill, the fee-on-transfer case, the no-`bool` case, the canary's hourly and
+per-lock refusals and the hour-0/1 locks are complete. Not yet run:
+
+- the daily-cap and total-cap refusals;
+- the raise vote and the larger lock;
+- the lock-switch drill.
 
 This record covers the stablecoin final acceptance on the existing local PQ
 network. The owner decided (2026-11-28, memo decision 32) that it replaces the
@@ -83,21 +92,22 @@ tUSDC and 10 tUSDT.
 | Lock 100 (hour 22) | n=3, minted 100, supply 225 at mc 456716 | n=5, minted 100, supply 225 at mc 458605 |
 | Probe 1 → `lock: over the hourly cap` | block 49465 | block 50227 |
 | Probe 100.000001 → `lock: over the per-lock cap` | block 49600 | block 50371 |
-| Locks 100 + 100 (28 Nov, hour 0) | HOUR0_USDC | HOUR0_USDT |
-| Locks 100 + 100 (hour 1) | HOUR1_USDC | HOUR1_USDT |
-| Lock 100 (hour 2) → day at 500 | HOUR2_USDC | HOUR2_USDT |
-| Probe 1 → `lock: over the daily cap` | DAILY_USDC | DAILY_USDT |
-| Total lowered to balance + 50, probe 100 → `lock: over the token cap` | TOTAL_USDC | TOTAL_USDT |
-| Raise vote | RAISE_USDC | RAISE_USDT |
-| Lock 150 (over the old per-lock cap) admitted | RAISED_USDC | RAISED_USDT |
+| Locks 100 + 100 (28 Nov, hour 0) | n=9, 10; supply 435 at mc 470891 | n=11, 12; supply 433 at mc 471725 |
+| Locks 100 + 100 (hour 1) | n=13, 14; supply 635 at mc 479341 | n=15, 16; supply 633 at mc 480210 |
+| Lock 100 (hour 2) → day at 500 | not run | not run |
+| Probe 1 → `lock: over the daily cap` | not run | not run |
+| Total lowered to balance + 50, probe 100 → `lock: over the token cap` | not run | not run |
+| Raise vote | not run | not run |
+| Lock 150 (over the old per-lock cap) admitted | not run | not run |
 
-**Why the total cap was lowered for its probe.** Under the decision-12 caps,
-the 1,000 total cannot be reached quickly. The daily cap of 500 means at most
-725 tokens of backing by the end of 28 Nov. The total-cap refusal was therefore
-shown by a cap vote that set the total to the current balance plus 50 (the
-lowering also takes effect at once). The decided caps' per-lock, hourly and
-daily refusals were each shown live under the decided values. The raise
-followed immediately.
+**Planned total-cap probe (not run).** Under the decision-12 caps, the 1,000
+total cannot be reached quickly. The daily cap of 500 means at most 725 tokens
+of backing by the end of 28 Nov. The plan, in `commands/canary-1128-h2.sh`, is
+to show the total-cap refusal under a cap vote that sets the total to the
+current balance plus 50 (a lowering also takes effect at once), then to raise
+the caps at once. The decided caps' hourly and per-lock refusals were shown
+live under the decided values. The daily refusal needs a third lock in hour 2
+of the same UTC day.
 
 **Observation windows.** Each window was several consecutive monitor reports.
 Every report had a distinct checkpoint, was fresh (at most 120 s old), named
@@ -105,8 +115,10 @@ the same checkpoint as its snapshot, and had no alarms, latched incidents or
 pause hook (`observe --expect-clean`).
 
 - **Hour 23 of 27 Nov:** `canary-window-1127h23-w2-1…5`, five clean reports.
-- **Hour 2 of 28 Nov:** WINDOW_H2 (before the daily-cap lock).
-- **After the raise:** WINDOW_RAISED.
+- **Emergency recovery:** `emergency-resolved-window-1…3`, three clean
+  reports.
+- **Hour 2 and after the raise:** not run. The first hour-2 observation
+  refused because the monitor report was stale (see below).
 
 While a rate bucket was full, the monitor correctly reported `hourly_headroom`
 and `lock_headroom` (`monitor-1127h22-cap-saturated`). Those alarms are not
@@ -205,14 +217,57 @@ above is a `safeTransferFrom` against it. Both unlocks are a `safeTransfer`.
 `Bridge.sol` has no pause of its own. Its stop is `voteForSwitchLock`, which
 stops every lock.
 
-PAUSE_DRILL
+Not run. Its script (`commands/canary-1128-h2.sh`) stopped at its first
+observation, before any value step.
 
 ## Final state
 
-FINAL_STATE
+Read at the stop (`stop-state-reconcile`, mc 488141, source block 61862, nodes
+4–6):
+
+| Asset | Wrapped supply | Bridge balance | Reconciled | Caps (total / per lock / hourly / daily) | Disabled | Locks open |
+| --- | --- | --- | --- | --- | --- | --- |
+| USDC | 635,000,000 | 635,000,000 | yes | 1,000 / 100 / 200 / 500 tokens (the canary values) | no | yes |
+| USDT | 633,000,000 | 633,000,000 | yes | 1,000 / 100 / 200 / 500 tokens (the canary values) | no | yes |
+
+At the stop:
+
+- the caps are the decision-12 canary values, the documented value for now;
+- the planned raise to 10,000 / 1,000 / 2,000 / 5,000 was not voted;
+- the monitor's latch file is empty;
+- the drill's only incident was resolved through the procedure;
+- both actors are active (USDT v5, USDC v1).
+
+The monitor's last published report predates the failure, so "clean reports at
+the end" is not claimed after 23:57.
+
+## The stop
+
+At 23:57:18 the running `tos-local-usdt-monitor` unit exited with status 1.
+
+- **What failed.** Node 4 answered its `getMasterchainInfo` with
+  `RATE_LIMITED -32005`. The resulting `testnet_lib.RpcError` is not among the
+  exceptions the monitor loop catches, so the process ended instead of
+  publishing STALE and retrying.
+- **What caused it.** The burst of reads came from this run's attempt to
+  archive the provider's pause transaction on nodes 4–6. The attempt started
+  at 23:57 and was stopped at 00:04.
+- **Consequences.** The same burst refused one hour-0 lock start before any
+  journal entry. With no unit refreshing it, the report stayed stale. This is
+  fail-closed: the provider and buyer refuse paid work on a stale report.
+- **Coverage.** The hour-0/1 canary locks ran while no monitor was running, and
+  this record does not claim monitor coverage for them.
+- **Not done.** The unit was not restarted. Restarting is a change to a running
+  service. More than 64 source blocks have also passed, so the collector needs
+  the runbook's explicit gap reconciliation (`reconcile-settlement-gap.py`
+  batches) before a fresh report, and it must never be baseline-reset.
+
+Follow-up for the monitor code: treat a rate-limited RPC as a STALE tick, not
+a crash.
 
 ## Dated limitations
 
+- **Monitor coverage.** It ended at 23:57 (see above).
 - **Provider transaction cells.** The provider's pause and resume transactions
   are identified by its journal records and by the finalized actor-policy reads
   on nodes 4–6. Their cells are not in this archive. The archive's ancestry
@@ -231,8 +286,9 @@ FINAL_STATE
 
 ## Files
 
-`INDEX.json` lists every committed file with its SHA-256. Nothing was
-sanitized: every `removed_fields` is empty. The private journal (`state.json`,
+`INDEX.json` lists every committed file with its SHA-256. Every
+`removed_fields` is empty. In `commands/`, the operator's home directory path
+was replaced by `$HOME`; those entries carry both digests and a note. The private journal (`state.json`,
 signed messages) and all keys stay on the host.
 
 - **`evidence/`:** step results.
@@ -248,7 +304,14 @@ signed messages) and all keys stay on the host.
 
 ## Verification
 
-VERIFICATION
+- Full operations suite (`local/tests testnet/tests`, `TOS_ROOT` = the tos
+  main checkout): **4,267 passed, 65 skipped, 34 subtests passed**.
+- Driver and actor-driver tests: 127 passed.
+- `local/tests/stablecoin_acceptance_mutants.py`: **31/31 assertion-red**, with
+  a green baseline.
+- Ruff check and format pass on every changed Python file.
+- The driver refuses a non-loopback source endpoint. Every TOS read checks the
+  approved genesis and global id 3 on nodes 4–6.
 
 Upstream comparison: these local operations drivers have no upstream
 counterpart at `99143587e6babb2e577eadea0fc741cb1b413fab`, and no inherited

@@ -1,0 +1,70 @@
+{
+ "approval": {
+  "after": 100000000,
+  "approved": 100000000,
+  "before": 0,
+  "tx": "0x90fdb09234ca49dadbf8caf20cdf62f393a34540063173f94eea947be3e2e062"
+ },
+ "asset": "usdt",
+ "fee_withheld": 0,
+ "lock": {
+  "block": 58690,
+  "status": 1,
+  "tx": "0x433a106dd62d998fee61b8313aa6741a3ef730dc53699d639f0ce2676d67fb8a"
+ },
+ "lock_event": {
+  "decimals": 6,
+  "generation": 1,
+  "n": 16,
+  "new_bridge_balance": 633000000,
+  "to_addr_hash": "0x14eda362e0cb32fc910daa87ffd1f7840ae8a152275fe36451a4d51422484979",
+  "value": 100000000
+ },
+ "mint_receipts": {
+  "pay_swap": 42,
+  "swap_vote": {
+   "external_hash": "1213702fc342295f2ca0717777cff3bd595f118ae6ef8ff91b04fd6d9b5941e9",
+   "submitter_seqno": 17,
+   "vote_body_hash": "83f353f97229d013ba193009afdbc75ceeb6743d65417f2e3b93886747418eb6"
+  }
+ },
+ "n": 16,
+ "received": 100000000,
+ "requested": 100000000,
+ "second_resolver": {
+  "buyer_wallet_balance": 629000000,
+  "checkpoint": {
+   "@type": "tos.blockIdExt",
+   "file_hash": "mkcB0j3r/sCO4qI0Aow2L0veDaKqShlVWaCKseSpGds=",
+   "root_hash": "6ilTiEoe+aVurphdi4dG7/hArdv9Sixu2JkXIlIavvI=",
+   "seqno": 480210,
+   "shard": "-9223372036854775808",
+   "workchain": -1
+  },
+  "endpoints": [
+   "http://127.0.0.1:8014",
+   "http://127.0.0.1:8015",
+   "http://127.0.0.1:8016"
+  ],
+  "supply": 633000000
+ },
+ "source_after": {
+  "allow_lock": true,
+  "bridge_balance": 633000000,
+  "bridge_blacklisted": false,
+  "cap": {
+   "available": 0,
+   "daily": 500000000,
+   "day_used": 400000000,
+   "hour_used": 200000000,
+   "hourly": 200000000,
+   "per_lock": 100000000,
+   "total": 1000000000
+  },
+  "disabled": false,
+  "fee_basis_points": 0,
+  "lock_nonce": 17,
+  "maximum_fee": 0,
+  "paused": false
+ }
+}

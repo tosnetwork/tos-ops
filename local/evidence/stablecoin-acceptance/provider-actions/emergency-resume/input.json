@@ -1,0 +1,5 @@
+{
+  "actor": "0:dab3c57e833459f6b2481148009a8c0817540da8cfc1e64248be612f1fe06df3",
+  "idempotency_key": "stablecoin-acceptance-emergency-resume",
+  "operation": "resume"
+}
